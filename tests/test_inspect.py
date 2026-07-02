@@ -252,6 +252,38 @@ def test_inspect_requirement_plan_mode_shows_tool_results(tmp_path: Path) -> Non
     assert (tmp_path / "transcript.json").exists()
 
 
+def test_inspect_requirement_plan_mode_prints_node_progress(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(ok=True, value=make_plan())
+
+    result = inspect_requirement(
+        "建立一个 UO2 pin-cell，并观察节点进度",
+        output_dir=tmp_path,
+        use_plan=True,
+        enable_plots=True,
+        enable_smoke_test=True,
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        verbose=True,
+    )
+
+    assert result.ok is True
+    stderr = capsys.readouterr().err
+    assert "[node:receive_requirement]" in stderr
+    assert "[node:generate_plan]" in stderr
+    assert "[node:validate_plan]" in stderr
+    assert "[node:render_plan_script]" in stderr
+    assert "[node:execute_tools] running export_xml" in stderr
+    assert "[node:execute_tools] running run_geometry_plots" in stderr
+    assert "[node:execute_tools] running run_smoke_test" in stderr
+    assert "[node:save_record]" in stderr
+
+
 def test_inspect_cli_json_accepts_interactive_expert_feedback(
     tmp_path: Path,
     monkeypatch,

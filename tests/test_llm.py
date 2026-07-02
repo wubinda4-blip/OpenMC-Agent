@@ -1,3 +1,5 @@
+import httpx
+import pytest
 from types import SimpleNamespace
 
 from openmc_agent.llm import ZhipuChatClient, generate_structured_output
@@ -277,6 +279,49 @@ class FakeHttpClient:
         )
 
 
+class RetryHttpClient:
+    def __init__(
+        self,
+        first_error: Exception | None = None,
+    ) -> None:
+        self.calls: list[dict] = []
+        self.first_error = first_error or httpx.ReadTimeout("The read operation timed out")
+
+    def post(self, url: str, *, headers: dict, json: dict, timeout: float):
+        self.calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "json": json,
+                "timeout": timeout,
+            }
+        )
+        if len(self.calls) == 1:
+            raise self.first_error
+        return FakeHttpResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": """
+                            {
+                              "name": "UO2 fuel",
+                              "density_unit": "g/cm3",
+                              "density_value": 10.4,
+                              "composition": [
+                                {"name": "U235", "percent": 4.95},
+                                {"name": "U238", "percent": 95.05},
+                                {"name": "O16", "percent": 200.0}
+                              ]
+                            }
+                            """
+                        }
+                    }
+                ]
+            }
+        )
+
+
 def test_generate_structured_output_routes_zhipu_models_through_zhipu_client(
     monkeypatch,
 ) -> None:
@@ -298,6 +343,78 @@ def test_generate_structured_output_routes_zhipu_models_through_zhipu_client(
     assert call["headers"]["Authorization"] == "Bearer test-key"
     assert call["json"]["model"] == "glm-5.2"
     assert call["json"]["temperature"] == 0
+    assert call["timeout"] == 180.0
+
+
+def test_zhipu_client_uses_timeout_environment(monkeypatch) -> None:
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+    monkeypatch.setenv("ZHIPUAI_TIMEOUT_SECONDS", "240")
+    http_client = FakeHttpClient()
+
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料",
+        schema=MaterialSpec,
+        model="zhipu:glm-5.2",
+        client=ZhipuChatClient(http_client=http_client),
+    )
+
+    assert result.ok is True
+    assert http_client.calls[0]["timeout"] == 240.0
+
+
+def test_zhipu_client_retries_read_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+    monkeypatch.setenv("ZHIPUAI_MAX_RETRIES", "1")
+    http_client = RetryHttpClient()
+
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料",
+        schema=MaterialSpec,
+        model="zhipu:glm-5.2",
+        client=ZhipuChatClient(http_client=http_client, retry_sleep_seconds=0),
+    )
+
+    assert result.ok is True
+    assert result.value is not None
+    assert result.value.name == "UO2 fuel"
+    assert len(http_client.calls) == 2
+
+
+def test_zhipu_client_retries_transient_ssl_eof(monkeypatch) -> None:
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+    monkeypatch.setenv("ZHIPUAI_MAX_RETRIES", "1")
+    http_client = RetryHttpClient(
+        httpx.ConnectError(
+            "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol"
+        )
+    )
+
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料",
+        schema=MaterialSpec,
+        model="zhipu:glm-5.2",
+        client=ZhipuChatClient(http_client=http_client, retry_sleep_seconds=0),
+    )
+
+    assert result.ok is True
+    assert result.value is not None
+    assert result.value.name == "UO2 fuel"
+    assert len(http_client.calls) == 2
+
+
+def test_zhipu_client_rejects_invalid_timeout_environment(monkeypatch) -> None:
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+    monkeypatch.setenv("ZHIPUAI_TIMEOUT_SECONDS", "bad")
+
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料",
+        schema=MaterialSpec,
+        model="zhipu:glm-5.2",
+        client=ZhipuChatClient(http_client=FakeHttpClient()),
+    )
+
+    assert result.ok is False
+    assert "ZHIPUAI_TIMEOUT_SECONDS" in result.error
 
 
 def test_zhipu_client_requires_api_key(monkeypatch) -> None:

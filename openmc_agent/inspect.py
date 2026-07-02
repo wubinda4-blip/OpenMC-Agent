@@ -47,6 +47,7 @@ def inspect_requirement(
     export_xml_tool: ExportXmlToolFn = export_xml,
     plot_tool: PlotToolFn = run_geometry_plots,
     smoke_test_tool: SmokeTestToolFn = run_smoke_test,
+    verbose: bool = False,
 ) -> InspectResult:
     if use_plan:
         return _inspect_plan_requirement(
@@ -62,23 +63,29 @@ def inspect_requirement(
             export_xml_tool=export_xml_tool,
             plot_tool=plot_tool,
             smoke_test_tool=smoke_test_tool,
+            verbose=verbose,
         )
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     records_path = output_path / "inspect_runs.jsonl"
+    if verbose:
+        print("[agent] Building legacy SimulationSpec workflow...", file=sys.stderr)
 
     graph = build_graph(
         generate_spec=generate_spec,
         repair_spec=repair_spec,
         max_retries=max_retries,
     )
+    if verbose:
+        print("[agent] Invoking LLM and validation workflow...", file=sys.stderr)
     state = graph.invoke(
         {
             "requirement": requirement,
             "model": model,
             "output_dir": str(output_path),
             "records_path": str(records_path),
+            "verbose": verbose,
         }
     )
 
@@ -86,6 +93,8 @@ def inspect_requirement(
     xml_export_ok = False
     xml_export_error = ""
     if model_path is not None:
+        if verbose:
+            print("[agent] Exporting OpenMC XML files...", file=sys.stderr)
         xml_export_ok, xml_export_error = _export_xml(model_path)
 
     transcript = _format_transcript(
@@ -213,10 +222,14 @@ def _inspect_plan_requirement(
     export_xml_tool: ExportXmlToolFn,
     plot_tool: PlotToolFn,
     smoke_test_tool: SmokeTestToolFn,
+    verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     records_path = output_path / "inspect_runs.jsonl"
+    if verbose:
+        print("[agent] Building SimulationPlan workflow...", file=sys.stderr)
+        print("[agent] Steps: LLM plan -> validate -> render code -> tools -> reflection.", file=sys.stderr)
 
     graph = build_plan_graph(
         generate_plan=generate_plan,
@@ -228,6 +241,8 @@ def _inspect_plan_requirement(
         enable_smoke_test=enable_smoke_test,
         max_retries=max_retries,
     )
+    if verbose:
+        print("[agent] Invoking LLM. This can take 30-120 seconds on remote models...", file=sys.stderr)
     state = graph.invoke(
         {
             "requirement": requirement,
@@ -235,8 +250,11 @@ def _inspect_plan_requirement(
             "output_dir": str(output_path),
             "records_path": str(records_path),
             "expert_feedback": expert_feedback,
+            "verbose": verbose,
         }
     )
+    if verbose:
+        print("[agent] Workflow finished. Formatting transcript...", file=sys.stderr)
 
     model_path = Path(state["model_path"]) if state.get("model_path") else None
     transcript_data = _plan_transcript_data(
@@ -375,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expert-feedback", action="append", default=[])
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument("--show-raw-llm", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     expert_feedback = list(args.expert_feedback)
@@ -396,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             enable_plots=args.plot,
             enable_smoke_test=args.smoke_test,
             expert_feedback=expert_feedback,
+            verbose=args.verbose,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -407,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
             enable_plots=args.plot,
             enable_smoke_test=args.smoke_test,
             expert_feedback=expert_feedback,
+            verbose=args.verbose,
         )
     else:
         parser.error("Provide a requirement or --md-file")

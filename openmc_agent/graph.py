@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 from typing import Any, Callable, TypedDict
 
 import sqlite3
@@ -48,6 +49,7 @@ class GraphState(TypedDict, total=False):
     tool_results: list[dict[str, Any]]
     expert_feedback: list[str]
     raw_llm_outputs: list[str]
+    verbose: bool
 
 
 def build_graph(
@@ -159,9 +161,12 @@ def _build_sqlite_checkpointer(path: str | Path) -> SqliteSaver:
 
 
 def _receive_requirement(state: GraphState) -> GraphState:
+    _progress(state, "receive_requirement", "reading and normalizing user requirement")
     requirement = state.get("requirement", "").strip()
     if not requirement:
+        _progress(state, "receive_requirement", "failed: requirement is empty")
         return {"error": "requirement is required"}
+    _progress(state, "receive_requirement", f"received {len(requirement)} characters")
     return {"requirement": requirement}
 
 
@@ -171,16 +176,19 @@ def _make_generate_spec_node(generate_spec: GenerateSpecFn):
             return {}
 
         model = state.get("model", "openai:gpt-4o")
+        _progress(state, "generate_spec", f"calling LLM model={model}")
         result = generate_spec(
             requirement=state["requirement"],
             schema=SimulationSpec,
             model=model,
         )
         if not result.ok or result.value is None:
+            _progress(state, "generate_spec", f"failed: {result.error}")
             return {
                 "simulation_spec": None,
                 "error": result.error or "failed to generate SimulationSpec",
             }
+        _progress(state, "generate_spec", f"generated SimulationSpec name={result.value.name!r}")
         return {"simulation_spec": result.value}
 
     return _generate_spec
@@ -192,18 +200,29 @@ def _make_generate_plan_node(generate_plan: GeneratePlanFn):
             return {}
 
         model = state.get("model", "openai:gpt-4o")
+        _progress(state, "generate_plan", f"calling LLM model={model}")
         result = generate_plan(
             requirement=_requirement_with_expert_feedback(state),
             schema=SimulationPlan,
             model=model,
         )
         if not result.ok or result.value is None:
+            _progress(state, "generate_plan", f"failed: {result.error}")
             return {
-            "simulation_plan": None,
-            "simulation_spec": None,
-            "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
-            "error": result.error or "failed to generate SimulationPlan",
-        }
+                "simulation_plan": None,
+                "simulation_spec": None,
+                "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+                "error": result.error or "failed to generate SimulationPlan",
+            }
+        _progress(
+            state,
+            "generate_plan",
+            (
+                f"generated SimulationPlan name={result.value.model_spec.name!r}, "
+                f"plots={len(result.value.plot_specs)}, "
+                f"smoke_test={result.value.execution_check.enabled}"
+            ),
+        )
         return {
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
@@ -221,6 +240,7 @@ def _make_repair_spec_node(repair_spec: RepairSpecFn, max_retries: int):
         if spec is None or report is None or report.is_valid or retry_count >= max_retries:
             return {"retry_count": retry_count}
 
+        _progress(state, "repair_spec", f"calling LLM repair retry={retry_count + 1}/{max_retries}")
         result = repair_spec(
             requirement=state["requirement"],
             schema=SimulationSpec,
@@ -229,10 +249,12 @@ def _make_repair_spec_node(repair_spec: RepairSpecFn, max_retries: int):
             validation_errors=report.errors,
         )
         if not result.ok or result.value is None:
+            _progress(state, "repair_spec", f"failed: {result.error}")
             return {
                 "retry_count": retry_count + 1,
                 "error": result.error or "failed to repair SimulationSpec",
             }
+        _progress(state, "repair_spec", "repair produced a new SimulationSpec")
         return {
             "simulation_spec": result.value,
             "retry_count": retry_count + 1,
@@ -244,6 +266,7 @@ def _make_repair_spec_node(repair_spec: RepairSpecFn, max_retries: int):
 
 def _make_validate_spec_node(max_retries: int):
     def _validate_spec(state: GraphState) -> GraphState:
+        _progress(state, "validate_spec", "validating SimulationSpec")
         spec = state.get("simulation_spec")
         retry_count = state.get("retry_count", 0)
         if spec is None:
@@ -270,11 +293,13 @@ def _make_validate_spec_node(max_retries: int):
         )
 
         if not report.is_valid:
+            _progress(state, "validate_spec", f"failed with {len(report.errors)} error(s)")
             return {
                 "validation_report": report,
                 "retry_history": history,
                 "error": "; ".join(report.errors),
             }
+        _progress(state, "validate_spec", "passed")
         return {
             "validation_report": report,
             "retry_history": history,
@@ -286,6 +311,7 @@ def _make_validate_spec_node(max_retries: int):
 
 def _make_validate_plan_node(max_retries: int):
     def _validate_plan(state: GraphState) -> GraphState:
+        _progress(state, "validate_plan", "validating SimulationPlan.model_spec")
         plan = state.get("simulation_plan")
         retry_count = state.get("retry_count", 0)
         if plan is None:
@@ -312,11 +338,13 @@ def _make_validate_plan_node(max_retries: int):
         )
 
         if not report.is_valid:
+            _progress(state, "validate_plan", f"failed with {len(report.errors)} error(s)")
             return {
                 "validation_report": report,
                 "retry_history": history,
                 "error": "; ".join(report.errors),
             }
+        _progress(state, "validate_plan", "passed")
         return {
             "validation_report": report,
             "retry_history": history,
@@ -362,6 +390,7 @@ def _make_plan_execution_router(max_retries: int):
 
 
 def _render_script(state: GraphState) -> GraphState:
+    _progress(state, "render_script", "rendering OpenMC Python model.py")
     report = state.get("validation_report")
     spec = state.get("simulation_spec")
     if spec is None or report is None or not report.is_valid:
@@ -370,6 +399,7 @@ def _render_script(state: GraphState) -> GraphState:
     script = render_openmc_script(spec)
     script_report = validate_openmc_script(script, spec)
     if not script_report.is_valid:
+        _progress(state, "render_script", f"failed script validation: {script_report.errors}")
         return {
             "validation_report": script_report,
             "error": "; ".join(script_report.errors),
@@ -379,10 +409,12 @@ def _render_script(state: GraphState) -> GraphState:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "model.py"
     model_path.write_text(script, encoding="utf-8")
+    _progress(state, "render_script", f"wrote {model_path}")
     return {"script": script, "model_path": str(model_path)}
 
 
 def _render_plan_script(state: GraphState) -> GraphState:
+    _progress(state, "render_plan_script", "rendering OpenMC Python model.py from SimulationPlan")
     report = state.get("validation_report")
     plan = state.get("simulation_plan")
     if plan is None or report is None or not report.is_valid:
@@ -391,6 +423,7 @@ def _render_plan_script(state: GraphState) -> GraphState:
     script = render_openmc_plan_script(plan)
     script_report = validate_openmc_script(script, plan.model_spec)
     if not script_report.is_valid:
+        _progress(state, "render_plan_script", f"failed script validation: {script_report.errors}")
         return {
             "validation_report": script_report,
             "error": "; ".join(script_report.errors),
@@ -400,6 +433,7 @@ def _render_plan_script(state: GraphState) -> GraphState:
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "model.py"
     model_path.write_text(script, encoding="utf-8")
+    _progress(state, "render_plan_script", f"wrote {model_path}")
     return {"script": script, "model_path": str(model_path)}
 
 
@@ -419,16 +453,40 @@ def _make_execute_tools_node(
 
         output_dir = Path(state.get("output_dir", "data/runs"))
         results: list[ToolResult] = []
+        _progress(state, "execute_tools", "running export_xml")
         export_result = export_xml_tool(Path(model_path))
         results.append(export_result)
+        _progress(state, "execute_tools", f"export_xml ok={export_result.ok}")
 
         if enable_plots and export_result.ok and plan.plot_specs:
+            _progress(state, "execute_tools", f"running run_geometry_plots count={len(plan.plot_specs)}")
             results.append(plot_tool(output_dir))
+            _progress(state, "execute_tools", f"run_geometry_plots ok={results[-1].ok}")
+        elif not enable_plots:
+            _progress(state, "execute_tools", "skipping run_geometry_plots because --plot is disabled")
 
         if enable_smoke_test and export_result.ok and plan.execution_check.enabled:
+            settings = plan.execution_check.settings
+            _progress(
+                state,
+                "execute_tools",
+                (
+                    "running run_smoke_test "
+                    f"batches={settings.batches} inactive={settings.inactive} "
+                    f"particles={settings.particles}"
+                ),
+            )
             results.append(smoke_test_tool(output_dir, plan))
+            _progress(state, "execute_tools", f"run_smoke_test ok={results[-1].ok}")
+        elif not enable_smoke_test:
+            _progress(state, "execute_tools", "skipping run_smoke_test because --smoke-test is disabled")
 
         report = _execution_report_from_tool_results(results)
+        _progress(
+            state,
+            "execute_tools",
+            f"tool checks {'passed' if report.is_valid else 'failed'} with {len(report.errors)} error(s)",
+        )
         history = list(state.get("retry_history", []))
         if history:
             history[-1]["tool_results"] = [result.model_dump() for result in results]
@@ -453,6 +511,7 @@ def _make_reflect_plan_node(repair_plan: RepairPlanFn):
             return {"retry_count": retry_count}
 
         reflection_requirement = _build_reflection_requirement(state)
+        _progress(state, "reflect_plan", f"calling LLM reflection retry={retry_count + 1}")
         result = repair_plan(
             requirement=reflection_requirement,
             schema=SimulationPlan,
@@ -461,11 +520,13 @@ def _make_reflect_plan_node(repair_plan: RepairPlanFn):
             validation_errors=report.errors,
         )
         if not result.ok or result.value is None:
+            _progress(state, "reflect_plan", f"failed: {result.error}")
             return {
                 "retry_count": retry_count + 1,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "error": result.error or "failed to repair SimulationPlan",
             }
+        _progress(state, "reflect_plan", "reflection produced a new SimulationPlan")
         return {
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
@@ -478,6 +539,7 @@ def _make_reflect_plan_node(repair_plan: RepairPlanFn):
 
 
 def _save_record(state: GraphState) -> GraphState:
+    _progress(state, "save_record", "appending simulation record")
     report = state.get("validation_report") or ValidationReport(
         is_valid=False,
         errors=[state.get("error", "unknown graph error")],
@@ -494,10 +556,12 @@ def _save_record(state: GraphState) -> GraphState:
         retry_count=state.get("retry_count", 0),
         retry_history=state.get("retry_history", []),
     )
+    _progress(state, "save_record", "record saved")
     return {}
 
 
 def _save_plan_record(state: GraphState) -> GraphState:
+    _progress(state, "save_record", "appending SimulationPlan run record")
     report = state.get("validation_report") or ValidationReport(
         is_valid=False,
         errors=[state.get("error", "unknown graph error")],
@@ -515,6 +579,7 @@ def _save_plan_record(state: GraphState) -> GraphState:
         retry_count=state.get("retry_count", 0),
         retry_history=state.get("retry_history", []),
     )
+    _progress(state, "save_record", "record saved")
     return {}
 
 
@@ -591,3 +656,8 @@ def _truncate_text(text: str, limit: int = 1200) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "...[truncated]"
+
+
+def _progress(state: GraphState, node: str, message: str) -> None:
+    if state.get("verbose"):
+        print(f"[node:{node}] {message}", file=sys.stderr, flush=True)

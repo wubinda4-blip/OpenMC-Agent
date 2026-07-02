@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -11,6 +12,8 @@ from pydantic import BaseModel, ValidationError
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_MODEL = "zhipu:glm-5.2"
 ZHIPU_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+ZHIPU_DEFAULT_TIMEOUT_SECONDS = 180.0
+ZHIPU_DEFAULT_MAX_RETRIES = 2
 
 
 @dataclass(frozen=True)
@@ -28,12 +31,16 @@ class ZhipuChatClient:
         api_key: str | None = None,
         base_url: str | None = None,
         http_client: Any | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        retry_sleep_seconds: float = 1.0,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url or os.getenv("ZHIPUAI_BASE_URL", ZHIPU_DEFAULT_BASE_URL)
         self.http_client = http_client or httpx.Client()
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_sleep_seconds = retry_sleep_seconds
         self.chat = _ZhipuChat(self)
 
 
@@ -60,18 +67,43 @@ class _ZhipuCompletions:
             "messages": messages,
         }
         payload.update(kwargs)
-        response = self.client.http_client.post(
-            self.client.base_url,
+        timeout = _zhipu_timeout_seconds(self.client.timeout)
+        max_retries = _zhipu_max_retries(self.client.max_retries)
+        response = self._post_with_retries(
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=payload,
-            timeout=self.client.timeout,
+            payload=payload,
+            timeout=timeout,
+            max_retries=max_retries,
         )
         response.raise_for_status()
         data = response.json()
         return _response_from_openai_compatible_payload(data)
+
+    def _post_with_retries(
+        self,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float,
+        max_retries: int,
+    ) -> Any:
+        for attempt in range(max_retries + 1):
+            try:
+                return self.client.http_client.post(
+                    self.client.base_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                )
+            except httpx.TransportError:
+                if attempt >= max_retries:
+                    raise
+                if self.client.retry_sleep_seconds > 0:
+                    time.sleep(self.client.retry_sleep_seconds)
+        raise RuntimeError("unreachable retry loop state")
 
 
 def generate_structured_output(
@@ -247,3 +279,33 @@ def _looks_like_secret_env(name: str, value: str) -> bool:
         return False
     secret_markers = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
     return any(marker in name.upper() for marker in secret_markers)
+
+
+def _zhipu_timeout_seconds(explicit_timeout: float | None) -> float:
+    if explicit_timeout is not None:
+        return explicit_timeout
+    value = os.getenv("ZHIPUAI_TIMEOUT_SECONDS")
+    if not value:
+        return ZHIPU_DEFAULT_TIMEOUT_SECONDS
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise ValueError("ZHIPUAI_TIMEOUT_SECONDS must be a number") from exc
+    if timeout <= 0:
+        raise ValueError("ZHIPUAI_TIMEOUT_SECONDS must be greater than 0")
+    return timeout
+
+
+def _zhipu_max_retries(explicit_retries: int | None) -> int:
+    if explicit_retries is not None:
+        return explicit_retries
+    value = os.getenv("ZHIPUAI_MAX_RETRIES")
+    if not value:
+        return ZHIPU_DEFAULT_MAX_RETRIES
+    try:
+        retries = int(value)
+    except ValueError as exc:
+        raise ValueError("ZHIPUAI_MAX_RETRIES must be an integer") from exc
+    if retries < 0:
+        raise ValueError("ZHIPUAI_MAX_RETRIES must be greater than or equal to 0")
+    return retries

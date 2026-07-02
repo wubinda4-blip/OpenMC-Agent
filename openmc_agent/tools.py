@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -150,7 +151,7 @@ def parse_openmc_output(stdout: str, stderr: str) -> ValidationReport:
     errors: list[str] = []
     warnings: list[str] = []
 
-    if "cross_sections.xml" in lowered or "cross section" in lowered:
+    if _has_cross_section_error(lowered):
         errors.append("OpenMC cross section data is missing or not configured.")
     if "could not be located in any cell" in lowered or "undefined" in lowered:
         errors.append("OpenMC reported an undefined region or geometry containment issue.")
@@ -186,3 +187,17 @@ def _first_matching_line(text: str, pattern: str) -> str:
         if lowered_pattern in line.lower():
             return line.strip()
     return ""
+
+
+def _has_cross_section_error(lowered_text: str) -> bool:
+    patterns = (
+        r"no\s+cross_sections\.xml\s+was\s+specified",
+        r"cross_sections\.xml\s+(?:was\s+)?not\s+(?:specified|found)",
+        r"could\s+not\s+(?:find|open|read).{0,120}cross",
+        r"unable\s+to\s+(?:find|open|read).{0,120}cross",
+        r"failed\s+to\s+(?:find|open|read).{0,120}cross",
+        r"no\s+cross\s+section\s+data",
+        r"cross\s+section\s+data\s+.*(?:missing|not\s+found|unavailable)",
+        r"not\s+present\s+in\s+cross_sections\.xml",
+    )
+    return any(re.search(pattern, lowered_text) for pattern in patterns)

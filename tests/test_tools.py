@@ -150,3 +150,19 @@ def test_parse_openmc_output_extracts_common_diagnostics() -> None:
     assert "cross section" in text
     assert "undefined region" in text
     assert "Python traceback" in text
+
+
+def test_parse_openmc_output_accepts_successful_cross_section_reads() -> None:
+    report = parse_openmc_output(
+        stdout=(
+            "Reading cross sections XML file...\n"
+            "Reading U235 from /home/wbd/openmc_data/endfb-vii.1-hdf5/neutron/U235.h5\n"
+            "Reading c_H_in_H2O from /home/wbd/openmc_data/endfb-vii.1-hdf5/neutron/c_H_in_H2O.h5\n"
+            "Creating state point statepoint.15.h5...\n"
+            "Combined k-effective = 1.00000 +/- 0.01000\n"
+        ),
+        stderr="",
+    )
+
+    assert report.is_valid is True
+    assert report.errors == []
