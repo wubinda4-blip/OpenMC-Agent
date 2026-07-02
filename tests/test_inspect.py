@@ -1,0 +1,293 @@
+import io
+import json
+from pathlib import Path
+
+from openmc_agent.inspect import InspectResult
+from openmc_agent.inspect import inspect_markdown_file, inspect_requirement, main
+from openmc_agent.llm import StructuredOutputResult
+from openmc_agent.schemas import (
+    ExecutionCheckSpec,
+    GeometrySpec,
+    MaterialSpec,
+    NuclideSpec,
+    PinCellSpec,
+    PlotSpec,
+    RunSettingsSpec,
+    SettingsSpec,
+    SimulationPlan,
+    SimulationSpec,
+)
+from openmc_agent.tools import ToolResult
+
+
+def make_spec() -> SimulationSpec:
+    fuel = MaterialSpec(
+        name="UO2 fuel",
+        density_unit="g/cm3",
+        density_value=10.4,
+        composition=[
+            NuclideSpec(name="U235", percent=4.95),
+            NuclideSpec(name="U238", percent=95.05),
+            NuclideSpec(name="O16", percent=200.0),
+        ],
+    )
+    moderator = MaterialSpec(
+        name="Water moderator",
+        density_unit="g/cm3",
+        density_value=1.0,
+        composition=[
+            NuclideSpec(name="H1", percent=2.0),
+            NuclideSpec(name="O16", percent=1.0),
+        ],
+    )
+    return SimulationSpec(
+        name="Observable UO2 pin-cell",
+        pin_cell=PinCellSpec(
+            fuel=fuel,
+            moderator=moderator,
+            geometry=GeometrySpec(fuel_radius_cm=0.41, pitch_cm=1.26),
+        ),
+        settings=SettingsSpec(batches=50, inactive=10, particles=1000),
+    )
+
+
+def make_plan() -> SimulationPlan:
+    return SimulationPlan(
+        model_spec=make_spec(),
+        plot_specs=[
+            PlotSpec(
+                basis="xy",
+                origin=(0.0, 0.0, 0.0),
+                width_cm=(1.26, 1.26),
+                pixels=(300, 300),
+                filename="pin_cell_xy.png",
+            )
+        ],
+        execution_check=ExecutionCheckSpec(
+            settings=RunSettingsSpec(batches=5, inactive=1, particles=100)
+        ),
+    )
+
+
+def test_inspect_requirement_shows_structured_output_and_exports_xml(
+    tmp_path: Path,
+) -> None:
+    def fake_generate_spec(*, requirement: str, schema, model: str):
+        assert requirement == "建立一个 UO2 pin-cell 临界计算"
+        return StructuredOutputResult(ok=True, value=make_spec())
+
+    result = inspect_requirement(
+        "建立一个 UO2 pin-cell 临界计算",
+        output_dir=tmp_path,
+        generate_spec=fake_generate_spec,
+    )
+
+    assert result.ok is True
+    assert result.model_path == tmp_path / "model.py"
+    assert result.model_path.exists()
+    assert result.xml_export_ok is True
+    assert (tmp_path / "materials.xml").exists()
+    assert (tmp_path / "geometry.xml").exists()
+    assert (tmp_path / "settings.xml").exists()
+    assert (tmp_path / "tallies.xml").exists()
+
+    output = result.transcript
+    assert "[1] 用户需求" in output
+    assert "建立一个 UO2 pin-cell 临界计算" in output
+    assert "[2] LLM 结构化输出" in output
+    assert '"name": "Observable UO2 pin-cell"' in output
+    assert "[3] 验证结果" in output
+    assert "is_valid=True" in output
+    assert "[4] 修复过程" in output
+    assert "retry_count=0" in output
+    assert "[5] 最终执行结果" in output
+    assert "xml_export=success" in output
+
+
+def test_inspect_requirement_reports_validation_failure(tmp_path: Path) -> None:
+    invalid_spec = make_spec()
+    invalid_spec.pin_cell.geometry = GeometrySpec.model_construct(
+        fuel_radius_cm=10.0,
+        pitch_cm=1.26,
+        clad_inner_radius_cm=None,
+        clad_outer_radius_cm=None,
+    )
+
+    def fake_generate_spec(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(ok=True, value=invalid_spec)
+
+    def fake_repair_spec(
+        *,
+        requirement: str,
+        schema,
+        model: str,
+        previous_spec: SimulationSpec,
+        validation_errors: list[str],
+    ):
+        return StructuredOutputResult(ok=True, value=invalid_spec)
+
+    result = inspect_requirement(
+        "异常：燃料半径 10cm 的 UO2 pin-cell",
+        output_dir=tmp_path,
+        generate_spec=fake_generate_spec,
+        repair_spec=fake_repair_spec,
+        max_retries=1,
+    )
+
+    assert result.ok is False
+    assert result.model_path is None
+    assert result.xml_export_ok is False
+    assert "fuel_radius_cm" in result.transcript
+    assert "xml_export=skipped" in result.transcript
+
+
+def test_inspect_markdown_file_uses_markdown_content_as_requirement(
+    tmp_path: Path,
+) -> None:
+    md_path = tmp_path / "requirement.md"
+    md_path.write_text(
+        "# 建模需求\n\n建立一个 UO2 pin-cell 临界计算\n",
+        encoding="utf-8",
+    )
+
+    def fake_generate_spec(*, requirement: str, schema, model: str):
+        assert "# 建模需求" in requirement
+        assert "建立一个 UO2 pin-cell 临界计算" in requirement
+        return StructuredOutputResult(ok=True, value=make_spec())
+
+    result = inspect_markdown_file(
+        md_path,
+        output_dir=tmp_path / "output",
+        generate_spec=fake_generate_spec,
+    )
+
+    assert result.ok is True
+    assert "# 建模需求" in result.transcript
+    assert "建立一个 UO2 pin-cell 临界计算" in result.transcript
+
+
+def test_inspect_cli_accepts_markdown_file(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    md_path = tmp_path / "requirement.md"
+    md_path.write_text("建立一个 UO2 pin-cell 临界计算\n", encoding="utf-8")
+
+    def fake_inspect_markdown_file(path, **kwargs):
+        assert Path(path) == md_path
+        assert kwargs["output_dir"] == str(tmp_path / "output")
+        return type(
+            "Result",
+            (),
+            {
+                "ok": True,
+                "transcript": "[1] 用户需求\n建立一个 UO2 pin-cell 临界计算",
+            },
+        )()
+
+    monkeypatch.setattr(
+        "openmc_agent.inspect.inspect_markdown_file",
+        fake_inspect_markdown_file,
+    )
+
+    exit_code = main(
+        [
+            "--md-file",
+            str(md_path),
+            "--output-dir",
+            str(tmp_path / "output"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "建立一个 UO2 pin-cell 临界计算" in capsys.readouterr().out
+
+
+def test_inspect_requirement_plan_mode_shows_tool_results(tmp_path: Path) -> None:
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        assert schema is SimulationPlan
+        return StructuredOutputResult(ok=True, value=make_plan(), raw_response='{"ok": true}')
+
+    result = inspect_requirement(
+        "建立一个 UO2 pin-cell，并绘制几何截面图",
+        output_dir=tmp_path,
+        use_plan=True,
+        enable_plots=True,
+        enable_smoke_test=True,
+        expert_feedback=["xy 图不够，要看 xz 截面"],
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(
+            name="export_xml",
+            ok=True,
+            returncode=0,
+            artifacts=[str(tmp_path / "materials.xml")],
+        ),
+        plot_tool=lambda run_dir: ToolResult(
+            name="run_geometry_plots",
+            ok=True,
+            returncode=0,
+            artifacts=[str(tmp_path / "pin_cell_xy.png")],
+        ),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(
+            name="run_smoke_test",
+            ok=True,
+            returncode=0,
+            stdout="k-effective 1.0",
+        ),
+    )
+
+    assert result.ok is True
+    assert result.model_path == tmp_path / "model.py"
+    assert result.transcript_data is not None
+    assert result.transcript_data["simulation_plan"]["plot_specs"][0]["basis"] == "xy"
+    assert result.transcript_data["expert_feedback"] == ["xy 图不够，要看 xz 截面"]
+    assert [item["name"] for item in result.transcript_data["tool_results"]] == [
+        "export_xml",
+        "run_geometry_plots",
+        "run_smoke_test",
+    ]
+    assert "[6] 工具执行结果" in result.transcript
+    assert "run_smoke_test" in result.transcript
+    assert (tmp_path / "transcript.json").exists()
+
+
+def test_inspect_cli_json_accepts_interactive_expert_feedback(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    def fake_inspect_requirement(requirement, **kwargs):
+        assert kwargs["use_plan"] is True
+        assert kwargs["enable_plots"] is True
+        assert kwargs["enable_smoke_test"] is True
+        assert kwargs["expert_feedback"] == ["增加 xz 截面"]
+        return InspectResult(
+            ok=True,
+            transcript="human transcript",
+            transcript_data={
+                "ok": True,
+                "requirement": requirement,
+                "expert_feedback": kwargs["expert_feedback"],
+            },
+        )
+
+    monkeypatch.setattr("openmc_agent.inspect.inspect_requirement", fake_inspect_requirement)
+    monkeypatch.setattr("sys.stdin", io.StringIO("增加 xz 截面\n"))
+
+    exit_code = main(
+        [
+            "建立一个 UO2 pin-cell",
+            "--plot",
+            "--smoke-test",
+            "--interactive-feedback",
+            "--json",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["expert_feedback"] == ["增加 xz 截面"]

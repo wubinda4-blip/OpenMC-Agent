@@ -1,0 +1,152 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+from openmc_agent.schemas import (
+    ExecutionCheckSpec,
+    GeometrySpec,
+    MaterialSpec,
+    NuclideSpec,
+    PinCellSpec,
+    PlotSpec,
+    RunSettingsSpec,
+    SimulationPlan,
+    SimulationSpec,
+)
+from openmc_agent.tools import (
+    export_xml,
+    parse_openmc_output,
+    run_geometry_plots,
+    run_smoke_test,
+)
+
+
+def _plan(particles: int = 100, batches: int = 5) -> SimulationPlan:
+    fuel = MaterialSpec(
+        name="UO2 fuel",
+        density_unit="g/cm3",
+        density_value=10.4,
+        composition=[
+            NuclideSpec(name="U235", percent=4.95),
+            NuclideSpec(name="U238", percent=95.05),
+            NuclideSpec(name="O16", percent=200.0),
+        ],
+    )
+    moderator = MaterialSpec(
+        name="Water moderator",
+        density_unit="g/cm3",
+        density_value=1.0,
+        composition=[
+            NuclideSpec(name="H1", percent=2.0),
+            NuclideSpec(name="O16", percent=1.0),
+        ],
+    )
+    return SimulationPlan(
+        model_spec=SimulationSpec(
+            name="Tool test pin-cell",
+            pin_cell=PinCellSpec(
+                fuel=fuel,
+                moderator=moderator,
+                geometry=GeometrySpec(fuel_radius_cm=0.41, pitch_cm=1.26),
+            ),
+            settings=RunSettingsSpec(batches=50, inactive=10, particles=1000),
+        ),
+        plot_specs=[
+            PlotSpec(
+                basis="xy",
+                origin=(0.0, 0.0, 0.0),
+                width_cm=(1.26, 1.26),
+                pixels=(200, 200),
+                filename="geometry_xy.png",
+            )
+        ],
+        execution_check=ExecutionCheckSpec(
+            settings=RunSettingsSpec(
+                batches=batches,
+                inactive=1,
+                particles=particles,
+            )
+        ),
+    )
+
+
+def test_export_xml_returns_subprocess_output_and_artifacts(tmp_path: Path, monkeypatch) -> None:
+    model_path = tmp_path / "model.py"
+    model_path.write_text("print('export')\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        assert command[-1] == "model.py"
+        assert kwargs["cwd"] == tmp_path
+        (tmp_path / "materials.xml").write_text("<materials />", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="exported", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = export_xml(model_path)
+
+    assert result.ok is True
+    assert result.returncode == 0
+    assert result.stdout == "exported"
+    assert str(tmp_path / "materials.xml") in result.artifacts
+
+
+def test_run_geometry_plots_preserves_failure_stderr(tmp_path: Path, monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        assert command == ["openmc", "-p"]
+        return SimpleNamespace(returncode=2, stdout="", stderr="Plot error")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = run_geometry_plots(tmp_path)
+
+    assert result.ok is False
+    assert result.returncode == 2
+    assert result.stderr == "Plot error"
+
+
+def test_run_smoke_test_rejects_settings_above_safety_limits(tmp_path: Path) -> None:
+    result = run_smoke_test(
+        tmp_path,
+        _plan(particles=100000, batches=5),
+        max_particles=1000,
+        max_batches=20,
+    )
+
+    assert result.ok is False
+    assert result.returncode is None
+    assert "exceed safety limits" in result.error
+    assert not (tmp_path / "smoke_model.py").exists()
+
+
+def test_run_smoke_test_writes_smoke_script_and_runs_openmc(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "smoke_model.py":
+            return SimpleNamespace(returncode=0, stdout="xml ok", stderr="")
+        return SimpleNamespace(returncode=0, stdout="k-effective 1.000 +/- 0.010", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = run_smoke_test(tmp_path, _plan(particles=120, batches=6))
+
+    assert result.ok is True
+    assert calls[0][-1] == "smoke_model.py"
+    assert calls[1] == ["openmc"]
+    assert "settings.particles = 120" in (tmp_path / "smoke_model.py").read_text(
+        encoding="utf-8"
+    )
+    assert "k-effective" in result.stdout
+
+
+def test_parse_openmc_output_extracts_common_diagnostics() -> None:
+    report = parse_openmc_output(
+        stdout="WARNING: After particle 1 crossed surface, it could not be located in any cell",
+        stderr="ERROR: No cross_sections.xml was specified\nTraceback (most recent call last)",
+    )
+
+    assert report.is_valid is False
+    text = " ".join(report.errors + report.warnings)
+    assert "cross section" in text
+    assert "undefined region" in text
+    assert "Python traceback" in text

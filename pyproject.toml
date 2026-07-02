@@ -1,0 +1,28 @@
+[project]
+name = "openmc-agent"
+version = "0.1.0"
+description = "Structured OpenMC model generation agent using aisuite, Pydantic, LangGraph, and OpenMC."
+requires-python = ">=3.10"
+dependencies = [
+    "aisuite",
+    "httpx>=0.27,<0.29",
+    "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["openmc_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
