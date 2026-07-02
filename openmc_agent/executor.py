@@ -18,6 +18,11 @@ from openmc_agent.schemas import (
     SimulationSpec,
     SurfaceSpec,
     TRISOSpec,
+    UniverseSpec,
+)
+from openmc_agent.reachability import (
+    ActiveDependencies,
+    collect_active_dependencies_from_model,
 )
 
 
@@ -199,16 +204,25 @@ def render_openmc_assembly_script(
     settings_override: RunSettingsSpec | None = None,
     plot_specs: list[PlotSpec] | None = None,
 ) -> str:
-    _validate_renderable_assembly(spec)
+    deps = collect_active_dependencies_from_model(spec)
+    _validate_renderable_assembly(spec, deps)
     settings = settings_override or spec.settings
+    # Only emit objects the default model actually uses. Candidate / inactive
+    # subsystems (e.g. an un-inserted burnable-poison universe with an
+    # incomplete borosilicate glass) stay in the IR for review, not in model.py.
+    renderable_materials = _renderable_assembly_materials(spec, deps)
+    active_cells = [cell for cell in spec.cells if cell.id in deps.cell_ids]
+    active_universes = [
+        universe for universe in spec.universes if universe.id in deps.universe_ids
+    ]
     material_blocks = "\n\n".join(
         _render_complex_material_definition(material)
-        for material in spec.materials
+        for material in renderable_materials
     )
     surfaces_block = _render_surface_definitions(spec.surfaces)
     regions_block = _render_region_definitions(spec.regions)
-    cells_block = _render_cell_definitions(spec.cells)
-    universes_block = _render_universe_definitions(spec)
+    cells_block = _render_cell_definitions(active_cells)
+    universes_block = _render_universe_definitions(active_universes)
     lattices_block = _render_lattice_definitions(spec.lattices)
     root_block = _render_assembly_root(spec)
     plots_block = _render_plots_block(plot_specs or [])
@@ -388,7 +402,7 @@ def render_openmc_core_script(
     surfaces_block = _render_surface_definitions(spec.surfaces)
     regions_block = _render_region_definitions(spec.regions)
     cells_block = _render_cell_definitions(spec.cells)
-    universes_block = _render_universe_definitions(spec)
+    universes_block = _render_universe_definitions(spec.universes)
     lattices_block = _render_lattice_definitions(spec.lattices)
     assert spec.core is not None
     root_block = _render_lattice_root(
@@ -534,7 +548,7 @@ def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
     return "\n".join(lines)
 
 
-def _validate_renderable_assembly(spec: ComplexModelSpec) -> None:
+def _validate_renderable_assembly(spec: ComplexModelSpec, deps: ActiveDependencies) -> None:
     if spec.kind != "assembly":
         raise ValueError(f"assembly renderer requires kind='assembly', got {spec.kind!r}")
     if not spec.materials:
@@ -549,7 +563,13 @@ def _validate_renderable_assembly(spec: ComplexModelSpec) -> None:
         raise ValueError("assembly renderer requires an AssemblySpec with lattice_id")
     if spec.lattices[0].kind != "rect":
         raise ValueError("assembly renderer currently supports RectLattice only")
+    # Only materials reachable from the default lattice (or used by reflectors /
+    # control rods) must be complete. Candidate / inactive materials may stay
+    # incomplete; the capability layer already warned about them and they are
+    # skipped at render time.
     for material in spec.materials:
+        if material.id not in deps.material_ids:
+            continue
         if material.density_unit is None or material.density_value is None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
@@ -584,6 +604,32 @@ def _validate_renderable_assembly(spec: ComplexModelSpec) -> None:
                 f"control rod {control_rod.id!r} must reference a lattice universe position "
                 "or a guide_tube_region_id"
             )
+
+
+def _material_is_fully_defined(material: ComplexMaterialSpec) -> bool:
+    """True when a material has both density and composition/formula."""
+    has_density = material.density_unit is not None and material.density_value is not None
+    has_composition = bool(material.composition or material.chemical_formula)
+    return has_density and has_composition
+
+
+def _renderable_assembly_materials(
+    spec: ComplexModelSpec,
+    deps: ActiveDependencies,
+) -> list[ComplexMaterialSpec]:
+    """Materials to emit into the default model.py.
+
+    Active materials are always emitted. Inactive materials are emitted only when
+    fully defined, so a candidate burnable-poison material with a partial density
+    is dropped instead of producing broken ``set_density`` code, while a complete
+    but currently-unused material still renders (harmless, and robust to any
+    reachability gap for non-assembly subsystems).
+    """
+    emitted: list[ComplexMaterialSpec] = []
+    for material in spec.materials:
+        if material.id in deps.material_ids or _material_is_fully_defined(material):
+            emitted.append(material)
+    return emitted
 
 
 def _validate_renderable_triso(spec: ComplexModelSpec) -> None:
@@ -855,9 +901,9 @@ def _cell_fill_expression(cell: CellSpec) -> str:
     raise ValueError(f"unsupported fill_type {cell.fill_type!r}")
 
 
-def _render_universe_definitions(spec: ComplexModelSpec) -> str:
+def _render_universe_definitions(universe_specs: list[UniverseSpec]) -> str:
     lines: list[str] = []
-    for universe in spec.universes:
+    for universe in universe_specs:
         variable_name = _safe_name("universe", universe.id)
         cell_refs = ", ".join(f"cells[{cell_id!r}]" for cell_id in universe.cell_ids)
         lines.append(

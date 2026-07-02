@@ -6,6 +6,7 @@ from pathlib import Path
 from openmc_agent.executor import (
     build_openmc_complex_material,
     build_openmc_material,
+    render_openmc_assembly_script,
     render_openmc_plan_script,
     render_openmc_script,
     render_openmc_smoke_test_script,
@@ -435,6 +436,100 @@ def test_render_assembly_with_reflector_and_control_rod_exports_xml(
     assert result.returncode == 0, result.stderr or result.stdout
     assert (tmp_path / "geometry.xml").exists()
     assert (tmp_path / "plots.xml").exists()
+
+
+def test_render_assembly_skips_inactive_candidate_material(tmp_path: Path) -> None:
+    """An incomplete candidate material in an un-inserted universe must not block export.
+
+    The default model emits only the active fuel/guide graph. The borosilicate
+    glass lives in a candidate burnable-poison universe that is not referenced by
+    the lattice, so it is dropped from model.py and the script still exports XML.
+    """
+    spec = ComplexModelSpec(
+        name="assembly with a candidate BP universe",
+        kind="assembly",
+        materials=[
+            ComplexMaterialSpec(
+                id="fuel",
+                name="UO2 fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[
+                    NuclideSpec(name="U235", percent=4.95),
+                    NuclideSpec(name="U238", percent=95.05),
+                    NuclideSpec(name="O16", percent=200.0),
+                ],
+            ),
+            # Candidate material: partial density flagged for confirmation, and
+            # no composition. Must be tolerated by the schema and skipped by the
+            # renderer because its universe is not in the default lattice.
+            ComplexMaterialSpec(
+                id="borosilicate_glass",
+                name="borosilicate glass",
+                density_unit="g/cm3",
+                requires_human_confirmation=["density value", "composition"],
+            ),
+        ],
+        cells=[
+            CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel"),
+            CellSpec(
+                id="bp_glass_cell",
+                name="bp glass",
+                fill_type="material",
+                fill_id="borosilicate_glass",
+            ),
+        ],
+        universes=[
+            UniverseSpec(id="fuel_pin", name="fuel pin", cell_ids=["fuel_cell"]),
+            UniverseSpec(
+                id="burnable_poison",
+                name="candidate BP",
+                cell_ids=["bp_glass_cell"],
+            ),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="2x2 lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[
+                    ["fuel_pin", "fuel_pin"],
+                    ["fuel_pin", "fuel_pin"],
+                ],
+            )
+        ],
+        assemblies=[
+            AssemblySpec(
+                id="assembly",
+                name="root assembly",
+                lattice_id="assembly_lattice",
+                boundary="reflective",
+            )
+        ],
+        settings=RunSettingsSpec(batches=6, inactive=1, particles=50),
+    )
+
+    script = render_openmc_assembly_script(spec)
+
+    assert "model.export_to_xml()" in script
+    assert "borosilicate_glass" not in script
+    assert "burnable_poison" not in script
+    assert "fuel" in script
+
+    # The generated model.py must be executable Python that exports XML.
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (tmp_path / "materials.xml").exists()
 
 
 def test_render_triso_pebble_exports_xml(tmp_path: Path) -> None:

@@ -1,78 +1,351 @@
-# 算例2：15×15 组件 OpenMC 模型 
-请根据以下自然语言描述，生成用于 OpenMC 模型自动生成与校验的结构化建模信息。要求保留源资料中的建模证据、默认假设、资料缺口和校验边界，不要把未给出的可燃毒物棒插入方案、材料细节、热散射数据或截面库路径伪造成确定事实。 
+# 算例2：15×15 组件 OpenMC 模型（图片资料完善版）
 
-## 建模目标 
-建立一个 15×15 组件级 OpenMC 模型，用于验证智能体流程能否从单棒几何扩展到组件尺度，并处理多棒位几何、棒位映射、默认假设记录、OpenMC lattice/universe 组织和低计算成本运行诊断。 
-该算例主要检验： 
-- 15×15 棒阵列是否能够被正确组织为 `openmc.RectLattice` 或等价显式 cell 分区； 
-- 燃料棒、导向管和可燃毒物棒候选棒位是否能够被正确区分为不同 universe/cell 类型； 
-- 多棒位几何是否满足分区面积闭合与外半径内含约束； 
-- 输入文档资料缺口是否能够作为默认假设记录在 IR 中； 
-- 自动生成的 OpenMC Python 脚本是否能够导出 XML，并支持低计算成本运行诊断。 
+> 本文件用于替换或补充原 `case2.md`。本版根据用户提供的组件排布图片补全了 15×15 棒位映射、导向管尺寸、可燃毒物棒候选尺寸和材料组成信息。  
+> 目标是让 Agent 能够生成一个定义闭合的组件级 IR，并在材料默认值被接受时可进一步生成 OpenMC `model.py` / XML。  
+> 仍需注意：图片未给出真实可燃毒物棒插入图，因此默认不把任何导向管位置强行建模为已插入可燃毒物棒。
 
-## 已知模型信息 
-- 组件排布：15×15。 
-- 总棒位数：225 个。 
-- 导向管位置数：21 个。 
-- 棒位划分： 
-  - 204 个燃料棒位； 
-  - 21 个导向管/可燃毒物棒候选棒位。 
-- **导向管位置坐标（行列号 1-15）**：
-  - 中心位置（1个）：(8, 8)
-  - 十字交叉主轴位置（4个）：(4, 8), (12, 8), (8, 4), (8, 12)
-  - 四角对角线位置（4个）：(4, 4), (4, 12), (12, 4), (12, 12)
-  - 外围扩展对称位置（12个）：(4, 6), (4, 10), (6, 4), (6, 12), (10, 4), (10, 12), (12, 6), (12, 10), (6, 6), (6, 10), (10, 6), (10, 10)
-  - *注：以上坐标基于典型压水堆15x15组件对称分布推断，呈高度对称。在生成 RectLattice 时，这些位置的栅元将映射为导向管独立 Universe。*
-- 输入文档给出了： 
-  - 15×15 排布； 
-  - 21 个导向管位置； 
-  - 导向管尺寸； 
-  - 可燃毒物棒尺寸； 
-  - 相关材料组成。 
-- 源资料记录的旧格式输入规模：3846 行；该数字仅作为模型复杂度参考，不应作为 OpenMC 脚本行数要求。 
+## 1. 建模目标
 
-## 默认假设与不确定项 
-- 原始文档未提供独立的可燃毒物棒插入图。 
-- 因此，智能体应将 21 个导向管位置处理为导向管/可燃毒物棒候选棒位。 
-- 该处理仅用于 OpenMC 模型接受性和几何一致性验证，不应表述为对真实插棒方案的复现。 
-- 若材料组成、热散射数据、温度、`cross_sections.xml` 或具体可燃毒物布置无法从输入资料确定，应列为需要人工确认的信息。 
+建立一个 15×15 组件级 OpenMC 模型，用于验证智能体流程能否从单棒几何扩展到组件尺度，并处理：
 
-## OpenMC 几何组织要求 
-请在生成模型时考虑以下组织方式： 
-- 在单棒 OpenMC 几何基础上扩展到 15×15 组件尺度。 
-- 为每个棒位建立明确的棒位记录，包含行列号、物理类型、对应 universe 名称和资料来源。 
-- 将棒位类型至少划分为： 
-  - 燃料棒位； 
-  - 导向管/可燃毒物棒候选棒位； 
-  - 冷却剂区域。 
-- 对燃料棒位和导向管/可燃毒物棒候选棒位分别建立 OpenMC universe，必要时使用不同的 `openmc.ZCylinder` 半径和材料填充。 
-- 优先使用 `openmc.RectLattice` 组织 15×15 棒阵列；若采用显式 cell 分区，应说明不使用 lattice 的原因。 
-- 使用组件外边界 cell 包围 lattice；边界条件应明确为反射、真空或由上级堆芯模型提供，不能缺省成真实边界设定。 
-- 外半径必须位于对应栅元内。 
-- 棒位映射应可追溯到文字或图形证据。 
+- 15×15 棒阵列的 `openmc.RectLattice` 组织；
+- 燃料棒位与导向管 / 可燃毒物棒候选棒位的区分；
+- 明确的棒位映射；
+- 组件级 material、surface、cell、universe、lattice、geometry、settings 和可选 tally 组织；
+- 几何一致性检查；
+- XML 导出和低计算成本诊断。
 
-## 校验与纠错要求 
-源资料中该算例涉及以下校验与修复记录，请在输出中保留这些检查项，并改写为 OpenMC 语义： 
-- 源定义修复：检查 `openmc.IndependentSource` 空间范围、是否落在有效几何内、是否与 `only_fissionable` 设定一致。 
-- 显式分区修复：检查 OpenMC cell region 布尔表达式是否无重叠、无遗漏。 
-- 冷却剂组分归一化检查：检查 `openmc.Material` 中核素/元素分数、密度单位和热散射数据缺口。 
-- `ZCylinder` 曲面输出检查：确认所有圆柱半径均以 `openmc.ZCylinder(r=...)` 或等价方式定义，且半径单位为 cm。 
-- 燃料棒和导向管/可燃毒物棒候选棒位的分区面积闭合检查。 
-- 外半径位于对应栅元内的检查。 
-- 几何校验通过后再进行低计算成本 OpenMC 运行。 
+该算例的目的不是复现真实堆芯物理结果，而是验证组件级 OpenMC 模型生成、棒位组织、默认假设记录和早期错误诊断能力。
 
-## 运行诊断要求 
-OpenMC 低计算成本诊断应满足： 
-- 可完成 XML 导出，生成 `materials.xml`、`geometry.xml`、`settings.xml` 和可选 `tallies.xml`。 
-- 可使用低粒子数 eigenvalue 设置进行早期诊断，例如约 1000 个粒子历史规模；该设置仅用于模型接受性检查。 
-- OpenMC 日志中不应出现 XML 解析错误、几何重叠、lost particle 或 ERROR 级错误。 
+## 2. 图片资料中可直接确定的信息
 
-## 期望输出 
-请输出以下内容： 
-1. 该算例的结构化中间表示 IR，包括棒位规模、棒位分类、默认假设和资料缺口。 
-2. OpenMC Python API 生成思路，说明组件级 material、surface、cell、universe、`RectLattice`、geometry、settings、tallies 和 `model.export_to_xml()` 可以如何组织。 
-3. 棒位映射与几何一致性校验清单。 
-4. 源资料中提到的纠错项及其在 OpenMC 模型中的应检查位置。 
-5. 低计算成本 OpenMC 运行诊断设置建议。 
-6. 需要人工确认的信息列表，尤其是可燃毒物棒真实插入方案、材料细节、热散射数据和截面库路径。 
-注意：该算例的目的不是复现真实组件全部物理结果，而是验证组件级 OpenMC 模型生成、棒位组织、默认假设记录和早期错误诊断能力。
+### 2.1 组件规模
+
+- 组件排布：15×15。
+- 总棒位数：225。
+- 导向管数量：21。
+- 燃料棒位数量：204。
+- 棒位类型：
+  - `F`：燃料棒位；
+  - `G`：导向管 / 可燃毒物棒候选棒位。
+
+### 2.2 导向管位置
+
+以下坐标使用 1-based 行列号，即左上角为 `(row=1, col=1)`，右下角为 `(row=15, col=15)`。
+
+导向管 / 可燃毒物棒候选位置共 21 个：
+
+```text
+[(3, 3), (3, 6), (3, 10), (3, 13), (4, 8), (5, 5), (5, 11), (6, 3), (6, 13), (8, 4), (8, 8), (8, 12), (10, 3), (10, 13), (11, 5), (11, 11), (12, 8), (13, 3), (13, 6), (13, 10), (13, 13)]
+```
+
+对应 15×15 棒位映射为：
+
+```text
+01: F F F F F F F F F F F F F F F
+02: F F F F F F F F F F F F F F F
+03: F F G F F G F F F G F F G F F
+04: F F F F F F F G F F F F F F F
+05: F F F F G F F F F F G F F F F
+06: F F G F F F F F F F F F G F F
+07: F F F F F F F F F F F F F F F
+08: F F F G F F F G F F F G F F F
+09: F F F F F F F F F F F F F F F
+10: F F G F F F F F F F F F G F F
+11: F F F F G F F F F F G F F F F
+12: F F F F F F F G F F F F F F F
+13: F F G F F G F F F G F F G F F
+14: F F F F F F F F F F F F F F F
+15: F F F F F F F F F F F F F F F
+```
+
+其中：
+
+- `F` 表示燃料棒 universe；
+- `G` 表示导向管 universe；
+- 默认情况下，所有 `G` 位置均建模为水填充导向管；
+- 若后续提供真实可燃毒物棒插入图，可将其中部分 `G` 位置替换为可燃毒物棒 universe。
+
+### 2.3 导向管尺寸
+
+图片文字给出：
+
+- 导向管外径：12.9 mm；
+- 导向管内径：11.9 mm。
+
+换算为 OpenMC 使用的 cm 半径：
+
+- 导向管外半径：0.645 cm；
+- 导向管内半径：0.595 cm。
+
+### 2.4 可燃毒物棒候选尺寸
+
+图片文字给出“毒物棒尺寸”：
+
+- 外包壳：10 mm – 9 mm；
+- 硼玻璃层：8.8 mm – 5.8 mm；
+- 不锈钢内衬：5.6 mm – 5.14 mm。
+
+按“外径 – 内径”理解，换算为 cm 半径：
+
+| 部件 | 外径 mm | 内径 mm | 外半径 cm | 内半径 cm |
+|---|---:|---:|---:|---:|
+| 可燃毒物棒外包壳 | 10.0 | 9.0 | 0.500 | 0.450 |
+| 硼玻璃层 | 8.8 | 5.8 | 0.440 | 0.290 |
+| 不锈钢内衬 | 5.6 | 5.14 | 0.280 | 0.257 |
+
+建模约定：
+
+- 可燃毒物棒不是默认插入件；
+- 该尺寸仅用于定义一个候选 `burnable_poison_universe`；
+- 只有当人工提供插入位置后，才允许将某些 `G` 位置替换为 `burnable_poison_universe`；
+- 图片未给出硼玻璃材料组成，因此硼玻璃材料必须列为需要人工确认，除非采用明确标注的工程默认值。
+
+## 3. 单棒几何闭合定义
+
+图片说明“燃料棒、包壳、栅距的尺寸同单棒元件的数据”。为了使本 `case2.md` 可以独立驱动组件建模，组件级输入必须显式包含单棒几何参数。
+
+若上游单棒算例已有更权威数据，应优先使用上游单棒数据。若本文件独立运行，可采用以下工程默认闭合值，并在 IR 中标记为默认假设：
+
+- 栅距 `pitch`：1.43 cm；
+- 燃料芯块外半径 `fuel_radius`：0.4095 cm；
+- 包壳内半径 `clad_inner_radius`：0.4180 cm；
+- 包壳外半径 `clad_outer_radius`：0.4750 cm；
+- 燃料棒间隙区域：`fuel_radius < r < clad_inner_radius`；
+- 包壳区域：`clad_inner_radius < r < clad_outer_radius`；
+- 冷却剂区域：`clad_outer_radius < r < pitch/2` 的 pin cell 剩余区域。
+
+几何内含检查：
+
+- `clad_outer_radius = 0.4750 cm < pitch/2 = 0.715 cm`，燃料棒可被栅元包含；
+- `guide_tube_outer_radius = 0.645 cm < pitch/2 = 0.715 cm`，导向管可被栅元包含；
+- `burnable_poison_outer_radius = 0.500 cm < guide_tube_inner_radius = 0.595 cm`，可燃毒物棒候选件可放入导向管内；
+- 所有圆柱半径单位均为 cm。
+
+组件边界：
+
+- 组件边长：`15 * pitch = 21.45 cm`；
+- 组件半宽：`10.725 cm`；
+- `RectLattice.lower_left = (-10.725, -10.725)`；
+- 外边界使用矩形边界包围 lattice；
+- 单组件诊断默认采用 `reflective` 边界；若放入上级堆芯模型，边界条件应由堆芯模型提供。
+
+## 4. 材料定义
+
+### 4.1 燃料材料
+
+图片给出：
+
+- 燃料富集度：3.1%。
+
+建模定义：
+
+- 燃料材料：UO2；
+- U-235 富集度：3.1 wt%；
+- 燃料密度：10.4 g/cm³，作为工程默认假设；
+- 温度：默认 600 K，需人工确认。
+
+IR 中必须记录：
+
+- 富集度来自图片资料；
+- UO2 化学式、密度和温度为工程默认假设；
+- 若上游资料给出更准确燃料密度、温度或氧铀比，应覆盖默认值。
+
+### 4.2 包壳材料
+
+图片给出包壳为 Zr-4 合金，重量百分比：
+
+| 元素 | 重量百分比 |
+|---|---:|
+| Sn | 1.5% |
+| Fe | 0.2% |
+| Cr | 0.1% |
+| O | 0.1% |
+| Zr | 98.1% |
+
+建模定义：
+
+- 包壳材料：Zr-4；
+- 组成采用重量百分比；
+- 密度：6.56 g/cm³，作为工程默认假设；
+- 温度：默认 600 K，需人工确认。
+
+### 4.3 冷却剂 / 慢化剂材料
+
+图片未给出冷却剂组成、密度、温度或热散射数据。为了生成可执行 OpenMC 模型，可采用以下工程默认假设：
+
+- 冷却剂：H2O；
+- 密度：0.743 g/cm³；
+- 温度：600 K；
+- 若截面库支持，可加入 `c_H_in_H2O` 热散射数据；
+- 若截面库不支持热散射，应保留 warning，而不是伪造库路径。
+
+IR 中必须将冷却剂密度、温度和热散射数据列为默认假设 / 待确认项。
+
+### 4.4 间隙材料
+
+若需要显式建模燃料芯块与包壳之间的间隙，默认采用：
+
+- 间隙材料：He；
+- 密度：0.001598 g/cm³；
+- 温度：600 K；
+- 该项为工程默认假设，需人工确认。
+
+### 4.5 导向管与可燃毒物棒金属结构材料
+
+图片给出导向管及毒物棒相关金属结构材料为不锈钢，重量百分比：
+
+| 元素 | 重量百分比 |
+|---|---:|
+| Fe | 71% |
+| Cr | 18% |
+| Ni | 11% |
+
+密度：
+
+- 7.9 g/cm³。
+
+该材料用于：
+
+- 导向管壁；
+- 可燃毒物棒外包壳；
+- 可燃毒物棒不锈钢内衬。
+
+### 4.6 硼玻璃材料
+
+图片给出了硼玻璃层尺寸，但未给出硼玻璃组成、密度、硼同位素丰度和温度。
+
+默认处理：
+
+- 不在默认 lattice 中插入可燃毒物棒；
+- 仅保留可燃毒物棒候选几何定义；
+- 硼玻璃材料必须列为人工确认项；
+- 若用户要求生成含可燃毒物棒的可运行模型，必须提供硼玻璃组成、密度、温度和插入位置。
+
+## 5. OpenMC 几何组织要求
+
+### 5.1 Universe 划分
+
+至少建立以下 universe：
+
+1. `fuel_pin_universe`
+   - `fuel_cell`：`r < fuel_radius`，填充 UO2；
+   - `gap_cell`：`fuel_radius < r < clad_inner_radius`，填充 He 或冷却剂默认材料；
+   - `clad_cell`：`clad_inner_radius < r < clad_outer_radius`，填充 Zr-4；
+   - `moderator_cell`：pin cell 剩余区域，填充 H2O。
+
+2. `guide_tube_universe`
+   - `guide_inner_cell`：`r < guide_tube_inner_radius`，默认填充 H2O；
+   - `guide_wall_cell`：`guide_tube_inner_radius < r < guide_tube_outer_radius`，填充不锈钢；
+   - `guide_outer_moderator_cell`：pin cell 剩余区域，填充 H2O。
+
+3. `burnable_poison_universe`，候选，不默认插入
+   - `bp_inner_void_or_central_cell`：`r < 0.257 cm`，材料需人工确认或空腔；
+   - `bp_inner_liner_cell`：`0.257 cm < r < 0.280 cm`，填充不锈钢；
+   - `bp_glass_cell`：`0.290 cm < r < 0.440 cm`，填充硼玻璃，材料需人工确认；
+   - `bp_gap_or_clearance_cell`：根据尺寸间隙填充 H2O 或 He，需人工确认；
+   - `bp_outer_clad_cell`：`0.450 cm < r < 0.500 cm`，填充不锈钢；
+   - `guide_annulus_coolant_cell`：`0.500 cm < r < guide_tube_inner_radius`，填充 H2O；
+   - 该 universe 只有在提供实际插入位置时才用于 lattice。
+
+### 5.2 RectLattice
+
+使用 `openmc.RectLattice`：
+
+- `lattice.pitch = (1.43, 1.43)` cm；
+- `lattice.lower_left = (-10.725, -10.725)` cm；
+- `lattice.universes` 为 15×15 二维数组；
+- `F` 位置映射为 `fuel_pin_universe`；
+- `G` 位置默认映射为 `guide_tube_universe`；
+- 不得把 21 个 `G` 位置悄悄映射成 fuel universe。
+
+### 5.3 Root geometry
+
+- 建立 assembly 外边界矩形 region；
+- 外边界 cell 填充 `assembly_lattice`；
+- root universe 只包含 assembly cell；
+- 使用 `openmc.Geometry(root_universe)`；
+- 使用 `openmc.Model(geometry, materials, settings, tallies)`；
+- 最终调用 `model.export_to_xml()`。
+
+## 6. Settings 与低成本诊断
+
+默认低成本 eigenvalue 诊断设置：
+
+- `run_mode = "eigenvalue"`；
+- `batches = 50`；
+- `inactive = 10`；
+- `particles = 1000`；
+- 源分布使用组件包围盒内的 box source；
+- `only_fissionable = True` 时必须确认源采样范围能落入燃料区；
+- 低成本运行仅用于发现 XML、几何、lost particle 和明显材料定义错误，不用于物理结果评价。
+
+## 7. 校验清单
+
+Agent 生成 IR 和 OpenMC 脚本后必须检查：
+
+### 7.1 棒位映射
+
+- 15×15 lattice 总位置数为 225；
+- `F` 数量为 204；
+- `G` 数量为 21；
+- 21 个 `G` 位置必须与第 2.2 节一致；
+- `universe_pattern` 中不能引用不存在的 universe；
+- `G` 位置默认使用 `guide_tube_universe`，不得全部退化为 `fuel_pin_universe`。
+
+### 7.2 尺寸与内含
+
+- 所有圆柱半径均为正；
+- 半径单位必须为 cm；
+- `fuel_radius < clad_inner_radius < clad_outer_radius < pitch/2`；
+- `guide_tube_inner_radius < guide_tube_outer_radius < pitch/2`；
+- `burnable_poison_outer_radius < guide_tube_inner_radius`；
+- 组件边界必须完整包围 15×15 lattice。
+
+### 7.3 区域闭合
+
+- 每个 pin cell 内的圆柱分区必须无重叠、无遗漏；
+- guide tube universe 内部区域必须无重叠、无遗漏；
+- 可燃毒物棒候选 universe 中尺寸间隙必须显式处理；
+- OpenMC cell region 布尔表达式必须可导出 XML。
+
+### 7.4 材料
+
+- 所有参与默认 lattice 的材料必须有密度和组成；
+- 燃料富集度 3.1% 必须进入 UO2 材料定义；
+- Zr-4 和不锈钢组成必须按重量百分比处理；
+- 冷却剂热散射数据若缺失，应记录 warning；
+- 不得伪造 `cross_sections.xml` 路径。
+
+### 7.5 OpenMC 输出
+
+- `materials.xml`、`geometry.xml`、`settings.xml` 必须可导出；
+- 可选导出 `plots.xml` 或 `tallies.xml`；
+- OpenMC 日志中不应出现 XML 解析错误、几何重叠、lost particle 或 ERROR 级错误。
+
+## 8. 需要人工确认的信息
+
+尽管本文件已经给出足以生成组件模型的默认闭合定义，以下信息仍应在 IR 中标记为人工确认项：
+
+1. 单棒燃料棒、包壳和栅距尺寸是否确实采用第 3 节默认值；
+2. 燃料 UO2 密度、温度和氧铀比；
+3. 包壳 Zr-4 密度和温度；
+4. 冷却剂密度、温度、硼浓度和热散射数据；
+5. 间隙气体材料和密度；
+6. 硼玻璃组成、密度、温度和硼同位素丰度；
+7. 是否真实插入可燃毒物棒；
+8. 若插入，可燃毒物棒具体插入哪些导向管位置；
+9. `cross_sections.xml` 路径；
+10. 单组件边界条件应为 reflective、vacuum，还是由上级堆芯模型提供。
+
+## 9. 对 Agent 的输出要求
+
+请输出：
+
+1. 结构化 IR，包括组件规模、棒位映射、材料、几何、默认假设、资料来源和待确认项；
+2. OpenMC Python API 生成思路；
+3. 完整 15×15 `RectLattice` universe pattern；
+4. 棒位映射与几何一致性校验清单；
+5. 源定义、cell region、材料归一化、ZCylinder 半径、面积闭合和外半径内含检查；
+6. XML 导出和低成本运行诊断设置；
+7. 若材料或截面库仍不满足运行条件，应生成 skeleton 或 exportable model，并明确标记不可用于物理结果评价。

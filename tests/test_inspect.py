@@ -6,16 +6,23 @@ from openmc_agent.inspect import InspectResult
 from openmc_agent.inspect import inspect_markdown_file, inspect_requirement, main
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.schemas import (
+    AssemblySpec,
+    CellSpec,
+    ComplexMaterialSpec,
+    ComplexModelSpec,
     ExecutionCheckSpec,
     GeometrySpec,
+    LatticeSpec,
     MaterialSpec,
     NuclideSpec,
     PinCellSpec,
     PlotSpec,
+    RenderCapabilityReport,
     RunSettingsSpec,
     SettingsSpec,
     SimulationPlan,
     SimulationSpec,
+    UniverseSpec,
 )
 from openmc_agent.tools import ToolResult
 
@@ -282,6 +289,83 @@ def test_inspect_requirement_plan_mode_prints_node_progress(
     assert "[node:execute_tools] running run_geometry_plots" in stderr
     assert "[node:execute_tools] running run_smoke_test" in stderr
     assert "[node:save_record]" in stderr
+
+
+def test_inspect_requirement_plan_mode_marks_skeleton_not_ok(tmp_path: Path) -> None:
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        complex_model = ComplexModelSpec(
+            name="incomplete assembly",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    chemical_formula="UO2",
+                    requires_human_confirmation=["density"],
+                )
+            ],
+            cells=[
+                CellSpec(
+                    id="fuel_cell",
+                    name="fuel",
+                    fill_type="material",
+                    fill_id="fuel",
+                )
+            ],
+            universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                )
+            ],
+            assemblies=[
+                AssemblySpec(
+                    id="assembly",
+                    name="assembly",
+                    lattice_id="assembly_lattice",
+                )
+            ],
+        )
+        return StructuredOutputResult(
+            ok=True,
+            value=SimulationPlan(
+                schema_version="simulation_plan.v2",
+                model_spec=None,
+                complex_model=complex_model,
+                capability_report=RenderCapabilityReport(
+                    is_executable=False,
+                    supported_renderer="none",
+                ),
+                plot_specs=[
+                    PlotSpec(
+                        basis="xy",
+                        width_cm=(1.26, 1.26),
+                        filename="assembly_xy.png",
+                    )
+                ],
+            ),
+        )
+
+    result = inspect_requirement(
+        "建立一个材料缺密度的组件模型",
+        output_dir=tmp_path,
+        use_plan=True,
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+    )
+
+    assert result.ok is False
+    assert result.model_path == tmp_path / "model.py"
+    assert result.transcript_data is not None
+    assert result.transcript_data["ok"] is False
+    assert result.transcript_data["render_outcome"]["status"] == "skeleton"
+    assert "Status: NOT EXECUTABLE" in result.transcript
 
 
 def test_inspect_cli_json_accepts_interactive_expert_feedback(

@@ -133,8 +133,15 @@ class ComplexMaterialSpec(AgentBaseModel):
             raise ValueError(
                 "complex material needs composition, chemical_formula, or requires_human_confirmation"
             )
+        # A partial density (only one of unit/value) is allowed when the material
+        # is explicitly pending human confirmation -- e.g. a candidate burnable-
+        # poison material whose density the source document did not give. The LLM
+        # often knows the unit (or an estimate) but not the value. The capability
+        # layer decides whether the gap blocks based on whether the material is
+        # actually used by the default model (reachability), not here.
         if (self.density_unit is None) != (self.density_value is None):
-            raise ValueError("density_unit and density_value must be provided together")
+            if not self.requires_human_confirmation:
+                raise ValueError("density_unit and density_value must be provided together")
         return self
 
 
@@ -481,6 +488,67 @@ class ComplexModelSpec(AgentBaseModel):
         if content_count == 0:
             raise ValueError("complex model needs at least one structured subsystem")
         return self
+
+    @model_validator(mode="after")
+    def infer_single_assembly_root(self) -> "ComplexModelSpec":
+        """Recover a missing AssemblySpec when the root lattice is unambiguous."""
+        if self.kind != "assembly" or self.assemblies:
+            return self
+
+        lattice_id = self._infer_assembly_lattice_id()
+        if lattice_id is None:
+            return self
+
+        lattice = next(lattice for lattice in self.lattices if lattice.id == lattice_id)
+        pitch_cm = (
+            lattice.pitch_cm[0]
+            if all(value == lattice.pitch_cm[0] for value in lattice.pitch_cm)
+            else None
+        )
+        object.__setattr__(
+            self,
+            "assemblies",
+            [
+                AssemblySpec(
+                    id="assembly",
+                    name="assembly",
+                    lattice_id=lattice_id,
+                    pitch_cm=pitch_cm,
+                    purpose="Inferred from the assembly lattice root.",
+                )
+            ],
+        )
+        return self
+
+    def _infer_assembly_lattice_id(self) -> str | None:
+        rect_lattice_ids = [
+            lattice.id for lattice in self.lattices if lattice.kind == "rect"
+        ]
+        if not rect_lattice_ids:
+            return None
+        rect_lattice_id_set = set(rect_lattice_ids)
+
+        root_fill_ids: list[str] = []
+        all_fill_ids: list[str] = []
+        for cell in self.cells:
+            if cell.fill_type != "lattice" or cell.fill_id not in rect_lattice_id_set:
+                continue
+            all_fill_ids.append(cell.fill_id)
+            marker = f"{cell.id} {cell.name} {cell.purpose}".lower()
+            if "assembly" in marker or "root" in marker:
+                root_fill_ids.append(cell.fill_id)
+
+        unique_root_fill_ids = list(dict.fromkeys(root_fill_ids))
+        if len(unique_root_fill_ids) == 1:
+            return unique_root_fill_ids[0]
+
+        unique_fill_ids = list(dict.fromkeys(all_fill_ids))
+        if len(unique_fill_ids) == 1:
+            return unique_fill_ids[0]
+
+        if len(rect_lattice_ids) == 1:
+            return rect_lattice_ids[0]
+        return None
 
 
 class RenderCapabilityReport(AgentBaseModel):

@@ -467,7 +467,9 @@ def _plan_state_ok(report: object, state: dict, model_path: Path | None) -> bool
     if renderability == "none":
         # Structured IR was delivered for review even though nothing was rendered.
         return True
-    # skeleton / exportable / runnable must produce a model.py.
+    if renderability == "skeleton":
+        return False
+    # exportable / runnable must produce a model.py.
     return model_path is not None
 
 

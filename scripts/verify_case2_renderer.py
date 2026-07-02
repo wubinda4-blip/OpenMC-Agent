@@ -2,8 +2,15 @@
 
 This mirrors exactly what scripts/run_inspect.sh does AFTER the LLM produces a
 SimulationPlan, but replaces the LLM call with a fixed plan so it runs offline.
-The plan encodes case2's 15x15 assembly with guide-tube positions and material
-gaps (no density / cross-section data), matching the case2.md scenario.
+
+The plan encodes case2's 15x15 assembly with:
+- complete default materials (UO2 fuel, stainless-steel guide-tube fill) so the
+  default F/G assembly is exportable;
+- a candidate ``burnable_poison_universe`` (with an incomplete ``borosilicate_glass``
+  material) that is defined but NOT inserted into the default lattice.
+
+The acceptance criteria lock in the reachability fix: the incomplete candidate
+material must only warn, never downgrade the default model to a skeleton.
 """
 
 import json
@@ -17,6 +24,7 @@ from openmc_agent.schemas import (
     ComplexMaterialSpec,
     ComplexModelSpec,
     LatticeSpec,
+    NuclideSpec,
     PlotSpec,
     RenderCapabilityReport,
     RunSettingsSpec,
@@ -39,42 +47,88 @@ GUIDE_TUBES_1INDEXED = [
 def build_case2_pattern() -> list[list[str]]:
     guide = {(r - 1, c - 1) for r, c in GUIDE_TUBES_1INDEXED}
     return [
-        ["guide" if (r, c) in guide else "fuel" for c in range(15)]
+        ["guide_tube_universe" if (r, c) in guide else "fuel_pin_universe" for c in range(15)]
         for r in range(15)
     ]
 
 
 def build_case2_plan() -> SimulationPlan:
     pattern = build_case2_pattern()
-    guide_count = sum(row.count("guide") for row in pattern)
-    fuel_count = sum(row.count("fuel") for row in pattern)
+    guide_count = sum(row.count("guide_tube_universe") for row in pattern)
+    fuel_count = sum(row.count("fuel_pin_universe") for row in pattern)
     assert guide_count == 21 and fuel_count == 204, (guide_count, fuel_count)
 
     model = ComplexModelSpec(
         name="15x15 PWR assembly (case2)",
         kind="assembly",
         materials=[
-            # Material details are intentionally gaps per case2.md: the source
-            # document does not give density / composition / cross_sections.xml.
+            # Default active materials: complete enough to export XML. Densities
+            # and compositions follow the engineering defaults in case2.md sec. 4.
             ComplexMaterialSpec(
-                id="fuel",
-                name="UO2 fuel (composition pending)",
-                chemical_formula="UO2",
-                requires_human_confirmation=["density", "enrichment", "temperature"],
+                id="uo2_fuel",
+                name="UO2 fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[
+                    NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+                    NuclideSpec(name="U238", percent=96.9, percent_type="wo"),
+                    NuclideSpec(name="O16", percent=2.0),
+                ],
             ),
             ComplexMaterialSpec(
-                id="guide",
-                name="guide tube / coolant (composition pending)",
-                requires_human_confirmation=["density", "composition"],
+                id="guide_steel",
+                name="stainless steel guide fill",
+                density_unit="g/cm3",
+                density_value=7.9,
+                composition=[
+                    NuclideSpec(name="Fe", percent=71.0, percent_type="wo"),
+                    NuclideSpec(name="Cr", percent=18.0, percent_type="wo"),
+                    NuclideSpec(name="Ni", percent=11.0, percent_type="wo"),
+                ],
+            ),
+            # Candidate burnable-poison material: deliberately incomplete (partial
+            # density flagged for confirmation, no composition). case2.md sec. 4.6
+            # does not give borosilicate-glass composition, density, or boron
+            # isotope abundance. This must NOT block the default model.
+            ComplexMaterialSpec(
+                id="borosilicate_glass",
+                name="borosilicate glass (candidate)",
+                density_unit="g/cm3",
+                requires_human_confirmation=[
+                    "density value",
+                    "composition",
+                    "boron isotope abundance",
+                ],
             ),
         ],
         cells=[
-            CellSpec(id="fuel_cell", name="fuel pin", fill_type="material", fill_id="fuel"),
-            CellSpec(id="guide_cell", name="guide tube", fill_type="material", fill_id="guide"),
+            CellSpec(id="fuel_cell", name="fuel pin", fill_type="material", fill_id="uo2_fuel"),
+            CellSpec(
+                id="guide_cell",
+                name="guide tube",
+                fill_type="material",
+                fill_id="guide_steel",
+            ),
+            CellSpec(
+                id="bp_glass_cell",
+                name="bp glass",
+                fill_type="material",
+                fill_id="borosilicate_glass",
+            ),
         ],
         universes=[
-            UniverseSpec(id="fuel", name="fuel pin universe", cell_ids=["fuel_cell"]),
-            UniverseSpec(id="guide", name="guide tube universe", cell_ids=["guide_cell"]),
+            UniverseSpec(id="fuel_pin_universe", name="fuel pin", cell_ids=["fuel_cell"]),
+            UniverseSpec(
+                id="guide_tube_universe",
+                name="guide tube",
+                cell_ids=["guide_cell"],
+            ),
+            # Candidate universe: defined but NOT inserted into the default lattice.
+            UniverseSpec(
+                id="burnable_poison_universe",
+                name="candidate burnable poison",
+                cell_ids=["bp_glass_cell"],
+            ),
         ],
         lattices=[
             LatticeSpec(
@@ -92,14 +146,14 @@ def build_case2_plan() -> SimulationPlan:
                 name="root assembly",
                 lattice_id="assembly_lattice",
                 pitch_cm=18.9,
-                boundary=None,  # case2: boundary must be confirmed by a core model
+                boundary="reflective",
             )
         ],
         settings=RunSettingsSpec(batches=10, inactive=2, particles=1000),
         requires_human_confirmation=[
-            "burnable poison rod insertion pattern",
             "cross_sections.xml path",
             "thermal scattering data",
+            "whether burnable poison rods are actually inserted",
         ],
     )
     return SimulationPlan(
@@ -147,12 +201,12 @@ def main() -> None:
     print(f"  renderability   = {cap.renderability}")
     print(f"  is_executable   = {cap.is_executable}")
     print(f"  supported_renderer = {cap.supported_renderer}")
-    print(f"  reasons (first 5):")
-    for reason in cap.reasons[:5]:
+    print(f"  blocking reasons:")
+    for reason in cap.reasons:
         print(f"    - {reason}")
-    print(f"  required_human_confirmations (first 6):")
-    for item in cap.required_human_confirmations[:6]:
-        print(f"    - {item}")
+    print(f"  warnings:")
+    for warning in cap.warnings:
+        print(f"    - {warning}")
     print(f"Generated files in {outdir}:")
     for name in sorted(p.name for p in outdir.iterdir()):
         print(f"    - {name}")
@@ -160,21 +214,31 @@ def main() -> None:
     if model_path.exists():
         text = model_path.read_text(encoding="utf-8")
         print(f"model.py contains 'NOT EXECUTABLE': {'NOT EXECUTABLE' in text}")
-        print(f"model.py contains 'TODO': {'TODO' in text}")
-        export_lines = [ln for ln in text.splitlines() if "export_to_xml()" in ln]
-        print(f"export_to_xml calls all commented: {all(ln.lstrip().startswith('#') for ln in export_lines)}")
+        print(f"model.py contains 'export_to_xml()': {'export_to_xml()' in text}")
+        print(f"model.py mentions borosilicate_glass: {'borosilicate_glass' in text}")
     tool_names = [t["name"] for t in state.get("tool_results", [])]
-    print(f"Tools executed: {tool_names} (expected [] for skeleton)")
-    print(f"openmc.run attempted: {'run_smoke_test' in tool_names}")
+    print(f"Tools executed: {tool_names}")
     print("=" * 70)
-    # Acceptance assertions
+
+    # -- acceptance criteria (reachability fix) --------------------------
     assert state["validation_report"].is_valid, "plan must validate"
-    assert cap.renderability == "skeleton", cap.renderability
-    assert model_path.exists(), "skeleton model.py must be generated"
-    assert (outdir / "capability_report.json").exists()
-    assert (outdir / "TODO.md").exists()
-    assert "run_smoke_test" not in tool_names, "no OpenMC run for non-executable model"
-    assert any("missing density" in r for r in cap.reasons)
+    # The default F/G assembly has complete active materials -> exportable/runnable.
+    assert cap.renderability in {"exportable", "runnable"}, cap.renderability
+    assert cap.is_executable is True
+    # The candidate borosilicate_glass must never appear as a blocking reason.
+    assert not any("borosilicate_glass" in r for r in cap.reasons), cap.reasons
+    # Its gaps surface as warnings / human-confirmations instead.
+    soft = "\n".join(cap.warnings + cap.required_human_confirmations)
+    assert "borosilicate_glass" in soft, (cap.warnings, cap.required_human_confirmations)
+    # The candidate universe is reported as not inserted.
+    assert any("burnable_poison_universe" in w for w in cap.warnings), cap.warnings
+    # model.py is a real executable export, not a skeleton.
+    assert model_path.exists()
+    text = model_path.read_text(encoding="utf-8")
+    assert "NOT EXECUTABLE" not in text
+    assert "export_to_xml()" in text
+    # The default model must not emit the candidate material.
+    assert "borosilicate_glass" not in text
     print("ALL CASE2 ACCEPTANCE CRITERIA PASSED")
 
 

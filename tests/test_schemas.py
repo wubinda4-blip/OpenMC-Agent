@@ -219,6 +219,126 @@ def test_complex_assembly_ir_validates_without_executable_material_cards() -> No
     assert payload["capability_report"]["is_executable"] is False
 
 
+def test_complex_assembly_infers_missing_assembly_from_single_rect_lattice() -> None:
+    complex_model = ComplexModelSpec(
+        name="PWR assembly IR",
+        kind="assembly",
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="15x15 lattice",
+                kind="rect",
+                pitch_cm=(1.43, 1.43),
+                universe_pattern=[["fuel_pin_universe"]],
+            )
+        ],
+    )
+
+    assert len(complex_model.assemblies) == 1
+    assert complex_model.assemblies[0].lattice_id == "assembly_lattice"
+
+
+def test_complex_assembly_infers_lattice_from_root_cell_fill() -> None:
+    complex_model = ComplexModelSpec(
+        name="PWR assembly IR",
+        kind="assembly",
+        cells=[
+            CellSpec(
+                id="assembly_cell",
+                name="Assembly root cell",
+                fill_type="lattice",
+                fill_id="assembly_lattice",
+            )
+        ],
+        lattices=[
+            LatticeSpec(
+                id="candidate_lattice",
+                name="candidate lattice",
+                kind="rect",
+                pitch_cm=(1.43, 1.43),
+                universe_pattern=[["fuel_pin_universe"]],
+            ),
+            LatticeSpec(
+                id="assembly_lattice",
+                name="15x15 lattice",
+                kind="rect",
+                pitch_cm=(1.43, 1.43),
+                universe_pattern=[["fuel_pin_universe"]],
+            ),
+        ],
+    )
+
+    assert len(complex_model.assemblies) == 1
+    assert complex_model.assemblies[0].lattice_id == "assembly_lattice"
+
+
+def test_complex_assembly_does_not_guess_between_multiple_lattices() -> None:
+    complex_model = ComplexModelSpec(
+        name="ambiguous assembly IR",
+        kind="assembly",
+        lattices=[
+            LatticeSpec(
+                id="first_lattice",
+                name="first lattice",
+                kind="rect",
+                pitch_cm=(1.43, 1.43),
+                universe_pattern=[["fuel_pin_universe"]],
+            ),
+            LatticeSpec(
+                id="second_lattice",
+                name="second lattice",
+                kind="rect",
+                pitch_cm=(1.43, 1.43),
+                universe_pattern=[["fuel_pin_universe"]],
+            ),
+        ],
+    )
+
+    assert complex_model.assemblies == []
+
+
+def test_complex_material_with_partial_density_and_confirmation_is_accepted() -> None:
+    """A candidate material flagged for confirmation may carry a partial density.
+
+    The LLM often knows the density unit (or an estimate) for a burnable-poison
+    candidate material but not the value (or vice versa). The schema must accept
+    that partial state so the plan can be constructed; the capability layer then
+    decides whether the gap blocks based on whether the material is actually used
+    by the default model.
+    """
+    # density_unit set, density_value omitted, flagged for confirmation.
+    material = ComplexMaterialSpec(
+        id="borosilicate_glass",
+        name="borosilicate glass",
+        density_unit="g/cm3",
+        requires_human_confirmation=["density value", "composition", "boron isotope abundance"],
+    )
+    assert material.density_unit == "g/cm3"
+    assert material.density_value is None
+
+    # density_value set, density_unit omitted, flagged for confirmation.
+    material_value_only = ComplexMaterialSpec(
+        id="borosilicate_glass",
+        name="borosilicate glass",
+        density_value=2.23,
+        requires_human_confirmation=["density unit", "composition"],
+    )
+    assert material_value_only.density_value == 2.23
+    assert material_value_only.density_unit is None
+
+
+def test_complex_material_partial_density_without_confirmation_still_rejected() -> None:
+    """A partial density with no confirmation flag is still a malformed material."""
+    with pytest.raises(ValidationError) as exc_info:
+        ComplexMaterialSpec(
+            id="fuel",
+            name="fuel",
+            density_unit="g/cm3",
+            composition=[NuclideSpec(name="U235", percent=1.0)],
+        )
+    assert "provided together" in str(exc_info.value)
+
+
 def test_complex_only_plan_must_be_marked_non_executable() -> None:
     with pytest.raises(ValidationError) as exc_info:
         SimulationPlan(

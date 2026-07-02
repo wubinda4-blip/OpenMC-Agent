@@ -902,6 +902,8 @@ def _augmented_plan_requirement(state: GraphState) -> str:
         "supported_renderer='none' and is_executable=false. "
         "Do not invent material composition, density, temperature, or nuclear data. Put missing "
         "facts in requires_human_confirmation and expert_assumptions.",
+        "For rectangular assembly plans, complex_model.assemblies must include one "
+        "AssemblySpec whose lattice_id points to the default RectLattice id.",
         "",
         "Capability report consistency rule:\n\n"
         "If the output is a complex-only plan:\n"

@@ -17,6 +17,10 @@ from typing import Any
 
 from openmc_agent.executor import render_openmc_assembly_script
 from openmc_agent.renderers.base import BaseRenderer, RenderResult, low_cost_runnable
+from openmc_agent.reachability import (
+    ActiveDependencies,
+    collect_active_dependencies,
+)
 from openmc_agent.renderers.skeleton import (
     _write_capability_report,
     _write_todo,
@@ -45,7 +49,8 @@ class RectAssemblyRenderer(BaseRenderer):
                 reasons=["assembly renderer requires complex_model.kind='assembly'"],
             )
 
-        errors, warnings = _assembly_diagnostics(model)
+        deps = collect_active_dependencies(plan)
+        errors, warnings = _assembly_diagnostics(model, deps)
         if errors:
             return RenderCapabilityReport(
                 renderability="skeleton",
@@ -55,7 +60,7 @@ class RectAssemblyRenderer(BaseRenderer):
                 unsupported_subsystems=_assembly_subsystems(model),
                 reasons=errors,
                 warnings=warnings,
-                required_human_confirmations=_material_confirmations(model),
+                required_human_confirmations=_material_confirmations(model, deps),
             )
         renderability = "runnable" if low_cost_runnable(plan) else "exportable"
         return RenderCapabilityReport(
@@ -71,7 +76,7 @@ class RectAssemblyRenderer(BaseRenderer):
             unsupported_subsystems=[],
             reasons=["Current executor supports rectangular assembly lattice rendering."],
             warnings=warnings,
-            required_human_confirmations=_material_confirmations(model),
+            required_human_confirmations=_material_confirmations(model, deps),
         )
 
     def render(self, plan: SimulationPlan, outdir: Path) -> RenderResult:
@@ -115,8 +120,16 @@ class RectAssemblyRenderer(BaseRenderer):
 # -- diagnostics ----------------------------------------------------------
 
 
-def _assembly_diagnostics(model: ComplexModelSpec) -> tuple[list[str], list[str]]:
-    """Return (blocking_errors, warnings). Empty error list means exportable."""
+def _assembly_diagnostics(
+    model: ComplexModelSpec,
+    deps: ActiveDependencies,
+) -> tuple[list[str], list[str]]:
+    """Return (blocking_errors, warnings). Empty error list means exportable.
+
+    ``deps`` partitions declared objects by reachability from the default
+    lattice. Only *active* materials can block the default model; gaps in
+    candidate / inactive materials become warnings instead.
+    """
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -144,13 +157,18 @@ def _assembly_diagnostics(model: ComplexModelSpec) -> tuple[list[str], list[str]
         errors.append("assembly renderer requires materials")
 
     # Check 8: material completeness (density + composition/chemical_formula).
-    for material in model.materials:
-        if material.density_unit is None or material.density_value is None:
-            errors.append(f"material {material.id!r} is missing density")
-        if not material.composition and not material.chemical_formula:
-            errors.append(
-                f"material {material.id!r} is missing composition or chemical_formula"
-            )
+    # Only materials reachable from the default lattice (active) can block;
+    # candidate / inactive material gaps only warn, so an un-inserted
+    # burnable-poison universe with an incomplete borosilicate glass does not
+    # downgrade the default F/G assembly.
+    warnings.extend(_material_completeness_messages(model, deps, errors))
+
+    # Candidate universes defined but not inserted into the default lattice.
+    for universe_id in sorted(deps.inactive_universe_ids):
+        warnings.append(
+            f"universe {universe_id!r} is not inserted in the default lattice "
+            "(candidate only)"
+        )
 
     # Check 4 + 3: universe_pattern references and shape consistency.
     for lattice in rect_lattices:
@@ -352,17 +370,68 @@ def _assembly_subsystems(model: ComplexModelSpec) -> list[str]:
     return present
 
 
-def _material_confirmations(model: ComplexModelSpec) -> list[str]:
+def _material_completeness_messages(
+    model: ComplexModelSpec,
+    deps: ActiveDependencies,
+    errors: list[str],
+) -> list[str]:
+    """Split material gaps into blocking errors (active) and warnings (inactive).
+
+    Mutates ``errors`` in place with active-material gaps and returns the
+    inactive-material warnings. Active = reachable from the default lattice.
+    """
+    warnings: list[str] = []
+    for material in model.materials:
+        missing_density = material.density_unit is None or material.density_value is None
+        missing_composition = not material.composition and not material.chemical_formula
+        if material.id in deps.material_ids:
+            if missing_density:
+                errors.append(f"material {material.id!r} is missing density")
+            if missing_composition:
+                errors.append(
+                    f"material {material.id!r} is missing composition or chemical_formula"
+                )
+        elif missing_density or missing_composition:
+            # Candidate / orphan material: gaps only warn, never block.
+            suffix = "; this only blocks models that use its universe"
+            if missing_density:
+                warnings.append(
+                    f"inactive candidate material {material.id!r} is missing density{suffix}"
+                )
+            if missing_composition:
+                warnings.append(
+                    f"inactive candidate material {material.id!r} is missing "
+                    f"composition or chemical_formula{suffix}"
+                )
+    return warnings
+
+
+def _material_confirmations(
+    model: ComplexModelSpec,
+    deps: ActiveDependencies | None = None,
+) -> list[str]:
+    """Human-confirmation entries for every material gap.
+
+    ``deps`` tags candidate / inactive materials so reviewers can see that a gap
+    only matters if the owning universe is later inserted. Accepts ``None`` so
+    callers without a reachability analysis (e.g. defensive skeleton fallbacks)
+    still work, treating every material as potentially active.
+    """
+    active_material_ids = deps.material_ids if deps is not None else None
     confirmations: list[str] = []
     for material in model.materials:
+        is_active = (
+            material.id in active_material_ids if active_material_ids is not None else True
+        )
+        prefix = "material" if is_active else "inactive candidate material"
         if material.density_unit is None or material.density_value is None:
-            confirmations.append(f"material {material.id}: is missing density")
+            confirmations.append(f"{prefix} {material.id}: is missing density")
         if not material.composition and not material.chemical_formula:
             confirmations.append(
-                f"material {material.id}: is missing composition or chemical_formula"
+                f"{prefix} {material.id}: is missing composition or chemical_formula"
             )
         confirmations.extend(
-            f"material {material.id}: {item}"
+            f"{prefix} {material.id}: {item}"
             for item in material.requires_human_confirmation
         )
     return list(dict.fromkeys(confirmations))
@@ -378,6 +447,8 @@ def _dedupe(items: list[str]) -> list[str]:
 def _skeleton_capability(plan: SimulationPlan, extra_reason: str) -> RenderCapabilityReport:
     model = plan.complex_model
     assert model is not None
+    # Preserve active/inactive labelling even in the defensive skeleton fallback.
+    deps = collect_active_dependencies(plan)
     base_reasons = [
         "Assembly IR could not be exported safely; generating a review-only skeleton.",
         extra_reason,
@@ -389,5 +460,5 @@ def _skeleton_capability(plan: SimulationPlan, extra_reason: str) -> RenderCapab
         executable_subsystems=[],
         unsupported_subsystems=_assembly_subsystems(model),
         reasons=base_reasons,
-        required_human_confirmations=_material_confirmations(model),
+        required_human_confirmations=_material_confirmations(model, deps),
     )
