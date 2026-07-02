@@ -16,7 +16,12 @@ from openmc_agent.graph import (
     build_graph,
     build_plan_graph,
 )
-from openmc_agent.llm import DEFAULT_MODEL, generate_structured_output, repair_structured_output
+from openmc_agent.llm import (
+    DEFAULT_MODEL,
+    generate_structured_output,
+    repair_structured_output,
+    set_llm_progress,
+)
 from openmc_agent.tools import export_xml, run_geometry_plots, run_smoke_test
 
 
@@ -49,6 +54,7 @@ def inspect_requirement(
     smoke_test_tool: SmokeTestToolFn = run_smoke_test,
     verbose: bool = False,
 ) -> InspectResult:
+    set_llm_progress(verbose)
     if use_plan:
         return _inspect_plan_requirement(
             requirement,
@@ -229,7 +235,11 @@ def _inspect_plan_requirement(
     records_path = output_path / "inspect_runs.jsonl"
     if verbose:
         print("[agent] Building SimulationPlan workflow...", file=sys.stderr)
-        print("[agent] Steps: LLM plan -> validate -> render code -> tools -> reflection.", file=sys.stderr)
+        print(
+            "[agent] Steps: retrieve docs -> few-shot -> LLM plan -> validate -> "
+            "capability -> render/tools or structured-only -> reflection.",
+            file=sys.stderr,
+        )
 
     graph = build_plan_graph(
         generate_plan=generate_plan,
@@ -271,7 +281,7 @@ def _inspect_plan_requirement(
     report = state.get("validation_report")
     export_result = _tool_result_by_name(state.get("tool_results", []), "export_xml")
     xml_export_ok = bool(export_result and export_result.get("ok"))
-    ok = bool(report and report.is_valid and model_path is not None)
+    ok = _plan_state_ok(report, state, model_path)
     return InspectResult(
         ok=ok,
         transcript=transcript,
@@ -314,19 +324,88 @@ def _plan_transcript_data(
 ) -> dict:
     plan = state.get("simulation_plan")
     report = state.get("validation_report")
+    capability = plan.capability_report.model_dump(mode="json") if plan is not None else None
+    tool_results = state.get("tool_results", [])
     return {
-        "ok": bool(report and report.is_valid and model_path is not None),
+        "ok": _plan_state_ok(report, state, model_path),
         "requirement": requirement,
         "expert_feedback": expert_feedback,
+        "openmc_api_docs": state.get("openmc_api_docs", []),
+        "few_shot_examples": state.get("few_shot_examples", []),
         "simulation_plan": plan.model_dump(mode="json") if plan is not None else None,
+        "capability_report": capability,
+        "render_outcome": _render_outcome(
+            plan, model_path, tool_results, state.get("output_dir")
+        ),
         "validation_report": report.model_dump(mode="json") if report is not None else None,
         "retry_count": state.get("retry_count", 0),
         "retry_history": state.get("retry_history", []),
-        "tool_results": state.get("tool_results", []),
+        "tool_results": tool_results,
         "raw_llm_outputs": state.get("raw_llm_outputs", []),
         "model_path": str(model_path) if model_path is not None else None,
         "error": state.get("error", ""),
     }
+
+
+def _render_outcome(
+    plan: object | None,
+    model_path: Path | None,
+    tool_results: list[dict],
+    output_dir: str | None,
+) -> dict:
+    """Summarize what the renderer produced so the CLI cannot misread skeleton as runnable."""
+    if plan is None:
+        return {"status": "no_plan", "lines": []}
+    capability = plan.capability_report  # type: ignore[attr-defined]
+    renderability = capability.renderability
+    lines: list[str] = []
+
+    if renderability == "none":
+        lines.append("No model.py generated: no renderer could handle this plan.")
+        return {"status": "none", "renderability": renderability, "lines": lines}
+
+    if renderability == "skeleton":
+        lines.append("Generated model.py skeleton")
+        lines.append("Status: NOT EXECUTABLE")
+        lines.append("No OpenMC run attempted because model is not executable")
+        sidecars = _sidecar_lines(output_dir)
+        if sidecars:
+            lines.append(f"See: {', '.join(sidecars)}")
+        return {"status": "skeleton", "renderability": renderability, "lines": lines}
+
+    # exportable or runnable
+    lines.append("Generated model.py")
+    exported = _tool_artifacts(tool_results, "export_xml")
+    if exported:
+        lines.append(f"Exported XML files: {', '.join(exported)}")
+    else:
+        lines.append("Exported XML files: (none)")
+    if renderability == "runnable":
+        smoke = _tool_result_by_name(tool_results, "run_smoke_test")
+        if smoke is None:
+            lines.append("Smoke test status: skipped (not enabled)")
+        elif smoke.get("ok"):
+            lines.append("Smoke test status: passed")
+        else:
+            lines.append(f"Smoke test status: failed ({smoke.get('error', '')})")
+    else:
+        lines.append("Smoke test status: skipped (renderability=exportable)")
+    return {"status": renderability, "renderability": renderability, "lines": lines}
+
+
+def _sidecar_lines(output_dir: str | None) -> list[str]:
+    if not output_dir:
+        return []
+    base = Path(output_dir)
+    candidates = ["capability_report.json", "TODO.md"]
+    return [name for name in candidates if (base / name).exists()]
+
+
+def _tool_artifacts(tool_results: list[dict], name: str) -> list[str]:
+    result = _tool_result_by_name(tool_results, name)
+    if not result:
+        return []
+    return [Path(artifact).name for artifact in result.get("artifacts", [])]
 
 
 def _format_plan_transcript(data: dict) -> str:
@@ -337,20 +416,32 @@ def _format_plan_transcript(data: dict) -> str:
         "[2] LLM 结构化输出",
         _json_dump(data.get("simulation_plan")),
         "",
-        "[3] 验证结果",
+        "[3] OpenMC API 检索上下文",
+        _json_dump(data.get("openmc_api_docs", [])),
+        "",
+        "[4] Few-shot 示例",
+        _json_dump(data.get("few_shot_examples", [])),
+        "",
+        "[5] Capability Report",
+        _json_dump(data.get("capability_report")),
+        "",
+        "[6] 验证结果",
         _json_dump(data.get("validation_report")),
         "",
-        "[4] 修复过程",
+        "[7] 修复过程",
         f"retry_count={data.get('retry_count', 0)}",
         _json_dump(data.get("retry_history", [])),
         "",
-        "[5] 人类专家反馈",
+        "[8] 人类专家反馈",
         _json_dump(data.get("expert_feedback", [])),
         "",
-        "[6] 工具执行结果",
+        "[9] 工具执行结果",
         _json_dump(data.get("tool_results", [])),
         "",
-        "[7] 最终执行结果",
+        "[10] 渲染结果摘要",
+        "\n".join(data.get("render_outcome", {}).get("lines", []) or ["(no render outcome)"]),
+        "",
+        "[11] 最终执行结果",
         f"model.py={data.get('model_path')}",
         f"ok={data.get('ok')}",
     ]
@@ -364,6 +455,20 @@ def _tool_result_by_name(tool_results: list[dict], name: str) -> dict | None:
         if result.get("name") == name:
             return result
     return None
+
+
+def _plan_state_ok(report: object, state: dict, model_path: Path | None) -> bool:
+    if not report or not getattr(report, "is_valid", False):
+        return False
+    plan = state.get("simulation_plan")
+    if plan is None:
+        return False
+    renderability = plan.capability_report.renderability
+    if renderability == "none":
+        # Structured IR was delivered for review even though nothing was rendered.
+        return True
+    # skeleton / exportable / runnable must produce a model.py.
+    return model_path is not None
 
 
 def _json_dump(value: object) -> str:

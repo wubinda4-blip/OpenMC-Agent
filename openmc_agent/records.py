@@ -56,6 +56,7 @@ def append_simulation_record(
     simulation_spec: SimulationSpec | None,
     validation_report: ValidationReport,
     path: str | Path = DEFAULT_SIMULATION_RECORDS_PATH,
+    simulation_plan: dict[str, Any] | None = None,
     model_path: str | None = None,
     error: str = "",
     retry_count: int = 0,
@@ -68,6 +69,7 @@ def append_simulation_record(
         "simulation_spec": (
             simulation_spec.model_dump(mode="json") if simulation_spec is not None else None
         ),
+        "simulation_plan": simulation_plan,
         "validation_report": validation_report.model_dump(mode="json"),
         "model_path": model_path,
         "error": error,

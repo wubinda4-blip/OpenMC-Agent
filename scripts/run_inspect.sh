@@ -6,8 +6,9 @@ CONDA_SH="${CONDA_SH:-/home/wbd/miniconda3/etc/profile.d/conda.sh}"
 CONDA_ENV="${CONDA_ENV:-openmc-env}"
 MODEL="${OPENMC_AGENT_MODEL:-zhipu:glm-5.2}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/runs/manual/script-run}"
-TIMEOUT_SECONDS="${ZHIPUAI_TIMEOUT_SECONDS:-240}"
-MAX_RETRIES="${ZHIPUAI_MAX_RETRIES:-2}"
+TIMEOUT_SECONDS=""
+MAX_RETRIES=""
+STREAM="${OPENMC_AGENT_STREAM:-1}"
 MD_FILE=""
 REQUIREMENT=""
 ENABLE_PLOT=0
@@ -22,20 +23,31 @@ Usage:
 Options:
   --md-file PATH          Read requirement from a Markdown file.
   --requirement TEXT      Natural-language requirement.
+  --model PROVIDER:MODEL  LLM model as 'provider:model'. Default: zhipu:glm-5.2
+                          Examples: zhipu:glm-5.2, deepseek:deepseek-chat,
+                          deepseek:deepseek-reasoner.
   --full                  Enable both OpenMC geometry plot and smoke test.
   --plot                  Enable geometry plot only.
   --smoke-test            Enable low-particle smoke test only.
   --output-dir PATH       Output directory. Default: data/runs/manual/script-run
-  --timeout-seconds N     Zhipu read timeout. Default: 240
-  --max-retries N         Retries after timeout. Default: 2
+  --timeout-seconds N     Read timeout per request. Default: 240
+  --max-retries N         Retries after a transport error. Default: 2
+  --no-stream             Disable SSE streaming. Streaming is on by default so
+                          slow (reasoning) generations do not hit the read
+                          timeout and you can see token-level progress.
   --text                  Print human-readable transcript instead of JSON.
   -h, --help              Show this help.
+
+Providers:
+  zhipu       -> ZHIPUAI_API_KEY,    endpoint open.bigmodel.cn
+  deepseek    -> DEEPSEEK_API_KEY,   endpoint api.deepseek.com
+
+The corresponding API key env var is requested securely if not already set.
 
 Examples:
   scripts/run_inspect.sh --md-file Input/case1.md
   scripts/run_inspect.sh --requirement "建立一个 UO2 pin-cell 临界计算" --full
-
-The script asks for ZHIPUAI_API_KEY securely if it is not already exported.
+  scripts/run_inspect.sh --model deepseek:deepseek-chat --md-file Input/case2.md --full --text
 EOF
 }
 
@@ -47,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --requirement)
       REQUIREMENT="${2:-}"
+      shift 2
+      ;;
+    --model)
+      MODEL="${2:-}"
       shift 2
       ;;
     --full)
@@ -74,6 +90,10 @@ while [[ $# -gt 0 ]]; do
       MAX_RETRIES="${2:-}"
       shift 2
       ;;
+    --no-stream)
+      STREAM=0
+      shift
+      ;;
     --text)
       JSON_OUTPUT=0
       shift
@@ -99,6 +119,32 @@ if [[ -z "$MD_FILE" && -z "$REQUIREMENT" ]]; then
   MD_FILE="Input/case1.md"
 fi
 
+# Provider is the part before the first ':' in the model id (e.g. zhipu, deepseek).
+PROVIDER="${MODEL%%:*}"
+case "$PROVIDER" in
+  zhipu)
+    API_KEY_ENV="ZHIPUAI_API_KEY"
+    TIMEOUT_ENV="ZHIPUAI_TIMEOUT_SECONDS"
+    RETRIES_ENV="ZHIPUAI_MAX_RETRIES"
+    ;;
+  deepseek)
+    API_KEY_ENV="DEEPSEEK_API_KEY"
+    TIMEOUT_ENV="DEEPSEEK_TIMEOUT_SECONDS"
+    RETRIES_ENV="DEEPSEEK_MAX_RETRIES"
+    ;;
+  *)
+    echo "Unsupported provider '$PROVIDER' in model '$MODEL'." >&2
+    echo "Use a 'provider:model' id such as 'zhipu:glm-5.2' or 'deepseek:deepseek-chat'." >&2
+    exit 2
+    ;;
+esac
+
+# Resolve timeout/retries: --flag > provider env > default.
+[[ -z "$TIMEOUT_SECONDS" ]] && TIMEOUT_SECONDS="${!TIMEOUT_ENV:-}"
+[[ -z "$TIMEOUT_SECONDS" ]] && TIMEOUT_SECONDS=240
+[[ -z "$MAX_RETRIES" ]] && MAX_RETRIES="${!RETRIES_ENV:-}"
+[[ -z "$MAX_RETRIES" ]] && MAX_RETRIES=2
+
 if [[ ! -f "$CONDA_SH" ]]; then
   echo "Conda activation script not found: $CONDA_SH" >&2
   exit 1
@@ -109,18 +155,19 @@ source "$CONDA_SH"
 conda activate "$CONDA_ENV"
 cd "$PROJECT_DIR"
 
-if [[ -z "${ZHIPUAI_API_KEY:-}" ]]; then
-  echo "[1/5] Waiting for ZHIPUAI_API_KEY input..." >&2
-  read -rsp "ZHIPUAI_API_KEY: " ZHIPUAI_API_KEY
-  export ZHIPUAI_API_KEY
+if [[ -z "${!API_KEY_ENV:-}" ]]; then
+  echo "[1/5] Waiting for $API_KEY_ENV input..." >&2
+  read -rsp "$API_KEY_ENV: " API_KEY_VALUE
+  export "$API_KEY_ENV=$API_KEY_VALUE"
   echo
 else
-  echo "[1/5] ZHIPUAI_API_KEY is already set." >&2
+  echo "[1/5] $API_KEY_ENV is already set." >&2
 fi
 
 export OPENMC_AGENT_MODEL="$MODEL"
-export ZHIPUAI_TIMEOUT_SECONDS="$TIMEOUT_SECONDS"
-export ZHIPUAI_MAX_RETRIES="$MAX_RETRIES"
+export OPENMC_AGENT_STREAM="$STREAM"
+export "$TIMEOUT_ENV=$TIMEOUT_SECONDS"
+export "$RETRIES_ENV=$MAX_RETRIES"
 
 cmd=(python -m openmc_agent.inspect --plan --verbose --model "$MODEL" --output-dir "$OUTPUT_DIR")
 
@@ -143,8 +190,13 @@ else
 fi
 
 echo "[2/5] Conda environment activated: $CONDA_ENV" >&2
-echo "[3/5] Running OpenMC Agent with model: $MODEL" >&2
-echo "      Zhipu timeout: ${ZHIPUAI_TIMEOUT_SECONDS}s, max retries: ${ZHIPUAI_MAX_RETRIES}" >&2
+echo "[3/5] Running OpenMC Agent with model: $MODEL (provider: $PROVIDER)" >&2
+echo "      $TIMEOUT_ENV=$TIMEOUT_SECONDS s, $RETRIES_ENV=$MAX_RETRIES" >&2
+if [[ "$STREAM" == "1" ]]; then
+  echo "      Streaming: on (OPENMC_AGENT_STREAM=1; pass --no-stream to disable)" >&2
+else
+  echo "      Streaming: off" >&2
+fi
 if [[ -n "$MD_FILE" ]]; then
   echo "[4/5] Input markdown: $MD_FILE" >&2
 else

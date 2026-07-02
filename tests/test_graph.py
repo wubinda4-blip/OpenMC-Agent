@@ -6,16 +6,23 @@ from openmc_agent.graph import build_graph, build_plan_graph
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.records import load_jsonl_records
 from openmc_agent.schemas import (
+    AssemblySpec,
+    CellSpec,
+    ComplexMaterialSpec,
+    ComplexModelSpec,
     ExecutionCheckSpec,
     GeometrySpec,
+    LatticeSpec,
     MaterialSpec,
     NuclideSpec,
     PinCellSpec,
     PlotSpec,
+    RenderCapabilityReport,
     RunSettingsSpec,
     SettingsSpec,
     SimulationPlan,
     SimulationSpec,
+    UniverseSpec,
 )
 from openmc_agent.tools import ToolResult
 
@@ -401,3 +408,278 @@ def test_plan_graph_includes_expert_feedback_in_generation_prompt(tmp_path: Path
     )
 
     assert state["validation_report"].is_valid is True
+
+
+def test_plan_graph_prompt_includes_capability_consistency_rule(tmp_path: Path) -> None:
+    captured: dict = {}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        captured["requirement"] = requirement
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+    )
+
+    graph.invoke(
+        {
+            "requirement": "建立一个 17x17 组件模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    requirement = captured["requirement"]
+    assert "Capability report consistency rule" in requirement
+    assert 'capability_report.supported_renderer = "none"' in requirement
+    assert "capability_report.is_executable is false" in requirement
+
+
+def test_plan_graph_normalizes_inconsistent_capability_report_from_llm(tmp_path: Path) -> None:
+    """Acceptance: an LLM draft that is non-executable but claims a concrete
+    renderer must not collapse the plan to null. The normalizer relaxes the
+    capability_report, validation passes, and the local assessor has the final
+    word (here: non-executable assembly IR with missing material data)."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from openmc_agent.llm import generate_structured_output, normalize_capability_report
+
+    inconsistent_payload = _json.dumps(
+        {
+            "schema_version": "simulation_plan.v2",
+            "model_spec": None,
+            "complex_model": {
+                "name": "assembly IR",
+                "kind": "assembly",
+                "materials": [
+                    {"id": "fuel", "name": "fuel", "requires_human_confirmation": ["density"]}
+                ],
+            },
+            "capability_report": {
+                "is_executable": False,
+                "supported_renderer": "assembly",
+                "executable_subsystems": ["assemblies"],
+            },
+            "plot_specs": [
+                {"basis": "xy", "width_cm": [2.0, 2.0], "filename": "assembly_xy.png"}
+            ],
+        }
+    )
+
+    class _FakePlanClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=self)
+
+        def create(self, *, model: str, messages: list, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=inconsistent_payload))]
+            )
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        # Mirror the production default: generate_structured_output with the
+        # capability_report normalizer bound.
+        return generate_structured_output(
+            requirement=requirement,
+            schema=schema,
+            model=model,
+            client=_FakePlanClient(),
+            normalizer=normalize_capability_report,
+        )
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个组件模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert state["simulation_plan"] is not None
+    assert state["validation_report"].is_valid is True
+    capability = state["simulation_plan"].capability_report
+    # The local assessor reconciled the report: the LLM's inconsistent draft
+    # (is_executable=false with a concrete renderer) is gone, and the incomplete
+    # assembly IR stays non-executable. Whether the renderer system emits a
+    # review-only skeleton or stops is its concern; the key invariant here is
+    # that the plan did not collapse to null.
+    assert capability.is_executable is False
+    assert capability.renderability in {"none", "skeleton"}
+
+
+def test_plan_graph_renders_skeleton_for_incomplete_assembly_ir(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        assert "OpenMC API context" in requirement
+        assert "Few-shot" in requirement
+        assert schema is SimulationPlan
+        complex_model = ComplexModelSpec(
+            name="assembly IR",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    chemical_formula="UO2",
+                    requires_human_confirmation=["density", "enrichment"],
+                )
+            ],
+            cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+            universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                )
+            ],
+            assemblies=[AssemblySpec(id="assembly", name="assembly", lattice_id="assembly_lattice")],
+        )
+        return StructuredOutputResult(
+            ok=True,
+            value=SimulationPlan(
+                schema_version="simulation_plan.v2",
+                model_spec=None,
+                complex_model=complex_model,
+                capability_report=RenderCapabilityReport(
+                    is_executable=False,
+                    supported_renderer="none",
+                ),
+                plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="assembly_xy.png")],
+            ),
+        )
+
+    def fake_export_xml(model_path: str | Path):
+        calls.append("export_xml")
+        return ToolResult(name="export_xml", ok=True)
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=fake_export_xml,
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        retrieve_docs=lambda requirement: [{"symbol": "openmc.RectLattice", "signature": "()"}],
+        select_examples=lambda requirement: [{"name": "rectangular_assembly_lattice"}],
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 17x17 组件模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    # Skeleton mode: model.py is produced for review, but no export/run happens.
+    assert calls == []
+    assert state["validation_report"].is_valid is True
+    capability = state["simulation_plan"].capability_report
+    assert capability.is_executable is False
+    assert capability.renderability == "skeleton"
+    assert capability.supported_renderer == "assembly"
+    model_path = Path(state["model_path"])
+    assert model_path.exists()
+    model_text = model_path.read_text(encoding="utf-8")
+    assert "NOT EXECUTABLE" in model_text
+    assert "TODO" in model_text
+    # export_to_xml must never be actually called; any mention is in comments only.
+    export_lines = [
+        line for line in model_text.splitlines() if "export_to_xml()" in line
+    ]
+    assert export_lines, "skeleton should explain why export is omitted"
+    assert all(line.lstrip().startswith("#") for line in export_lines)
+    assert (tmp_path / "capability_report.json").exists()
+    assert (tmp_path / "TODO.md").exists()
+    assert state["openmc_api_docs"][0]["symbol"] == "openmc.RectLattice"
+
+
+def test_plan_graph_renders_rectangular_assembly_ir(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        complex_model = ComplexModelSpec(
+            name="2x2 assembly",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="UO2 fuel",
+                    density_unit="g/cm3",
+                    density_value=10.4,
+                    composition=[
+                        NuclideSpec(name="U235", percent=4.95),
+                        NuclideSpec(name="U238", percent=95.05),
+                        NuclideSpec(name="O16", percent=200.0),
+                    ],
+                )
+            ],
+            cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+            universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin", "pin"], ["pin", "pin"]],
+                )
+            ],
+            assemblies=[AssemblySpec(id="assembly", name="assembly", lattice_id="assembly_lattice")],
+        )
+        return StructuredOutputResult(
+            ok=True,
+            value=SimulationPlan(
+                schema_version="simulation_plan.v2",
+                model_spec=None,
+                complex_model=complex_model,
+                capability_report=RenderCapabilityReport(
+                    is_executable=False,
+                    supported_renderer="none",
+                ),
+                plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="assembly_xy.png")],
+            ),
+        )
+
+    def fake_export_xml(model_path: str | Path):
+        calls.append("export_xml")
+        assert "openmc.RectLattice" in Path(model_path).read_text(encoding="utf-8")
+        return ToolResult(name="export_xml", ok=True, returncode=0)
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=fake_export_xml,
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        enable_plots=False,
+        enable_smoke_test=False,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 2x2 组件模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert calls == ["export_xml"]
+    assert state["validation_report"].is_valid is True
+    assert state["simulation_plan"].capability_report.supported_renderer == "assembly"
+    assert Path(state["model_path"]).exists()

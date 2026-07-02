@@ -247,7 +247,7 @@ def test_inspect_requirement_plan_mode_shows_tool_results(tmp_path: Path) -> Non
         "run_geometry_plots",
         "run_smoke_test",
     ]
-    assert "[6] 工具执行结果" in result.transcript
+    assert "[9] 工具执行结果" in result.transcript
     assert "run_smoke_test" in result.transcript
     assert (tmp_path / "transcript.json").exists()
 

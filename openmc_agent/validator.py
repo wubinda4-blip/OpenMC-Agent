@@ -1,4 +1,4 @@
-from openmc_agent.schemas import SimulationSpec, ValidationReport
+from openmc_agent.schemas import SimulationPlan, SimulationSpec, ValidationReport
 
 
 def validate_simulation_spec(spec: SimulationSpec) -> ValidationReport:
@@ -44,6 +44,43 @@ def validate_simulation_spec(spec: SimulationSpec) -> ValidationReport:
         errors.append("inactive must be less than batches")
 
     return ValidationReport(is_valid=not errors, errors=errors, warnings=warnings)
+
+
+def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
+    errors: list[str] = []
+    warnings: list[str] = []
+    suggestions: list[str] = []
+
+    if plan.model_spec is not None:
+        spec_report = validate_simulation_spec(plan.model_spec)
+        errors.extend(spec_report.errors)
+        warnings.extend(spec_report.warnings)
+        suggestions.extend(spec_report.suggestions)
+
+    if plan.model_spec is None and plan.complex_model is None:
+        errors.append("SimulationPlan requires model_spec or complex_model")
+
+    if plan.complex_model is not None and not plan.capability_report.is_executable:
+        warnings.append(
+            "Complex OpenMC IR was generated, but this executor version cannot render it yet."
+        )
+        suggestions.append(
+            "Review complex_model and capability_report before implementing a renderer for this subsystem."
+        )
+
+    if (
+        plan.capability_report.is_executable
+        and plan.model_spec is None
+        and plan.capability_report.supported_renderer not in {"assembly", "triso", "core"}
+    ):
+        errors.append("Executable plans require model_spec or supported_renderer='assembly'/'triso'/'core'")
+
+    return ValidationReport(
+        is_valid=not errors,
+        errors=errors,
+        warnings=warnings,
+        suggestions=suggestions,
+    )
 
 
 def validate_openmc_script(

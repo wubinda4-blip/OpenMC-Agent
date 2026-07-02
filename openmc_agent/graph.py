@@ -2,18 +2,29 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, TypedDict
 
+import functools
+import json
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from openmc_agent.executor import render_openmc_plan_script, render_openmc_script
+from openmc_agent.executor import render_openmc_script
+from openmc_agent.few_shots import select_few_shots
 from openmc_agent.llm import (
     StructuredOutputResult,
     generate_structured_output,
+    normalize_capability_report,
     repair_structured_output,
 )
+from openmc_agent.openmc_api import retrieve_openmc_context
 from openmc_agent.records import append_simulation_record
-from openmc_agent.schemas import SimulationPlan, SimulationSpec, ValidationReport
+from openmc_agent.renderers import choose_renderer
+from openmc_agent.schemas import (
+    RenderCapabilityReport,
+    SimulationPlan,
+    SimulationSpec,
+    ValidationReport,
+)
 from openmc_agent.tools import (
     ToolResult,
     export_xml,
@@ -21,7 +32,11 @@ from openmc_agent.tools import (
     run_geometry_plots,
     run_smoke_test,
 )
-from openmc_agent.validator import validate_openmc_script, validate_simulation_spec
+from openmc_agent.validator import (
+    validate_openmc_script,
+    validate_simulation_plan,
+    validate_simulation_spec,
+)
 
 
 GenerateSpecFn = Callable[..., StructuredOutputResult[SimulationSpec]]
@@ -31,6 +46,8 @@ RepairPlanFn = Callable[..., StructuredOutputResult[SimulationPlan]]
 ExportXmlToolFn = Callable[[str | Path], ToolResult]
 PlotToolFn = Callable[[str | Path], ToolResult]
 SmokeTestToolFn = Callable[[str | Path, SimulationPlan], ToolResult]
+RetrieveOpenMCDocsFn = Callable[[str], list[dict[str, str]]]
+SelectFewShotsFn = Callable[[str], list[dict[str, str]]]
 
 
 class GraphState(TypedDict, total=False):
@@ -49,6 +66,8 @@ class GraphState(TypedDict, total=False):
     tool_results: list[dict[str, Any]]
     expert_feedback: list[str]
     raw_llm_outputs: list[str]
+    openmc_api_docs: list[dict[str, str]]
+    few_shot_examples: list[dict[str, str]]
     verbose: bool
 
 
@@ -91,12 +110,18 @@ def build_graph(
 
 
 def build_plan_graph(
-    generate_plan: GeneratePlanFn = generate_structured_output,
-    repair_plan: RepairPlanFn = repair_structured_output,
+    generate_plan: GeneratePlanFn = functools.partial(
+        generate_structured_output, normalizer=normalize_capability_report
+    ),
+    repair_plan: RepairPlanFn = functools.partial(
+        repair_structured_output, normalizer=normalize_capability_report
+    ),
     *,
     export_xml_tool: ExportXmlToolFn = export_xml,
     plot_tool: PlotToolFn = run_geometry_plots,
     smoke_test_tool: SmokeTestToolFn = run_smoke_test,
+    retrieve_docs: RetrieveOpenMCDocsFn = retrieve_openmc_context,
+    select_examples: SelectFewShotsFn = select_few_shots,
     enable_plots: bool = True,
     enable_smoke_test: bool = True,
     max_retries: int = 3,
@@ -110,8 +135,11 @@ def build_plan_graph(
 
     graph = StateGraph(GraphState)
     graph.add_node("receive_requirement", _receive_requirement)
+    graph.add_node("retrieve_openmc_docs", _make_retrieve_openmc_docs_node(retrieve_docs))
+    graph.add_node("select_few_shots", _make_select_few_shots_node(select_examples))
     graph.add_node("generate_plan", _make_generate_plan_node(generate_plan))
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
+    graph.add_node("assess_capability", _assess_plan_capability)
     graph.add_node("render_plan_script", _render_plan_script)
     graph.add_node(
         "execute_tools",
@@ -127,11 +155,21 @@ def build_plan_graph(
     graph.add_node("save_record", _save_plan_record)
 
     graph.add_edge(START, "receive_requirement")
-    graph.add_edge("receive_requirement", "generate_plan")
+    graph.add_edge("receive_requirement", "retrieve_openmc_docs")
+    graph.add_edge("retrieve_openmc_docs", "select_few_shots")
+    graph.add_edge("select_few_shots", "generate_plan")
     graph.add_edge("generate_plan", "validate_plan")
     graph.add_conditional_edges(
         "validate_plan",
         _make_plan_validation_router(),
+        {
+            "assess": "assess_capability",
+            "stop": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "assess_capability",
+        _make_plan_capability_router(),
         {
             "render": "render_plan_script",
             "stop": "save_record",
@@ -194,6 +232,38 @@ def _make_generate_spec_node(generate_spec: GenerateSpecFn):
     return _generate_spec
 
 
+def _make_retrieve_openmc_docs_node(retrieve_docs: RetrieveOpenMCDocsFn):
+    def _retrieve_openmc_docs(state: GraphState) -> GraphState:
+        if state.get("error"):
+            return {}
+        _progress(state, "retrieve_openmc_docs", "retrieving local OpenMC API context")
+        try:
+            docs = retrieve_docs(state["requirement"])
+        except Exception as exc:
+            _progress(state, "retrieve_openmc_docs", f"failed: {exc}")
+            return {"openmc_api_docs": []}
+        _progress(state, "retrieve_openmc_docs", f"retrieved {len(docs)} API document(s)")
+        return {"openmc_api_docs": docs}
+
+    return _retrieve_openmc_docs
+
+
+def _make_select_few_shots_node(select_examples: SelectFewShotsFn):
+    def _select_few_shots(state: GraphState) -> GraphState:
+        if state.get("error"):
+            return {}
+        _progress(state, "select_few_shots", "selecting modeling few-shot examples")
+        try:
+            examples = select_examples(state["requirement"])
+        except Exception as exc:
+            _progress(state, "select_few_shots", f"failed: {exc}")
+            return {"few_shot_examples": []}
+        _progress(state, "select_few_shots", f"selected {len(examples)} example(s)")
+        return {"few_shot_examples": examples}
+
+    return _select_few_shots
+
+
 def _make_generate_plan_node(generate_plan: GeneratePlanFn):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):
@@ -202,7 +272,7 @@ def _make_generate_plan_node(generate_plan: GeneratePlanFn):
         model = state.get("model", "openai:gpt-4o")
         _progress(state, "generate_plan", f"calling LLM model={model}")
         result = generate_plan(
-            requirement=_requirement_with_expert_feedback(state),
+            requirement=_augmented_plan_requirement(state),
             schema=SimulationPlan,
             model=model,
         )
@@ -218,7 +288,7 @@ def _make_generate_plan_node(generate_plan: GeneratePlanFn):
             state,
             "generate_plan",
             (
-                f"generated SimulationPlan name={result.value.model_spec.name!r}, "
+                f"generated SimulationPlan name={_plan_name(result.value)!r}, "
                 f"plots={len(result.value.plot_specs)}, "
                 f"smoke_test={result.value.execution_check.enabled}"
             ),
@@ -311,7 +381,7 @@ def _make_validate_spec_node(max_retries: int):
 
 def _make_validate_plan_node(max_retries: int):
     def _validate_plan(state: GraphState) -> GraphState:
-        _progress(state, "validate_plan", "validating SimulationPlan.model_spec")
+        _progress(state, "validate_plan", "validating SimulationPlan")
         plan = state.get("simulation_plan")
         retry_count = state.get("retry_count", 0)
         if plan is None:
@@ -320,7 +390,7 @@ def _make_validate_plan_node(max_retries: int):
                 errors=[state.get("error", "SimulationPlan is missing")],
             )
         else:
-            report = validate_simulation_spec(plan.model_spec)
+            report = validate_simulation_plan(plan)
 
         history = list(state.get("retry_history", []))
         history.append(
@@ -330,7 +400,17 @@ def _make_validate_plan_node(max_retries: int):
                 "plan": plan.model_dump(mode="json") if plan is not None else None,
                 "validation_errors": report.errors,
                 "fix_suggestion": (
-                    "Ask the model to repair the plan using validation and execution errors."
+                    (
+                        "Non-executable complex-only plan used a supported_renderer other than "
+                        "'none'; set capability_report.supported_renderer='none' and "
+                        "executable_subsystems=[]."
+                        if any(
+                            "non-executable complex-only plans must use supported_renderer='none'"
+                            in err
+                            for err in report.errors
+                        )
+                        else "Ask the model to repair the plan using validation and execution errors."
+                    )
                     if not report.is_valid and retry_count < max_retries
                     else ""
                 ),
@@ -371,8 +451,22 @@ def _make_plan_validation_router():
     def _route(state: GraphState) -> str:
         report = state.get("validation_report")
         if report is not None and report.is_valid and state.get("simulation_plan") is not None:
-            return "render"
+            return "assess"
         return "stop"
+
+    return _route
+
+
+def _make_plan_capability_router():
+    def _route(state: GraphState) -> str:
+        plan = state.get("simulation_plan")
+        report = state.get("validation_report")
+        if report is None or not report.is_valid or plan is None:
+            return "stop"
+        # skeleton / exportable / runnable all produce a model.py; only 'none' stops.
+        if plan.capability_report.renderability == "none":
+            return "stop"
+        return "render"
 
     return _route
 
@@ -387,6 +481,68 @@ def _make_plan_execution_router(max_retries: int):
         return "save"
 
     return _route
+
+
+def _assess_plan_capability(state: GraphState) -> GraphState:
+    _progress(state, "assess_capability", "checking executor support for structured plan")
+    plan = state.get("simulation_plan")
+    if plan is None:
+        return {}
+
+    capability = _capability_for_plan(plan)
+    updated_plan = plan.model_copy(update={"capability_report": capability})
+    report = state.get("validation_report") or ValidationReport(is_valid=True)
+    warnings = [
+        warning
+        for warning in report.warnings
+        if warning != "Complex OpenMC IR was generated, but this executor version cannot render it yet."
+    ]
+    suggestions = [
+        suggestion
+        for suggestion in report.suggestions
+        if suggestion
+        != "Review complex_model and capability_report before implementing a renderer for this subsystem."
+    ]
+
+    if capability.renderability == "none":
+        message = "; ".join(capability.reasons) or "no renderer can handle this plan"
+        if message not in warnings:
+            warnings.append(message)
+        suggestions.append(
+            "Use complex_model as reviewed IR before adding a renderer for this subsystem."
+        )
+    elif capability.renderability == "skeleton":
+        warnings.append(
+            "Renderer produced a review-only model.py skeleton; the model is NOT executable."
+        )
+        suggestions.append(
+            "Fill the gaps listed in capability_report.json and TODO.md before exporting XML."
+        )
+
+    capability_warnings = [
+        warning for warning in capability.warnings if warning not in warnings
+    ]
+    warnings.extend(capability_warnings)
+
+    updated_report = ValidationReport(
+        is_valid=report.is_valid,
+        errors=report.errors,
+        warnings=warnings,
+        suggestions=suggestions,
+    )
+    _progress(
+        state,
+        "assess_capability",
+        (
+            f"renderer={capability.supported_renderer} "
+            f"renderability={capability.renderability}"
+        ),
+    )
+    return {
+        "simulation_plan": updated_plan,
+        "simulation_spec": updated_plan.model_spec,
+        "validation_report": updated_report,
+    }
 
 
 def _render_script(state: GraphState) -> GraphState:
@@ -418,23 +574,39 @@ def _render_plan_script(state: GraphState) -> GraphState:
     report = state.get("validation_report")
     plan = state.get("simulation_plan")
     if plan is None or report is None or not report.is_valid:
+        _progress(state, "render_plan_script", "skipped: plan is not valid")
         return {}
 
-    script = render_openmc_plan_script(plan)
-    script_report = validate_openmc_script(script, plan.model_spec)
-    if not script_report.is_valid:
-        _progress(state, "render_plan_script", f"failed script validation: {script_report.errors}")
-        return {
-            "validation_report": script_report,
-            "error": "; ".join(script_report.errors),
-        }
+    renderer, capability = choose_renderer(plan)
+    if renderer is None or capability.renderability == "none":
+        _progress(state, "render_plan_script", "skipped: no renderer for this plan")
+        return {}
 
     output_dir = Path(state.get("output_dir", "data/runs"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    result = renderer.render(plan, output_dir)
+    # The authoritative capability report lives on the plan (assess_capability),
+    # so refresh capability_report.json from it to keep sidecars consistent.
+    _write_capability_sidecar(output_dir, plan.capability_report)
+
+    if result.errors:
+        _progress(state, "render_plan_script", f"renderer failed: {result.errors}")
+        return {
+            "validation_report": ValidationReport(
+                is_valid=False,
+                errors=result.errors,
+            ),
+            "error": "; ".join(result.errors),
+        }
+
     model_path = output_dir / "model.py"
-    model_path.write_text(script, encoding="utf-8")
-    _progress(state, "render_plan_script", f"wrote {model_path}")
-    return {"script": script, "model_path": str(model_path)}
+    _progress(
+        state,
+        "render_plan_script",
+        f"wrote {model_path} (renderer={result.renderer_name}, "
+        f"renderability={result.renderability})",
+    )
+    return {"script": result.script, "model_path": str(model_path)}
 
 
 def _make_execute_tools_node(
@@ -451,8 +623,26 @@ def _make_execute_tools_node(
         if plan is None or not model_path:
             return {}
 
+        renderability = plan.capability_report.renderability
         output_dir = Path(state.get("output_dir", "data/runs"))
         results: list[ToolResult] = []
+
+        if renderability not in {"exportable", "runnable"}:
+            _progress(
+                state,
+                "execute_tools",
+                (
+                    f"skipping export/run: renderability={renderability}, "
+                    "model is not executable"
+                ),
+            )
+            report = _execution_report_from_tool_results(results)
+            return {
+                "tool_results": [result.model_dump() for result in results],
+                "validation_report": report,
+                "error": "",
+            }
+
         _progress(state, "execute_tools", "running export_xml")
         export_result = export_xml_tool(Path(model_path))
         results.append(export_result)
@@ -465,7 +655,12 @@ def _make_execute_tools_node(
         elif not enable_plots:
             _progress(state, "execute_tools", "skipping run_geometry_plots because --plot is disabled")
 
-        if enable_smoke_test and export_result.ok and plan.execution_check.enabled:
+        if (
+            enable_smoke_test
+            and export_result.ok
+            and renderability == "runnable"
+            and plan.execution_check.enabled
+        ):
             settings = plan.execution_check.settings
             _progress(
                 state,
@@ -480,6 +675,12 @@ def _make_execute_tools_node(
             _progress(state, "execute_tools", f"run_smoke_test ok={results[-1].ok}")
         elif not enable_smoke_test:
             _progress(state, "execute_tools", "skipping run_smoke_test because --smoke-test is disabled")
+        elif renderability != "runnable":
+            _progress(
+                state,
+                "execute_tools",
+                f"skipping run_smoke_test: renderability={renderability} (not runnable)",
+            )
 
         report = _execution_report_from_tool_results(results)
         _progress(
@@ -574,6 +775,7 @@ def _save_plan_record(state: GraphState) -> GraphState:
         simulation_spec=plan.model_spec if plan is not None else None,
         validation_report=report,
         path=records_path,
+        simulation_plan=plan.model_dump(mode="json") if plan is not None else None,
         model_path=state.get("model_path"),
         error=state.get("error", ""),
         retry_count=state.get("retry_count", 0),
@@ -616,6 +818,55 @@ def _build_reflection_requirement(state: GraphState) -> str:
     )
 
 
+def _capability_for_plan(plan: SimulationPlan) -> RenderCapabilityReport:
+    """Use the renderer registry as the single source of truth for capability."""
+    _renderer, report = choose_renderer(plan)
+    # Merge plan-level human confirmations (e.g. complex_model.requires_human_confirmation)
+    # on top of the renderer-level report so the sidecar records everything.
+    confirmations = list(
+        dict.fromkeys(
+            [
+                *report.required_human_confirmations,
+                *_plan_human_confirmations(plan),
+            ]
+        )
+    )
+    return report.model_copy(update={"required_human_confirmations": confirmations})
+
+
+def _write_capability_sidecar(output_dir: Path, capability: RenderCapabilityReport) -> None:
+    """Keep capability_report.json consistent with the authoritative plan report."""
+    path = output_dir / "capability_report.json"
+    path.write_text(
+        json.dumps(capability.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _plan_human_confirmations(plan: SimulationPlan) -> list[str]:
+    confirmations = list(plan.capability_report.required_human_confirmations)
+    model = plan.complex_model
+    if model is None:
+        return confirmations
+    confirmations.extend(model.requires_human_confirmation)
+    for material in model.materials:
+        confirmations.extend(
+            f"material {material.id}: {item}"
+            for item in material.requires_human_confirmation
+        )
+    for triso in model.trisos:
+        confirmations.extend(
+            f"TRISO {triso.id}: {item}"
+            for item in triso.requires_human_confirmation
+        )
+    for pebble in model.pebbles:
+        confirmations.extend(
+            f"pebble {pebble.id}: {item}"
+            for item in pebble.requires_human_confirmation
+        )
+    return list(dict.fromkeys(confirmations))
+
+
 def _requirement_with_expert_feedback(state: GraphState) -> str:
     requirement = state["requirement"]
     feedback = state.get("expert_feedback", [])
@@ -626,6 +877,69 @@ def _requirement_with_expert_feedback(state: GraphState) -> str:
         "Human expert feedback that should guide the structured SimulationPlan:\n"
         + "\n".join(f"- {item}" for item in feedback)
     )
+
+
+def _augmented_plan_requirement(state: GraphState) -> str:
+    base = _requirement_with_expert_feedback(state)
+    docs = state.get("openmc_api_docs", [])
+    few_shots = state.get("few_shot_examples", [])
+    parts = [
+        base,
+        "",
+        "OpenMC API context retrieved from local Python introspection and official docs references:",
+        _compact_context(docs),
+        "",
+        "Few-shot modeling patterns to follow when relevant:",
+        _compact_context(few_shots),
+        "",
+        "For complex assemblies, full cores, reflectors, control rods, TRISO particles, "
+        "fuel pebbles, or pebble beds, use schema_version='simulation_plan.v2' and fill "
+        "complex_model. Set capability_report only according to executor support: "
+        "supported_renderer='assembly' for complete rectangular assembly lattices, "
+        "supported_renderer='triso' for complete TRISO/pebble unit models, "
+        "supported_renderer='core' for complete rectangular core lattices, "
+        "supported_renderer='pin_cell' for executable pin-cell model_spec, otherwise "
+        "supported_renderer='none' and is_executable=false. "
+        "Do not invent material composition, density, temperature, or nuclear data. Put missing "
+        "facts in requires_human_confirmation and expert_assumptions.",
+        "",
+        "Capability report consistency rule:\n\n"
+        "If the output is a complex-only plan:\n"
+        "- model_spec is null\n"
+        "- complex_model is not null\n\n"
+        "and the plan is not executable:\n"
+        "- capability_report.is_executable is false\n\n"
+        "then you MUST set:\n"
+        '- capability_report.supported_renderer = "none"\n'
+        "- capability_report.executable_subsystems = []\n\n"
+        'Do not set supported_renderer to "assembly", "rect_assembly", "complex", "skeleton", '
+        'or any renderer name unless is_executable is true and that renderer is actually '
+        "supported by the current executor.",
+    ]
+    return "\n".join(parts)
+
+
+def _compact_context(items: list[dict[str, str]], *, limit: int = 6) -> str:
+    if not items:
+        return "[]"
+    compact = []
+    for item in items[:limit]:
+        compact.append(
+            {
+                key: _truncate_text(str(value), 700)
+                for key, value in item.items()
+                if key in {"symbol", "signature", "doc_summary", "official_url", "name", "structured_outline"}
+            }
+        )
+    return str(compact)
+
+
+def _plan_name(plan: SimulationPlan) -> str:
+    if plan.model_spec is not None:
+        return plan.model_spec.name
+    if plan.complex_model is not None:
+        return plan.complex_model.name
+    return "unknown"
 
 
 def _append_raw_llm_output(state: GraphState, raw_response: str) -> list[str]:

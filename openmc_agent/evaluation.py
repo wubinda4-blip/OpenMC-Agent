@@ -231,7 +231,16 @@ def _run_simulation_case(
         }
     )
     report = state.get("validation_report")
-    completed = bool(report and report.is_valid and state.get("model_path"))
+    if use_plan:
+        plan = state.get("simulation_plan")
+        completed = bool(
+            report
+            and report.is_valid
+            and plan is not None
+            and (state.get("model_path") or not plan.capability_report.is_executable)
+        )
+    else:
+        completed = bool(report and report.is_valid and state.get("model_path"))
     return EvaluationResult(
         case=case,
         completed=completed,
