@@ -45,3 +45,6 @@ statepoint.*.h5
 summary.h5
 tallies.out
 *.xml.gz
+
+# Manual agent run outputs (regenerable via scripts/run_inspect.sh)
+data/runs/manual/
