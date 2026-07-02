@@ -27,12 +27,16 @@ from openmc_agent.renderers.skeleton import (
     emit_skeleton,
 )
 from openmc_agent.schemas import (
+    ComplexMaterialSpec,
     ComplexModelSpec,
     LatticeSpec,
     RenderCapabilityReport,
     SimulationPlan,
 )
 from openmc_agent.validator import validate_openmc_script
+
+
+_COMPOSITE_REGION_SURFACE_KINDS = {"rectangular_prism", "hexagonal_prism"}
 
 
 class RectAssemblyRenderer(BaseRenderer):
@@ -145,6 +149,12 @@ def _assembly_diagnostics(
 
     material_ids = {material.id for material in model.materials}
     region_ids = {region.id for region in model.regions}
+    composite_region_ids = {
+        surface.id
+        for surface in model.surfaces
+        if surface.kind in _COMPOSITE_REGION_SURFACE_KINDS
+    }
+    region_like_ids = region_ids | composite_region_ids
     surface_ids = {surface.id for surface in model.surfaces}
     universe_ids = {universe.id for universe in model.universes}
     cell_ids = {cell.id for cell in model.cells}
@@ -176,7 +186,7 @@ def _assembly_diagnostics(
 
     # Check 5: cell.region_id references an existing region (when set).
     for cell in model.cells:
-        if cell.region_id is not None and cell.region_id not in region_ids:
+        if cell.region_id is not None and cell.region_id not in region_like_ids:
             errors.append(
                 f"cell {cell.id!r} references missing region {cell.region_id!r}"
             )
@@ -199,16 +209,23 @@ def _assembly_diagnostics(
     # Universe -> cell references.
     for universe in model.universes:
         missing = [cid for cid in universe.cell_ids if cid not in cell_ids]
-        if missing:
+        if not missing:
+            continue
+        if universe.id in deps.universe_ids:
             errors.append(
                 f"universe {universe.id!r} references missing cells: {missing}"
+            )
+        else:
+            warnings.append(
+                f"inactive candidate universe {universe.id!r} references missing "
+                f"cells: {missing}; this only blocks models that use that universe"
             )
 
     # Existing reflector / control-rod reference checks.
     for reflector in model.reflectors:
         if reflector.material_id not in material_ids:
             errors.append(f"reflector {reflector.id!r} references missing material")
-        if reflector.region_id is None or reflector.region_id not in region_ids:
+        if reflector.region_id is None or reflector.region_id not in region_like_ids:
             errors.append(f"reflector {reflector.id!r} requires a valid region_id")
 
     lattice_universe_ids = {
@@ -224,7 +241,7 @@ def _assembly_diagnostics(
             )
         if (
             control_rod.guide_tube_region_id is not None
-            and control_rod.guide_tube_region_id not in region_ids
+            and control_rod.guide_tube_region_id not in region_like_ids
         ):
             errors.append(
                 f"control rod {control_rod.id!r} references missing guide_tube_region_id"
@@ -384,6 +401,7 @@ def _material_completeness_messages(
     for material in model.materials:
         missing_density = material.density_unit is None or material.density_value is None
         missing_composition = not material.composition and not material.chemical_formula
+        mixed_percent_types = _material_has_mixed_percent_types(material)
         if material.id in deps.material_ids:
             if missing_density:
                 errors.append(f"material {material.id!r} is missing density")
@@ -391,7 +409,17 @@ def _material_completeness_messages(
                 errors.append(
                     f"material {material.id!r} is missing composition or chemical_formula"
                 )
-        elif missing_density or missing_composition:
+            if mixed_percent_types and material.chemical_formula is None:
+                errors.append(
+                    f"material {material.id!r} mixes atom and weight percents "
+                    "without chemical_formula fallback"
+                )
+            elif mixed_percent_types:
+                warnings.append(
+                    f"material {material.id!r} mixes atom and weight percents; "
+                    "using chemical_formula fallback"
+                )
+        elif missing_density or missing_composition or mixed_percent_types:
             # Candidate / orphan material: gaps only warn, never block.
             suffix = "; this only blocks models that use its universe"
             if missing_density:
@@ -403,7 +431,17 @@ def _material_completeness_messages(
                     f"inactive candidate material {material.id!r} is missing "
                     f"composition or chemical_formula{suffix}"
                 )
+            if mixed_percent_types:
+                warnings.append(
+                    f"inactive candidate material {material.id!r} mixes atom and "
+                    f"weight percents{suffix}"
+                )
     return warnings
+
+
+def _material_has_mixed_percent_types(material: ComplexMaterialSpec) -> bool:
+    percent_types = {component.percent_type for component in material.composition}
+    return len(percent_types) > 1
 
 
 def _material_confirmations(

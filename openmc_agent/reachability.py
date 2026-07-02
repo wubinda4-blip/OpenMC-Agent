@@ -65,6 +65,11 @@ def collect_active_dependencies_from_model(model: ComplexModelSpec) -> ActiveDep
     universes_by_id = {universe.id: universe for universe in model.universes}
     lattices_by_id = {lattice.id: lattice for lattice in model.lattices}
     regions_by_id = {region.id: region for region in model.regions}
+    composite_region_surface_ids = {
+        surface.id
+        for surface in model.surfaces
+        if surface.kind in {"rectangular_prism", "hexagonal_prism"}
+    }
 
     visited_lattices: set[str] = set()
     visited_universes: set[str] = set()
@@ -111,6 +116,9 @@ def collect_active_dependencies_from_model(model: ComplexModelSpec) -> ActiveDep
         if cell.region_id and cell.region_id in regions_by_id:
             deps.region_ids.add(cell.region_id)
             deps.surface_ids.update(regions_by_id[cell.region_id].surface_ids)
+        elif cell.region_id and cell.region_id in composite_region_surface_ids:
+            deps.region_ids.add(cell.region_id)
+            deps.surface_ids.add(cell.region_id)
         if cell.fill_type == "material" and cell.fill_id:
             deps.material_ids.add(cell.fill_id)
         elif cell.fill_type == "universe" and cell.fill_id:
@@ -142,6 +150,9 @@ def collect_active_dependencies_from_model(model: ComplexModelSpec) -> ActiveDep
         if reflector.region_id and reflector.region_id in regions_by_id:
             deps.region_ids.add(reflector.region_id)
             deps.surface_ids.update(regions_by_id[reflector.region_id].surface_ids)
+        elif reflector.region_id and reflector.region_id in composite_region_surface_ids:
+            deps.region_ids.add(reflector.region_id)
+            deps.surface_ids.add(reflector.region_id)
     for control_rod in model.control_rods:
         if control_rod.absorber_material_id:
             deps.material_ids.add(control_rod.absorber_material_id)
@@ -153,6 +164,12 @@ def collect_active_dependencies_from_model(model: ComplexModelSpec) -> ActiveDep
             deps.surface_ids.update(
                 regions_by_id[control_rod.guide_tube_region_id].surface_ids
             )
+        elif (
+            control_rod.guide_tube_region_id is not None
+            and control_rod.guide_tube_region_id in composite_region_surface_ids
+        ):
+            deps.region_ids.add(control_rod.guide_tube_region_id)
+            deps.surface_ids.add(control_rod.guide_tube_region_id)
 
     all_material_ids = {material.id for material in model.materials}
     all_universe_ids = {universe.id for universe in model.universes}

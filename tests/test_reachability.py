@@ -218,6 +218,30 @@ def test_inactive_candidate_material_missing_is_warning_only() -> None:
     assert "borosilicate_glass" in blob
 
 
+def test_inactive_universe_missing_cell_is_warning_only() -> None:
+    """An unused LLM root universe may reference a synthetic cell the executor rebuilds."""
+    plan = _assembly_plan(
+        pattern=_DEFAULT_PATTERN,
+        materials=_active_complete_materials(),
+        cells=_fuel_guide_cells(),
+        universes=_fuel_guide_universes()
+        + [
+            UniverseSpec(
+                id="assembly_root_universe",
+                name="root universe candidate",
+                cell_ids=["assembly_cell"],
+            )
+        ],
+    )
+
+    capability = RectAssemblyRenderer().can_render(plan)
+
+    assert capability.is_executable is True
+    assert capability.renderability in {"exportable", "runnable"}
+    assert not any("assembly_cell" in reason for reason in capability.reasons)
+    assert any("assembly_cell" in warning for warning in capability.warnings)
+
+
 def test_active_candidate_material_missing_is_blocking() -> None:
     """Once the candidate universe is referenced by the lattice, its material becomes blocking."""
     materials = _active_complete_materials() + [_incomplete_material("borosilicate_glass", "BP glass")]

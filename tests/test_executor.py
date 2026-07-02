@@ -1,4 +1,6 @@
 import openmc
+import pytest
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +13,7 @@ from openmc_agent.executor import (
     render_openmc_script,
     render_openmc_smoke_test_script,
 )
+from openmc_agent.renderers.assembly import RectAssemblyRenderer
 from openmc_agent.schemas import (
     AssemblySpec,
     CellSpec,
@@ -84,6 +87,30 @@ def test_build_openmc_complex_material_from_formula() -> None:
     assert isinstance(material, openmc.Material)
     assert material.name == "UO2 fuel"
     assert material.density == 10.4
+    assert any(nuclide.name == "U235" for nuclide in material.nuclides)
+
+
+def test_build_openmc_complex_material_uses_formula_for_mixed_percent_types() -> None:
+    spec = ComplexMaterialSpec(
+        id="fuel",
+        name="UO2 fuel",
+        density_unit="g/cm3",
+        density_value=10.4,
+        composition=[
+            NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+            NuclideSpec(name="U238", percent=96.9, percent_type="wo"),
+            NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+        ],
+        chemical_formula="UO2",
+        enrichment_percent=3.1,
+        enrichment_target="U235",
+        enrichment_type="wo",
+    )
+
+    material = build_openmc_complex_material(spec)
+
+    assert material.name == "UO2 fuel"
+    assert {nuclide.percent_type for nuclide in material.nuclides} == {"ao"}
     assert any(nuclide.name == "U235" for nuclide in material.nuclides)
 
 
@@ -302,6 +329,242 @@ def test_render_openmc_plan_script_for_rectangular_assembly_exports_xml(
     assert (tmp_path / "geometry.xml").exists()
     assert (tmp_path / "settings.xml").exists()
     assert (tmp_path / "plots.xml").exists()
+
+
+def test_render_assembly_with_mixed_uo2_percent_types_plots(
+    tmp_path: Path,
+) -> None:
+    openmc_cli = shutil.which("openmc")
+    if openmc_cli is None:
+        pytest.skip("openmc executable is not available")
+
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="1x1 assembly with enriched UO2",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="uo2",
+                    name="UO2 fuel",
+                    density_unit="g/cm3",
+                    density_value=10.4,
+                    composition=[
+                        NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+                        NuclideSpec(name="U238", percent=96.9, percent_type="wo"),
+                        NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+                    ],
+                    chemical_formula="UO2",
+                    enrichment_percent=3.1,
+                    enrichment_target="U235",
+                    enrichment_type="wo",
+                )
+            ],
+            cells=[
+                CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="uo2")
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin universe", cell_ids=["fuel_cell"])
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="1x1 rectangular lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                )
+            ],
+            assemblies=[
+                AssemblySpec(
+                    id="assembly",
+                    name="root assembly",
+                    lattice_id="assembly_lattice",
+                    boundary="reflective",
+                )
+            ],
+            settings=RunSettingsSpec(batches=6, inactive=1, particles=50),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="assembly",
+            executable_subsystems=["rect_lattice", "assembly"],
+        ),
+        plot_specs=[
+            PlotSpec(
+                basis="xy",
+                width_cm=(1.26, 1.26),
+                pixels=(100, 100),
+                filename="assembly_xy.png",
+            )
+        ],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "add_elements_from_formula('UO2', enrichment=3.1)" in script
+    assert "add_nuclide('U235', 3.1, 'wo')" not in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    plot_result = subprocess.run(
+        [openmc_cli, "-p"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert plot_result.returncode == 0, plot_result.stderr or plot_result.stdout
+
+
+def test_render_assembly_accepts_composite_prism_region_ids(
+    tmp_path: Path,
+) -> None:
+    """LLM plans may use rectangular_prism surfaces directly as region ids."""
+    spec = ComplexModelSpec(
+        name="2x2 assembly with composite prism regions",
+        kind="assembly",
+        materials=[
+            ComplexMaterialSpec(
+                id="fuel",
+                name="UO2 fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[
+                    NuclideSpec(name="U235", percent=4.95),
+                    NuclideSpec(name="U238", percent=95.05),
+                    NuclideSpec(name="O16", percent=200.0),
+                ],
+            ),
+            ComplexMaterialSpec(
+                id="water",
+                name="Water",
+                density_unit="g/cm3",
+                density_value=0.743,
+                composition=[
+                    NuclideSpec(name="H1", percent=2.0),
+                    NuclideSpec(name="O16", percent=1.0),
+                ],
+            ),
+        ],
+        surfaces=[
+            SurfaceSpec(id="fuel_r", kind="zcylinder", parameters={"r": 0.3}),
+            SurfaceSpec(
+                id="pin_cell_boundary",
+                kind="rectangular_prism",
+                parameters={"xmin": -0.63, "xmax": 0.63, "ymin": -0.63, "ymax": 0.63},
+            ),
+            SurfaceSpec(
+                id="assembly_boundary",
+                kind="rectangular_prism",
+                parameters={"xmin": -1.26, "xmax": 1.26, "ymin": -1.26, "ymax": 1.26},
+                boundary_type="reflective",
+            ),
+        ],
+        regions=[
+            RegionSpec(id="fuel_region", expression="-fuel_r", surface_ids=["fuel_r"]),
+            RegionSpec(
+                id="moderator_region",
+                expression="+fuel_r & pin_cell_boundary",
+                surface_ids=["fuel_r", "pin_cell_boundary"],
+            ),
+        ],
+        cells=[
+            CellSpec(
+                id="fuel_cell",
+                name="fuel",
+                region_id="fuel_region",
+                fill_type="material",
+                fill_id="fuel",
+            ),
+            CellSpec(
+                id="moderator_cell",
+                name="moderator",
+                region_id="moderator_region",
+                fill_type="material",
+                fill_id="water",
+            ),
+            CellSpec(
+                id="assembly_cell",
+                name="assembly root",
+                region_id="assembly_boundary",
+                fill_type="lattice",
+                fill_id="assembly_lattice",
+            ),
+        ],
+        universes=[
+            UniverseSpec(id="pin", name="pin universe", cell_ids=["fuel_cell", "moderator_cell"]),
+            UniverseSpec(id="root_universe", name="root", cell_ids=["assembly_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="2x2 rectangular lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[
+                    ["pin", "pin"],
+                    ["pin", "pin"],
+                ],
+            )
+        ],
+        assemblies=[
+            AssemblySpec(
+                id="assembly",
+                name="root assembly",
+                lattice_id="assembly_lattice",
+                boundary="reflective",
+            )
+        ],
+        settings=RunSettingsSpec(batches=6, inactive=1, particles=50),
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        complex_model=spec,
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="assembly",
+            executable_subsystems=["rect_lattice", "assembly"],
+        ),
+        plot_specs=[
+            PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="assembly_xy.png")
+        ],
+    )
+
+    capability = RectAssemblyRenderer().can_render(plan)
+    assert capability.renderability in {"exportable", "runnable"}
+    assert not any("assembly_boundary" in reason for reason in capability.reasons)
+
+    script = render_openmc_assembly_script(spec)
+    assert "openmc.model.RectangularPrism" in script
+    assert "width=1.26" in script
+    assert "regions['assembly_boundary'] = surface_assembly_boundary" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (tmp_path / "geometry.xml").exists()
 
 
 def test_render_assembly_with_reflector_and_control_rod_exports_xml(

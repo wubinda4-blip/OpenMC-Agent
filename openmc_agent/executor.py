@@ -60,6 +60,11 @@ def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
         raise ValueError(f"material {spec.id!r} is missing density")
     if not spec.composition and not spec.chemical_formula:
         raise ValueError(f"material {spec.id!r} is missing composition or chemical_formula")
+    if _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
+        raise ValueError(
+            f"material {spec.id!r} mixes atom and weight percents without "
+            "chemical_formula fallback"
+        )
 
     material = openmc.Material(name=spec.name)
     material.set_density(spec.density_unit, spec.density_value)
@@ -69,7 +74,12 @@ def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
     if spec.volume_cm3 is not None:
         material.volume = spec.volume_cm3
 
-    if spec.composition:
+    if _use_chemical_formula_for_complex_material(spec):
+        material.add_elements_from_formula(
+            spec.chemical_formula,
+            **_complex_enrichment_kwargs(spec),
+        )
+    elif spec.composition:
         for component in spec.composition:
             if component.kind == "element":
                 material.add_element(
@@ -84,11 +94,6 @@ def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
                     component.percent,
                     component.percent_type,
                 )
-    elif spec.chemical_formula is not None:
-        material.add_elements_from_formula(
-            spec.chemical_formula,
-            **_complex_enrichment_kwargs(spec),
-        )
 
     for sab_name in spec.sab:
         material.add_s_alpha_beta(sab_name)
@@ -574,8 +579,15 @@ def _validate_renderable_assembly(spec: ComplexModelSpec, deps: ActiveDependenci
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
             raise ValueError(f"material {material.id!r} is missing composition or chemical_formula")
+        if _material_has_mixed_percent_types(material) and material.chemical_formula is None:
+            raise ValueError(
+                f"material {material.id!r} mixes atom and weight percents without "
+                "chemical_formula fallback"
+            )
     cell_ids = {cell.id for cell in spec.cells}
     for universe in spec.universes:
+        if universe.id not in deps.universe_ids:
+            continue
         missing = [cell_id for cell_id in universe.cell_ids if cell_id not in cell_ids]
         if missing:
             raise ValueError(f"universe {universe.id!r} references missing cells: {missing}")
@@ -613,6 +625,24 @@ def _material_is_fully_defined(material: ComplexMaterialSpec) -> bool:
     return has_density and has_composition
 
 
+def _material_has_mixed_percent_types(material: ComplexMaterialSpec) -> bool:
+    percent_types = {component.percent_type for component in material.composition}
+    return len(percent_types) > 1
+
+
+def _use_chemical_formula_for_complex_material(material: ComplexMaterialSpec) -> bool:
+    """Prefer formula rendering when explicit components are not OpenMC-safe.
+
+    OpenMC rejects a material card that mixes ``ao`` and ``wo`` entries. LLMs
+    commonly describe enriched UO2 as U isotopes in weight percent plus oxygen
+    stoichiometry in atom ratio. When a chemical formula is available, render
+    the formula with enrichment instead of emitting an invalid mixed card.
+    """
+    if material.chemical_formula is None:
+        return False
+    return not material.composition or _material_has_mixed_percent_types(material)
+
+
 def _renderable_assembly_materials(
     spec: ComplexModelSpec,
     deps: ActiveDependencies,
@@ -645,6 +675,11 @@ def _validate_renderable_triso(spec: ComplexModelSpec) -> None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
             raise ValueError(f"material {material.id!r} is missing composition or chemical_formula")
+        if _material_has_mixed_percent_types(material) and material.chemical_formula is None:
+            raise ValueError(
+                f"material {material.id!r} mixes atom and weight percents without "
+                "chemical_formula fallback"
+            )
 
     triso = spec.trisos[0]
     missing_layers = [
@@ -686,6 +721,11 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
             raise ValueError(f"material {material.id!r} is missing composition or chemical_formula")
+        if _material_has_mixed_percent_types(material) and material.chemical_formula is None:
+            raise ValueError(
+                f"material {material.id!r} mixes atom and weight percents without "
+                "chemical_formula fallback"
+            )
     cell_ids = {cell.id for cell in spec.cells}
     for universe in spec.universes:
         missing = [cell_id for cell_id in universe.cell_ids if cell_id not in cell_ids]
@@ -724,7 +764,13 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
         lines.append(f"{variable_name}.depletable = {spec.depletable!r}")
     if spec.volume_cm3 is not None:
         lines.append(f"{variable_name}.volume = {spec.volume_cm3!r}")
-    if spec.composition:
+    if _use_chemical_formula_for_complex_material(spec):
+        lines.append(
+            f"{variable_name}.add_elements_from_formula("
+            f"{spec.chemical_formula!r}"
+            f"{enrichment_args})"
+        )
+    elif spec.composition:
         for component in spec.composition:
             if component.kind == "element":
                 lines.append(
@@ -737,12 +783,6 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
                     f"{variable_name}.add_nuclide("
                     f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
                 )
-    elif spec.chemical_formula is not None:
-        lines.append(
-            f"{variable_name}.add_elements_from_formula("
-            f"{spec.chemical_formula!r}"
-            f"{enrichment_args})"
-        )
     for sab_name in spec.sab:
         lines.append(f"{variable_name}.add_s_alpha_beta({sab_name!r})")
     lines.append(f"materials_by_id[{spec.id!r}] = {variable_name}")
@@ -809,6 +849,8 @@ def _render_surface_definitions(surface_specs: list[SurfaceSpec]) -> str:
         variable_name = _safe_name("surface", surface.id)
         lines.append(f"{variable_name} = {_surface_constructor(surface)}")
         lines.append(f"surfaces[{surface.id!r}] = {variable_name}")
+        if surface.kind in {"rectangular_prism", "hexagonal_prism"}:
+            lines.append(f"regions[{surface.id!r}] = {variable_name}")
     return "\n".join(lines) if lines else "# No explicit surfaces were provided."
 
 
@@ -816,6 +858,15 @@ def _surface_constructor(surface: SurfaceSpec) -> str:
     params = dict(surface.parameters)
     if surface.boundary_type is not None:
         params["boundary_type"] = surface.boundary_type
+    if surface.kind == "rectangular_prism":
+        return _composite_surface_constructor(
+            "openmc.model.RectangularPrism",
+            _rectangular_prism_kwargs(params),
+        )
+    if surface.kind == "hexagonal_prism":
+        if "pitch" in params and "edge_length" not in params:
+            params["edge_length"] = params.pop("pitch")
+        return _composite_surface_constructor("openmc.model.HexagonalPrism", params)
     constructor_by_kind = {
         "xplane": "openmc.XPlane",
         "yplane": "openmc.YPlane",
@@ -831,6 +882,101 @@ def _surface_constructor(surface: SurfaceSpec) -> str:
         raise ValueError(f"surface kind {surface.kind!r} is not supported by assembly renderer")
     args = ", ".join(f"{key}={value!r}" for key, value in sorted(params.items()))
     return f"{constructor}({args})"
+
+
+def _composite_surface_constructor(constructor: str, params: dict[str, object]) -> str:
+    args = ", ".join(f"{key}={value!r}" for key, value in sorted(params.items()))
+    return f"(-{constructor}({args}))"
+
+
+def _rectangular_prism_kwargs(params: dict[str, object]) -> dict[str, object]:
+    """Normalize bounded rectangular-prism params to OpenMC's width/height API."""
+    if "width" in params and "height" in params:
+        return params
+
+    intervals = {
+        "x": _pop_interval(params, ("xmin", "x_min"), ("xmax", "x_max")),
+        "y": _pop_interval(params, ("ymin", "y_min"), ("ymax", "y_max")),
+        "z": _pop_interval(params, ("zmin", "z_min"), ("zmax", "z_max")),
+    }
+    present_axes = {axis: value for axis, value in intervals.items() if value is not None}
+    if not present_axes:
+        return params
+    if len(present_axes) != 2:
+        raise ValueError(
+            "rectangular_prism requires exactly two bounded axes "
+            "(for example xmin/xmax/ymin/ymax)"
+        )
+
+    axes = set(present_axes)
+    if axes == {"x", "y"}:
+        prism_axis = "z"
+        first_axis, second_axis = "x", "y"
+    elif axes == {"x", "z"}:
+        prism_axis = "y"
+        first_axis, second_axis = "x", "z"
+    elif axes == {"y", "z"}:
+        prism_axis = "x"
+        first_axis, second_axis = "y", "z"
+    else:
+        raise ValueError(f"unsupported rectangular_prism axes: {sorted(axes)}")
+
+    axis_hint = params.pop("axis", None)
+    if axis_hint is not None and axis_hint != prism_axis:
+        raise ValueError(
+            f"rectangular_prism axis={axis_hint!r} conflicts with "
+            f"{sorted(axes)} bounds"
+        )
+
+    first_min, first_max = present_axes[first_axis]
+    second_min, second_max = present_axes[second_axis]
+    params["axis"] = prism_axis
+    params["height"] = second_max - second_min
+    params["origin"] = (
+        (first_min + first_max) / 2.0,
+        (second_min + second_max) / 2.0,
+    )
+    params["width"] = first_max - first_min
+    return params
+
+
+def _pop_interval(
+    params: dict[str, object],
+    min_keys: tuple[str, ...],
+    max_keys: tuple[str, ...],
+) -> tuple[float, float] | None:
+    lower = _pop_any(params, min_keys)
+    upper = _pop_any(params, max_keys)
+    if lower is None and upper is None:
+        return None
+    if lower is None:
+        upper_value = _as_float(upper)
+        lower_value = -upper_value
+    elif upper is None:
+        lower_value = _as_float(lower)
+        upper_value = -lower_value
+    else:
+        lower_value = _as_float(lower)
+        upper_value = _as_float(upper)
+    if upper_value <= lower_value:
+        raise ValueError(
+            f"rectangular_prism bound max must exceed min, got {lower_value}..{upper_value}"
+        )
+    return lower_value, upper_value
+
+
+def _pop_any(params: dict[str, object], keys: tuple[str, ...]) -> object | None:
+    for key in keys:
+        if key in params:
+            return params.pop(key)
+    return None
+
+
+def _as_float(value: object) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"rectangular_prism bound must be numeric, got {value!r}") from exc
 
 
 def _render_region_definitions(region_specs: list[RegionSpec]) -> str:
@@ -858,11 +1004,20 @@ def _region_expression_to_python(expression: str) -> str:
         if token in {"+", "-"}:
             pending_sign = token
             continue
-        if token in {"(", ")", "&", "|", "~"}:
+        if token == "(":
+            if pending_sign:
+                raise ValueError(f"dangling half-space sign {pending_sign!r} in region expression")
+            if _needs_implicit_intersection(tokens):
+                tokens.append("&")
+            tokens.append(token)
+            continue
+        if token in {")", "&", "|", "~"}:
             if pending_sign:
                 raise ValueError(f"dangling half-space sign {pending_sign!r} in region expression")
             tokens.append(token)
             continue
+        if _needs_implicit_intersection(tokens):
+            tokens.append("&")
         if pending_sign:
             tokens.append(f"({pending_sign}surfaces[{token!r}])")
             pending_sign = ""
@@ -871,6 +1026,11 @@ def _region_expression_to_python(expression: str) -> str:
     if pending_sign:
         raise ValueError(f"dangling half-space sign {pending_sign!r} in region expression")
     return " ".join(tokens)
+
+
+def _needs_implicit_intersection(tokens: list[str]) -> bool:
+    """True when MCNP/OpenMC-style adjacency should become Python ``&``."""
+    return bool(tokens) and tokens[-1] not in {"(", "&", "|", "~"}
 
 
 def _render_cell_definitions(cell_specs: list[CellSpec]) -> str:

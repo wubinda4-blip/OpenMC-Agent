@@ -74,6 +74,10 @@ def build_case2_plan() -> SimulationPlan:
                     NuclideSpec(name="U238", percent=96.9, percent_type="wo"),
                     NuclideSpec(name="O16", percent=2.0),
                 ],
+                chemical_formula="UO2",
+                enrichment_percent=3.1,
+                enrichment_target="U235",
+                enrichment_type="wo",
             ),
             ComplexMaterialSpec(
                 id="guide_steel",
