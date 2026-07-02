@@ -101,6 +101,43 @@ python -m openmc_agent.inspect "建立一个 2x2 组件模型" --plan --plot --s
 
 ---
 
+## 组件建模示例
+
+`Input/case2.md` 是一个 15x15 PWR 组件用例：默认组件包含燃料棒和导向管，另有一个候选 burnable poison universe，但默认不插入 lattice。完整流程会让 LLM 生成 `SimulationPlan`，本地 `RectAssemblyRenderer` 再做可达性分析，只渲染默认 lattice 实际使用的材料、cell、universe。
+
+```bash
+scripts/run_inspect.sh \
+  --model deepseek:deepseek-chat \
+  --md-file Input/case2.md \
+  --full \
+  --text
+```
+
+成功时，摘要应显示生成的是可执行 `model.py`，而不是 `Status: NOT EXECUTABLE` 的 skeleton：
+
+```text
+Generated model.py
+Exported XML files: materials.xml, geometry.xml, settings.xml, tallies.xml, plots.xml
+```
+
+这个例子覆盖了几个组件建模中的常见坑：
+
+- **组件 root 自动重建**：渲染器使用 `AssemblySpec.lattice_id` 生成 OpenMC root cell，LLM 输出中未插入的 root universe 不会阻塞默认模型。
+- **候选 BP 不阻塞默认组件**：未插入 lattice 的 `burnable_poison_universe` 可以保留在 IR 中；其缺失的硼硅酸盐玻璃密度/成分只进入 warning 和 `TODO.md`。
+- **UO2 富集材料安全渲染**：若 LLM 给出 `U235/U238` 的 weight percent 和 `O16` 的 atom ratio，渲染器会用 `chemical_formula="UO2"` + `enrichment_percent` 生成 OpenMC 接受的材料卡，避免 `Cannot mix atom and weight percents`。
+- **几何边界兼容**：`rectangular_prism` 可作为复合 region 使用，并转换成当前 OpenMC API 的 `openmc.model.RectangularPrism`。
+
+也可以离线跑固定 case2 回归验证，不调用远程模型：
+
+```bash
+conda activate openmc-env
+python scripts/verify_case2_renderer.py
+```
+
+该脚本会检查默认组件不是 skeleton、候选 BP 材料没有进入 `model.py`、XML 可导出，并执行几何绘图/低粒子 smoke test 工具链。
+
+---
+
 ## 输出
 
 默认写入 `data/runs/<run>/`：
