@@ -56,25 +56,32 @@ def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
 
 
 def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
-    if spec.density_unit is None or spec.density_value is None:
+    if spec.macroscopic is None and (spec.density_unit is None or spec.density_value is None):
         raise ValueError(f"material {spec.id!r} is missing density")
-    if not spec.composition and not spec.chemical_formula:
-        raise ValueError(f"material {spec.id!r} is missing composition or chemical_formula")
-    if _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
+    if spec.macroscopic is None and not spec.composition and not spec.chemical_formula:
+        raise ValueError(
+            f"material {spec.id!r} is missing composition, chemical_formula, or macroscopic"
+        )
+    if spec.macroscopic is not None and spec.density_unit not in {None, "macro"}:
+        raise ValueError(f"material {spec.id!r} uses macroscopic data with non-macro density")
+    if spec.macroscopic is None and _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
         raise ValueError(
             f"material {spec.id!r} mixes atom and weight percents without "
             "chemical_formula fallback"
         )
 
     material = openmc.Material(name=spec.name)
-    material.set_density(spec.density_unit, spec.density_value)
+    if spec.density_unit is not None and spec.density_value is not None:
+        material.set_density(spec.density_unit, spec.density_value)
     if spec.temperature_k is not None:
         material.temperature = spec.temperature_k
     material.depletable = spec.depletable
     if spec.volume_cm3 is not None:
         material.volume = spec.volume_cm3
 
-    if _use_chemical_formula_for_complex_material(spec):
+    if spec.macroscopic is not None:
+        material.add_macroscopic(spec.macroscopic)
+    elif _use_chemical_formula_for_complex_material(spec):
         material.add_elements_from_formula(
             spec.chemical_formula,
             **_complex_enrichment_kwargs(spec),
@@ -148,6 +155,7 @@ cells = [fuel_cell, gap_cell, clad_cell, moderator_cell]
 """
 
     plots_block = _render_plots_block(plot_specs or [])
+    energy_mode_block = _render_optional_energy_mode(settings)
 
     return f'''"""Generated OpenMC pin-cell model for {spec.name}."""
 
@@ -175,6 +183,7 @@ geometry = openmc.Geometry(root_universe)
 
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
+{energy_mode_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -224,6 +233,9 @@ def render_openmc_assembly_script(
         _render_complex_material_definition(material)
         for material in renderable_materials
     )
+    benchmark_imports = _render_benchmark_imports(spec)
+    mgxs_setup = _render_mgxs_setup(spec)
+    cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     surfaces_block = _render_surface_definitions(spec.surfaces)
     regions_block = _render_region_definitions(spec.regions)
     cells_block = _render_cell_definitions(active_cells)
@@ -231,10 +243,12 @@ def render_openmc_assembly_script(
     lattices_block = _render_lattice_definitions(spec.lattices)
     root_block = _render_assembly_root(spec)
     plots_block = _render_plots_block(plot_specs or [])
+    energy_mode_block = _render_optional_energy_mode(settings, spec)
 
     return f'''"""Generated OpenMC assembly model for {spec.name}."""
 
 import openmc
+{benchmark_imports}
 
 
 materials_by_id = {{}}
@@ -246,7 +260,9 @@ lattices = {{}}
 
 {material_blocks}
 
+{mgxs_setup}
 materials = openmc.Materials(list(materials_by_id.values()))
+{cross_sections_assignment}
 
 {surfaces_block}
 
@@ -264,6 +280,7 @@ geometry = openmc.Geometry(root_universe)
 
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
+{energy_mode_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -304,6 +321,9 @@ def render_openmc_triso_script(
         _render_complex_material_definition(material)
         for material in spec.materials
     )
+    benchmark_imports = _render_benchmark_imports(spec)
+    mgxs_setup = _render_mgxs_setup(spec)
+    cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     triso = spec.trisos[0]
     pebble = spec.pebbles[0] if spec.pebbles else None
     packed = spec.packed_spheres[0] if spec.packed_spheres else None
@@ -314,17 +334,21 @@ def render_openmc_triso_script(
     matrix_material_id = _triso_matrix_material_id(triso, pebble)
     layer_blocks = _render_triso_layer_universe(triso)
     plots_block = _render_plots_block(plot_specs or [])
+    energy_mode_block = _render_optional_energy_mode(settings, spec)
 
     return f'''"""Generated OpenMC TRISO/pebble model for {spec.name}."""
 
 import openmc
+{benchmark_imports}
 
 
 materials_by_id = {{}}
 
 {material_blocks}
 
+{mgxs_setup}
 materials = openmc.Materials(list(materials_by_id.values()))
+{cross_sections_assignment}
 
 {layer_blocks}
 
@@ -364,6 +388,7 @@ geometry = openmc.Geometry(root_universe)
 
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
+{energy_mode_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -404,6 +429,9 @@ def render_openmc_core_script(
         _render_complex_material_definition(material)
         for material in spec.materials
     )
+    benchmark_imports = _render_benchmark_imports(spec)
+    mgxs_setup = _render_mgxs_setup(spec)
+    cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     surfaces_block = _render_surface_definitions(spec.surfaces)
     regions_block = _render_region_definitions(spec.regions)
     cells_block = _render_cell_definitions(spec.cells)
@@ -417,10 +445,12 @@ def render_openmc_core_script(
         boundary=spec.core.boundary,
     )
     plots_block = _render_plots_block(plot_specs or [])
+    energy_mode_block = _render_optional_energy_mode(settings, spec)
 
     return f'''"""Generated OpenMC core model for {spec.name}."""
 
 import openmc
+{benchmark_imports}
 
 
 materials_by_id = {{}}
@@ -432,7 +462,9 @@ lattices = {{}}
 
 {material_blocks}
 
+{mgxs_setup}
 materials = openmc.Materials(list(materials_by_id.values()))
+{cross_sections_assignment}
 
 {surfaces_block}
 
@@ -450,6 +482,7 @@ geometry = openmc.Geometry(root_universe)
 
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
+{energy_mode_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -575,10 +608,15 @@ def _validate_renderable_assembly(spec: ComplexModelSpec, deps: ActiveDependenci
     for material in spec.materials:
         if material.id not in deps.material_ids:
             continue
+        if _material_is_macroscopic(material):
+            continue
         if material.density_unit is None or material.density_value is None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
-            raise ValueError(f"material {material.id!r} is missing composition or chemical_formula")
+            raise ValueError(
+                f"material {material.id!r} is missing composition, "
+                "chemical_formula, or macroscopic"
+            )
         if _material_has_mixed_percent_types(material) and material.chemical_formula is None:
             raise ValueError(
                 f"material {material.id!r} mixes atom and weight percents without "
@@ -619,10 +657,16 @@ def _validate_renderable_assembly(spec: ComplexModelSpec, deps: ActiveDependenci
 
 
 def _material_is_fully_defined(material: ComplexMaterialSpec) -> bool:
-    """True when a material has both density and composition/formula."""
+    """True when a material can be rendered without human-filled fields."""
+    if _material_is_macroscopic(material):
+        return True
     has_density = material.density_unit is not None and material.density_value is not None
     has_composition = bool(material.composition or material.chemical_formula)
     return has_density and has_composition
+
+
+def _material_is_macroscopic(material: ComplexMaterialSpec) -> bool:
+    return material.macroscopic is not None
 
 
 def _material_has_mixed_percent_types(material: ComplexMaterialSpec) -> bool:
@@ -671,10 +715,15 @@ def _validate_renderable_triso(spec: ComplexModelSpec) -> None:
         raise ValueError("triso renderer requires at least one TRISOSpec")
     material_ids = {material.id for material in spec.materials}
     for material in spec.materials:
+        if _material_is_macroscopic(material):
+            continue
         if material.density_unit is None or material.density_value is None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
-            raise ValueError(f"material {material.id!r} is missing composition or chemical_formula")
+            raise ValueError(
+                f"material {material.id!r} is missing composition, "
+                "chemical_formula, or macroscopic"
+            )
         if _material_has_mixed_percent_types(material) and material.chemical_formula is None:
             raise ValueError(
                 f"material {material.id!r} mixes atom and weight percents without "
@@ -717,10 +766,15 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
     if any(lattice.kind != "rect" for lattice in spec.lattices):
         raise ValueError("core renderer currently supports RectLattice only")
     for material in spec.materials:
+        if _material_is_macroscopic(material):
+            continue
         if material.density_unit is None or material.density_value is None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
-            raise ValueError(f"material {material.id!r} is missing composition or chemical_formula")
+            raise ValueError(
+                f"material {material.id!r} is missing composition, "
+                "chemical_formula, or macroscopic"
+            )
         if _material_has_mixed_percent_types(material) and material.chemical_formula is None:
             raise ValueError(
                 f"material {material.id!r} mixes atom and weight percents without "
@@ -756,15 +810,18 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
     enrichment_args = _render_complex_enrichment_args(spec)
     lines = [
         f"{variable_name} = openmc.Material(name={spec.name!r})",
-        f"{variable_name}.set_density({spec.density_unit!r}, {spec.density_value!r})",
     ]
+    if spec.density_unit is not None and spec.density_value is not None:
+        lines.append(f"{variable_name}.set_density({spec.density_unit!r}, {spec.density_value!r})")
     if spec.temperature_k is not None:
         lines.append(f"{variable_name}.temperature = {spec.temperature_k!r}")
     if spec.depletable:
         lines.append(f"{variable_name}.depletable = {spec.depletable!r}")
     if spec.volume_cm3 is not None:
         lines.append(f"{variable_name}.volume = {spec.volume_cm3!r}")
-    if _use_chemical_formula_for_complex_material(spec):
+    if spec.macroscopic is not None:
+        lines.append(f"{variable_name}.add_macroscopic({spec.macroscopic!r})")
+    elif _use_chemical_formula_for_complex_material(spec):
         lines.append(
             f"{variable_name}.add_elements_from_formula("
             f"{spec.chemical_formula!r}"
@@ -1208,6 +1265,52 @@ def _render_optional_seed(settings: RunSettingsSpec) -> str:
     if settings.seed is None:
         return ""
     return f"settings.seed = {settings.seed}"
+
+
+def _model_uses_mgxs(spec: ComplexModelSpec | None = None) -> bool:
+    if spec is None:
+        return False
+    return bool(spec.standard_mgxs_library or spec.mg_cross_sections_file)
+
+
+def _render_optional_energy_mode(
+    settings: RunSettingsSpec,
+    spec: ComplexModelSpec | None = None,
+) -> str:
+    energy_mode = settings.energy_mode
+    if energy_mode is None and _model_uses_mgxs(spec):
+        energy_mode = "multi-group"
+    if energy_mode is None:
+        return ""
+    return f"settings.energy_mode = {energy_mode!r}"
+
+
+def _render_benchmark_imports(spec: ComplexModelSpec) -> str:
+    if spec.standard_mgxs_library == "c5g7":
+        return "\nfrom openmc_agent.benchmarks.c5g7 import export_mgxs_hdf5\n"
+    return ""
+
+
+def _mgxs_filename(spec: ComplexModelSpec) -> str:
+    return spec.mg_cross_sections_file or "mgxs.h5"
+
+
+def _render_mgxs_setup(spec: ComplexModelSpec) -> str:
+    if spec.standard_mgxs_library == "c5g7":
+        filename = _mgxs_filename(spec)
+        return (
+            f"mg_cross_sections_file = {filename!r}\n"
+            "export_mgxs_hdf5(mg_cross_sections_file)\n"
+        )
+    if spec.mg_cross_sections_file:
+        return f"mg_cross_sections_file = {spec.mg_cross_sections_file!r}\n"
+    return ""
+
+
+def _render_materials_cross_sections_assignment(spec: ComplexModelSpec) -> str:
+    if not _model_uses_mgxs(spec):
+        return ""
+    return "materials.cross_sections = mg_cross_sections_file"
 
 
 def _render_plots_block(plot_specs: list[PlotSpec]) -> str:

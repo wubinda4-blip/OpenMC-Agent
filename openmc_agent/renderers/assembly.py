@@ -274,6 +274,12 @@ def _lattice_pattern_errors(
 ) -> list[str]:
     errors: list[str] = []
     pattern = lattice.universe_pattern
+    if not pattern:
+        if lattice.kind == "rect":
+            errors.append(
+                f"lattice {lattice.id!r} requires universe_pattern before export"
+            )
+        return errors
     if lattice.shape is not None:
         expected = tuple(lattice.shape)
         # OpenMC RectLattice shape is (num_x, num_y); pattern is rows of columns.
@@ -307,6 +313,25 @@ def _lattice_pattern_errors(
             f"lattice {lattice.id!r} universe_pattern references missing universes: "
             f"{_dedupe(missing)}"
         )
+
+    # Hard gate at export: a pin-count mismatch must block XML export so a wrong
+    # map can never become a runnable model. (The schema records the same mismatch
+    # as a soft confirmation so the workflow can still emit a reviewable skeleton.)
+    if lattice.expected_counts:
+        actual_counts: dict[str, int] = {}
+        for row in pattern:
+            for uid in row:
+                actual_counts[uid] = actual_counts.get(uid, 0) + 1
+        count_mismatches = [
+            f"{uid}: expected {expected}, got {actual_counts.get(uid, 0)}"
+            for uid, expected in lattice.expected_counts.items()
+            if actual_counts.get(uid, 0) != expected
+        ]
+        if count_mismatches:
+            errors.append(
+                f"lattice {lattice.id!r} pin counts do not match expected_counts: "
+                + "; ".join(count_mismatches)
+            )
     return errors
 
 
@@ -399,8 +424,16 @@ def _material_completeness_messages(
     """
     warnings: list[str] = []
     for material in model.materials:
-        missing_density = material.density_unit is None or material.density_value is None
-        missing_composition = not material.composition and not material.chemical_formula
+        is_macroscopic = material.macroscopic is not None
+        missing_density = (
+            not is_macroscopic
+            and (material.density_unit is None or material.density_value is None)
+        )
+        missing_composition = (
+            not is_macroscopic
+            and not material.composition
+            and not material.chemical_formula
+        )
         mixed_percent_types = _material_has_mixed_percent_types(material)
         if material.id in deps.material_ids:
             if missing_density:
@@ -458,19 +491,27 @@ def _material_confirmations(
     active_material_ids = deps.material_ids if deps is not None else None
     confirmations: list[str] = []
     for material in model.materials:
+        is_macroscopic = material.macroscopic is not None
         is_active = (
             material.id in active_material_ids if active_material_ids is not None else True
         )
         prefix = "material" if is_active else "inactive candidate material"
-        if material.density_unit is None or material.density_value is None:
+        if not is_macroscopic and (
+            material.density_unit is None or material.density_value is None
+        ):
             confirmations.append(f"{prefix} {material.id}: is missing density")
-        if not material.composition and not material.chemical_formula:
+        if not is_macroscopic and not material.composition and not material.chemical_formula:
             confirmations.append(
                 f"{prefix} {material.id}: is missing composition or chemical_formula"
             )
         confirmations.extend(
             f"{prefix} {material.id}: {item}"
             for item in material.requires_human_confirmation
+        )
+    for lattice in model.lattices:
+        confirmations.extend(
+            f"lattice {lattice.id}: {item}"
+            for item in lattice.requires_human_confirmation
         )
     return list(dict.fromkeys(confirmations))
 

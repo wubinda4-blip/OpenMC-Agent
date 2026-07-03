@@ -1,6 +1,6 @@
 # 算例1：单栅元/单棒 OpenMC 模型
 
-请根据以下自然语言描述，生成用于 OpenMC 模型自动生成与校验的结构化建模信息。要求保留参数来源、默认假设和校验目标，不要补充源资料中未给出的材料成分、截面库或物理结果。
+本文件描述单栅元/单棒算例的建模事实、默认假设、不确定项和审查目标。
 
 ## 建模目标
 
@@ -33,9 +33,9 @@
 - OpenMC 的 `settings.run_mode = "eigenvalue"`、`settings.batches`、`settings.inactive`、`settings.particles` 和 `settings.source` 仅用于低计算成本诊断，不用于证明物理计算结果准确性。
 - 文献未给出完整材料成分、温度、热散射数据和 `cross_sections.xml` 信息，不应虚构具体 OpenMC 材料卡或截面库路径。
 
-## OpenMC 建模要求
+## OpenMC 建模参考
 
-请在生成模型时同步给出以下 OpenMC 组织逻辑：
+该算例对应的 OpenMC 组织逻辑：
 
 - 使用 `openmc.Material` 和 `openmc.Materials` 表示材料；材料缺口必须进入“需要人工确认的信息”。
 - 使用 `openmc.ZCylinder` 表示燃料外表面、包壳内表面和包壳外表面。
@@ -47,9 +47,9 @@
   - outer coolant cell：`+clad_outer_surface & square_region`。
 - 使用 `openmc.Geometry`、`openmc.Settings`、`openmc.Tallies` 和 `openmc.Model(...).export_to_xml()` 形成可导出的模型脚本。
 
-## 几何校验要求
+## 几何校验清单
 
-请在生成模型时同步给出以下校验逻辑：
+几何一致性审查项：
 
 - 四个几何区域的横截面积之和应为 1.7689 cm²，并与 1.33 cm × 1.33 cm 的栅元正方形面积一致。
 - 半径关系应满足单调递增：
@@ -58,7 +58,7 @@
 - OpenMC cell region 分区应无重叠、无遗漏。
 - OpenMC 脚本应至少包含 `openmc.Materials`、`openmc.Geometry`、`openmc.Settings()`、`openmc.Tallies` 和 `model.export_to_xml()`。
 
-## 运行诊断要求
+## 运行诊断目标
 
 生成的 OpenMC 模型应支持低计算成本 eigenvalue 运行诊断。
 
@@ -69,15 +69,12 @@
 - 使用 `openmc.IndependentSource` 和位于栅元内、优先限制在可裂变区的空间源。
 - 检查 OpenMC 导出和运行日志中是否存在 XML 导出失败、几何重叠、lost particle 或 ERROR 级错误。
 
-## 期望输出
+## 需要人工确认或源资料未提供的信息
 
-请输出以下内容：
-
-1. 该算例的结构化中间表示 IR，包括参数、几何区域、默认假设和校验规则。
-2. OpenMC Python API 生成思路，说明 material、surface、cell、universe、geometry、settings、tallies 和 `model.export_to_xml()` 应如何组织。
-3. 静态校验清单。
-4. 几何一致性校验清单。
-5. 低计算成本 OpenMC eigenvalue 运行诊断设置建议。
-6. 需要人工确认或源资料未提供的信息列表。
+- 轴向高度或二维无限栅元近似的确认；
+- 完整材料成分、密度、温度和热散射数据；
+- `cross_sections.xml` 路径和可用核数据库；
+- 低成本诊断设置是否满足当前审查目标；
+- 边界条件是否采用 x/y 反射边界。
 
 注意：该算例的目的不是获得可信物理量，而是验证 OpenMC 模型可生成、XML 可导出、几何可闭合、程序可低成本运行。

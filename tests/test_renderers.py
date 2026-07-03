@@ -211,6 +211,45 @@ def test_rect_assembly_lattice_shape_validation() -> None:
     assert any("shape" in reason and "15" in reason for reason in capability.reasons)
 
 
+def test_rect_assembly_missing_lattice_pattern_becomes_skeleton(tmp_path: Path) -> None:
+    model = ComplexModelSpec(
+        name="incomplete assembly",
+        kind="assembly",
+        materials=[_complete_fuel()],
+        cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                shape=(17, 17),
+                universe_pattern=None,
+            )
+        ],
+        assemblies=[AssemblySpec(id="assembly", name="root", lattice_id="assembly_lattice")],
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(21.42, 21.42), filename="assembly.png")],
+    )
+
+    renderer = RectAssemblyRenderer()
+    capability = renderer.can_render(plan)
+    result = renderer.render(plan, tmp_path)
+
+    assert capability.renderability == "skeleton"
+    assert any("requires universe_pattern" in reason for reason in capability.reasons)
+    assert "universe_pattern missing" in result.script
+    assert "lattice assembly_lattice: rect lattice universe_pattern is missing" in (
+        tmp_path / "TODO.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_rect_assembly_missing_universe_reference() -> None:
     plan = _assembly_plan(
         materials=[_complete_fuel()],

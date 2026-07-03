@@ -6,6 +6,8 @@
 
 > 设计原则：**LLM 只负责结构化建模决策，执行权完全在本地。** 缺失的物理数据会被放进 `requires_human_confirmation`，绝不伪造材料、密度或截面库。
 
+系统 prompt 位于 `openmc_agent/prompts.py`，负责定义 Agent 能力边界、JSON-only 输出契约、缺失数据处理和 OpenMC 安全规范；`Input/case*.md` 只保留算例事实、默认假设、不确定项和审查目标。
+
 ---
 
 ## 核心特性
@@ -30,14 +32,17 @@ receive_requirement
    → select_few_shots           # 按关键词挑 few-shot 建模范式
    → generate_plan              # LLM 产出 SimulationPlan（带 normalization 容错）
    → validate_plan              # Pydantic 校验
+   → repair_plan_format ─坏 JSON/坏 schema 重试──▶ validate_plan
+   → reflect_plan ──验证失败重试───────────────▶ validate_plan
    → assess_capability          # 本地重算 capability_report（覆盖 LLM 草稿）
+   → ask_expert                 # 可选：LangGraph interrupt/resume 专家反馈
    → render_plan_script         # choose_renderer 选渲染器 → model.py（或骨架）
    → execute_tools              # export_xml / 几何绘图 / smoke test
    → reflect_plan ──失败重试──▶ validate_plan
    → save_record
 ```
 
-关键容错点：`generate_structured_output` 支持传入 `normalizer`，默认对 plan 启用 `normalize_capability_report`——LLM 若给出"非可执行却带具体 renderer"的矛盾 capability_report，会在 Pydantic 校验前被修正为 `supported_renderer="none"`，避免整个 plan 坍缩为 null。
+关键容错点：`generate_structured_output` 支持传入 `normalizer`，默认对 plan 启用 `normalize_capability_report`——LLM 若给出"非可执行却带具体 renderer"的矛盾 capability_report，会在 Pydantic 校验前被修正为 `supported_renderer="none"`，避免整个 plan 坍缩为 null。若模型返回坏 JSON 或 schema 不合格，Plan 工作流会先尝试格式修复；若已生成 plan 但验证失败，会进入 reflection 修复，而不是直接终止。
 
 ### 渲染能力分级
 
@@ -97,7 +102,15 @@ scripts/run_inspect.sh --model deepseek:deepseek-chat --md-file Input/case2.md -
 python -m openmc_agent.inspect "建立一个 2x2 组件模型" --plan --plot --smoke-test --json
 ```
 
-常用参数：`--plan`（强制 plan 工作流）、`--plot` / `--smoke-test` / `--full`、`--output-dir`、`--json` / `--text`（输出格式）、`--expert-feedback`、`--verbose`。
+常用参数：`--plan`（强制 plan 工作流）、`--plot` / `--smoke-test` / `--full`、`--output-dir`、`--json` / `--text`（输出格式）、`--expert-feedback`、`--interactive-feedback`、`--max-expert-rounds`、`--verbose`。
+
+交互式专家反馈：
+
+```bash
+python -m openmc_agent.inspect --md-file Input/case2.md --plan --interactive-feedback --max-expert-rounds 2
+```
+
+当 capability report 或 IR 中存在阻塞性人工确认项时，LangGraph 会通过 `interrupt` 暂停，CLI 展示问题并用 `Command(resume=...)` 把专家反馈写回图状态，然后重新生成/修复 `SimulationPlan`。
 
 ---
 

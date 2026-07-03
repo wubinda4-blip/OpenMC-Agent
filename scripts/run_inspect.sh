@@ -14,6 +14,8 @@ REQUIREMENT=""
 ENABLE_PLOT=0
 ENABLE_SMOKE=0
 JSON_OUTPUT=1
+INTERACTIVE_FEEDBACK="auto"
+MAX_EXPERT_ROUNDS=2
 
 usage() {
   cat <<'EOF'
@@ -29,6 +31,12 @@ Options:
   --full                  Enable both OpenMC geometry plot and smoke test.
   --plot                  Enable geometry plot only.
   --smoke-test            Enable low-particle smoke test only.
+  --interactive-feedback  Ask human expert questions when the graph detects
+                          missing or ambiguous modeling facts.
+                          This is also enabled automatically for terminal runs.
+  --no-interactive-feedback
+                          Disable expert questions for batch/non-interactive runs.
+  --max-expert-rounds N   Maximum interactive expert feedback rounds. Default: 2
   --output-dir PATH       Output directory. Default: data/runs/manual/script-run
   --timeout-seconds N     Read timeout per request. Default: 240
   --max-retries N         Retries after a transport error. Default: 2
@@ -77,6 +85,18 @@ while [[ $# -gt 0 ]]; do
     --smoke-test)
       ENABLE_SMOKE=1
       shift
+      ;;
+    --interactive-feedback)
+      INTERACTIVE_FEEDBACK=1
+      shift
+      ;;
+    --no-interactive-feedback)
+      INTERACTIVE_FEEDBACK=0
+      shift
+      ;;
+    --max-expert-rounds)
+      MAX_EXPERT_ROUNDS="${2:-}"
+      shift 2
       ;;
     --output-dir)
       OUTPUT_DIR="${2:-}"
@@ -181,6 +201,14 @@ fi
 
 if [[ "$ENABLE_SMOKE" -eq 1 ]]; then
   cmd+=(--smoke-test)
+fi
+
+if [[ "$INTERACTIVE_FEEDBACK" == "1" ]]; then
+  cmd+=(--interactive-feedback --max-expert-rounds "$MAX_EXPERT_ROUNDS")
+elif [[ "$INTERACTIVE_FEEDBACK" == "0" ]]; then
+  cmd+=(--no-interactive-feedback)
+else
+  cmd+=(--max-expert-rounds "$MAX_EXPERT_ROUNDS")
 fi
 
 if [[ -n "$MD_FILE" ]]; then

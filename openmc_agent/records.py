@@ -61,6 +61,8 @@ def append_simulation_record(
     error: str = "",
     retry_count: int = 0,
     retry_history: list[dict[str, Any]] | None = None,
+    pending_expert_questions: list[str] | None = None,
+    human_loop_events: list[dict[str, Any]] | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     record = {
@@ -75,6 +77,8 @@ def append_simulation_record(
         "error": error,
         "retry_count": retry_count,
         "retry_history": retry_history or [],
+        "pending_expert_questions": pending_expert_questions or [],
+        "human_loop_events": human_loop_events or [],
         "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
     }
 

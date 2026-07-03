@@ -2,8 +2,12 @@ import argparse
 import json
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from langgraph.types import Command
 
 from openmc_agent.graph import (
     ExportXmlToolFn,
@@ -47,6 +51,8 @@ def inspect_requirement(
     enable_plots: bool = False,
     enable_smoke_test: bool = False,
     expert_feedback: list[str] | None = None,
+    interactive_feedback: bool = False,
+    max_expert_rounds: int = 0,
     generate_plan: GeneratePlanFn = generate_structured_output,
     repair_plan: RepairPlanFn = repair_structured_output,
     export_xml_tool: ExportXmlToolFn = export_xml,
@@ -64,6 +70,8 @@ def inspect_requirement(
             enable_plots=enable_plots,
             enable_smoke_test=enable_smoke_test,
             expert_feedback=expert_feedback or [],
+            interactive_feedback=interactive_feedback,
+            max_expert_rounds=max_expert_rounds,
             generate_plan=generate_plan,
             repair_plan=repair_plan,
             export_xml_tool=export_xml_tool,
@@ -223,6 +231,8 @@ def _inspect_plan_requirement(
     enable_plots: bool,
     enable_smoke_test: bool,
     expert_feedback: list[str],
+    interactive_feedback: bool,
+    max_expert_rounds: int,
     generate_plan: GeneratePlanFn,
     repair_plan: RepairPlanFn,
     export_xml_tool: ExportXmlToolFn,
@@ -250,18 +260,29 @@ def _inspect_plan_requirement(
         enable_plots=enable_plots,
         enable_smoke_test=enable_smoke_test,
         max_retries=max_retries,
+        checkpoint_path=(output_path / "checkpoints.sqlite") if interactive_feedback else None,
     )
     if verbose:
         print("[agent] Invoking LLM. This can take 30-120 seconds on remote models...", file=sys.stderr)
-    state = graph.invoke(
-        {
-            "requirement": requirement,
-            "model": model,
-            "output_dir": str(output_path),
-            "records_path": str(records_path),
-            "expert_feedback": expert_feedback,
-            "verbose": verbose,
-        }
+    initial_state = {
+        "requirement": requirement,
+        "model": model,
+        "output_dir": str(output_path),
+        "records_path": str(records_path),
+        "expert_feedback": expert_feedback,
+        "max_expert_rounds": max_expert_rounds if interactive_feedback else 0,
+        "verbose": verbose,
+    }
+    config = (
+        {"configurable": {"thread_id": f"inspect-plan-{uuid.uuid4().hex}"}}
+        if interactive_feedback
+        else None
+    )
+    state = _invoke_plan_graph_with_optional_feedback(
+        graph=graph,
+        initial_state=initial_state,
+        config=config,
+        interactive_feedback=interactive_feedback,
     )
     if verbose:
         print("[agent] Workflow finished. Formatting transcript...", file=sys.stderr)
@@ -271,7 +292,7 @@ def _inspect_plan_requirement(
         requirement=requirement,
         state=state,
         model_path=model_path,
-        expert_feedback=expert_feedback,
+        expert_feedback=state.get("expert_feedback", expert_feedback),
     )
     transcript = _format_plan_transcript(transcript_data)
     (output_path / "transcript.json").write_text(
@@ -290,6 +311,50 @@ def _inspect_plan_requirement(
         xml_export_error="" if xml_export_ok else (export_result or {}).get("error", ""),
         transcript_data=transcript_data,
     )
+
+
+def _invoke_plan_graph_with_optional_feedback(
+    *,
+    graph,
+    initial_state: dict,
+    config: dict | None,
+    interactive_feedback: bool,
+) -> dict:
+    state = graph.invoke(initial_state, config) if config else graph.invoke(initial_state)
+    while _interrupt_payload(state) is not None:
+        payload = _interrupt_payload(state) or {}
+        if not interactive_feedback:
+            return state
+        feedback = _read_expert_feedback(payload)
+        state = graph.invoke(
+            Command(
+                resume={
+                    "expert_feedback": feedback,
+                    "should_continue": bool(feedback.strip()),
+                }
+            ),
+            config,
+        )
+    return state
+
+
+def _interrupt_payload(state: dict) -> dict | None:
+    interrupts = state.get("__interrupt__") or []
+    if not interrupts:
+        return None
+    value = getattr(interrupts[0], "value", None)
+    return value if isinstance(value, dict) else {"value": value}
+
+
+def _read_expert_feedback(payload: dict[str, Any]) -> str:
+    round_index = payload.get("round", "?")
+    max_rounds = payload.get("max_rounds", "?")
+    questions = payload.get("questions") or []
+    print(f"专家反馈轮次 {round_index}/{max_rounds}", file=sys.stderr)
+    for index, question in enumerate(questions, start=1):
+        print(f"{index}. {question}", file=sys.stderr)
+    print("请输入专家反馈；直接回车表示暂不补充并继续当前产物:", file=sys.stderr)
+    return sys.stdin.readline().strip()
 
 
 def _legacy_transcript_data(
@@ -340,6 +405,9 @@ def _plan_transcript_data(
         "validation_report": report.model_dump(mode="json") if report is not None else None,
         "retry_count": state.get("retry_count", 0),
         "retry_history": state.get("retry_history", []),
+        "pending_expert_questions": state.get("pending_expert_questions", []),
+        "expert_round_count": state.get("expert_round_count", 0),
+        "human_loop_events": state.get("human_loop_events", []),
         "tool_results": tool_results,
         "raw_llm_outputs": state.get("raw_llm_outputs", []),
         "model_path": str(model_path) if model_path is not None else None,
@@ -435,6 +503,12 @@ def _format_plan_transcript(data: dict) -> str:
         "[8] 人类专家反馈",
         _json_dump(data.get("expert_feedback", [])),
         "",
+        "[8a] 待专家确认问题",
+        _json_dump(data.get("pending_expert_questions", [])),
+        "",
+        "[8b] 人机回路事件",
+        _json_dump(data.get("human_loop_events", [])),
+        "",
         "[9] 工具执行结果",
         _json_dump(data.get("tool_results", [])),
         "",
@@ -496,7 +570,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan", action="store_true", help="Use SimulationPlan workflow")
     parser.add_argument("--plot", action="store_true", help="Run OpenMC geometry plots")
     parser.add_argument("--smoke-test", action="store_true", help="Run low-particle OpenMC smoke test")
-    parser.add_argument("--interactive-feedback", action="store_true")
+    parser.add_argument(
+        "--interactive-feedback",
+        action="store_true",
+        default=None,
+        help="Enable LangGraph interrupt/resume expert questions.",
+    )
+    parser.add_argument(
+        "--no-interactive-feedback",
+        action="store_false",
+        dest="interactive_feedback",
+        help="Disable expert question interrupts, useful for batch runs.",
+    )
+    parser.add_argument("--max-expert-rounds", type=int, default=2)
     parser.add_argument("--expert-feedback", action="append", default=[])
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument("--show-raw-llm", action="store_true")
@@ -504,12 +590,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     expert_feedback = list(args.expert_feedback)
-    if args.interactive_feedback:
-        feedback = _read_interactive_feedback()
-        if feedback:
-            expert_feedback.append(feedback)
+    interactive_feedback = (
+        bool(args.interactive_feedback)
+        if args.interactive_feedback is not None
+        else sys.stdin.isatty()
+    )
 
-    use_plan = args.plan or args.plot or args.smoke_test or bool(expert_feedback)
+    use_plan = (
+        args.plan
+        or args.plot
+        or args.smoke_test
+        or interactive_feedback
+        or bool(expert_feedback)
+    )
     if args.md_file and args.requirement:
         parser.error("Use either a positional requirement or --md-file, not both")
     if args.md_file:
@@ -522,6 +615,8 @@ def main(argv: list[str] | None = None) -> int:
             enable_plots=args.plot,
             enable_smoke_test=args.smoke_test,
             expert_feedback=expert_feedback,
+            interactive_feedback=interactive_feedback,
+            max_expert_rounds=args.max_expert_rounds,
             verbose=args.verbose,
         )
     elif args.requirement:
@@ -534,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
             enable_plots=args.plot,
             enable_smoke_test=args.smoke_test,
             expert_feedback=expert_feedback,
+            interactive_feedback=interactive_feedback,
+            max_expert_rounds=args.max_expert_rounds,
             verbose=args.verbose,
         )
     else:
@@ -547,11 +644,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(result.transcript)
     return 0 if result.ok else 1
-
-
-def _read_interactive_feedback() -> str:
-    print("专家反馈（可直接回车跳过）:", file=sys.stderr)
-    return sys.stdin.readline().strip()
 
 
 if __name__ == "__main__":

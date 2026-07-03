@@ -90,6 +90,24 @@ def test_build_openmc_complex_material_from_formula() -> None:
     assert any(nuclide.name == "U235" for nuclide in material.nuclides)
 
 
+def test_build_openmc_complex_material_from_macroscopic() -> None:
+    spec = ComplexMaterialSpec(
+        id="uo2",
+        name="UO2",
+        density_unit="macro",
+        density_value=1.0,
+        macroscopic="uo2",
+    )
+
+    material = build_openmc_complex_material(spec)
+
+    assert isinstance(material, openmc.Material)
+    assert material.name == "UO2"
+    assert material.density_units == "macro"
+    assert material.density == 1.0
+    assert getattr(material, "_macroscopic") == "uo2"
+
+
 def test_build_openmc_complex_material_uses_formula_for_mixed_percent_types() -> None:
     spec = ComplexMaterialSpec(
         id="fuel",
@@ -427,6 +445,106 @@ def test_render_assembly_with_mixed_uo2_percent_types_plots(
         timeout=60,
     )
     assert plot_result.returncode == 0, plot_result.stderr or plot_result.stdout
+
+
+def test_render_assembly_with_c5g7_macroscopic_materials_sets_mgxs() -> None:
+    spec = ComplexModelSpec(
+        name="C5G7 macro assembly",
+        kind="assembly",
+        standard_mgxs_library="c5g7",
+        mg_cross_sections_file="c5g7-mgxs.h5",
+        materials=[
+            ComplexMaterialSpec(
+                id="uo2",
+                name="UO2",
+                density_unit="macro",
+                density_value=1.0,
+                macroscopic="uo2",
+            ),
+            ComplexMaterialSpec(
+                id="water",
+                name="Water",
+                density_unit="macro",
+                density_value=1.0,
+                macroscopic="water",
+            ),
+        ],
+        surfaces=[
+            SurfaceSpec(id="fuel_r", kind="zcylinder", parameters={"r": 0.3}),
+            SurfaceSpec(
+                id="pin_cell_boundary",
+                kind="rectangular_prism",
+                parameters={"xmin": -0.63, "xmax": 0.63, "ymin": -0.63, "ymax": 0.63},
+            ),
+            SurfaceSpec(
+                id="assembly_boundary",
+                kind="rectangular_prism",
+                parameters={"xmin": -0.63, "xmax": 0.63, "ymin": -0.63, "ymax": 0.63},
+                boundary_type="reflective",
+            ),
+        ],
+        regions=[
+            RegionSpec(id="fuel_region", expression="-fuel_r", surface_ids=["fuel_r"]),
+            RegionSpec(
+                id="moderator_region",
+                expression="+fuel_r & pin_cell_boundary",
+                surface_ids=["fuel_r", "pin_cell_boundary"],
+            ),
+        ],
+        cells=[
+            CellSpec(
+                id="fuel_cell",
+                name="fuel",
+                region_id="fuel_region",
+                fill_type="material",
+                fill_id="uo2",
+            ),
+            CellSpec(
+                id="moderator_cell",
+                name="moderator",
+                region_id="moderator_region",
+                fill_type="material",
+                fill_id="water",
+            ),
+            CellSpec(
+                id="assembly_cell",
+                name="assembly root",
+                region_id="assembly_boundary",
+                fill_type="lattice",
+                fill_id="assembly_lattice",
+            ),
+        ],
+        universes=[
+            UniverseSpec(id="pin", name="pin universe", cell_ids=["fuel_cell", "moderator_cell"]),
+            UniverseSpec(id="root_universe", name="root", cell_ids=["assembly_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="1x1 rectangular lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[["pin"]],
+            )
+        ],
+        assemblies=[
+            AssemblySpec(
+                id="assembly",
+                name="root assembly",
+                lattice_id="assembly_lattice",
+                boundary="reflective",
+            )
+        ],
+        settings=RunSettingsSpec(batches=6, inactive=1, particles=50),
+    )
+
+    script = render_openmc_assembly_script(spec)
+
+    assert "from openmc_agent.benchmarks.c5g7 import export_mgxs_hdf5" in script
+    assert "export_mgxs_hdf5(mg_cross_sections_file)" in script
+    assert "materials.cross_sections = mg_cross_sections_file" in script
+    assert "settings.energy_mode = 'multi-group'" in script
+    assert "material_uo2.add_macroscopic('uo2')" in script
 
 
 def test_render_assembly_accepts_composite_prism_region_ids(

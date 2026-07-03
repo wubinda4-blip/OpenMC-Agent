@@ -109,6 +109,8 @@ def _triso_renderability_errors(model: Any) -> list[str]:
         errors.append("triso renderer requires materials")
     material_ids = {material.id for material in model.materials}
     for material in model.materials:
+        if material.macroscopic is not None:
+            continue
         if material.density_unit is None or material.density_value is None:
             errors.append(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:

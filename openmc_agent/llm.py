@@ -10,6 +10,8 @@ import aisuite
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from openmc_agent.prompts import system_prompt_for_schema
+
 
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_MODEL = "zhipu:glm-5.2"
@@ -474,15 +476,12 @@ def _build_messages(requirement: str, schema: type[BaseModel]) -> list[dict[str,
     return [
         {
             "role": "system",
-            "content": (
-                "You generate structured data for OpenMC model construction. "
-                "Return exactly one JSON object and no surrounding prose."
-            ),
+            "content": system_prompt_for_schema(schema),
         },
         {
             "role": "user",
             "content": (
-                f"Requirement: {requirement}\n"
+                f"Case requirement and per-run context:\n{requirement}\n\n"
                 f"Target Pydantic JSON schema: {schema_json}"
             ),
         },
@@ -525,10 +524,11 @@ def _consume_sse_stream(
     """Read an OpenAI-compatible SSE stream and return concatenated content.
 
     Zhipu (and other OpenAI-compatible servers) emit ``data: {json}`` lines
-    with ``choices[0].delta.content`` (and, for reasoning models, a separate
-    ``delta.reasoning_content``). We accumulate ``content`` for the final
-    response and count any delta for progress logging. The stream terminates
-    on a ``data: [DONE]`` sentinel.
+    with ``choices[0].delta.content``. Reasoning models (e.g. GLM-4.5/4.6/5)
+    stream the answer via ``delta.reasoning_content`` while ``content`` is
+    empty, so we fall back to it to avoid dropping the response as "only
+    chunks, no content". We count any delta for progress logging. The stream
+    terminates on a ``data: [DONE]`` sentinel.
     """
     content_parts: list[str] = []
     chunk_count = 0
@@ -552,8 +552,9 @@ def _consume_sse_stream(
             if not delta:
                 continue
             chunk_count += 1
-            if delta.get("content"):
-                content_parts.append(delta["content"])
+            text = delta.get("content") or delta.get("reasoning_content")
+            if text:
+                content_parts.append(text)
             now = time.monotonic()
             if _llm_progress_enabled and now - last_progress >= 5.0:
                 _llm_log(

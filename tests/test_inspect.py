@@ -1,4 +1,3 @@
-import io
 import json
 from pathlib import Path
 
@@ -368,7 +367,7 @@ def test_inspect_requirement_plan_mode_marks_skeleton_not_ok(tmp_path: Path) -> 
     assert "Status: NOT EXECUTABLE" in result.transcript
 
 
-def test_inspect_cli_json_accepts_interactive_expert_feedback(
+def test_inspect_cli_json_enables_interactive_expert_feedback(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -377,19 +376,20 @@ def test_inspect_cli_json_accepts_interactive_expert_feedback(
         assert kwargs["use_plan"] is True
         assert kwargs["enable_plots"] is True
         assert kwargs["enable_smoke_test"] is True
-        assert kwargs["expert_feedback"] == ["增加 xz 截面"]
+        assert kwargs["expert_feedback"] == []
+        assert kwargs["interactive_feedback"] is True
+        assert kwargs["max_expert_rounds"] == 2
         return InspectResult(
             ok=True,
             transcript="human transcript",
             transcript_data={
                 "ok": True,
                 "requirement": requirement,
-                "expert_feedback": kwargs["expert_feedback"],
+                "expert_feedback": ["增加 xz 截面"],
             },
         )
 
     monkeypatch.setattr("openmc_agent.inspect.inspect_requirement", fake_inspect_requirement)
-    monkeypatch.setattr("sys.stdin", io.StringIO("增加 xz 截面\n"))
 
     exit_code = main(
         [
@@ -407,3 +407,55 @@ def test_inspect_cli_json_accepts_interactive_expert_feedback(
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["expert_feedback"] == ["增加 xz 截面"]
+
+
+def test_inspect_cli_tty_defaults_to_interactive_feedback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class FakeTty:
+        def isatty(self):
+            return True
+
+        def readline(self):
+            return ""
+
+    def fake_inspect_requirement(requirement, **kwargs):
+        assert kwargs["use_plan"] is True
+        assert kwargs["interactive_feedback"] is True
+        assert kwargs["max_expert_rounds"] == 2
+        return InspectResult(ok=True, transcript="ok", transcript_data={"ok": True})
+
+    monkeypatch.setattr("sys.stdin", FakeTty())
+    monkeypatch.setattr("openmc_agent.inspect.inspect_requirement", fake_inspect_requirement)
+
+    exit_code = main(["建立一个 UO2 pin-cell", "--output-dir", str(tmp_path)])
+
+    assert exit_code == 0
+
+
+def test_inspect_cli_can_disable_tty_interactive_feedback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class FakeTty:
+        def isatty(self):
+            return True
+
+    def fake_inspect_requirement(requirement, **kwargs):
+        assert kwargs["interactive_feedback"] is False
+        return InspectResult(ok=True, transcript="ok", transcript_data={"ok": True})
+
+    monkeypatch.setattr("sys.stdin", FakeTty())
+    monkeypatch.setattr("openmc_agent.inspect.inspect_requirement", fake_inspect_requirement)
+
+    exit_code = main(
+        [
+            "建立一个 UO2 pin-cell",
+            "--no-interactive-feedback",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0

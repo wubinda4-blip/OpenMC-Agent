@@ -180,6 +180,10 @@ def _material_lines(material: ComplexMaterialSpec) -> list[str]:
         lines.append(
             f"{variable}.set_density({material.density_unit!r}, {material.density_value!r})"
         )
+    elif material.macroscopic is not None:
+        lines.append(
+            f"# {variable}.add_macroscopic(...) will set macro density to 1.0 by default"
+        )
     else:
         lines.append(f"# {variable}.set_density(<unit>, <value>)  # TODO: density missing")
     if material.temperature_k is not None:
@@ -193,6 +197,8 @@ def _material_lines(material: ComplexMaterialSpec) -> list[str]:
                 f"# {variable}.{action}({component.name!r}, {component.percent!r}, "
                 f"{component.percent_type!r})"
             )
+    elif material.macroscopic is not None:
+        lines.append(f"# {variable}.add_macroscopic({material.macroscopic!r})")
     elif material.chemical_formula is not None:
         lines.append(
             f"# {variable}.add_elements_from_formula({material.chemical_formula!r})"
@@ -276,10 +282,15 @@ def _lattice_section(model: ComplexModelSpec) -> str:
         if lattice.kind == "rect":
             rows = len(lattice.universe_pattern)
             cols = len(lattice.universe_pattern[0]) if lattice.universe_pattern else 0
-            lines.append(
-                f"# {variable}.universes = ...  # TODO: {rows}x{cols} universe_pattern; "
-                "verify dimensions and universe ids"
-            )
+            if lattice.universe_pattern:
+                lines.append(
+                    f"# {variable}.universes = ...  # TODO: {rows}x{cols} universe_pattern; "
+                    "verify dimensions and universe ids"
+                )
+            else:
+                lines.append(
+                    f"# {variable}.universes = ...  # TODO: universe_pattern missing"
+                )
         else:
             lines.append(
                 f"# {variable}.rings = ...  # TODO: {len(lattice.rings)} ring(s); verify universe ids"
@@ -364,6 +375,8 @@ def _tail() -> str:
 
 
 def _missing_material_fields(material: ComplexMaterialSpec) -> list[str]:
+    if material.macroscopic is not None:
+        return []
     missing: list[str] = []
     if material.density_unit is None or material.density_value is None:
         missing.append("is missing density")
@@ -421,6 +434,11 @@ def _skeleton_confirmations(plan: SimulationPlan) -> list[str]:
             confirmations.append(f"material {material.id}: {item}")
         confirmations.extend(
             f"material {material.id}: {item}" for item in material.requires_human_confirmation
+        )
+    for lattice in plan.complex_model.lattices:
+        confirmations.extend(
+            f"lattice {lattice.id}: {item}"
+            for item in lattice.requires_human_confirmation
         )
     return list(dict.fromkeys(confirmations))
 

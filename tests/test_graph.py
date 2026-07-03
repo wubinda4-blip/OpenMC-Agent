@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 
 from openmc_agent.graph import build_graph, build_plan_graph
 from openmc_agent.llm import StructuredOutputResult
@@ -385,6 +386,331 @@ def test_plan_graph_reflects_after_smoke_test_failure(tmp_path: Path) -> None:
     assert state["validation_report"].is_valid is True
 
 
+def test_plan_graph_reflects_after_plan_validation_failure(tmp_path: Path) -> None:
+    invalid_plan = make_simulation_plan()
+    invalid_plan.model_spec.pin_cell.geometry = GeometrySpec.model_construct(
+        fuel_radius_cm=10.0,
+        pitch_cm=1.26,
+        clad_inner_radius_cm=None,
+        clad_outer_radius_cm=None,
+    )
+    calls = {"repair": 0}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(ok=True, value=invalid_plan)
+
+    def fake_repair_plan(
+        *,
+        requirement: str,
+        schema,
+        model: str,
+        previous_spec: SimulationPlan,
+        validation_errors: list[str],
+    ):
+        calls["repair"] += 1
+        assert previous_spec is invalid_plan
+        assert any("fuel_radius_cm" in error for error in validation_errors)
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        repair_plan=fake_repair_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 UO2 pin-cell 临界计算",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert calls["repair"] == 1
+    assert state["retry_count"] == 1
+    assert state["validation_report"].is_valid is True
+
+
+def test_plan_graph_repairs_malformed_raw_plan_response(tmp_path: Path) -> None:
+    calls = {"generate": 0}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        calls["generate"] += 1
+        if calls["generate"] == 1:
+            return StructuredOutputResult(
+                ok=False,
+                error="Could not parse model response: response did not contain a JSON object",
+                raw_response="not json",
+            )
+        assert "previous model response could not be parsed" in requirement
+        assert "not json" in requirement
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 UO2 pin-cell 临界计算",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert calls["generate"] == 2
+    assert state["retry_count"] == 1
+    assert state["validation_report"].is_valid is True
+    assert state["raw_llm_outputs"] == ["not json"]
+
+
+def test_plan_graph_format_repair_guides_truncated_large_patterns(tmp_path: Path) -> None:
+    calls = {"generate": 0}
+    truncated = '{"complex_model":{"lattices":[{"id":"lat","universe_pattern":[["u"'
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        calls["generate"] += 1
+        if calls["generate"] == 1:
+            return StructuredOutputResult(
+                ok=False,
+                error="Could not parse model response: Unterminated string",
+                raw_response=truncated,
+            )
+        assert "appears truncated or too large" in requirement
+        assert "set oversized or uncertain universe_pattern/rings to []" in requirement
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个大型堆芯模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert calls["generate"] == 2
+    assert state["validation_report"].is_valid is True
+
+
+def test_plan_graph_records_expert_question_when_generation_never_parses(tmp_path: Path) -> None:
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(
+            ok=False,
+            error="Could not parse model response: Unterminated string",
+            raw_response='{"complex_model":{"lattices":[["u"',
+        )
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个大型堆芯模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert state["validation_report"].is_valid is False
+    assert state["pending_expert_questions"]
+    assert "truncated" in state["pending_expert_questions"][1]
+
+
+def test_plan_graph_interrupts_for_expert_feedback_and_resumes(tmp_path: Path) -> None:
+    calls = {"generate": 0}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        calls["generate"] += 1
+        if "fuel density is 10.4 g/cm3" in requirement:
+            return StructuredOutputResult(ok=True, value=make_simulation_plan())
+        complex_model = ComplexModelSpec(
+            name="assembly IR",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    chemical_formula="UO2",
+                    requires_human_confirmation=["density"],
+                )
+            ],
+            cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+            universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                )
+            ],
+            assemblies=[AssemblySpec(id="assembly", name="assembly", lattice_id="assembly_lattice")],
+        )
+        return StructuredOutputResult(
+            ok=True,
+            value=SimulationPlan(
+                schema_version="simulation_plan.v2",
+                model_spec=None,
+                complex_model=complex_model,
+                capability_report=RenderCapabilityReport(
+                    is_executable=False,
+                    supported_renderer="none",
+                ),
+                plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="assembly_xy.png")],
+            ),
+        )
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        checkpoint_path=tmp_path / "checkpoints.sqlite",
+        enable_plots=False,
+        enable_smoke_test=False,
+    )
+    config = {"configurable": {"thread_id": "expert-loop"}}
+
+    interrupted = graph.invoke(
+        {
+            "requirement": "建立一个材料缺密度的组件模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+            "max_expert_rounds": 1,
+        },
+        config,
+    )
+
+    assert "__interrupt__" in interrupted
+    payload = interrupted["__interrupt__"][0].value
+    assert payload["kind"] == "expert_feedback_request"
+    assert any("material fuel: density" in question for question in payload["questions"])
+
+    state = graph.invoke(
+        Command(resume={"expert_feedback": "fuel density is 10.4 g/cm3"}),
+        config,
+    )
+
+    assert calls["generate"] == 2
+    assert state["expert_feedback"] == ["fuel density is 10.4 g/cm3"]
+    assert state["human_loop_events"][0]["feedback"] == ["fuel density is 10.4 g/cm3"]
+    assert state["validation_report"].is_valid is True
+    assert Path(state["model_path"]).exists()
+
+
+def test_plan_graph_does_not_re_ask_confirmations_after_expert_feedback(tmp_path: Path) -> None:
+    """Regression: after the expert answers one round, the workflow must NOT interrupt
+    again to re-ask the same material confirmations, even when the regenerated plan
+    still carries them (real LLMs often fail to strip already-confirmed items).
+    Re-asking every round until max_expert_rounds is exhausted is the bug."""
+    def plan_with_confirmation() -> SimulationPlan:
+        complex_model = ComplexModelSpec(
+            name="assembly IR",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    chemical_formula="UO2",
+                    density_value=10.0,
+                    density_unit="g/cm3",
+                    requires_human_confirmation=["density"],
+                )
+            ],
+            cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+            universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                )
+            ],
+            assemblies=[AssemblySpec(id="assembly", name="assembly", lattice_id="assembly_lattice")],
+        )
+        return SimulationPlan(
+            schema_version="simulation_plan.v2",
+            model_spec=None,
+            complex_model=complex_model,
+            capability_report=RenderCapabilityReport(
+                is_executable=False,
+                supported_renderer="none",
+            ),
+            plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="assembly_xy.png")],
+        )
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        # Always return a plan that still carries the 'density' confirmation, simulating
+        # a real LLM that did not consume the expert feedback.
+        return StructuredOutputResult(ok=True, value=plan_with_confirmation())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        checkpoint_path=tmp_path / "checkpoints.sqlite",
+        enable_plots=False,
+        enable_smoke_test=False,
+    )
+    config = {"configurable": {"thread_id": "no-re-ask"}}
+
+    interrupted = graph.invoke(
+        {
+            "requirement": "建立一个组件模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+            "max_expert_rounds": 2,
+        },
+        config,
+    )
+    assert "__interrupt__" in interrupted
+    assert any(
+        "material fuel: density" in q for q in interrupted["__interrupt__"][0].value["questions"]
+    )
+
+    state = graph.invoke(
+        Command(resume={"expert_feedback": "fuel density is 10.4 g/cm3"}),
+        config,
+    )
+
+    # The expert has answered. Even though fake_generate_plan STILL returns a plan with
+    # the 'density' confirmation, the second round must NOT re-interrupt to ask it again.
+    assert "__interrupt__" not in state
+    assert state["expert_feedback"] == ["fuel density is 10.4 g/cm3"]
+    assert state["validation_report"].is_valid is True
+    assert Path(state["model_path"]).exists()
+
+
 def test_plan_graph_includes_expert_feedback_in_generation_prompt(tmp_path: Path) -> None:
     def fake_generate_plan(*, requirement: str, schema, model: str):
         assert "xy 图不够，要增加 xz 截面" in requirement
@@ -410,7 +736,9 @@ def test_plan_graph_includes_expert_feedback_in_generation_prompt(tmp_path: Path
     assert state["validation_report"].is_valid is True
 
 
-def test_plan_graph_prompt_includes_capability_consistency_rule(tmp_path: Path) -> None:
+def test_plan_graph_augmented_requirement_keeps_policy_out_of_user_context(tmp_path: Path) -> None:
+    from openmc_agent.prompts import SIMULATION_PLAN_SYSTEM_PROMPT
+
     captured: dict = {}
 
     def fake_generate_plan(*, requirement: str, schema, model: str):
@@ -434,9 +762,11 @@ def test_plan_graph_prompt_includes_capability_consistency_rule(tmp_path: Path) 
     )
 
     requirement = captured["requirement"]
-    assert "Capability report consistency rule" in requirement
-    assert 'capability_report.supported_renderer = "none"' in requirement
-    assert "capability_report.is_executable is false" in requirement
+    assert "OpenMC API context" in requirement
+    assert "Few-shot" in requirement
+    assert "Capability report consistency rule" not in requirement
+    assert "non-executable complex-only plan" in SIMULATION_PLAN_SYSTEM_PROMPT
+    assert "capability_report.supported_renderer='none'" in SIMULATION_PLAN_SYSTEM_PROMPT
 
 
 def test_plan_graph_normalizes_inconsistent_capability_report_from_llm(tmp_path: Path) -> None:

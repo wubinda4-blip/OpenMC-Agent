@@ -1,93 +1,116 @@
-from openmc_agent.schemas import SimulationPlan, SimulationSpec, ValidationReport
+"""Validation for OpenMC-agent IR / SimulationPlan / generated scripts.
+
+Validators return a :class:`~openmc_agent.schemas.ValidationReport` that carries
+both the legacy free-text ``errors`` / ``warnings`` / ``suggestions`` lists (for
+backward compatibility) and a structured ``issues`` list.  Each issue carries a
+stable ``code``, related OpenMC ``concept_id``, knowledge references and repair
+hints, so an LLM self-repair loop or a future retrieval layer can act on them.
+
+Legacy message strings are intentionally preserved verbatim so existing callers
+that match on ``report.errors`` text keep working.
+"""
+
+from __future__ import annotations
+
+from openmc_agent.error_catalog import add_issue, issue_from_catalog
+from openmc_agent.schemas import (
+    SimulationPlan,
+    SimulationSpec,
+    ValidationIssue,
+    ValidationReport,
+)
 
 
 def validate_simulation_spec(spec: SimulationSpec) -> ValidationReport:
-    errors: list[str] = []
-    warnings: list[str] = []
+    """Validate a pin-cell :class:`SimulationSpec`.
+
+    The schema's own model validators already reject most malformed specs, but a
+    caller may bypass validation via ``model_construct`` (e.g. a repair loop
+    inspecting a broken draft).  These checks catch that case and attach stable
+    error codes + repair hints.
+    """
+    issues: list[ValidationIssue] = []
     geometry = spec.pin_cell.geometry
 
     if geometry.fuel_radius_cm <= 0 or geometry.fuel_radius_cm > 2.0:
-        errors.append(
-            f"fuel_radius_cm={geometry.fuel_radius_cm} is outside the supported "
-            "pin-cell range (0, 2.0] cm"
+        add_issue(
+            issues,
+            "geometry.fuel_radius.out_of_range",
+            message=(
+                f"fuel_radius_cm={geometry.fuel_radius_cm} is outside the supported "
+                "pin-cell range (0, 2.0] cm"
+            ),
         )
 
     if geometry.pitch_cm <= 0 or geometry.pitch_cm > 5.0:
-        errors.append(
-            f"pitch_cm={geometry.pitch_cm} is outside the supported range (0, 5.0] cm"
+        add_issue(
+            issues,
+            "geometry.pitch.out_of_range",
+            message=(
+                f"pitch_cm={geometry.pitch_cm} is outside the supported range (0, 5.0] cm"
+            ),
         )
 
     if geometry.fuel_radius_cm >= geometry.pitch_cm / 2:
-        errors.append("fuel_radius_cm must be less than half of pitch_cm")
+        add_issue(issues, "geometry.fuel_radius.too_large_for_pitch")
 
     has_clad_inner = geometry.clad_inner_radius_cm is not None
     has_clad_outer = geometry.clad_outer_radius_cm is not None
     if has_clad_inner != has_clad_outer:
-        errors.append("clad_inner_radius_cm and clad_outer_radius_cm must both be set")
+        add_issue(issues, "geometry.cladding.radii_partial_missing")
 
     if has_clad_inner and has_clad_outer:
         assert geometry.clad_inner_radius_cm is not None
         assert geometry.clad_outer_radius_cm is not None
         if geometry.clad_inner_radius_cm <= geometry.fuel_radius_cm:
-            errors.append("clad_inner_radius_cm must exceed fuel_radius_cm")
+            add_issue(issues, "geometry.cladding.inner_not_greater_than_fuel")
         if geometry.clad_outer_radius_cm <= geometry.clad_inner_radius_cm:
-            errors.append("clad_outer_radius_cm must exceed clad_inner_radius_cm")
+            add_issue(issues, "geometry.cladding.outer_not_greater_than_inner")
         if geometry.clad_outer_radius_cm >= geometry.pitch_cm / 2:
-            errors.append("clad_outer_radius_cm must be less than half of pitch_cm")
+            add_issue(issues, "geometry.cladding.outer_too_large_for_pitch")
 
     if spec.pin_cell.cladding is not None and not has_clad_outer:
-        errors.append("cladding material is present but cladding radii are missing")
+        add_issue(issues, "geometry.cladding.material_missing_for_radii")
     if spec.pin_cell.cladding is None and has_clad_outer:
-        errors.append("cladding radii are present but cladding material is missing")
+        add_issue(issues, "geometry.cladding.radii_missing_for_material")
 
     if spec.settings.inactive >= spec.settings.batches:
-        errors.append("inactive must be less than batches")
+        add_issue(issues, "settings.inactive.not_less_than_batches")
 
-    return ValidationReport(is_valid=not errors, errors=errors, warnings=warnings)
+    return ValidationReport.from_issues(issues)
 
 
 def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
-    errors: list[str] = []
-    warnings: list[str] = []
-    suggestions: list[str] = []
+    """Validate a :class:`SimulationPlan`, merging any pin-cell spec issues."""
+    issues: list[ValidationIssue] = []
 
     if plan.model_spec is not None:
-        spec_report = validate_simulation_spec(plan.model_spec)
-        errors.extend(spec_report.errors)
-        warnings.extend(spec_report.warnings)
-        suggestions.extend(spec_report.suggestions)
+        issues.extend(validate_simulation_spec(plan.model_spec).issues)
 
     if plan.model_spec is None and plan.complex_model is None:
-        errors.append("SimulationPlan requires model_spec or complex_model")
+        add_issue(issues, "plan.model.missing")
 
     if plan.complex_model is not None and not plan.capability_report.is_executable:
-        warnings.append(
-            "Complex OpenMC IR was generated, but this executor version cannot render it yet."
-        )
-        suggestions.append(
-            "Review complex_model and capability_report before implementing a renderer for this subsystem."
-        )
+        # Warning + review suggestion. The exact strings are matched by graph.py
+        # when summarising the transcript, so keep them verbatim.
+        add_issue(issues, "plan.complex_model.non_executable")
 
     if (
         plan.capability_report.is_executable
         and plan.model_spec is None
         and plan.capability_report.supported_renderer not in {"assembly", "triso", "core"}
     ):
-        errors.append("Executable plans require model_spec or supported_renderer='assembly'/'triso'/'core'")
+        add_issue(issues, "plan.executable.unsupported_renderer")
 
-    return ValidationReport(
-        is_valid=not errors,
-        errors=errors,
-        warnings=warnings,
-        suggestions=suggestions,
-    )
+    return ValidationReport.from_issues(issues)
 
 
 def validate_openmc_script(
     script: str,
     spec: SimulationSpec | None = None,
 ) -> ValidationReport:
-    errors: list[str] = []
+    """Check that a rendered OpenMC script contains the required structures."""
+    issues: list[ValidationIssue] = []
     required_snippets = {
         "materials": "materials = openmc.Materials",
         "geometry": "geometry = openmc.Geometry",
@@ -98,7 +121,11 @@ def validate_openmc_script(
 
     for label, snippet in required_snippets.items():
         if snippet not in script:
-            errors.append(f"script missing required {label} structure")
+            add_issue(
+                issues,
+                "script.missing_structure",
+                message=f"script missing required {label} structure",
+            )
 
     if spec is not None:
         expected_names = [
@@ -110,6 +137,18 @@ def validate_openmc_script(
 
         for material_name in expected_names:
             if material_name not in script:
-                errors.append(f"material {material_name!r} is not referenced in script")
+                add_issue(
+                    issues,
+                    "script.material_not_referenced",
+                    message=f"material {material_name!r} is not referenced in script",
+                )
 
-    return ValidationReport(is_valid=not errors, errors=errors)
+    return ValidationReport.from_issues(issues)
+
+
+__all__ = [
+    "validate_simulation_spec",
+    "validate_simulation_plan",
+    "validate_openmc_script",
+    "issue_from_catalog",
+]

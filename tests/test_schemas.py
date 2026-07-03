@@ -327,6 +327,21 @@ def test_complex_material_with_partial_density_and_confirmation_is_accepted() ->
     assert material_value_only.density_unit is None
 
 
+def test_complex_material_accepts_multigroup_macroscopic_data() -> None:
+    material = ComplexMaterialSpec(
+        id="uo2",
+        name="UO2",
+        density_unit="macro",
+        density_value=1.0,
+        macroscopic="uo2",
+        source="C5G7 seven-group macroscopic benchmark data",
+    )
+
+    assert material.macroscopic == "uo2"
+    assert material.composition == []
+    assert material.chemical_formula is None
+
+
 def test_complex_material_partial_density_without_confirmation_still_rejected() -> None:
     """A partial density with no confirmation flag is still a malformed material."""
     with pytest.raises(ValidationError) as exc_info:
@@ -406,15 +421,15 @@ def test_lattice_tolerates_null_rings_and_universe_pattern() -> None:
     )
     assert lattice.rings == []
 
-    # None is coerced to [] before the semantic check fires, so we get the
-    # domain error rather than a pydantic list_type type error.
-    with pytest.raises(ValidationError) as exc_info:
-        LatticeSpec(
-            id="bad",
-            name="bad",
-            kind="rect",
-            pitch_cm=(1.26, 1.26),
-            universe_pattern=None,
-        )
+    incomplete = LatticeSpec(
+        id="incomplete",
+        name="incomplete",
+        kind="rect",
+        pitch_cm=(1.26, 1.26),
+        universe_pattern=None,
+    )
 
-    assert "rect lattice requires universe_pattern" in str(exc_info.value)
+    assert incomplete.universe_pattern == []
+    assert incomplete.requires_human_confirmation == [
+        "rect lattice universe_pattern is missing"
+    ]

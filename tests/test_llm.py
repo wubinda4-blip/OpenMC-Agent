@@ -76,6 +76,34 @@ def test_generate_structured_output_parses_material_spec() -> None:
     assert client.completions.calls[0]["model"] == "test:material-model"
 
 
+def test_structured_output_separates_system_prompt_from_case_requirement() -> None:
+    client = FakeClient(
+        """
+        {
+          "name": "UO2 fuel",
+          "density_unit": "g/cm3",
+          "density_value": 10.4,
+          "composition": [{"name": "U235", "percent": 4.95}]
+        }
+        """
+    )
+
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料；这段文字来自 case.md",
+        schema=MaterialSpec,
+        model="test:material-model",
+        client=client,
+    )
+
+    assert result.ok is True
+    messages = client.completions.calls[0]["messages"]
+    assert "You are an OpenMC modeling agent" in messages[0]["content"]
+    assert "Do not invent material composition" in messages[0]["content"]
+    assert "case.md" not in messages[0]["content"]
+    assert "Case requirement and per-run context" in messages[1]["content"]
+    assert "这段文字来自 case.md" in messages[1]["content"]
+
+
 def test_generate_structured_output_parses_simulation_plan() -> None:
     client = FakeClient(
         """
@@ -513,10 +541,15 @@ def test_llm_progress_is_silent_when_disabled(capsys) -> None:
     assert capsys.readouterr().err == ""
 
 
-def _sse_line(content: str) -> str:
+def _sse_line(content: str = "", reasoning_content: str = "") -> str:
     import json as _json
 
-    return "data: " + _json.dumps({"choices": [{"delta": {"content": content}}]})
+    delta: dict = {}
+    if content:
+        delta["content"] = content
+    if reasoning_content:
+        delta["reasoning_content"] = reasoning_content
+    return "data: " + _json.dumps({"choices": [{"delta": delta}]})
 
 
 class _FakeStreamResponse:
@@ -542,20 +575,22 @@ class _FakeStreamContextManager:
 
 
 class FakeStreamHttpClient:
-    def __init__(self) -> None:
+    def __init__(self, lines: list[str] | None = None) -> None:
         self.calls: list[dict] = []
+        self._lines = lines
 
     def stream(self, method: str, url: str, *, headers: dict, json: dict, timeout: float):
         self.calls.append(
             {"method": method, "url": url, "headers": headers, "json": json, "timeout": timeout}
         )
-        lines = [
-            _sse_line('{"name": "UO2 fuel", '),
-            _sse_line('"density_unit": "g/cm3", "density_value": 10.4, '),
-            _sse_line('"composition": [{"name": "U235", "percent": 4.95}]}'),
-            "data: [DONE]",
-        ]
-        return _FakeStreamContextManager(lines)
+        if self._lines is None:
+            self._lines = [
+                _sse_line('{"name": "UO2 fuel", '),
+                _sse_line('"density_unit": "g/cm3", "density_value": 10.4, '),
+                _sse_line('"composition": [{"name": "U235", "percent": 4.95}]}'),
+                "data: [DONE]",
+            ]
+        return _FakeStreamContextManager(self._lines)
 
 
 def test_zhipu_streaming_accumulates_content(monkeypatch) -> None:
@@ -577,6 +612,33 @@ def test_zhipu_streaming_accumulates_content(monkeypatch) -> None:
     assert call["method"] == "POST"
     assert call["json"]["stream"] is True
     assert call["json"]["model"] == "glm-5.2"
+
+
+def test_zhipu_streaming_falls_back_to_reasoning_content(monkeypatch) -> None:
+    # Thinking models (GLM-4.5/4.6/5) stream the answer via
+    # delta.reasoning_content while delta.content stays empty. The reader
+    # must fall back so the response is not dropped as "only chunks, no
+    # content".
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENMC_AGENT_STREAM", "true")
+    lines = [
+        _sse_line(reasoning_content='{"name": "UO2 fuel", '),
+        _sse_line(reasoning_content='"density_unit": "g/cm3", "density_value": 10.4, '),
+        _sse_line(reasoning_content='"composition": [{"name": "U235", "percent": 4.95}]}'),
+        "data: [DONE]",
+    ]
+    http_client = FakeStreamHttpClient(lines)
+
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料",
+        schema=MaterialSpec,
+        model="zhipu:glm-5.2",
+        client=ZhipuChatClient(http_client=http_client),
+    )
+
+    assert result.ok is True
+    assert result.value is not None
+    assert result.value.name == "UO2 fuel"
 
 
 def test_streaming_can_be_disabled_via_env(monkeypatch) -> None:
