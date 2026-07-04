@@ -42,8 +42,10 @@ FEW_SHOT_EXAMPLES = (
         requirement="Describe a core layout with fuel assemblies, radial reflector, and control rods.",
         structured_outline=(
             "Use complex_model.kind='core', CoreSpec, ReflectorSpec, ControlRodSpec, "
-            "assembly ids, lattice ids, supported_renderer='core' for complete rectangular core lattices, "
-            "and explicit human-confirmation items for missing dimensions."
+            "assembly ids, lattice ids, CoreSpec.boundary_conditions for the six outer faces, "
+            "CoreSpec.axial_layers for fuel-height and axial reflector regions, "
+            "supported_renderer='core' for complete rectangular core lattices, and explicit "
+            "human-confirmation items for missing dimensions."
         ),
     ),
     FewShotExample(

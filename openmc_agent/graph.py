@@ -1,9 +1,10 @@
 from pathlib import Path
 import sys
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 import functools
 import json
+import re
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -20,12 +21,18 @@ from openmc_agent.llm import (
 from openmc_agent.openmc_api import retrieve_openmc_context
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
+from openmc_agent.retrieval import (
+    RetrievalOutcome,
+    ToolSpec,
+    run_retrieval_loop,
+)
 from openmc_agent.schemas import (
     ComplexModelSpec,
     ExecutionCheckSpec,
     ExpertFeedback,
     PlotSpec,
     RenderCapabilityReport,
+    ResolvedExpertItem,
     SimulationPlan,
     SimulationSpec,
     ValidationReport,
@@ -76,10 +83,31 @@ class GraphState(TypedDict, total=False):
     awaiting_expert_feedback: bool
     human_loop_events: list[dict[str, Any]]
     needs_regeneration: bool
+    expert_feedback_action: Literal[
+        "none",
+        "classify",
+        "continue",
+        "patch_plan",
+        "regenerate_plan",
+        "manual_review",
+    ]
+    expert_feedback_interpretation: str | None
+    plan_patch: list[dict[str, Any]] | None
+    patch_confidence: Literal["high", "medium", "low"] | None
+    patch_reason: str | None
+    patch_error: str | None
+    resolved_expert_items: list[dict[str, Any]]
+    capability_repair_errors: list[str]
     raw_llm_outputs: list[str]
     openmc_api_docs: list[dict[str, str]]
     few_shot_examples: list[dict[str, str]]
     verbose: bool
+    investigation_trace: list[dict[str, Any]]
+    investigation_findings: str
+
+
+InvestigationLlmFn = Callable[[str], StructuredOutputResult]
+RetrievalRootsResolver = Callable[[GraphState], list[Path]]
 
 
 def build_graph(
@@ -133,6 +161,12 @@ def build_plan_graph(
     smoke_test_tool: SmokeTestToolFn = run_smoke_test,
     retrieve_docs: RetrieveOpenMCDocsFn = retrieve_openmc_context,
     select_examples: SelectFewShotsFn = select_few_shots,
+    investigation_llm: InvestigationLlmFn | None = None,
+    retrieval_roots_resolver: RetrievalRootsResolver | None = None,
+    retrieval_tool_dispatch: dict[str, Callable[..., ToolResult]] | None = None,
+    retrieval_tool_specs: list[ToolSpec] | None = None,
+    investigation_max_iterations: int = 4,
+    enable_openmc_source_root: bool = False,
     enable_plots: bool = True,
     enable_smoke_test: bool = True,
     max_retries: int = 3,
@@ -144,15 +178,32 @@ def build_plan_graph(
     if checkpoint_path is not None:
         checkpointer = _build_sqlite_checkpointer(checkpoint_path)
 
+    if retrieval_roots_resolver is None:
+        retrieval_roots_resolver = _make_default_retrieval_roots_resolver(
+            enable_openmc_source_root=enable_openmc_source_root
+        )
+
     graph = StateGraph(GraphState)
     graph.add_node("receive_requirement", _receive_requirement)
     graph.add_node("retrieve_openmc_docs", _make_retrieve_openmc_docs_node(retrieve_docs))
     graph.add_node("select_few_shots", _make_select_few_shots_node(select_examples))
-    graph.add_node("generate_plan", _make_generate_plan_node(generate_plan))
+    graph.add_node(
+        "generate_plan",
+        _make_generate_plan_node(
+            generate_plan,
+            investigation_llm=investigation_llm,
+            retrieval_roots_resolver=retrieval_roots_resolver,
+            retrieval_tool_dispatch=retrieval_tool_dispatch,
+            retrieval_tool_specs=retrieval_tool_specs,
+            investigation_max_iterations=investigation_max_iterations,
+        ),
+    )
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
     graph.add_node("repair_plan_format", _make_repair_plan_format_node(generate_plan, max_retries))
-    graph.add_node("assess_capability", _assess_plan_capability)
+    graph.add_node("assess_capability", _make_assess_plan_capability_node(max_retries))
     graph.add_node("ask_expert", _ask_expert)
+    graph.add_node("classify_expert_feedback", _classify_expert_feedback)
+    graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
     graph.add_node("render_plan_script", _render_plan_script)
     graph.add_node(
         "execute_tools",
@@ -164,7 +215,17 @@ def build_plan_graph(
             enable_smoke_test=enable_smoke_test,
         ),
     )
-    graph.add_node("reflect_plan", _make_reflect_plan_node(repair_plan))
+    graph.add_node(
+        "reflect_plan",
+        _make_reflect_plan_node(
+            repair_plan,
+            investigation_llm=investigation_llm,
+            retrieval_roots_resolver=retrieval_roots_resolver,
+            retrieval_tool_dispatch=retrieval_tool_dispatch,
+            retrieval_tool_specs=retrieval_tool_specs,
+            investigation_max_iterations=investigation_max_iterations,
+        ),
+    )
     graph.add_node("save_record", _save_plan_record)
 
     graph.add_edge(START, "receive_requirement")
@@ -184,14 +245,39 @@ def build_plan_graph(
     )
     graph.add_edge("repair_plan_format", "validate_plan")
     graph.add_edge("reflect_plan", "validate_plan")
-    graph.add_edge("assess_capability", "ask_expert")
+    graph.add_conditional_edges(
+        "assess_capability",
+        _make_plan_capability_assessment_router(),
+        {
+            "reflect": "reflect_plan",
+            "ask": "ask_expert",
+        },
+    )
     graph.add_conditional_edges(
         "ask_expert",
         _make_expert_feedback_router(),
         {
+            "classify": "classify_expert_feedback",
+            "render": "render_plan_script",
+            "stop": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "classify_expert_feedback",
+        _make_expert_feedback_action_router(),
+        {
+            "patch": "patch_plan_from_expert_feedback",
             "generate": "generate_plan",
             "render": "render_plan_script",
             "stop": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "patch_plan_from_expert_feedback",
+        _make_plan_patch_router(),
+        {
+            "validate": "validate_plan",
+            "generate": "generate_plan",
         },
     )
     graph.add_edge("render_plan_script", "execute_tools")
@@ -282,15 +368,191 @@ def _make_select_few_shots_node(select_examples: SelectFewShotsFn):
     return _select_few_shots
 
 
-def _make_generate_plan_node(generate_plan: GeneratePlanFn):
+def _make_default_retrieval_roots_resolver(
+    *, enable_openmc_source_root: bool = False
+) -> RetrievalRootsResolver:
+    """Build the default retrieval-roots resolver from GraphState.
+
+    Roots cover the four evidence sources: the agent source tree, the run's
+    output directory (rendered model.py / XML), the data/knowledge dir, and
+    (optionally) the installed OpenMC library source.
+    """
+
+    def _resolve(state: GraphState) -> list[Path]:
+        roots: list[Path] = []
+        repo_root = Path(__file__).resolve().parent.parent
+        roots.append(repo_root / "openmc_agent")
+        output_dir = state.get("output_dir")
+        if output_dir:
+            roots.append(Path(output_dir))
+        roots.append(repo_root / "data")
+        if enable_openmc_source_root:
+            try:
+                import openmc as _openmc  # type: ignore[import-not-found]
+
+                roots.append(Path(_openmc.__file__).resolve().parent)
+            except Exception:
+                pass
+        return [root for root in roots if root.exists()]
+
+    return _resolve
+
+
+def _error_catalog_hints_for(errors: list[str]) -> list[dict[str, Any]]:
+    """Pull matching error_catalog entries to seed the investigation prompt.
+
+    ``ERROR_CATALOG`` entries are plain dicts, but their ``knowledge_refs`` /
+    ``repair_hints`` elements are Pydantic models, so access is by attribute.
+    """
+    try:
+        from openmc_agent.error_catalog import ERROR_CATALOG
+    except Exception:
+        return []
+    hints: list[dict[str, Any]] = []
+    for code, entry in ERROR_CATALOG.items():
+        message = entry.get("message", "")
+        schema_path = entry.get("schema_path", "")
+        hit = any(
+            (bool(message) and message[:40] in err)
+            or (bool(schema_path) and schema_path in err)
+            for err in errors
+        )
+        if not hit:
+            continue
+        retrieval_queries = [
+            query
+            for ref in entry.get("knowledge_refs", [])
+            if (query := getattr(ref, "retrieval_query", None))
+        ]
+        repair_hints = [
+            {
+                "action": getattr(hint, "action", ""),
+                "message": getattr(hint, "message", ""),
+                "target_path": getattr(hint, "target_path", None),
+                "example_patch": getattr(hint, "example_patch", None),
+            }
+            for hint in entry.get("repair_hints", [])
+        ]
+        hints.append(
+            {
+                "error_code": code,
+                "schema_path": schema_path,
+                "retrieval_queries": retrieval_queries,
+                "repair_hints": repair_hints,
+            }
+        )
+        if len(hints) >= 5:
+            break
+    return hints
+
+
+def _run_investigation_safely(
+    state: GraphState,
+    *,
+    phase: Literal["generate", "reflect"],
+    task_brief: str,
+    plan_summary: str,
+    investigation_llm: InvestigationLlmFn | None,
+    retrieval_roots_resolver: RetrievalRootsResolver | None,
+    retrieval_tool_dispatch: dict[str, Callable[..., ToolResult]] | None,
+    retrieval_tool_specs: list[ToolSpec] | None,
+    investigation_max_iterations: int,
+    error_catalog_hints: list[dict[str, Any]] | None,
+) -> RetrievalOutcome | None:
+    """Run the retrieval loop, returning None when disabled or when it fails.
+
+    Never raises: investigation is best-effort and must not block the main
+    generate/reflect flow.
+    """
+    if investigation_llm is None or retrieval_roots_resolver is None:
+        return None
+    roots = retrieval_roots_resolver(state)
+    if not roots:
+        return None
+    _progress(state, "investigation", f"starting {phase} retrieval loop")
+    try:
+        outcome = run_retrieval_loop(
+            phase=phase,
+            task_brief=task_brief,
+            plan_summary=plan_summary,
+            roots=roots,
+            investigation_llm=investigation_llm,
+            tool_dispatch=retrieval_tool_dispatch,
+            tool_specs=retrieval_tool_specs,
+            max_iterations=investigation_max_iterations,
+            error_catalog_hints=error_catalog_hints,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _progress(state, "investigation", f"failed: {exc}")
+        return None
+    patch_ops = len(outcome.patch) if outcome.patch else 0
+    _progress(
+        state,
+        "investigation",
+        f"finished iterations={len(outcome.trace)} ok={outcome.ok} patch_ops={patch_ops}",
+    )
+    return outcome
+
+
+def _investigation_state_updates(outcome: RetrievalOutcome | None) -> dict[str, Any]:
+    if outcome is None:
+        return {}
+    return {
+        "investigation_trace": outcome.trace,
+        "investigation_findings": outcome.findings,
+    }
+
+
+def _make_generate_plan_node(
+    generate_plan: GeneratePlanFn,
+    *,
+    investigation_llm: InvestigationLlmFn | None = None,
+    retrieval_roots_resolver: RetrievalRootsResolver | None = None,
+    retrieval_tool_dispatch: dict[str, Callable[..., ToolResult]] | None = None,
+    retrieval_tool_specs: list[ToolSpec] | None = None,
+    investigation_max_iterations: int = 4,
+):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):
             return {}
 
         model = state.get("model", "openai:gpt-4o")
         _progress(state, "generate_plan", f"calling LLM model={model}")
+        events = list(state.get("human_loop_events", []))
+        if state.get("expert_feedback"):
+            events.append(
+                {
+                    "event": "expert_feedback_consumption_prompt_applied",
+                    "round": state.get("expert_round_count", 0),
+                    "reason": "generation prompt includes expert feedback consumption rules",
+                    "action": "generate_plan",
+                }
+            )
+        investigation_outcome = _run_investigation_safely(
+            state,
+            phase="generate",
+            task_brief=state.get("requirement", ""),
+            plan_summary="",
+            investigation_llm=investigation_llm,
+            retrieval_roots_resolver=retrieval_roots_resolver,
+            retrieval_tool_dispatch=retrieval_tool_dispatch,
+            retrieval_tool_specs=retrieval_tool_specs,
+            investigation_max_iterations=investigation_max_iterations,
+            error_catalog_hints=None,
+        )
+        requirement = _augmented_plan_requirement(state)
+        if (
+            investigation_outcome is not None
+            and investigation_outcome.ok
+            and investigation_outcome.findings
+        ):
+            requirement = (
+                f"{requirement}\n\n"
+                "Investigation findings (from codebase retrieval; verify before relying on):\n"
+                f"{_truncate_text(investigation_outcome.findings, 2000)}\n"
+            )
         result = generate_plan(
-            requirement=_augmented_plan_requirement(state),
+            requirement=requirement,
             schema=SimulationPlan,
             model=model,
         )
@@ -301,6 +563,8 @@ def _make_generate_plan_node(generate_plan: GeneratePlanFn):
                 "simulation_spec": None,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "error": result.error or "failed to generate SimulationPlan",
+                "human_loop_events": events,
+                **_investigation_state_updates(investigation_outcome),
             }
         _progress(
             state,
@@ -315,6 +579,10 @@ def _make_generate_plan_node(generate_plan: GeneratePlanFn):
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+            "needs_regeneration": False,
+            "expert_feedback_action": "none",
+            "human_loop_events": events,
+            **_investigation_state_updates(investigation_outcome),
         }
 
     return _generate_plan
@@ -565,9 +833,30 @@ def _make_plan_capability_router():
 
 def _make_expert_feedback_router():
     def _route(state: GraphState) -> str:
-        if state.get("needs_regeneration"):
+        if state.get("expert_feedback_action") == "classify":
+            return "classify"
+        return _make_plan_capability_router()(state)
+
+    return _route
+
+
+def _make_expert_feedback_action_router():
+    def _route(state: GraphState) -> str:
+        action = state.get("expert_feedback_action", "none")
+        if action == "patch_plan":
+            return "patch"
+        if action == "regenerate_plan" or state.get("needs_regeneration"):
             return "generate"
         return _make_plan_capability_router()(state)
+
+    return _route
+
+
+def _make_plan_patch_router():
+    def _route(state: GraphState) -> str:
+        if state.get("expert_feedback_action") == "regenerate_plan" or state.get("patch_error"):
+            return "generate"
+        return "validate"
 
     return _route
 
@@ -587,66 +876,126 @@ def _make_plan_execution_router(max_retries: int):
     return _route
 
 
-def _assess_plan_capability(state: GraphState) -> GraphState:
-    _progress(state, "assess_capability", "checking executor support for structured plan")
-    plan = _coerce_simulation_plan(state.get("simulation_plan"))
-    if plan is None:
-        return {}
+def _make_plan_capability_assessment_router():
+    def _route(state: GraphState) -> str:
+        # assess_capability injects validation errors for LLM-fixable structural
+        # defects (missing-cell references, pin-count mismatches, bad radii). Send
+        # those back to reflect_plan; material confirmations and clean plans
+        # proceed to ask_expert, which is a no-op when there is nothing to ask.
+        report = state.get("validation_report")
+        if (
+            report is not None
+            and not report.is_valid
+            and state.get("capability_repair_errors")
+            and _coerce_simulation_plan(state.get("simulation_plan")) is not None
+        ):
+            return "reflect"
+        return "ask"
 
-    capability = _capability_for_plan(plan)
-    updated_plan = plan.model_copy(update={"capability_report": capability})
-    report = state.get("validation_report") or ValidationReport(is_valid=True)
-    warnings = [
-        warning
-        for warning in report.warnings
-        if warning != "Complex OpenMC IR was generated, but this executor version cannot render it yet."
-    ]
-    suggestions = [
-        suggestion
-        for suggestion in report.suggestions
-        if suggestion
-        != "Review complex_model and capability_report before implementing a renderer for this subsystem."
-    ]
+    return _route
 
-    if capability.renderability == "none":
-        message = "; ".join(capability.reasons) or "no renderer can handle this plan"
-        if message not in warnings:
-            warnings.append(message)
-        suggestions.append(
-            "Use complex_model as reviewed IR before adding a renderer for this subsystem."
+
+def _make_assess_plan_capability_node(max_retries: int):
+    def _assess_plan_capability(state: GraphState) -> GraphState:
+        _progress(state, "assess_capability", "checking executor support for structured plan")
+        plan = _coerce_simulation_plan(state.get("simulation_plan"))
+        if plan is None:
+            return {}
+
+        capability = _capability_for_plan(plan)
+        updated_plan = plan.model_copy(update={"capability_report": capability})
+        report = state.get("validation_report") or ValidationReport(is_valid=True)
+        warnings = [
+            warning
+            for warning in report.warnings
+            if warning != "Complex OpenMC IR was generated, but this executor version cannot render it yet."
+        ]
+        suggestions = [
+            suggestion
+            for suggestion in report.suggestions
+            if suggestion
+            != "Review complex_model and capability_report before implementing a renderer for this subsystem."
+        ]
+
+        if capability.renderability == "none":
+            message = "; ".join(capability.reasons) or "no renderer can handle this plan"
+            if message not in warnings:
+                warnings.append(message)
+            suggestions.append(
+                "Use complex_model as reviewed IR before adding a renderer for this subsystem."
+            )
+        elif capability.renderability == "skeleton":
+            warnings.append(
+                "Renderer produced a review-only model.py skeleton; the model is NOT executable."
+            )
+            suggestions.append(
+                "Fill the gaps listed in capability_report.json and TODO.md before exporting XML."
+            )
+
+        capability_warnings = [
+            warning for warning in capability.warnings if warning not in warnings
+        ]
+        warnings.extend(capability_warnings)
+
+        # Structural plan defects (a universe pointing at a missing cell, a pin-count
+        # mismatch, a bad radius) are LLM typos, not missing expert facts. Route them
+        # back to the LLM via reflect_plan instead of asking the expert, who can only
+        # supply material values. Injecting them as validation errors makes the existing
+        # reflect_plan path fire automatically; the assess_capability conditional edge
+        # then picks reflect vs ask_expert based on retry_count.
+        events = list(state.get("human_loop_events", []))
+        retry_count = state.get("retry_count", 0)
+        repair_errors: list[str] = (
+            _capability_self_repair_errors(capability)
+            if capability.renderability in {"none", "skeleton"}
+            else []
         )
-    elif capability.renderability == "skeleton":
-        warnings.append(
-            "Renderer produced a review-only model.py skeleton; the model is NOT executable."
-        )
-        suggestions.append(
-            "Fill the gaps listed in capability_report.json and TODO.md before exporting XML."
-        )
+        inject_invalid = bool(repair_errors) and retry_count < max_retries
+        if inject_invalid:
+            events.append(
+                {
+                    "event": "capability_structure_errors_delegated_to_reflect",
+                    "retry_count": retry_count,
+                    "max_retries": max_retries,
+                    "errors": repair_errors,
+                    "reason": (
+                        "structural plan defects are LLM-fixable; routing to reflect_plan "
+                        "instead of asking the expert"
+                    ),
+                }
+            )
+            updated_report = ValidationReport(
+                is_valid=False,
+                errors=list(repair_errors),
+                warnings=warnings,
+                suggestions=suggestions,
+            )
+        else:
+            updated_report = ValidationReport(
+                is_valid=report.is_valid,
+                errors=report.errors,
+                warnings=warnings,
+                suggestions=suggestions,
+            )
 
-    capability_warnings = [
-        warning for warning in capability.warnings if warning not in warnings
-    ]
-    warnings.extend(capability_warnings)
+        _progress(
+            state,
+            "assess_capability",
+            (
+                f"renderer={capability.supported_renderer} "
+                f"renderability={capability.renderability}"
+                + (f"; {len(repair_errors)} self-repair error(s)" if repair_errors else "")
+            ),
+        )
+        return {
+            "simulation_plan": updated_plan,
+            "simulation_spec": updated_plan.model_spec,
+            "validation_report": updated_report,
+            "capability_repair_errors": repair_errors,
+            "human_loop_events": events,
+        }
 
-    updated_report = ValidationReport(
-        is_valid=report.is_valid,
-        errors=report.errors,
-        warnings=warnings,
-        suggestions=suggestions,
-    )
-    _progress(
-        state,
-        "assess_capability",
-        (
-            f"renderer={capability.supported_renderer} "
-            f"renderability={capability.renderability}"
-        ),
-    )
-    return {
-        "simulation_plan": updated_plan,
-        "simulation_spec": updated_plan.model_spec,
-        "validation_report": updated_report,
-    }
+    return _assess_plan_capability
 
 
 def _ask_expert(state: GraphState) -> GraphState:
@@ -663,6 +1012,8 @@ def _ask_expert(state: GraphState) -> GraphState:
             "pending_expert_questions": [],
             "awaiting_expert_feedback": False,
             "needs_regeneration": False,
+            "expert_feedback_action": "none",
+            "human_loop_events": state.get("human_loop_events", []),
         }
 
     if round_count >= max_rounds:
@@ -687,6 +1038,7 @@ def _ask_expert(state: GraphState) -> GraphState:
             "pending_expert_questions": questions,
             "awaiting_expert_feedback": False,
             "needs_regeneration": False,
+            "expert_feedback_action": "none",
             "human_loop_events": events,
         }
 
@@ -717,6 +1069,21 @@ def _ask_expert(state: GraphState) -> GraphState:
         "should_continue": should_continue,
     }
     events.append(event)
+    resolved_items = _update_resolved_expert_items_from_feedback(
+        state=state,
+        questions=questions,
+        feedback_items=feedback_items,
+        round_index=prompt_round,
+    )
+    if resolved_items:
+        events.append(
+            {
+                "event": "expert_feedback_resolved_items_extracted",
+                "round": prompt_round,
+                "items": resolved_items,
+                "reason": "bound current pending questions to the expert resume payload",
+            }
+        )
 
     if not should_continue or not feedback_items:
         return {
@@ -725,6 +1092,8 @@ def _ask_expert(state: GraphState) -> GraphState:
             "expert_round_count": prompt_round,
             "awaiting_expert_feedback": False,
             "needs_regeneration": False,
+            "expert_feedback_action": "continue",
+            "resolved_expert_items": resolved_items,
             "human_loop_events": events,
         }
 
@@ -736,7 +1105,189 @@ def _ask_expert(state: GraphState) -> GraphState:
         "pending_expert_questions": [],
         "expert_round_count": prompt_round,
         "awaiting_expert_feedback": False,
-        "needs_regeneration": True,
+        "needs_regeneration": False,
+        "expert_feedback_action": "classify",
+        "resolved_expert_items": resolved_items,
+        "human_loop_events": events,
+        "error": "",
+    }
+
+
+def _classify_expert_feedback(state: GraphState) -> GraphState:
+    feedback = _latest_expert_feedback(state)
+    events = list(state.get("human_loop_events", []))
+    round_index = state.get("expert_round_count", 0)
+    if not feedback:
+        action = "continue"
+        reason = "empty or missing expert feedback"
+        confidence = "high"
+    else:
+        action, reason, confidence = _classify_feedback_text(
+            feedback,
+            _coerce_simulation_plan(state.get("simulation_plan")),
+        )
+
+    event = {
+        "event": "expert_feedback_classified",
+        "round": round_index,
+        "action": action,
+        "reason": reason,
+        "confidence": confidence,
+        "feedback": feedback,
+    }
+    events.append(event)
+    if action == "regenerate_plan":
+        events.append(
+            {
+                "event": "expert_feedback_regeneration_selected",
+                "round": round_index,
+                "action": action,
+                "reason": reason,
+                "confidence": confidence,
+            }
+        )
+    elif action == "continue":
+        events.append(
+            {
+                "event": "expert_feedback_continue_selected",
+                "round": round_index,
+                "action": action,
+                "reason": reason,
+                "confidence": confidence,
+            }
+        )
+
+    return {
+        "expert_feedback_action": action,
+        "expert_feedback_interpretation": reason,
+        "patch_confidence": confidence,
+        "patch_reason": reason,
+        "needs_regeneration": action == "regenerate_plan",
+        "human_loop_events": events,
+    }
+
+
+def _patch_plan_from_expert_feedback(state: GraphState) -> GraphState:
+    plan = _coerce_simulation_plan(state.get("simulation_plan"))
+    feedback = _latest_expert_feedback(state)
+    events = list(state.get("human_loop_events", []))
+    round_index = state.get("expert_round_count", 0)
+    if plan is None:
+        error = "cannot patch because SimulationPlan is missing"
+        events.extend(
+            [
+                {
+                    "event": "plan_patch_failed",
+                    "round": round_index,
+                    "error": error,
+                    "reason": error,
+                },
+                {
+                    "event": "patch_failed_fallback_to_regeneration",
+                    "round": round_index,
+                    "reason": error,
+                    "action": "regenerate_plan",
+                },
+            ]
+        )
+        return {
+            "patch_error": error,
+            "expert_feedback_action": "regenerate_plan",
+            "needs_regeneration": True,
+            "human_loop_events": events,
+        }
+
+    patches, reason, confidence = _build_plan_patches(plan, feedback, state)
+    events.append(
+        {
+            "event": "plan_patch_generated",
+            "round": round_index,
+            "reason": reason,
+            "action": "patch_plan",
+            "confidence": confidence,
+            "patch": patches,
+        }
+    )
+    if not patches:
+        error = "expert feedback could not be mapped to a safe SimulationPlan field"
+        events.extend(
+            [
+                {
+                    "event": "plan_patch_failed",
+                    "round": round_index,
+                    "reason": reason,
+                    "error": error,
+                },
+                {
+                    "event": "patch_failed_fallback_to_regeneration",
+                    "round": round_index,
+                    "reason": error,
+                    "action": "regenerate_plan",
+                },
+            ]
+        )
+        return {
+            "plan_patch": patches,
+            "patch_confidence": confidence,
+            "patch_reason": reason,
+            "patch_error": error,
+            "expert_feedback_action": "regenerate_plan",
+            "needs_regeneration": True,
+            "human_loop_events": events,
+        }
+
+    try:
+        patched_payload = _apply_json_patches(plan.model_dump(mode="json"), patches)
+        patched_payload = _normalize_capability_report_for_plan_validation(patched_payload)
+        patched_plan = SimulationPlan.model_validate(patched_payload)
+    except Exception as exc:
+        error = str(exc)
+        events.extend(
+            [
+                {
+                    "event": "plan_patch_failed",
+                    "round": round_index,
+                    "reason": reason,
+                    "error": error,
+                    "patch": patches,
+                },
+                {
+                    "event": "patch_failed_fallback_to_regeneration",
+                    "round": round_index,
+                    "reason": "patched plan failed schema validation",
+                    "action": "regenerate_plan",
+                },
+            ]
+        )
+        return {
+            "plan_patch": patches,
+            "patch_confidence": confidence,
+            "patch_reason": reason,
+            "patch_error": error,
+            "expert_feedback_action": "regenerate_plan",
+            "needs_regeneration": True,
+            "human_loop_events": events,
+        }
+
+    events.append(
+        {
+            "event": "plan_patch_applied",
+            "round": round_index,
+            "reason": reason,
+            "action": "patch_plan",
+            "confidence": confidence,
+            "patch": patches,
+        }
+    )
+    return {
+        "simulation_plan": patched_plan,
+        "simulation_spec": patched_plan.model_spec,
+        "plan_patch": patches,
+        "patch_confidence": confidence,
+        "patch_reason": reason,
+        "patch_error": "",
+        "expert_feedback_action": "none",
+        "needs_regeneration": False,
         "human_loop_events": events,
         "error": "",
     }
@@ -782,9 +1333,11 @@ def _render_plan_script(state: GraphState) -> GraphState:
     output_dir = Path(state.get("output_dir", "data/runs"))
     output_dir.mkdir(parents=True, exist_ok=True)
     result = renderer.render(plan, output_dir)
-    # The authoritative capability report lives on the plan (assess_capability),
-    # so refresh capability_report.json from it to keep sidecars consistent.
-    _write_capability_sidecar(output_dir, plan.capability_report)
+    # Rendering may defensively downgrade an apparently exportable plan to a
+    # skeleton if executor/script validation fails. The render result is the
+    # final authority for sidecars and downstream tool execution.
+    plan = plan.model_copy(update={"capability_report": result.capability})
+    _write_capability_sidecar(output_dir, result.capability)
 
     if result.errors:
         _progress(state, "render_plan_script", f"renderer failed: {result.errors}")
@@ -803,7 +1356,12 @@ def _render_plan_script(state: GraphState) -> GraphState:
         f"wrote {model_path} (renderer={result.renderer_name}, "
         f"renderability={result.renderability})",
     )
-    return {"script": result.script, "model_path": str(model_path)}
+    return {
+        "simulation_plan": plan,
+        "simulation_spec": plan.model_spec,
+        "script": result.script,
+        "model_path": str(model_path),
+    }
 
 
 def _make_execute_tools_node(
@@ -900,7 +1458,15 @@ def _make_execute_tools_node(
     return _execute_tools
 
 
-def _make_reflect_plan_node(repair_plan: RepairPlanFn):
+def _make_reflect_plan_node(
+    repair_plan: RepairPlanFn,
+    *,
+    investigation_llm: InvestigationLlmFn | None = None,
+    retrieval_roots_resolver: RetrievalRootsResolver | None = None,
+    retrieval_tool_dispatch: dict[str, Callable[..., ToolResult]] | None = None,
+    retrieval_tool_specs: list[ToolSpec] | None = None,
+    investigation_max_iterations: int = 4,
+):
     def _reflect_plan(state: GraphState) -> GraphState:
         plan = _coerce_simulation_plan(state.get("simulation_plan"))
         report = state.get("validation_report")
@@ -908,7 +1474,74 @@ def _make_reflect_plan_node(repair_plan: RepairPlanFn):
         if plan is None or report is None or report.is_valid:
             return {"retry_count": retry_count}
 
-        reflection_requirement = _build_reflection_requirement(state)
+        base_requirement = _build_reflection_requirement(state)
+        plan_summary = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False)
+        hints = _error_catalog_hints_for(report.errors)
+        investigation_outcome = _run_investigation_safely(
+            state,
+            phase="reflect",
+            task_brief=base_requirement,
+            plan_summary=_truncate_text(plan_summary, 4000),
+            investigation_llm=investigation_llm,
+            retrieval_roots_resolver=retrieval_roots_resolver,
+            retrieval_tool_dispatch=retrieval_tool_dispatch,
+            retrieval_tool_specs=retrieval_tool_specs,
+            investigation_max_iterations=investigation_max_iterations,
+            error_catalog_hints=hints,
+        )
+
+        # Precision-patch path: the investigation produced a surgical JSON Patch
+        # against the SimulationPlan IR. Reuse the existing patch applier so the
+        # result goes through capability normalization + full Pydantic validation.
+        if (
+            investigation_outcome is not None
+            and investigation_outcome.ok
+            and investigation_outcome.patch
+        ):
+            try:
+                patched_payload = _apply_json_patches(
+                    plan.model_dump(mode="json"), investigation_outcome.patch
+                )
+                patched_payload = _normalize_capability_report_for_plan_validation(
+                    patched_payload
+                )
+                patched_plan = SimulationPlan.model_validate(patched_payload)
+                _progress(
+                    state,
+                    "reflect_plan",
+                    f"applied {len(investigation_outcome.patch)} investigation patch op(s)",
+                )
+                return {
+                    "simulation_plan": patched_plan,
+                    "simulation_spec": patched_plan.model_spec,
+                    "retry_count": retry_count + 1,
+                    "plan_patch": investigation_outcome.patch,
+                    "patch_confidence": "high",
+                    "patch_reason": _truncate_text(investigation_outcome.findings, 500)
+                    or "investigation patch",
+                    "patch_error": "",
+                    "error": "",
+                    **_investigation_state_updates(investigation_outcome),
+                }
+            except Exception as exc:
+                _progress(
+                    state,
+                    "reflect_plan",
+                    f"investigation patch failed: {exc}; falling back to repair_plan",
+                )
+
+        # Fallback: regenerate the whole plan, enriched by findings when available.
+        reflection_requirement = base_requirement
+        if (
+            investigation_outcome is not None
+            and investigation_outcome.ok
+            and investigation_outcome.findings
+        ):
+            reflection_requirement = (
+                f"{reflection_requirement}\n\n"
+                "Investigation findings (verified against codebase):\n"
+                f"{_truncate_text(investigation_outcome.findings, 2000)}\n"
+            )
         _progress(state, "reflect_plan", f"calling LLM reflection retry={retry_count + 1}")
         result = repair_plan(
             requirement=reflection_requirement,
@@ -923,6 +1556,7 @@ def _make_reflect_plan_node(repair_plan: RepairPlanFn):
                 "retry_count": retry_count + 1,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "error": result.error or "failed to repair SimulationPlan",
+                **_investigation_state_updates(investigation_outcome),
             }
         _progress(state, "reflect_plan", "reflection produced a new SimulationPlan")
         return {
@@ -931,6 +1565,7 @@ def _make_reflect_plan_node(repair_plan: RepairPlanFn):
             "retry_count": retry_count + 1,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
             "error": "",
+            **_investigation_state_updates(investigation_outcome),
         }
 
     return _reflect_plan
@@ -955,6 +1590,7 @@ def _save_record(state: GraphState) -> GraphState:
         retry_history=state.get("retry_history", []),
         pending_expert_questions=state.get("pending_expert_questions", []),
         human_loop_events=state.get("human_loop_events", []),
+        investigation_trace=state.get("investigation_trace", []),
     )
     _progress(state, "save_record", "record saved")
     return {}
@@ -981,6 +1617,7 @@ def _save_plan_record(state: GraphState) -> GraphState:
         retry_history=state.get("retry_history", []),
         pending_expert_questions=state.get("pending_expert_questions", []),
         human_loop_events=state.get("human_loop_events", []),
+        investigation_trace=state.get("investigation_trace", []),
     )
     _progress(state, "save_record", "record saved")
     return {}
@@ -1009,10 +1646,26 @@ def _execution_report_from_tool_results(results: list[ToolResult]) -> Validation
 def _build_reflection_requirement(state: GraphState) -> str:
     tool_results = state.get("tool_results", [])
     expert_feedback = state.get("expert_feedback", [])
+    repair_errors = state.get("capability_repair_errors", [])
+    structure_guidance = ""
+    if repair_errors:
+        structure_guidance = (
+            "\nThe plan has STRUCTURAL defects the LLM must fix itself -- these are NOT "
+            "questions for a human expert. Fix reference consistency and counts in the JSON:\n"
+            "- Every universe.cell_ids / control-rod / reflector id reference must match an "
+            "existing cell/material/region id. Rename the reference or add the missing object "
+            "with that exact id.\n"
+            "- A lattice pin-count mismatch means fill_universe + overrides positions do not "
+            "sum to expected_counts; recompute the override (row, col) positions so each "
+            "universe count matches expected_counts exactly.\n"
+            "- Keep material values, geometry dimensions, and physical facts unchanged.\n"
+            f"Structural errors to fix now: {repair_errors}\n"
+        )
     return (
         f"{state.get('requirement', '')}\n\n"
         "The current SimulationPlan failed during OpenMC expert-style execution checks. "
         "Return a corrected SimulationPlan JSON object only. Do not modify Python code directly.\n"
+        f"{structure_guidance}"
         f"Validation and execution errors: {state.get('error', '')}\n"
         f"Tool results: {_compact_tool_results(tool_results)}\n"
         f"Human expert feedback: {expert_feedback}"
@@ -1059,21 +1712,12 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
     if plan is None:
         return []
 
-    # Once the expert has answered at least one round, do NOT re-ask confirmation /
-    # assumption items: the expert already covered them and the regenerating LLM is
-    # instructed (via _requirement_with_expert_feedback) to consume the feedback.
-    # Re-asking the same items every round until max_expert_rounds is exhausted is the
-    # bug this guards against. Structural renderability gaps (skeleton/none
-    # reasons/warnings) are a different concern and may still surface.
-    feedback_already_given = bool(state.get("expert_feedback"))
-
     questions: list[str] = []
     capability = plan.capability_report
-    if not feedback_already_given:
-        for item in capability.required_human_confirmations:
-            questions.append(f"Please provide or confirm: {item}")
-        for item in plan.expert_assumptions:
-            questions.append(f"Please confirm or correct this modeling assumption: {item}")
+    for item in capability.required_human_confirmations:
+        questions.append(f"Please provide or confirm: {item}")
+    for item in plan.expert_assumptions:
+        questions.append(f"Please confirm or correct this modeling assumption: {item}")
 
     if capability.renderability in {"none", "skeleton"}:
         for reason in capability.reasons:
@@ -1081,7 +1725,591 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
         for warning in capability.warnings:
             questions.append(f"Please review this modeling warning: {warning}")
 
-    return list(dict.fromkeys(q for q in questions if q.strip()))[:8]
+    questions = list(dict.fromkeys(q for q in questions if q.strip()))
+    return _filter_already_resolved_questions(questions, state)[:8]
+
+
+def _filter_already_resolved_questions(
+    questions: list[str],
+    state: GraphState,
+) -> list[str]:
+    events = state.setdefault("human_loop_events", [])
+    resolved_items = _coerce_resolved_expert_items(state.get("resolved_expert_items", []))
+    if not resolved_items:
+        return questions
+
+    kept: list[str] = []
+    for question in questions:
+        match = _resolved_match_for_question(question, resolved_items)
+        if match is None:
+            kept.append(question)
+            continue
+        event_name = (
+            "expert_question_filtered_as_declined"
+            if match.status == "declined"
+            else "expert_question_filtered_as_resolved"
+        )
+        events.append(
+            {
+                "event": event_name,
+                "round": state.get("expert_round_count", 0),
+                "question": question,
+                "answer": match.answer,
+                "reason": match.reason or "matched prior expert feedback semantically",
+                "semantic_keys": match.semantic_keys,
+            }
+        )
+    return kept
+
+
+def _coerce_resolved_expert_items(items: Any) -> list[ResolvedExpertItem]:
+    resolved: list[ResolvedExpertItem] = []
+    for item in items or []:
+        try:
+            resolved.append(
+                item if isinstance(item, ResolvedExpertItem) else ResolvedExpertItem.model_validate(item)
+            )
+        except Exception:
+            continue
+    return resolved
+
+
+def _update_resolved_expert_items_from_feedback(
+    *,
+    state: GraphState,
+    questions: list[str],
+    feedback_items: list[str],
+    round_index: int,
+) -> list[dict[str, Any]]:
+    existing = _coerce_resolved_expert_items(state.get("resolved_expert_items", []))
+    answer = "\n".join(feedback_items).strip()
+    updated = list(existing)
+    for question in questions:
+        if not answer:
+            status: Literal["resolved", "declined", "unknown"] = "declined"
+            reason = "expert submitted empty feedback for this round"
+        elif _question_answered_by_feedback(question, answer):
+            status = "resolved"
+            reason = "expert feedback overlaps the question by field keywords, values, or units"
+        else:
+            status = "unknown"
+            reason = "feedback received, but this question was not clearly answered"
+        updated.append(
+            ResolvedExpertItem(
+                question=question,
+                answer=answer,
+                kind=_expert_question_kind(question),
+                status=status,
+                source_round=round_index,
+                semantic_keys=_semantic_keys(f"{question}\n{answer}"),
+                reason=reason,
+            )
+        )
+    return [item.model_dump(mode="json") for item in updated]
+
+
+def _resolved_match_for_question(
+    question: str,
+    resolved_items: list[ResolvedExpertItem],
+) -> ResolvedExpertItem | None:
+    kind = _expert_question_kind(question)
+    # Structural/capability questions (missing-cell references, pin-count
+    # mismatches, unsupported subsystems) are plan-internal defects that a
+    # material-level expert answer can never resolve. Only an identical-text
+    # match may de-duplicate them; semantic matching against a prior material
+    # answer would silently swallow the gap and leave the model stuck at
+    # skeleton -- the over-correction of the earlier "re-ask" bug.
+    structural_kind = kind in {"capability_reason", "capability_warning", "unknown"}
+    for item in resolved_items:
+        if item.status not in {"resolved", "declined"}:
+            continue
+        # Identical question text always wins (covers declined + exact re-asks).
+        if _normalized_text(question) == _normalized_text(item.question):
+            return item
+        if item.status == "declined":
+            continue
+        if structural_kind:
+            continue
+        if _question_answered_by_feedback(question, item.answer):
+            return item
+        question_keys = set(_semantic_keys(question))
+        item_keys = set(item.semantic_keys)
+        # Empty question_keys cannot support a semantic claim. Guard against the
+        # 0 >= 0 vacuous-truth trap that previously matched structural errors
+        # (which extract no keywords) against unrelated material answers.
+        if not question_keys:
+            continue
+        if question_keys.issubset(item_keys):
+            return item
+        if len(question_keys & item_keys) >= min(2, len(question_keys)):
+            return item
+    return None
+
+
+def _expert_question_kind(question: str) -> str:
+    lowered = question.lower()
+    if "assumption" in lowered:
+        return "assumption"
+    if "renderability gap" in lowered:
+        return "capability_reason"
+    if "warning" in lowered:
+        return "capability_warning"
+    if "confirm" in lowered:
+        return "confirmation"
+    return "unknown"
+
+
+def _question_answered_by_feedback(question: str, feedback: str) -> bool:
+    question_norm = _normalized_text(question)
+    feedback_norm = _normalized_text(feedback)
+    if not question_norm or not feedback_norm:
+        return False
+    if question_norm in feedback_norm or feedback_norm in question_norm:
+        return True
+
+    question_keys = set(_semantic_keys(question))
+    feedback_keys = set(_semantic_keys(feedback))
+    if not question_keys or not feedback_keys:
+        return False
+    if question_keys & feedback_keys and (
+        feedback_keys & _value_like_semantic_keys(feedback)
+        or {"benchmark", "default", "acceptable", "confirmed"} & feedback_keys
+    ):
+        return True
+    return len(question_keys & feedback_keys) >= min(2, len(question_keys))
+
+
+def _semantic_keys(text: str) -> list[str]:
+    lowered = text.lower()
+    keys: list[str] = []
+    patterns = {
+        "fuel temperature": [
+            r"fuel\s+temperature",
+            r"temperature",
+            r"temperature_k",
+            r"燃料温度",
+            r"温度",
+        ],
+        "boundary condition": [
+            r"boundary\s+(condition|type)",
+            r"boundary_type",
+            r"boundary",
+            r"边界条件",
+            r"边界",
+        ],
+        "density": [r"density", r"density_value", r"密度"],
+        "enrichment": [r"enrichment", r"u-?235", r"富集", r"富集度"],
+        "composition": [r"composition", r"isotope", r"nuclide", r"同位素", r"组分"],
+        "packing fraction": [r"packing\s+fraction", r"packing_fraction", r"填充"],
+        "triso": [r"triso"],
+        "pitch": [r"pitch", r"栅距"],
+        "radius": [r"radius", r"半径"],
+        "benchmark": [r"benchmark", r"基准"],
+        "default": [r"default", r"默认"],
+        "acceptable": [r"acceptable", r"可以", r"同意", r"确认"],
+        "confirmed": [r"confirm", r"confirmed", r"按"],
+        "reflective": [r"reflective", r"反射"],
+        "vacuum": [r"vacuum", r"真空"],
+        "periodic": [r"periodic", r"周期"],
+    }
+    for key, regexes in patterns.items():
+        if any(re.search(pattern, lowered) for pattern in regexes):
+            keys.append(key)
+    for number in re.findall(r"\b\d+(?:\.\d+)?\s*(?:k|g/cm3|kg/m3|cm|%)?\b", lowered):
+        keys.append(re.sub(r"\s+", " ", number.strip()))
+    return list(dict.fromkeys(keys))
+
+
+def _value_like_semantic_keys(text: str) -> set[str]:
+    keys = set(_semantic_keys(text))
+    return {
+        key
+        for key in keys
+        if re.search(r"\d", key)
+        or key in {"reflective", "vacuum", "periodic", "benchmark", "default"}
+    }
+
+
+def _normalized_text(text: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", text.lower()).strip()
+
+
+def _latest_expert_feedback(state: GraphState) -> str:
+    feedback = state.get("expert_feedback", [])
+    return feedback[-1].strip() if feedback else ""
+
+
+def _classify_feedback_text(
+    feedback: str,
+    plan: SimulationPlan | None,
+) -> tuple[str, str, Literal["high", "medium", "low"]]:
+    lowered = feedback.lower()
+    regenerate_patterns = [
+        r"\brebuild\b",
+        r"\bregenerate\b",
+        r"\brestart\b",
+        r"not\s+be\s+a",
+        r"wrong\s+(requirement|task|model)",
+        r"full[-\s]?core",
+        r"whole\s+core",
+        r"assembly",
+        r"fixed\s+source",
+        r"criticality",
+        r"c5g7",
+        r"triso",
+        r"pebble",
+        r"重新",
+        r"重建",
+        r"理解错",
+        r"不是",
+        r"全堆芯",
+        r"组件",
+        r"固定源",
+        r"临界",
+    ]
+    if any(re.search(pattern, lowered) for pattern in regenerate_patterns):
+        return (
+            "regenerate_plan",
+            "expert feedback appears to change the modeling intent, topology, benchmark, or physics task",
+            "high",
+        )
+    if not _semantic_keys(feedback):
+        return (
+            "manual_review",
+            "expert feedback has no safely mappable field, value, or confirmation keyword",
+            "low",
+        )
+    if plan is None:
+        return (
+            "regenerate_plan",
+            "no existing SimulationPlan is available for a local patch",
+            "high",
+        )
+    return (
+        "patch_plan",
+        "expert feedback appears to provide or confirm local plan fields",
+        "medium",
+    )
+
+
+def _build_plan_patches(
+    plan: SimulationPlan,
+    feedback: str,
+    state: GraphState,
+) -> tuple[list[dict[str, Any]], str, Literal["high", "medium", "low"]]:
+    patches: list[dict[str, Any]] = []
+    payload = plan.model_dump(mode="json")
+    keys = set(_semantic_keys(feedback))
+
+    if plan.model_spec is not None:
+        spec_patches = _build_model_spec_patches(payload, feedback, keys)
+        patches.extend(spec_patches)
+    if plan.complex_model is not None:
+        complex_patches = _build_complex_model_patches(payload, feedback, keys)
+        patches.extend(complex_patches)
+
+    patches.extend(_confirmation_removal_patches(payload, state))
+    patches = _dedupe_patches(patches)
+    if not patches:
+        return [], "no safe local field path matched the expert feedback", "low"
+    value_patches = [patch for patch in patches if patch.get("op") != "remove"]
+    confidence: Literal["high", "medium", "low"] = "high" if value_patches else "medium"
+    return patches, "generated minimal JSON Patch operations from expert feedback", confidence
+
+
+def _build_model_spec_patches(
+    payload: dict[str, Any],
+    feedback: str,
+    keys: set[str],
+) -> list[dict[str, Any]]:
+    patches: list[dict[str, Any]] = []
+    model_spec = payload.get("model_spec") or {}
+    fuel = (((model_spec.get("pin_cell") or {}).get("fuel")) or {})
+    if "fuel temperature" in keys and fuel:
+        temperature = _extract_temperature_k(feedback)
+        if temperature is not None:
+            patches.append(
+                {
+                    "op": "replace" if fuel.get("temperature_k") is not None else "add",
+                    "path": "/model_spec/pin_cell/fuel/temperature_k",
+                    "value": temperature,
+                }
+            )
+    if "density" in keys and fuel:
+        density = _extract_density(feedback)
+        if density is not None:
+            patches.append(
+                {
+                    "op": "replace",
+                    "path": "/model_spec/pin_cell/fuel/density_value",
+                    "value": density,
+                }
+            )
+            unit = _extract_density_unit(feedback) or fuel.get("density_unit") or "g/cm3"
+            patches.append(
+                {
+                    "op": "replace",
+                    "path": "/model_spec/pin_cell/fuel/density_unit",
+                    "value": unit,
+                }
+            )
+    return patches
+
+
+def _build_complex_model_patches(
+    payload: dict[str, Any],
+    feedback: str,
+    keys: set[str],
+) -> list[dict[str, Any]]:
+    patches: list[dict[str, Any]] = []
+    complex_model = payload.get("complex_model") or {}
+    materials = complex_model.get("materials") or []
+    fuel_index = _find_material_index(materials, feedback)
+    if fuel_index is not None:
+        material = materials[fuel_index]
+        if "fuel temperature" in keys:
+            temperature = _extract_temperature_k(feedback)
+            if temperature is not None:
+                patches.append(
+                    {
+                        "op": "replace" if material.get("temperature_k") is not None else "add",
+                        "path": f"/complex_model/materials/{fuel_index}/temperature_k",
+                        "value": temperature,
+                    }
+                )
+        if "density" in keys:
+            density = _extract_density(feedback)
+            if density is not None:
+                patches.append(
+                    {
+                        "op": "replace" if material.get("density_value") is not None else "add",
+                        "path": f"/complex_model/materials/{fuel_index}/density_value",
+                        "value": density,
+                    }
+                )
+                unit = _extract_density_unit(feedback) or material.get("density_unit") or "g/cm3"
+                patches.append(
+                    {
+                        "op": "replace" if material.get("density_unit") is not None else "add",
+                        "path": f"/complex_model/materials/{fuel_index}/density_unit",
+                        "value": unit,
+                    }
+                )
+
+    boundary = _extract_boundary_type(feedback)
+    if boundary is not None and "boundary condition" in keys:
+        for index, surface in enumerate(complex_model.get("surfaces") or []):
+            if surface.get("boundary_type") is not None:
+                patches.append(
+                    {
+                        "op": "replace",
+                        "path": f"/complex_model/surfaces/{index}/boundary_type",
+                        "value": boundary,
+                    }
+                )
+        for index, assembly in enumerate(complex_model.get("assemblies") or []):
+            if assembly.get("boundary") is not None:
+                patches.append(
+                    {
+                        "op": "replace",
+                        "path": f"/complex_model/assemblies/{index}/boundary",
+                        "value": boundary,
+                    }
+                )
+    return patches
+
+
+def _confirmation_removal_patches(
+    payload: dict[str, Any],
+    state: GraphState,
+) -> list[dict[str, Any]]:
+    patches: list[dict[str, Any]] = []
+    resolved_items = [
+        item
+        for item in _coerce_resolved_expert_items(state.get("resolved_expert_items", []))
+        if item.status == "resolved"
+    ]
+    if not resolved_items:
+        return patches
+    _append_remove_matches(
+        patches,
+        payload.get("capability_report", {}).get("required_human_confirmations", []),
+        "/capability_report/required_human_confirmations",
+        resolved_items,
+    )
+    _append_remove_matches(
+        patches,
+        payload.get("expert_assumptions", []),
+        "/expert_assumptions",
+        resolved_items,
+    )
+    complex_model = payload.get("complex_model") or {}
+    _append_remove_matches(
+        patches,
+        complex_model.get("requires_human_confirmation", []),
+        "/complex_model/requires_human_confirmation",
+        resolved_items,
+    )
+    for index, material in enumerate(complex_model.get("materials") or []):
+        _append_remove_matches(
+            patches,
+            material.get("requires_human_confirmation", []),
+            f"/complex_model/materials/{index}/requires_human_confirmation",
+            resolved_items,
+        )
+    for index, lattice in enumerate(complex_model.get("lattices") or []):
+        _append_remove_matches(
+            patches,
+            lattice.get("requires_human_confirmation", []),
+            f"/complex_model/lattices/{index}/requires_human_confirmation",
+            resolved_items,
+        )
+    for index, triso in enumerate(complex_model.get("trisos") or []):
+        _append_remove_matches(
+            patches,
+            triso.get("requires_human_confirmation", []),
+            f"/complex_model/trisos/{index}/requires_human_confirmation",
+            resolved_items,
+        )
+    for index, pebble in enumerate(complex_model.get("pebbles") or []):
+        _append_remove_matches(
+            patches,
+            pebble.get("requires_human_confirmation", []),
+            f"/complex_model/pebbles/{index}/requires_human_confirmation",
+            resolved_items,
+        )
+    return patches
+
+
+def _append_remove_matches(
+    patches: list[dict[str, Any]],
+    items: list[Any],
+    base_path: str,
+    resolved_items: list[ResolvedExpertItem],
+) -> None:
+    for index in range(len(items) - 1, -1, -1):
+        item_text = str(items[index])
+        question = f"Please provide or confirm: {item_text}"
+        if _resolved_match_for_question(question, resolved_items) is not None:
+            patches.append({"op": "remove", "path": f"{base_path}/{index}"})
+
+
+def _find_material_index(materials: list[dict[str, Any]], feedback: str) -> int | None:
+    if not materials:
+        return None
+    lowered = feedback.lower()
+    if "fuel" in lowered or "燃料" in lowered:
+        for index, material in enumerate(materials):
+            material_text = f"{material.get('id', '')} {material.get('name', '')}".lower()
+            if "fuel" in material_text or "uo2" in material_text:
+                return index
+    if len(materials) == 1:
+        return 0
+    return None
+
+
+def _extract_temperature_k(text: str) -> float | None:
+    match = re.search(r"(\d+(?:\.\d+)?)\s*k\b", text.lower())
+    return float(match.group(1)) if match else None
+
+
+def _extract_density(text: str) -> float | None:
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:g\s*/\s*cm3|g/cm3|g/cc|kg\s*/\s*m3|kg/m3)", text.lower())
+    return float(match.group(1)) if match else None
+
+
+def _extract_density_unit(text: str) -> str | None:
+    lowered = text.lower()
+    if re.search(r"kg\s*/\s*m3|kg/m3", lowered):
+        return "kg/m3"
+    if re.search(r"g\s*/\s*cm3|g/cm3|g/cc", lowered):
+        return "g/cm3"
+    if "atom/b-cm" in lowered:
+        return "atom/b-cm"
+    return None
+
+
+def _extract_boundary_type(text: str) -> str | None:
+    lowered = text.lower()
+    for boundary in ("reflective", "vacuum", "periodic", "transmission", "white"):
+        if boundary in lowered:
+            return boundary
+    if "反射" in text:
+        return "reflective"
+    if "真空" in text:
+        return "vacuum"
+    if "周期" in text:
+        return "periodic"
+    return None
+
+
+def _dedupe_patches(patches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for patch in patches:
+        deduped[(patch.get("op", ""), patch.get("path", ""))] = patch
+    return list(deduped.values())
+
+
+def _apply_json_patches(payload: Any, patches: list[dict[str, Any]]) -> Any:
+    updated = json.loads(json.dumps(payload))
+    for patch in patches:
+        op = patch.get("op")
+        path = patch.get("path")
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise ValueError(f"invalid JSON Patch path: {path!r}")
+        parent, key = _json_pointer_parent(updated, path)
+        if op in {"add", "replace"}:
+            value = patch.get("value")
+            if isinstance(parent, list):
+                index = int(key)
+                if op == "add" and index == len(parent):
+                    parent.append(value)
+                else:
+                    parent[index] = value
+            else:
+                parent[key] = value
+        elif op == "remove":
+            if isinstance(parent, list):
+                del parent[int(key)]
+            else:
+                parent.pop(key, None)
+        else:
+            raise ValueError(f"unsupported JSON Patch op: {op!r}")
+    return updated
+
+
+def _normalize_capability_report_for_plan_validation(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reset locally assessed renderer capability before validating patched plans.
+
+    ``assess_capability`` may write skeleton/assembly capability back onto a
+    complex-only plan for sidecars and routing. The schema intentionally rejects
+    that shape as an LLM-authored plan. A local expert patch should validate the
+    structural plan first, then let ``assess_capability`` recompute capability.
+    """
+    if payload.get("model_spec") is not None or payload.get("complex_model") is None:
+        return payload
+    capability = dict(payload.get("capability_report") or {})
+    if capability.get("is_executable") is False:
+        capability["renderability"] = "none"
+        capability["supported_renderer"] = "none"
+        capability["executable_subsystems"] = []
+        payload["capability_report"] = capability
+    return payload
+
+
+def _json_pointer_parent(payload: Any, path: str) -> tuple[Any, str]:
+    parts = [_decode_json_pointer_part(part) for part in path.strip("/").split("/")]
+    current = payload
+    for part in parts[:-1]:
+        if isinstance(current, list):
+            current = current[int(part)]
+        else:
+            current = current[part]
+    return current, parts[-1]
+
+
+def _decode_json_pointer_part(part: str) -> str:
+    return part.replace("~1", "/").replace("~0", "~")
 
 
 def _feedback_from_resume_payload(payload: Any) -> tuple[list[str], bool]:
@@ -1158,6 +2386,47 @@ def _construct_simulation_plan_from_payload(payload: dict[str, Any]) -> Simulati
     )
 
 
+_SELF_REPAIRABLE_CAPABILITY_PATTERNS = (
+    # Reference-consistency defects from renderer diagnostics: a universe/cell/
+    # region/control-rod/reflector pointing at an id that does not exist.
+    r"references missing (cells|universes|materials|surfaces|regions?)",
+    # Pin-count / lattice-shape defects.
+    r"pin counts? (do not match|mismatch)",
+    r"expected_counts",
+    r"shape .* does not match",
+    r"(universe_pattern )?rows have unequal lengths",
+    # Cylinder geometry defects.
+    r"radius must be (positive|less than pitch)",
+    r"non-numeric radius",
+)
+
+
+def _capability_self_repair_errors(capability: RenderCapabilityReport) -> list[str]:
+    """Capability reasons/confirmations the LLM can fix itself vs. facts only a
+    human expert can supply.
+
+    A missing-cell reference, a pin-count mismatch, or a bad radius is a plan
+    typo -- the LLM mis-named an id or mis-counted overrides -- so it is routed
+    to reflect_plan. A missing density or composition is a real gap the expert
+    must fill, so it stays out of this set and goes to ask_expert.
+    """
+    candidates: list[str] = []
+    if capability.renderability in {"none", "skeleton"}:
+        candidates.extend(capability.reasons)
+    # Pin-count mismatches are also recorded as soft human confirmations on the
+    # lattice spec; they are still count/override errors the LLM can fix.
+    candidates.extend(capability.required_human_confirmations)
+    repaired = [
+        text
+        for text in candidates
+        if any(
+            re.search(pattern, text, re.IGNORECASE)
+            for pattern in _SELF_REPAIRABLE_CAPABILITY_PATTERNS
+        )
+    ]
+    return list(dict.fromkeys(repaired))
+
+
 def _capability_for_plan(plan: SimulationPlan) -> RenderCapabilityReport:
     """Use the renderer registry as the single source of truth for capability."""
     _renderer, report = choose_renderer(plan)
@@ -1217,18 +2486,36 @@ def _requirement_with_expert_feedback(state: GraphState) -> str:
     feedback = state.get("expert_feedback", [])
     if not feedback:
         return requirement
+    resolved_items = _coerce_resolved_expert_items(state.get("resolved_expert_items", []))
+    resolved_context = ""
+    if resolved_items:
+        resolved_context = (
+            "\n\nResolved expert feedback items:\n"
+            + "\n".join(
+                (
+                    f"- Question: {item.question}\n"
+                    f"  Expert answer: {item.answer}\n"
+                    f"  Resolution: {item.status}; semantic_keys={item.semantic_keys}"
+                )
+                for item in resolved_items
+                if item.status in {"resolved", "declined"}
+            )
+        )
     return (
         f"{requirement}\n\n"
         "Human expert feedback that should guide the structured SimulationPlan:\n"
         + "\n".join(f"- {item}" for item in feedback)
+        + resolved_context
         + "\n\n"
-        "Expert-feedback consumption rule (IMPORTANT; do not re-ask answered items):\n"
-        "- For every fact the expert confirmed or provided, write the concrete value "
-        "into the corresponding material / geometry / settings field.\n"
-        "- Remove the matching entries from requires_human_confirmation and "
-        "expert_assumptions. Keep ONLY items the expert did NOT address.\n"
-        "- Do not re-list already-answered items as requires_human_confirmation. "
-        "Asking the expert the same question in a later round is a regression."
+        "Expert feedback consumption rules (IMPORTANT):\n"
+        "- Treat expert feedback as authoritative unless it conflicts with the original requirement or validated OpenMC constraints.\n"
+        "- If expert feedback answers a previous confirmation question, write the answer into the corresponding structured field.\n"
+        "- Do not keep requires_human_confirmation entries for items already answered by expert feedback.\n"
+        "- Do not keep expert_assumptions entries for assumptions already confirmed or corrected by expert feedback.\n"
+        "- Do not ask the same expert question again in a later round.\n"
+        "- If the feedback is in a different language from the question, infer the semantic match rather than relying on exact text.\n"
+        "- If the feedback confirms use of benchmark/default/document values, represent that confirmation explicitly in the plan or remove the unresolved confirmation marker.\n"
+        "- If a value remains genuinely unresolved after considering all expert feedback, then and only then keep requires_human_confirmation."
     )
 
 

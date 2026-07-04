@@ -3,9 +3,12 @@ import pytest
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from openmc_agent.executor import (
+    _region_expression_to_python,
+    _surface_constructor,
     build_openmc_complex_material,
     build_openmc_material,
     render_openmc_assembly_script,
@@ -16,10 +19,12 @@ from openmc_agent.executor import (
 from openmc_agent.renderers.assembly import RectAssemblyRenderer
 from openmc_agent.schemas import (
     AssemblySpec,
+    AxialLayerSpec,
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
     ControlRodSpec,
+    CoreBoundarySpec,
     CoreSpec,
     ExecutionCheckSpec,
     GeometrySpec,
@@ -685,6 +690,30 @@ def test_render_assembly_accepts_composite_prism_region_ids(
     assert (tmp_path / "geometry.xml").exists()
 
 
+def test_rectangular_prism_width_pair_is_normalized_for_openmc_api() -> None:
+    surface = SurfaceSpec(
+        id="pin_boundary",
+        kind="rectangular_prism",
+        parameters={"width": [1.43, 1.43], "axis": "z", "height": 1.0},
+    )
+
+    constructor = _surface_constructor(surface)
+
+    assert "openmc.model.RectangularPrism" in constructor
+    assert "width=1.43" in constructor
+    assert "height=1.43" in constructor
+    assert "width=[" not in constructor
+
+
+def test_region_expression_adds_positive_halfspace_for_bare_primitive_surfaces() -> None:
+    expression = _region_expression_to_python(
+        "fuel_r -clad_inner_r",
+        composite_surface_ids=set(),
+    )
+
+    assert expression == "(+surfaces['fuel_r']) & (-surfaces['clad_inner_r'])"
+
+
 def test_render_assembly_with_reflector_and_control_rod_exports_xml(
     tmp_path: Path,
 ) -> None:
@@ -817,6 +846,448 @@ def test_render_assembly_with_reflector_and_control_rod_exports_xml(
     assert result.returncode == 0, result.stderr or result.stdout
     assert (tmp_path / "geometry.xml").exists()
     assert (tmp_path / "plots.xml").exists()
+
+
+def test_render_3d_rectangular_core_with_axial_water_layer_exports_xml(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="mini 3D core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    composition=[
+                        NuclideSpec(name="H1", percent=2.0),
+                        NuclideSpec(name="O16", percent=1.0),
+                    ],
+                    sab=["c_H_in_H2O"],
+                ),
+            ],
+            cells=[
+                CellSpec(id="pin_cell", name="fuel pin", fill_type="material", fill_id="fuel"),
+                CellSpec(
+                    id="assembly_cell",
+                    name="assembly lattice cell",
+                    fill_type="lattice",
+                    fill_id="assembly_lattice",
+                ),
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="assembly", name="assembly", cell_ids=["assembly_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="2x2 assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["pin", "pin"], ["pin", "pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice",
+                    name="1x1 core lattice",
+                    kind="rect",
+                    pitch_cm=(2.52, 2.52),
+                    lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["assembly"]],
+                ),
+            ],
+            core=CoreSpec(
+                id="core",
+                name="3D root core",
+                lattice_id="core_lattice",
+                boundary="mixed",
+                boundary_conditions=CoreBoundarySpec(
+                    xmin="reflective",
+                    xmax="vacuum",
+                    ymin="reflective",
+                    ymax="vacuum",
+                    zmin="reflective",
+                    zmax="vacuum",
+                ),
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel",
+                        name="fuel active height",
+                        z_min_cm=0.0,
+                        z_max_cm=10.0,
+                        fill_type="lattice",
+                        fill_id="core_lattice",
+                    ),
+                    AxialLayerSpec(
+                        id="top_water",
+                        name="top water reflector",
+                        z_min_cm=10.0,
+                        z_max_cm=12.0,
+                        fill_type="material",
+                        fill_id="water",
+                    ),
+                ],
+            ),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="core",
+            executable_subsystems=["rect_lattice", "core", "axial_layers"],
+        ),
+        plot_specs=[
+            PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png"),
+            PlotSpec(basis="xz", origin=(1.26, 0.0, 6.0), width_cm=(2.52, 12.0), filename="core_xz.png"),
+            PlotSpec(basis="yz", origin=(0.0, 1.26, 6.0), width_cm=(2.52, 12.0), filename="core_yz.png"),
+        ],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "assembly_zmin = openmc.ZPlane(z0=assembly_z_min, boundary_type='reflective')" in script
+    assert "root_cell_top_water = openmc.Cell" in script
+    assert "fill=materials_by_id['water']" in script
+    assert "plot_1.basis = 'xz'" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (tmp_path / "materials.xml").exists()
+    assert (tmp_path / "geometry.xml").exists()
+    assert (tmp_path / "settings.xml").exists()
+    assert (tmp_path / "plots.xml").exists()
+
+
+def test_core_renderer_wraps_empty_assembly_universes_for_nested_lattices(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="nested core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    composition=[
+                        NuclideSpec(name="H1", percent=2.0),
+                        NuclideSpec(name="O16", percent=1.0),
+                    ],
+                ),
+            ],
+            cells=[
+                CellSpec(id="pin_cell", name="fuel pin", fill_type="material", fill_id="fuel"),
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="fuel_assembly", name="fuel assembly", cell_ids=[]),
+                UniverseSpec(id="water_assembly", name="water assembly", cell_ids=[]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="fuel_assembly_lattice",
+                    name="2x2 fuel assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["pin", "pin"], ["pin", "pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice",
+                    name="2x1 core lattice",
+                    kind="rect",
+                    pitch_cm=(2.52, 2.52),
+                    lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["fuel_assembly", "water_assembly"]],
+                ),
+            ],
+            assemblies=[
+                AssemblySpec(
+                    id="fuel_assembly",
+                    name="fuel assembly",
+                    lattice_id="fuel_assembly_lattice",
+                ),
+            ],
+            core=CoreSpec(
+                id="core",
+                name="root core",
+                lattice_id="core_lattice",
+                boundary="vacuum",
+            ),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="core",
+            executable_subsystems=["rect_lattice", "core"],
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(5.04, 2.52), filename="nested_core_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "cell_wrapper_fuel_assembly = openmc.Cell" in script
+    assert "cell_wrapper_fuel_assembly.fill = lattices['fuel_assembly_lattice']" in script
+    assert "cell_wrapper_water_assembly = openmc.Cell" in script
+    assert "fill=materials_by_id['water']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
+    assert 'name="auto wrapper for fuel_assembly"' in geometry_xml
+    assert 'name="auto wrapper for water_assembly"' in geometry_xml
+    assert (tmp_path / "plots.xml").exists()
+
+
+def test_core_renderer_clones_shared_pin_cells_for_reachable_universes(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="shared pin cell core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    chemical_formula="H2O",
+                ),
+            ],
+            cells=[
+                CellSpec(id="pin_fuel_cell", name="pin fuel", fill_type="material", fill_id="fuel"),
+                CellSpec(id="pin_mod_cell", name="pin moderator", fill_type="material", fill_id="water"),
+            ],
+            universes=[
+                UniverseSpec(id="pin_uo2", name="UO2 pin", cell_ids=["pin_fuel_cell", "pin_mod_cell"]),
+                UniverseSpec(id="pin_mox", name="MOX pin", cell_ids=["pin_fuel_cell", "pin_mod_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="core_lattice",
+                    name="2x1 core lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin_uo2", "pin_mox"]],
+                )
+            ],
+            core=CoreSpec(id="core", name="root core", lattice_id="core_lattice", boundary="vacuum"),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 1.26), filename="shared_core_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "pin_fuel_cell__for_pin_mox" in script
+    assert "pin_mod_cell__for_pin_mox" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    geometry_root = ET.parse(tmp_path / "geometry.xml").getroot()
+    exported_names = {cell.attrib.get("name") for cell in geometry_root.findall(".//cell")}
+    assert "pin fuel for pin_mox" in exported_names
+    assert "pin moderator for pin_mox" in exported_names
+
+
+def test_core_renderer_prefers_assembly_lattice_wrapper_over_bad_pin_cells(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="assembly wrapper core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                )
+            ],
+            cells=[
+                CellSpec(id="pin_fuel_cell", name="pin fuel", fill_type="material", fill_id="fuel"),
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_fuel_cell"]),
+                UniverseSpec(id="uo2_assembly", name="UO2 assembly", cell_ids=["pin_fuel_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="uo2_assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice",
+                    name="core lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["uo2_assembly"]],
+                ),
+            ],
+            assemblies=[
+                AssemblySpec(id="uo2_assembly", name="UO2 assembly", lattice_id="uo2_assembly_lattice"),
+            ],
+            core=CoreSpec(id="core", name="root core", lattice_id="core_lattice", boundary="vacuum"),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="assembly_wrapper_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "cells['__wrapper_uo2_assembly']" in script
+    assert "cell_wrapper_uo2_assembly.fill = lattices['uo2_assembly_lattice']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
+    assert 'name="auto wrapper for uo2_assembly"' in geometry_xml
+
+
+def test_core_renderer_material_wrapper_replaces_reused_water_cell(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="water wrapper core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    chemical_formula="H2O",
+                )
+            ],
+            cells=[
+                CellSpec(id="pin_mod_cell", name="pin moderator", fill_type="material", fill_id="water"),
+            ],
+            universes=[
+                UniverseSpec(id="water_univ", name="water universe", cell_ids=["pin_mod_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="core_lattice",
+                    name="core lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["water_univ"]],
+                )
+            ],
+            core=CoreSpec(id="core", name="root core", lattice_id="core_lattice", boundary="vacuum"),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="water_wrapper_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "cells['__wrapper_water_univ']" in script
+    assert "fill=materials_by_id['water']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
+    assert 'name="auto wrapper for water_univ"' in geometry_xml
 
 
 def test_render_assembly_skips_inactive_candidate_material(tmp_path: Path) -> None:

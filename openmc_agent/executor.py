@@ -237,10 +237,11 @@ def render_openmc_assembly_script(
     mgxs_setup = _render_mgxs_setup(spec)
     cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     surfaces_block = _render_surface_definitions(spec.surfaces)
-    regions_block = _render_region_definitions(spec.regions)
+    regions_block = _render_region_definitions(spec.regions, spec.surfaces)
     cells_block = _render_cell_definitions(active_cells)
     universes_block = _render_universe_definitions(active_universes)
     lattices_block = _render_lattice_definitions(spec.lattices)
+    cell_fill_assignments = _render_cell_fill_assignments(active_cells)
     root_block = _render_assembly_root(spec)
     plots_block = _render_plots_block(plot_specs or [])
     energy_mode_block = _render_optional_energy_mode(settings, spec)
@@ -273,6 +274,8 @@ materials = openmc.Materials(list(materials_by_id.values()))
 {universes_block}
 
 {lattices_block}
+
+{cell_fill_assignments}
 
 {root_block}
 
@@ -424,6 +427,7 @@ def render_openmc_core_script(
     plot_specs: list[PlotSpec] | None = None,
 ) -> str:
     _validate_renderable_core(spec)
+    spec = _normalize_core_spec_for_rendering(spec)
     settings = settings_override or spec.settings
     material_blocks = "\n\n".join(
         _render_complex_material_definition(material)
@@ -433,17 +437,14 @@ def render_openmc_core_script(
     mgxs_setup = _render_mgxs_setup(spec)
     cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     surfaces_block = _render_surface_definitions(spec.surfaces)
-    regions_block = _render_region_definitions(spec.regions)
+    regions_block = _render_region_definitions(spec.regions, spec.surfaces)
     cells_block = _render_cell_definitions(spec.cells)
     universes_block = _render_universe_definitions(spec.universes)
     lattices_block = _render_lattice_definitions(spec.lattices)
+    cell_fill_assignments = _render_cell_fill_assignments(spec.cells)
+    core_universe_wrappers = "# Core universes were normalized before rendering."
     assert spec.core is not None
-    root_block = _render_lattice_root(
-        spec,
-        lattice_id=spec.core.lattice_id,
-        root_name=spec.core.name,
-        boundary=spec.core.boundary,
-    )
+    root_block = _render_core_root(spec)
     plots_block = _render_plots_block(plot_specs or [])
     energy_mode_block = _render_optional_energy_mode(settings, spec)
 
@@ -476,6 +477,10 @@ materials = openmc.Materials(list(materials_by_id.values()))
 
 {lattices_block}
 
+{cell_fill_assignments}
+
+{core_universe_wrappers}
+
 {root_block}
 
 geometry = openmc.Geometry(root_universe)
@@ -489,8 +494,8 @@ settings.particles = {settings.particles}
 {_render_optional_seed(settings)}
 settings.source = openmc.IndependentSource(
     space=openmc.stats.Box(
-        (assembly_x_min, assembly_y_min, -1.0),
-        (assembly_x_max, assembly_y_max, 1.0),
+        (assembly_x_min, assembly_y_min, assembly_z_min),
+        (assembly_x_max, assembly_y_max, assembly_z_max),
         only_fissionable=True,
     )
 )
@@ -765,6 +770,18 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
         raise ValueError(f"core references missing lattice_id={spec.core.lattice_id!r}")
     if any(lattice.kind != "rect" for lattice in spec.lattices):
         raise ValueError("core renderer currently supports RectLattice only")
+    material_ids = {material.id for material in spec.materials}
+    surface_ids = {surface.id for surface in spec.surfaces}
+    region_ids = {region.id for region in spec.regions}
+    composite_region_ids = {
+        surface.id
+        for surface in spec.surfaces
+        if surface.kind in {"rectangular_prism", "hexagonal_prism"}
+    }
+    region_like_ids = region_ids | composite_region_ids
+    cell_ids = {cell.id for cell in spec.cells}
+    universe_ids = {universe.id for universe in spec.universes}
+    lattice_ids = {lattice.id for lattice in spec.lattices}
     for material in spec.materials:
         if _material_is_macroscopic(material):
             continue
@@ -780,11 +797,58 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
                 f"material {material.id!r} mixes atom and weight percents without "
                 "chemical_formula fallback"
             )
-    cell_ids = {cell.id for cell in spec.cells}
+    for region in spec.regions:
+        missing = [surface_id for surface_id in region.surface_ids if surface_id not in surface_ids]
+        if missing:
+            raise ValueError(f"region {region.id!r} references missing surfaces: {missing}")
+    for cell in spec.cells:
+        if cell.region_id is not None and cell.region_id not in region_like_ids:
+            raise ValueError(f"cell {cell.id!r} references missing region {cell.region_id!r}")
+        if cell.fill_type == "material" and cell.fill_id not in material_ids:
+            raise ValueError(f"cell {cell.id!r} references missing material {cell.fill_id!r}")
+        if cell.fill_type == "universe" and cell.fill_id not in universe_ids:
+            raise ValueError(f"cell {cell.id!r} references missing universe {cell.fill_id!r}")
+        if cell.fill_type == "lattice" and cell.fill_id not in lattice_ids:
+            raise ValueError(f"cell {cell.id!r} references missing lattice {cell.fill_id!r}")
     for universe in spec.universes:
         missing = [cell_id for cell_id in universe.cell_ids if cell_id not in cell_ids]
         if missing:
             raise ValueError(f"universe {universe.id!r} references missing cells: {missing}")
+    empty_universe_ids = {universe.id for universe in spec.universes if not universe.cell_ids}
+    auto_wrappable_universe_ids = _core_auto_wrappable_universe_ids(spec)
+    for lattice in spec.lattices:
+        pattern = lattice.universe_pattern
+        if not pattern:
+            raise ValueError(f"lattice {lattice.id!r} requires universe_pattern before export")
+        row_lengths = {len(row) for row in pattern}
+        if len(row_lengths) > 1:
+            raise ValueError(f"lattice {lattice.id!r} universe_pattern rows have unequal lengths")
+        missing = sorted({universe_id for row in pattern for universe_id in row if universe_id not in universe_ids})
+        if missing:
+            raise ValueError(f"lattice {lattice.id!r} references missing universes: {missing}")
+        empty_refs = sorted(
+            {
+                universe_id
+                for row in pattern
+                for universe_id in row
+                if universe_id in empty_universe_ids
+                and universe_id not in auto_wrappable_universe_ids
+            }
+        )
+        if empty_refs:
+            raise ValueError(f"lattice {lattice.id!r} references empty universes: {empty_refs}")
+        if lattice.outer_universe_id is not None and lattice.outer_universe_id not in universe_ids:
+            raise ValueError(
+                f"lattice {lattice.id!r} references missing outer_universe_id "
+                f"{lattice.outer_universe_id!r}"
+            )
+    for layer in spec.core.axial_layers:
+        if layer.fill_type == "material" and layer.fill_id not in material_ids:
+            raise ValueError(f"axial layer {layer.id!r} references missing material {layer.fill_id!r}")
+        if layer.fill_type == "universe" and layer.fill_id not in universe_ids:
+            raise ValueError(f"axial layer {layer.id!r} references missing universe {layer.fill_id!r}")
+        if layer.fill_type == "lattice" and layer.fill_id not in lattice_ids:
+            raise ValueError(f"axial layer {layer.id!r} references missing lattice {layer.fill_id!r}")
 
 
 def _complex_enrichment_kwargs(spec: ComplexMaterialSpec) -> dict[str, str | float]:
@@ -948,6 +1012,11 @@ def _composite_surface_constructor(constructor: str, params: dict[str, object]) 
 
 def _rectangular_prism_kwargs(params: dict[str, object]) -> dict[str, object]:
     """Normalize bounded rectangular-prism params to OpenMC's width/height API."""
+    width_pair = _as_float_pair(params.get("width"))
+    if width_pair is not None:
+        params["width"] = width_pair[0]
+        params["height"] = width_pair[1]
+
     if "width" in params and "height" in params:
         return params
 
@@ -1036,16 +1105,41 @@ def _as_float(value: object) -> float:
         raise ValueError(f"rectangular_prism bound must be numeric, got {value!r}") from exc
 
 
-def _render_region_definitions(region_specs: list[RegionSpec]) -> str:
+def _as_float_pair(value: object) -> tuple[float, float] | None:
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        return None
+    if len(value) != 2:
+        raise ValueError(
+            f"rectangular_prism width sequence must contain exactly two values, got {value!r}"
+        )
+    return (_as_float(value[0]), _as_float(value[1]))
+
+
+def _render_region_definitions(
+    region_specs: list[RegionSpec],
+    surface_specs: list[SurfaceSpec],
+) -> str:
+    composite_surface_ids = {
+        surface.id
+        for surface in surface_specs
+        if surface.kind in {"rectangular_prism", "hexagonal_prism"}
+    }
     lines: list[str] = []
     for region in region_specs:
         variable_name = _safe_name("region", region.id)
-        lines.append(f"{variable_name} = {_region_expression_to_python(region.expression)}")
+        lines.append(
+            f"{variable_name} = "
+            f"{_region_expression_to_python(region.expression, composite_surface_ids)}"
+        )
         lines.append(f"regions[{region.id!r}] = {variable_name}")
     return "\n".join(lines) if lines else "# No explicit regions were provided."
 
 
-def _region_expression_to_python(expression: str) -> str:
+def _region_expression_to_python(
+    expression: str,
+    composite_surface_ids: set[str] | None = None,
+) -> str:
+    composite_surface_ids = composite_surface_ids or set()
     token_pattern = re.compile(r"\s*([()+\-&|~]|[A-Za-z_][A-Za-z0-9_\-]*)")
     tokens: list[str] = []
     index = 0
@@ -1075,11 +1169,20 @@ def _region_expression_to_python(expression: str) -> str:
             continue
         if _needs_implicit_intersection(tokens):
             tokens.append("&")
+        if token in composite_surface_ids and pending_sign:
+            if pending_sign == "+":
+                tokens.append(f"(~surfaces[{token!r}])")
+            else:
+                tokens.append(f"surfaces[{token!r}]")
+            pending_sign = ""
+            continue
         if pending_sign:
             tokens.append(f"({pending_sign}surfaces[{token!r}])")
             pending_sign = ""
-        else:
+        elif token in composite_surface_ids:
             tokens.append(f"surfaces[{token!r}]")
+        else:
+            tokens.append(f"(+surfaces[{token!r}])")
     if pending_sign:
         raise ValueError(f"dangling half-space sign {pending_sign!r} in region expression")
     return " ".join(tokens)
@@ -1094,7 +1197,7 @@ def _render_cell_definitions(cell_specs: list[CellSpec]) -> str:
     lines: list[str] = []
     for cell in cell_specs:
         variable_name = _safe_name("cell", cell.id)
-        fill_expr = _cell_fill_expression(cell)
+        fill_expr = _cell_initial_fill_expression(cell)
         region_expr = f"regions[{cell.region_id!r}]" if cell.region_id is not None else "None"
         lines.append(
             f"{variable_name} = openmc.Cell("
@@ -1104,6 +1207,22 @@ def _render_cell_definitions(cell_specs: list[CellSpec]) -> str:
             lines.append(f"{variable_name}.temperature = {cell.temperature_k!r}")
         lines.append(f"cells[{cell.id!r}] = {variable_name}")
     return "\n".join(lines)
+
+
+def _cell_initial_fill_expression(cell: CellSpec) -> str:
+    if cell.fill_type in {"universe", "lattice"}:
+        return "None"
+    return _cell_fill_expression(cell)
+
+
+def _render_cell_fill_assignments(cell_specs: list[CellSpec]) -> str:
+    lines: list[str] = []
+    for cell in cell_specs:
+        if cell.fill_type not in {"universe", "lattice"}:
+            continue
+        variable_name = _safe_name("cell", cell.id)
+        lines.append(f"{variable_name}.fill = {_cell_fill_expression(cell)}")
+    return "\n".join(lines) if lines else "# No deferred cell fills were required."
 
 
 def _cell_fill_expression(cell: CellSpec) -> str:
@@ -1152,6 +1271,285 @@ def _render_lattice_definitions(lattice_specs: list[LatticeSpec]) -> str:
     return "\n".join(lines)
 
 
+def _render_core_universe_wrappers(spec: ComplexModelSpec) -> str:
+    """Populate empty core-lattice assembly universes with wrapper cells.
+
+    The planning IR often models a core as a lattice of assembly universes while
+    separately listing AssemblySpec entries that point at assembly lattices. In
+    OpenMC, an empty universe referenced by a lattice is not exported as usable
+    geometry, so the core lattice ends up pointing at missing universe numbers.
+    """
+    assert spec.core is not None
+    lines: list[str] = []
+    for universe_id in sorted(_core_auto_wrappable_universe_ids(spec)):
+        fill_expr = _core_universe_wrapper_fill_expression(spec, universe_id)
+        if fill_expr is None:
+            continue
+        cell_variable = _safe_name("wrapper_cell", universe_id)
+        cell_id = f"__wrapper_{universe_id}"
+        lines.append(
+            f"{cell_variable} = openmc.Cell("
+            f"name={f'auto wrapper for {universe_id}'!r}, fill={fill_expr})"
+        )
+        lines.append(f"cells[{cell_id!r}] = {cell_variable}")
+        lines.append(f"universes[{universe_id!r}].add_cell({cell_variable})")
+    return "\n".join(lines) if lines else "# No core universe wrappers were required."
+
+
+def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSpec:
+    """Return a core rendering copy with lattice-referenced universes exportable.
+
+    OpenMC cells are single-owner objects in exported XML. If multiple universe
+    definitions reuse one Cell object, that cell is emitted under only one
+    universe, leaving other lattice universe numbers dangling. The core renderer
+    can infer the intended hierarchy for assembly/material wrappers and can
+    safely clone pin-level cell definitions for the remaining shared-cell case.
+    """
+    normalized = spec.model_copy(deep=True)
+    if normalized.core is None or normalized.core.lattice_id is None:
+        return normalized
+
+    reachable = _core_reachable_universe_ids(normalized)
+    direct_core_refs = _core_direct_lattice_universe_ids(normalized)
+    cell_by_id = {cell.id: cell for cell in normalized.cells}
+    existing_cell_ids = set(cell_by_id)
+    wrapper_cells: list[CellSpec] = []
+
+    normalized_universes: list[UniverseSpec] = []
+    for universe in normalized.universes:
+        if universe.id not in reachable:
+            normalized_universes.append(universe)
+            continue
+        wrapper = _core_wrapper_cell_for_universe(
+            normalized,
+            universe.id,
+            direct_core_refs=direct_core_refs,
+            existing_cell_ids=existing_cell_ids,
+        )
+        if wrapper is None:
+            normalized_universes.append(universe)
+            continue
+        wrapper_cells.append(wrapper)
+        existing_cell_ids.add(wrapper.id)
+        normalized_universes.append(universe.model_copy(update={"cell_ids": [wrapper.id]}))
+
+    normalized = normalized.model_copy(
+        update={
+            "cells": [*normalized.cells, *wrapper_cells],
+            "universes": normalized_universes,
+        }
+    )
+    return _clone_shared_core_universe_cells(normalized, reachable)
+
+
+def _core_wrapper_cell_for_universe(
+    spec: ComplexModelSpec,
+    universe_id: str,
+    *,
+    direct_core_refs: set[str],
+    existing_cell_ids: set[str],
+) -> CellSpec | None:
+    assembly = {assembly.id: assembly for assembly in spec.assemblies}.get(universe_id)
+    lattice_ids = {lattice.id for lattice in spec.lattices}
+    if assembly is not None and assembly.lattice_id in lattice_ids:
+        return _core_wrapper_cell(
+            universe_id,
+            fill_type="lattice",
+            fill_id=assembly.lattice_id,
+            existing_cell_ids=existing_cell_ids,
+        )
+
+    universe = {universe.id: universe for universe in spec.universes}.get(universe_id)
+    material_id = _core_material_id_for_empty_universe(spec, universe_id)
+    if material_id is not None and (not universe or not universe.cell_ids or universe_id in direct_core_refs):
+        return _core_wrapper_cell(
+            universe_id,
+            fill_type="material",
+            fill_id=material_id,
+            existing_cell_ids=existing_cell_ids,
+        )
+    return None
+
+
+def _core_wrapper_cell(
+    universe_id: str,
+    *,
+    fill_type: str,
+    fill_id: str | None,
+    existing_cell_ids: set[str],
+) -> CellSpec:
+    base_id = f"__wrapper_{universe_id}"
+    cell_id = _unique_generated_id(base_id, existing_cell_ids)
+    return CellSpec(
+        id=cell_id,
+        name=f"auto wrapper for {universe_id}",
+        fill_type=fill_type,  # type: ignore[arg-type]
+        fill_id=fill_id,
+    )
+
+
+def _clone_shared_core_universe_cells(
+    spec: ComplexModelSpec,
+    reachable: set[str],
+) -> ComplexModelSpec:
+    cell_by_id = {cell.id: cell for cell in spec.cells}
+    existing_cell_ids = set(cell_by_id)
+    seen_owner_by_cell_id: dict[str, str] = {}
+    cloned_cells: list[CellSpec] = []
+    normalized_universes: list[UniverseSpec] = []
+
+    for universe in spec.universes:
+        if universe.id not in reachable:
+            normalized_universes.append(universe)
+            continue
+        normalized_cell_ids: list[str] = []
+        for cell_id in universe.cell_ids:
+            if cell_id not in cell_by_id or cell_id not in seen_owner_by_cell_id:
+                seen_owner_by_cell_id[cell_id] = universe.id
+                normalized_cell_ids.append(cell_id)
+                continue
+            source = cell_by_id[cell_id]
+            clone_id = _unique_generated_id(f"{cell_id}__for_{universe.id}", existing_cell_ids)
+            existing_cell_ids.add(clone_id)
+            cloned_cells.append(
+                source.model_copy(
+                    update={
+                        "id": clone_id,
+                        "name": f"{source.name} for {universe.id}",
+                    }
+                )
+            )
+            normalized_cell_ids.append(clone_id)
+        normalized_universes.append(universe.model_copy(update={"cell_ids": normalized_cell_ids}))
+
+    if not cloned_cells:
+        return spec
+    return spec.model_copy(
+        update={
+            "cells": [*spec.cells, *cloned_cells],
+            "universes": normalized_universes,
+        }
+    )
+
+
+def _unique_generated_id(base_id: str, existing_ids: set[str]) -> str:
+    if base_id not in existing_ids:
+        return base_id
+    index = 2
+    while f"{base_id}_{index}" in existing_ids:
+        index += 1
+    return f"{base_id}_{index}"
+
+
+def _core_direct_lattice_universe_ids(spec: ComplexModelSpec) -> set[str]:
+    if spec.core is None or spec.core.lattice_id is None:
+        return set()
+    core_lattice = _lattice_by_id(spec, spec.core.lattice_id)
+    return {
+        universe_id
+        for row in core_lattice.universe_pattern
+        for universe_id in row
+    }
+
+
+def _core_reachable_universe_ids(spec: ComplexModelSpec) -> set[str]:
+    if spec.core is None or spec.core.lattice_id is None:
+        return set()
+    lattice_by_id = {lattice.id: lattice for lattice in spec.lattices}
+    cell_by_id = {cell.id: cell for cell in spec.cells}
+    universe_by_id = {universe.id: universe for universe in spec.universes}
+    assembly_by_id = {assembly.id: assembly for assembly in spec.assemblies}
+    pending_lattice_ids = [spec.core.lattice_id]
+    visited_lattice_ids: set[str] = set()
+    reachable_universe_ids: set[str] = set()
+
+    while pending_lattice_ids:
+        lattice_id = pending_lattice_ids.pop()
+        if lattice_id in visited_lattice_ids:
+            continue
+        visited_lattice_ids.add(lattice_id)
+        lattice = lattice_by_id.get(lattice_id)
+        if lattice is None:
+            continue
+        lattice_universe_ids = {
+            universe_id
+            for row in lattice.universe_pattern
+            for universe_id in row
+        }
+        if lattice.outer_universe_id is not None:
+            lattice_universe_ids.add(lattice.outer_universe_id)
+        for universe_id in lattice_universe_ids:
+            if universe_id in reachable_universe_ids:
+                continue
+            reachable_universe_ids.add(universe_id)
+            assembly = assembly_by_id.get(universe_id)
+            if assembly is not None and assembly.lattice_id is not None:
+                pending_lattice_ids.append(assembly.lattice_id)
+            universe = universe_by_id.get(universe_id)
+            if universe is None:
+                continue
+            for cell_id in universe.cell_ids:
+                cell = cell_by_id.get(cell_id)
+                if cell is not None and cell.fill_type == "lattice" and cell.fill_id is not None:
+                    pending_lattice_ids.append(cell.fill_id)
+    return reachable_universe_ids
+
+
+def _core_auto_wrappable_universe_ids(spec: ComplexModelSpec) -> set[str]:
+    if spec.core is None or spec.core.lattice_id is None:
+        return set()
+    universe_by_id = {universe.id: universe for universe in spec.universes}
+    core_universe_ids = _core_reachable_universe_ids(spec)
+    direct_core_refs = _core_direct_lattice_universe_ids(spec)
+    existing_cell_ids = {cell.id for cell in spec.cells}
+    return {
+        universe_id
+        for universe_id in core_universe_ids
+        if universe_id in universe_by_id
+        and _core_wrapper_cell_for_universe(
+            spec,
+            universe_id,
+            direct_core_refs=direct_core_refs,
+            existing_cell_ids=existing_cell_ids,
+        ) is not None
+    }
+
+
+def _core_universe_wrapper_fill_expression(
+    spec: ComplexModelSpec,
+    universe_id: str,
+) -> str | None:
+    lattice_ids = {lattice.id for lattice in spec.lattices}
+    assembly_by_id = {assembly.id: assembly for assembly in spec.assemblies}
+    assembly = assembly_by_id.get(universe_id)
+    if assembly is not None and assembly.lattice_id in lattice_ids:
+        return f"lattices[{assembly.lattice_id!r}]"
+
+    material_id = _core_material_id_for_empty_universe(spec, universe_id)
+    if material_id is not None:
+        return f"materials_by_id[{material_id!r}]"
+    return None
+
+
+def _core_material_id_for_empty_universe(
+    spec: ComplexModelSpec,
+    universe_id: str,
+) -> str | None:
+    material_ids = [material.id for material in spec.materials]
+    tokens = set(universe_id.split("_"))
+    candidates = [
+        material_id
+        for material_id in material_ids
+        if universe_id == material_id
+        or universe_id.startswith(f"{material_id}_")
+        or universe_id.endswith(f"_{material_id}")
+        or material_id in tokens
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def _render_assembly_root(spec: ComplexModelSpec) -> str:
     assembly = spec.assemblies[0]
     return _render_lattice_root(
@@ -1160,6 +1558,123 @@ def _render_assembly_root(spec: ComplexModelSpec) -> str:
         root_name=assembly.name,
         boundary=assembly.boundary,
     )
+
+
+def _render_core_root(spec: ComplexModelSpec) -> str:
+    assert spec.core is not None
+    if spec.core.axial_layers:
+        return _render_axial_core_root(spec)
+    return _render_lattice_root(
+        spec,
+        lattice_id=spec.core.lattice_id,
+        root_name=spec.core.name,
+        boundary=spec.core.boundary,
+    )
+
+
+def _render_axial_core_root(spec: ComplexModelSpec) -> str:
+    assert spec.core is not None
+    lattice = _lattice_by_id(spec, spec.core.lattice_id)
+    pitch_x, pitch_y = _rect_lattice_pitch(lattice)
+    rows = len(lattice.universe_pattern)
+    cols = len(lattice.universe_pattern[0])
+    lower_left_x, lower_left_y = lattice.lower_left_cm or _infer_rect_lattice_lower_left(lattice)
+    upper_right_x = lower_left_x + cols * pitch_x
+    upper_right_y = lower_left_y + rows * pitch_y
+    z_min = min(layer.z_min_cm for layer in spec.core.axial_layers)
+    z_max = max(layer.z_max_cm for layer in spec.core.axial_layers)
+    boundaries = spec.core.boundary_conditions
+    fallback_boundary = _root_boundary_type(spec.core.boundary)
+
+    lines = [
+        f"assembly_x_min = {lower_left_x!r}",
+        f"assembly_x_max = {upper_right_x!r}",
+        f"assembly_y_min = {lower_left_y!r}",
+        f"assembly_y_max = {upper_right_y!r}",
+        f"assembly_z_min = {z_min!r}",
+        f"assembly_z_max = {z_max!r}",
+        (
+            "assembly_xmin = openmc.XPlane("
+            f"x0=assembly_x_min, boundary_type={_axis_boundary(boundaries, 'xmin', fallback_boundary)!r})"
+        ),
+        (
+            "assembly_xmax = openmc.XPlane("
+            f"x0=assembly_x_max, boundary_type={_axis_boundary(boundaries, 'xmax', fallback_boundary)!r})"
+        ),
+        (
+            "assembly_ymin = openmc.YPlane("
+            f"y0=assembly_y_min, boundary_type={_axis_boundary(boundaries, 'ymin', fallback_boundary)!r})"
+        ),
+        (
+            "assembly_ymax = openmc.YPlane("
+            f"y0=assembly_y_max, boundary_type={_axis_boundary(boundaries, 'ymax', fallback_boundary)!r})"
+        ),
+        (
+            "assembly_zmin = openmc.ZPlane("
+            f"z0=assembly_z_min, boundary_type={_axis_boundary(boundaries, 'zmin', fallback_boundary)!r})"
+        ),
+        (
+            "assembly_zmax = openmc.ZPlane("
+            f"z0=assembly_z_max, boundary_type={_axis_boundary(boundaries, 'zmax', fallback_boundary)!r})"
+        ),
+    ]
+
+    internal_planes: dict[float, str] = {}
+    for layer in spec.core.axial_layers:
+        for z_value in (layer.z_min_cm, layer.z_max_cm):
+            if z_value in {z_min, z_max} or z_value in internal_planes:
+                continue
+            plane_name = _safe_name("assembly_z", str(z_value).replace(".", "_"))
+            internal_planes[z_value] = plane_name
+            lines.append(f"{plane_name} = openmc.ZPlane(z0={z_value!r})")
+
+    root_cell_refs: list[str] = []
+    for layer in spec.core.axial_layers:
+        cell_name = _safe_name("root_cell", layer.id)
+        lower_plane = "assembly_zmin" if layer.z_min_cm == z_min else internal_planes[layer.z_min_cm]
+        upper_plane = "assembly_zmax" if layer.z_max_cm == z_max else internal_planes[layer.z_max_cm]
+        region_name = _safe_name("root_region", layer.id)
+        lines.append(
+            f"{region_name} = +assembly_xmin & -assembly_xmax & "
+            f"+assembly_ymin & -assembly_ymax & +{lower_plane} & -{upper_plane}"
+        )
+        lines.append(
+            f"{cell_name} = openmc.Cell("
+            f"name={layer.name!r}, "
+            f"fill={_axial_layer_fill_expression(layer)}, "
+            f"region={region_name})"
+        )
+        root_cell_refs.append(cell_name)
+
+    root_cells = ", ".join(root_cell_refs)
+    lines.append(f"root_cell = {root_cell_refs[0]}")
+    lines.append(f"root_universe = openmc.Universe(cells=[{root_cells}])")
+    return "\n".join(lines)
+
+
+def _axis_boundary(boundaries: object, axis: str, fallback: str) -> str:
+    if boundaries is None:
+        return fallback
+    value = getattr(boundaries, axis, None)
+    return value or fallback
+
+
+def _root_boundary_type(boundary: str | None) -> str:
+    return boundary if boundary in {"transmission", "vacuum", "reflective", "white"} else "vacuum"
+
+
+def _axial_layer_fill_expression(layer: object) -> str:
+    fill_type = getattr(layer, "fill_type")
+    fill_id = getattr(layer, "fill_id")
+    if fill_type == "void":
+        return "None"
+    if fill_type == "material":
+        return f"materials_by_id[{fill_id!r}]"
+    if fill_type == "universe":
+        return f"universes[{fill_id!r}]"
+    if fill_type == "lattice":
+        return f"lattices[{fill_id!r}]"
+    raise ValueError(f"unsupported axial layer fill_type {fill_type!r}")
 
 
 def _render_lattice_root(
@@ -1183,6 +1698,8 @@ def _render_lattice_root(
 assembly_x_max = {upper_right_x!r}
 assembly_y_min = {lower_left_y!r}
 assembly_y_max = {upper_right_y!r}
+assembly_z_min = -1.0
+assembly_z_max = 1.0
 assembly_xmin = openmc.XPlane(x0=assembly_x_min, boundary_type={boundary_type!r})
 assembly_xmax = openmc.XPlane(x0=assembly_x_max, boundary_type={boundary_type!r})
 assembly_ymin = openmc.YPlane(y0=assembly_y_min, boundary_type={boundary_type!r})

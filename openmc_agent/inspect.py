@@ -26,6 +26,7 @@ from openmc_agent.llm import (
     repair_structured_output,
     set_llm_progress,
 )
+from openmc_agent.retrieval import make_default_investigation_llm
 from openmc_agent.tools import export_xml, run_geometry_plots, run_smoke_test
 
 
@@ -58,6 +59,9 @@ def inspect_requirement(
     export_xml_tool: ExportXmlToolFn = export_xml,
     plot_tool: PlotToolFn = run_geometry_plots,
     smoke_test_tool: SmokeTestToolFn = run_smoke_test,
+    enable_investigation: bool = True,
+    investigation_max_iterations: int = 4,
+    enable_openmc_source_root: bool = False,
     verbose: bool = False,
 ) -> InspectResult:
     set_llm_progress(verbose)
@@ -77,6 +81,9 @@ def inspect_requirement(
             export_xml_tool=export_xml_tool,
             plot_tool=plot_tool,
             smoke_test_tool=smoke_test_tool,
+            enable_investigation=enable_investigation,
+            investigation_max_iterations=investigation_max_iterations,
+            enable_openmc_source_root=enable_openmc_source_root,
             verbose=verbose,
         )
 
@@ -238,6 +245,9 @@ def _inspect_plan_requirement(
     export_xml_tool: ExportXmlToolFn,
     plot_tool: PlotToolFn,
     smoke_test_tool: SmokeTestToolFn,
+    enable_investigation: bool,
+    investigation_max_iterations: int,
+    enable_openmc_source_root: bool,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -260,6 +270,9 @@ def _inspect_plan_requirement(
         enable_plots=enable_plots,
         enable_smoke_test=enable_smoke_test,
         max_retries=max_retries,
+        investigation_llm=make_default_investigation_llm(model) if enable_investigation else None,
+        investigation_max_iterations=investigation_max_iterations,
+        enable_openmc_source_root=enable_openmc_source_root,
         checkpoint_path=(output_path / "checkpoints.sqlite") if interactive_feedback else None,
     )
     if verbose:
@@ -407,8 +420,16 @@ def _plan_transcript_data(
         "retry_history": state.get("retry_history", []),
         "pending_expert_questions": state.get("pending_expert_questions", []),
         "expert_round_count": state.get("expert_round_count", 0),
+        "expert_feedback_action": state.get("expert_feedback_action", "none"),
+        "resolved_expert_items": state.get("resolved_expert_items", []),
+        "plan_patch": state.get("plan_patch"),
+        "patch_confidence": state.get("patch_confidence"),
+        "patch_reason": state.get("patch_reason"),
+        "patch_error": state.get("patch_error"),
         "human_loop_events": state.get("human_loop_events", []),
         "tool_results": tool_results,
+        "investigation_trace": state.get("investigation_trace", []),
+        "investigation_findings": state.get("investigation_findings", ""),
         "raw_llm_outputs": state.get("raw_llm_outputs", []),
         "model_path": str(model_path) if model_path is not None else None,
         "error": state.get("error", ""),
@@ -506,11 +527,29 @@ def _format_plan_transcript(data: dict) -> str:
         "[8a] 待专家确认问题",
         _json_dump(data.get("pending_expert_questions", [])),
         "",
-        "[8b] 人机回路事件",
+        "[8b] 专家反馈处理",
+        _json_dump(
+            {
+                "action": data.get("expert_feedback_action"),
+                "resolved_expert_items": data.get("resolved_expert_items", []),
+                "plan_patch": data.get("plan_patch"),
+                "patch_confidence": data.get("patch_confidence"),
+                "patch_reason": data.get("patch_reason"),
+                "patch_error": data.get("patch_error"),
+            }
+        ),
+        "",
+        "[8c] 人机回路事件",
         _json_dump(data.get("human_loop_events", [])),
         "",
         "[9] 工具执行结果",
         _json_dump(data.get("tool_results", [])),
+        "",
+        "[9a] 代码检索轨迹",
+        _json_dump(data.get("investigation_trace", [])),
+        "",
+        "[9b] 检索发现",
+        str(data.get("investigation_findings", "")),
         "",
         "[10] 渲染结果摘要",
         "\n".join(data.get("render_outcome", {}).get("lines", []) or ["(no render outcome)"]),
@@ -587,6 +626,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", dest="json_output")
     parser.add_argument("--show-raw-llm", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--investigate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable code retrieval + surgical IR patch in reflect_plan (default: on). "
+        "Pass --no-investigate to disable.",
+    )
+    parser.add_argument(
+        "--investigate-iterations",
+        type=int,
+        default=4,
+        help="Max retrieval-loop iterations per generate/reflect phase (default: 4).",
+    )
+    parser.add_argument(
+        "--investigate-openmc-source",
+        action="store_true",
+        help="Also let retrieval grep the installed OpenMC library source (default: off).",
+    )
     args = parser.parse_args(argv)
 
     expert_feedback = list(args.expert_feedback)
@@ -618,6 +675,9 @@ def main(argv: list[str] | None = None) -> int:
             interactive_feedback=interactive_feedback,
             max_expert_rounds=args.max_expert_rounds,
             verbose=args.verbose,
+            enable_investigation=args.investigate,
+            investigation_max_iterations=args.investigate_iterations,
+            enable_openmc_source_root=args.investigate_openmc_source,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -632,6 +692,9 @@ def main(argv: list[str] | None = None) -> int:
             interactive_feedback=interactive_feedback,
             max_expert_rounds=args.max_expert_rounds,
             verbose=args.verbose,
+            enable_investigation=args.investigate,
+            investigation_max_iterations=args.investigate_iterations,
+            enable_openmc_source_root=args.investigate_openmc_source,
         )
     else:
         parser.error("Provide a requirement or --md-file")

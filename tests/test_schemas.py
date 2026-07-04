@@ -4,11 +4,13 @@ import pytest
 from pydantic import ValidationError
 
 from openmc_agent.schemas import (
+    AxialLayerSpec,
     AssemblySpec,
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
     CoreSpec,
+    CoreBoundarySpec,
     ExecutionCheckSpec,
     GeometrySpec,
     LatticeSpec,
@@ -45,6 +47,64 @@ def test_uo2_material_validates_and_serializes_to_json() -> None:
     assert payload["density_unit"] == "g/cm3"
     assert payload["density_value"] == 10.4
     assert payload["composition"][0]["name"] == "U235"
+
+
+def test_core_3d_axial_layers_and_boundary_spec_validate() -> None:
+    core = CoreSpec(
+        id="core",
+        name="quarter core",
+        lattice_id="core_lattice",
+        boundary="mixed",
+        boundary_conditions=CoreBoundarySpec(
+            xmin="reflective",
+            xmax="vacuum",
+            ymin="reflective",
+            ymax="vacuum",
+            zmin="reflective",
+            zmax="vacuum",
+        ),
+        axial_layers=[
+            AxialLayerSpec(
+                id="fuel",
+                name="fuel active height",
+                z_min_cm=0.0,
+                z_max_cm=192.78,
+                fill_type="lattice",
+                fill_id="core_lattice",
+            ),
+            AxialLayerSpec(
+                id="top_water",
+                name="top water reflector",
+                z_min_cm=192.78,
+                z_max_cm=214.2,
+                fill_type="material",
+                fill_id="water",
+            ),
+        ],
+    )
+
+    assert core.boundary_conditions.xmin == "reflective"
+    assert core.axial_layers[1].fill_type == "material"
+
+
+def test_axial_layer_rejects_empty_non_void_fill_and_bad_height() -> None:
+    with pytest.raises(ValidationError):
+        AxialLayerSpec(
+            id="fuel",
+            name="fuel",
+            z_min_cm=1.0,
+            z_max_cm=1.0,
+            fill_type="lattice",
+            fill_id="core_lattice",
+        )
+    with pytest.raises(ValidationError):
+        AxialLayerSpec(
+            id="fuel",
+            name="fuel",
+            z_min_cm=0.0,
+            z_max_cm=1.0,
+            fill_type="lattice",
+        )
 
 
 def test_material_without_density_value_fails_validation() -> None:

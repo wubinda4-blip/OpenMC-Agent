@@ -63,6 +63,7 @@ def append_simulation_record(
     retry_history: list[dict[str, Any]] | None = None,
     pending_expert_questions: list[str] | None = None,
     human_loop_events: list[dict[str, Any]] | None = None,
+    investigation_trace: list[dict[str, Any]] | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     record = {
@@ -79,6 +80,7 @@ def append_simulation_record(
         "retry_history": retry_history or [],
         "pending_expert_questions": pending_expert_questions or [],
         "human_loop_events": human_loop_events or [],
+        "investigation_trace": investigation_trace or [],
         "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
     }
 

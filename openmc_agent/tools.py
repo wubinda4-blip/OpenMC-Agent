@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,15 +44,28 @@ def export_xml(model_path: str | Path, *, timeout: float = 60.0) -> ToolResult:
         timeout=timeout,
         check=False,
     )
+    artifacts = _existing_xml_artifacts(path.parent)
+    missing_required = _missing_required_xml_artifacts(path.parent)
+    closure_error = ""
+    if result.returncode == 0 and not missing_required:
+        closure_error = _geometry_lattice_reference_error(path.parent / "geometry.xml")
+    ok = result.returncode == 0 and not missing_required and not closure_error
+    error = ""
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout).strip()
+    elif missing_required:
+        error = "export_xml produced no required XML artifacts: " + ", ".join(missing_required)
+    elif closure_error:
+        error = closure_error
     return ToolResult(
         name="export_xml",
-        ok=result.returncode == 0,
+        ok=ok,
         command=command,
         returncode=result.returncode,
         stdout=result.stdout,
         stderr=result.stderr,
-        artifacts=_existing_xml_artifacts(path.parent),
-        error="" if result.returncode == 0 else (result.stderr or result.stdout).strip(),
+        artifacts=artifacts,
+        error=error,
     )
 
 
@@ -170,6 +184,48 @@ def parse_openmc_output(stdout: str, stderr: str) -> ValidationReport:
 def _existing_xml_artifacts(path: Path) -> list[str]:
     names = ("materials.xml", "geometry.xml", "settings.xml", "tallies.xml", "plots.xml")
     return [str(path / name) for name in names if (path / name).exists()]
+
+
+def _missing_required_xml_artifacts(path: Path) -> list[str]:
+    names = ("materials.xml", "geometry.xml", "settings.xml")
+    return [name for name in names if not (path / name).exists()]
+
+
+def _geometry_lattice_reference_error(geometry_path: Path) -> str:
+    try:
+        root = ET.parse(geometry_path).getroot()
+    except ET.ParseError as exc:
+        return f"geometry.xml is not valid XML: {exc}"
+
+    exported_universe_numbers = {
+        universe
+        for cell in root.findall(".//cell")
+        for universe in [cell.attrib.get("universe")]
+        if universe is not None
+    }
+    missing_by_lattice: dict[str, list[str]] = {}
+    for lattice in root.findall(".//lattice"):
+        lattice_id = lattice.attrib.get("id", "<unknown>")
+        referenced: set[str] = set()
+        for universes in lattice.findall("universes"):
+            if universes.text:
+                referenced.update(re.findall(r"-?\d+", universes.text))
+        missing = sorted(referenced - exported_universe_numbers, key=int)
+        if missing:
+            missing_by_lattice[lattice_id] = missing
+
+    if not missing_by_lattice:
+        return ""
+    details = "; ".join(
+        f"lattice {lattice_id} missing universe numbers {missing}"
+        for lattice_id, missing in sorted(missing_by_lattice.items(), key=_xml_id_sort_key)
+    )
+    return f"geometry.xml has dangling lattice universe references: {details}"
+
+
+def _xml_id_sort_key(item: tuple[str, object]) -> tuple[int, int | str]:
+    xml_id = item[0]
+    return (0, int(xml_id)) if xml_id.isdigit() else (1, xml_id)
 
 
 def _plot_artifacts(path: Path) -> list[str]:

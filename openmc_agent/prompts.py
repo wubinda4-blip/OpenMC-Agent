@@ -68,6 +68,9 @@ SimulationPlan-specific rules:
   and capability_report.executable_subsystems=[].
 - For rectangular assembly plans, complex_model.assemblies must include one AssemblySpec
   whose lattice_id points to the default RectLattice id.
+- For 3D rectangular core plans, use CoreSpec.boundary_conditions to specify
+  xmin/xmax/ymin/ymax/zmin/zmax boundary types and CoreSpec.axial_layers to
+  split fuel-height lattice regions from top/bottom reflector material regions.
 """.strip()
 )
 

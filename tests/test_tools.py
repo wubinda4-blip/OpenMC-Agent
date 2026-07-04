@@ -77,6 +77,8 @@ def test_export_xml_returns_subprocess_output_and_artifacts(tmp_path: Path, monk
         assert command[-1] == "model.py"
         assert kwargs["cwd"] == tmp_path
         (tmp_path / "materials.xml").write_text("<materials />", encoding="utf-8")
+        (tmp_path / "geometry.xml").write_text("<geometry />", encoding="utf-8")
+        (tmp_path / "settings.xml").write_text("<settings />", encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="exported", stderr="")
 
     monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
@@ -87,6 +89,60 @@ def test_export_xml_returns_subprocess_output_and_artifacts(tmp_path: Path, monk
     assert result.returncode == 0
     assert result.stdout == "exported"
     assert str(tmp_path / "materials.xml") in result.artifacts
+
+
+def test_export_xml_fails_when_required_xml_artifacts_are_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model.py"
+    model_path.write_text("print('skeleton')\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        assert command[-1] == "model.py"
+        return SimpleNamespace(returncode=0, stdout="skeleton", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = export_xml(model_path)
+
+    assert result.ok is False
+    assert result.returncode == 0
+    assert result.artifacts == []
+    assert "materials.xml" in result.error
+
+
+def test_export_xml_fails_on_dangling_lattice_universe_reference(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model.py"
+    model_path.write_text("print('export')\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        assert command[-1] == "model.py"
+        (tmp_path / "materials.xml").write_text("<materials />", encoding="utf-8")
+        (tmp_path / "settings.xml").write_text("<settings />", encoding="utf-8")
+        (tmp_path / "geometry.xml").write_text(
+            """<geometry>
+  <cell id="1" universe="1" />
+  <lattice id="7">
+    <universes>1 99</universes>
+  </lattice>
+</geometry>
+""",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="exported", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = export_xml(model_path)
+
+    assert result.ok is False
+    assert result.returncode == 0
+    assert "lattice 7" in result.error
+    assert "99" in result.error
 
 
 def test_run_geometry_plots_preserves_failure_stderr(tmp_path: Path, monkeypatch) -> None:

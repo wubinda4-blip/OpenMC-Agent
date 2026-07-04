@@ -691,6 +691,36 @@ class ControlRodSpec(AgentBaseModel):
     purpose: str = ""
 
 
+BoundaryType = Literal["transmission", "vacuum", "reflective", "periodic", "white"]
+
+
+class CoreBoundarySpec(AgentBaseModel):
+    xmin: BoundaryType | None = None
+    xmax: BoundaryType | None = None
+    ymin: BoundaryType | None = None
+    ymax: BoundaryType | None = None
+    zmin: BoundaryType | None = None
+    zmax: BoundaryType | None = None
+
+
+class AxialLayerSpec(AgentBaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    z_min_cm: float
+    z_max_cm: float
+    fill_type: Literal["material", "universe", "lattice", "void"] = "lattice"
+    fill_id: str | None = None
+    purpose: str = ""
+
+    @model_validator(mode="after")
+    def validate_layer(self) -> "AxialLayerSpec":
+        if self.z_max_cm <= self.z_min_cm:
+            raise ValueError("axial layer z_max_cm must exceed z_min_cm")
+        if self.fill_type != "void" and not self.fill_id:
+            raise ValueError("axial layer fill_id is required unless fill_type is void")
+        return self
+
+
 class CoreSpec(AgentBaseModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -699,6 +729,8 @@ class CoreSpec(AgentBaseModel):
     reflector_ids: list[str] = Field(default_factory=list)
     control_rod_ids: list[str] = Field(default_factory=list)
     boundary: Literal["vacuum", "reflective", "periodic", "mixed", "unknown"] = "unknown"
+    boundary_conditions: CoreBoundarySpec | None = None
+    axial_layers: list[AxialLayerSpec] = Field(default_factory=list)
     symmetry: str | None = None
     purpose: str = ""
 
@@ -1417,6 +1449,22 @@ class FeedbackDecision(AgentBaseModel):
         description="Whether the workflow should continue after expert feedback.",
     )
     feedback: ExpertFeedback | None = None
+
+
+class ResolvedExpertItem(AgentBaseModel):
+    question: str = Field(default="", description="Expert question that was answered or deferred.")
+    answer: str = Field(default="", description="Expert answer associated with the question.")
+    kind: Literal[
+        "confirmation",
+        "assumption",
+        "capability_reason",
+        "capability_warning",
+        "unknown",
+    ] = "unknown"
+    status: Literal["resolved", "declined", "unknown"] = "unknown"
+    source_round: int = Field(default=0, ge=0)
+    semantic_keys: list[str] = Field(default_factory=list)
+    reason: str | None = None
 
 
 class SimulationPlan(AgentBaseModel):

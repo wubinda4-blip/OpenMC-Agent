@@ -14,6 +14,7 @@ from openmc_agent.schemas import (
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
+    CoreSpec,
     ExecutionCheckSpec,
     GeometrySpec,
     LatticeSpec,
@@ -194,6 +195,50 @@ def test_skeleton_renderer_for_unrecognized_kind(tmp_path: Path) -> None:
     assert capability.renderability == "skeleton"
     result = renderer.render(plan, tmp_path)
     assert "NOT EXECUTABLE" in result.script
+
+
+def test_core_renderer_rejects_mixed_percent_material_without_formula() -> None:
+    model = ComplexModelSpec(
+        name="bad core",
+        kind="core",
+        materials=[
+            ComplexMaterialSpec(
+                id="fuel",
+                name="fuel",
+                density_unit="g/cm3",
+                density_value=10.0,
+                composition=[
+                    NuclideSpec(name="U235", percent=3.3, percent_type="wo"),
+                    NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+                ],
+            )
+        ],
+        cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="core lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[["pin"]],
+            )
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_lattice"),
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="core_xy.png")],
+    )
+
+    _renderer, capability = choose_renderer(plan)
+
+    assert capability.renderability == "skeleton"
+    assert capability.supported_renderer == "core"
+    assert any("mixes atom and weight percents" in reason for reason in capability.reasons)
 
 
 # -- assembly validation checks -------------------------------------------
