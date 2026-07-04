@@ -4,6 +4,7 @@ from pathlib import Path
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
+from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.graph import _render_plan_script, build_graph, build_plan_graph
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.records import load_jsonl_records
@@ -1720,6 +1721,34 @@ def test_capability_self_repair_classifies_structural_vs_material_gaps() -> None
     assert "universe.cell_ref_missing" in structured_codes
     assert "material.missing_density" not in structured_codes
 
+    core_structural_report = RenderCapabilityReport(
+        renderability="skeleton",
+        is_executable=False,
+        supported_renderer="core",
+        issues=[
+            issue_from_catalog(
+                "core.lattice_ref_missing",
+                message="core references missing lattice_id='core_lattic'",
+            ),
+            issue_from_catalog(
+                "axial_layer.fill_ref_missing",
+                message="axial layer 'fuel_layer' references missing lattice 'core_lattic'",
+            ),
+            issue_from_catalog(
+                "lattice_loading.base_ref_missing",
+                message="lattice loading 'rodded' references missing base_lattice_id 'core_lattic'",
+            ),
+        ],
+    )
+    core_structural_codes = {
+        issue.code for issue in _capability_self_repair_errors(core_structural_report)
+    }
+    assert core_structural_codes == {
+        "core.lattice_ref_missing",
+        "axial_layer.fill_ref_missing",
+        "lattice_loading.base_ref_missing",
+    }
+
     material = RenderCapabilityReport(
         renderability="skeleton",
         is_executable=False,
@@ -1734,6 +1763,41 @@ def test_capability_self_repair_classifies_structural_vs_material_gaps() -> None
 
     clean = RenderCapabilityReport(renderability="exportable", supported_renderer="assembly")
     assert _capability_self_repair_errors(clean) == []
+
+
+def test_pending_expert_questions_excludes_self_repairable_core_lattice_refs() -> None:
+    from openmc_agent.graph import _pending_expert_questions
+
+    plan = make_simulation_plan().model_copy(
+        update={
+            "capability_report": RenderCapabilityReport(
+                renderability="skeleton",
+                is_executable=False,
+                supported_renderer="core",
+                reasons=[
+                    "core references missing lattice_id='core_lattice'",
+                    "axial layer 'fuel_layer' references missing lattice 'core_lattice'",
+                ],
+                issues=[
+                    issue_from_catalog(
+                        "core.lattice_ref_missing",
+                        message="core references missing lattice_id='core_lattice'",
+                    ),
+                    issue_from_catalog(
+                        "axial_layer.fill_ref_missing",
+                        message=(
+                            "axial layer 'fuel_layer' references missing lattice "
+                            "'core_lattice'"
+                        ),
+                    ),
+                ],
+            )
+        }
+    )
+
+    questions = _pending_expert_questions({"simulation_plan": plan})
+
+    assert not questions
 
 
 def test_plan_graph_reflects_on_structural_capability_errors(tmp_path: Path) -> None:
@@ -2019,6 +2083,7 @@ def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path, monkeypa
     assert state.get("investigation_trace")
     assert state.get("grep_evidence")
     assert any("[Grep Evidence]" in prompt for prompt in prompts)
+    assert any("[Graph Context]" in prompt for prompt in prompts)
     assert any("Validation Issues" in prompt or "Structured diagnostic issues" in prompt for prompt in prompts)
     assert state["validation_report"].is_valid is True
 

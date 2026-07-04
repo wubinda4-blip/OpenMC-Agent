@@ -376,6 +376,19 @@ def test_unknown_catalog_code_falls_back_to_minimal_issue() -> None:
     assert issue.severity == "error"
 
 
+def test_catalog_routes_core_axial_and_loading_refs_to_auto_repair() -> None:
+    for code in (
+        "core.lattice_ref_missing",
+        "axial_layer.fill_ref_missing",
+        "axial_layer.loading_ref_missing",
+        "lattice_loading.base_ref_missing",
+        "lattice_loading.override_universe_ref_missing",
+    ):
+        issue = issue_from_catalog(code)
+        assert issue.route_hint == "auto_repair"
+        assert issue.requires_human_confirmation is False
+
+
 def test_catalog_covers_all_required_validator_codes() -> None:
     """Guardrail: every code the validator emits must resolve in the catalog."""
     required = {

@@ -1,8 +1,8 @@
 """Deterministic id-reference repair for repeated-geometry plans.
 
 Produces RFC 6902 JSON Patch ops that fix *uniquely-solvable* id-reference
-typos in a ``SimulationPlan``'s ``complex_model``: a ``cell.fill_id``, an
-``universe.cell_ids`` entry, a ``lattice.universe_pattern`` entry, a
+typos in a ``SimulationPlan``'s ``complex_model``: a ``cell.fill_id``, a core
+``lattice_id``, an ``universe.cell_ids`` entry, a ``lattice.universe_pattern`` entry, a
 ``region.surface_ids`` entry, a ``cell.region_id``, an axial-layer
 ``fill.id`` / ``loading_id``, or a lattice-loading reference that points at an
 id which does not exist but resolves to exactly
@@ -35,6 +35,7 @@ _ID_REF_CODES = frozenset({
     "cell.region_ref_missing",
     "cell.universe_ref_missing",
     "cell.lattice_ref_missing",
+    "core.lattice_ref_missing",
     "universe.cell_ref_missing",
     "region.surface_ref_missing",
     "lattice.universe_ref_missing",
@@ -178,8 +179,14 @@ def auto_repair_lattice_structure(
 
     loading_ids = {loading.id for loading in model.lattice_loadings}
 
-    # Axial-layer fill.id + loading_id.
+    # Core lattice_id + axial-layer fill.id + loading_id.
     if model.core is not None:
+        if model.core.lattice_id is not None and model.core.lattice_id not in lattice_ids:
+            replace_if_resolved(
+                "/complex_model/core/lattice_id",
+                model.core.lattice_id,
+                lattice_ids,
+            )
         for i, layer in enumerate(model.core.axial_layers):
             if layer.fill.type != "void" and layer.fill.id:
                 pool = fill_pools.get(layer.fill.type)

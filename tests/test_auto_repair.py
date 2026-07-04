@@ -244,6 +244,66 @@ def test_repairs_axial_layer_fill_ref_typo():
     ]
 
 
+def test_repairs_core_lattice_id_typo_even_when_issue_gates_scan():
+    model = ComplexModelSpec(
+        name="m",
+        kind="core",
+        materials=[_mat("fuel")],
+        cells=[CellSpec(id="c1", name="c", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="u1", name="u", cell_ids=["c1"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="lat",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["u1"]],
+            )
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_lattic"),
+    )
+    issue = ValidationIssue(
+        severity="error",
+        code="core.lattice_ref_missing",
+        message="core references missing lattice_id='core_lattic'",
+    )
+
+    patch = auto_repair_lattice_structure(_plan(model), issues=[issue])
+
+    assert patch == [
+        {"op": "replace", "path": "/complex_model/core/lattice_id", "value": "core_lattice"}
+    ]
+
+
+def test_does_not_repair_core_lattice_id_when_candidate_is_ambiguous():
+    model = ComplexModelSpec(
+        name="m",
+        kind="core",
+        materials=[_mat("fuel")],
+        cells=[CellSpec(id="c1", name="c", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="u1", name="u", cell_ids=["c1"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="lat",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["u1"]],
+            ),
+            LatticeSpec(
+                id="core_lattice_alt",
+                name="lat alt",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["u1"]],
+            ),
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_latt"),
+    )
+
+    assert auto_repair_lattice_structure(_plan(model)) is None
+
+
 def test_repairs_axial_layer_loading_id_and_base_lattice_typos():
     model = ComplexModelSpec(
         name="m",

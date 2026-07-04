@@ -19,6 +19,11 @@ from openmc_agent.grep_search import (
     format_grep_evidence,
     gather_grep_evidence_for_issues,
 )
+from openmc_agent.knowledge_graph import (
+    GraphContext,
+    format_graph_context,
+    gather_graph_context_for_issues,
+)
 from openmc_agent.llm import (
     StructuredOutputResult,
     generate_structured_output,
@@ -115,6 +120,7 @@ class GraphState(TypedDict, total=False):
     investigation_trace: list[dict[str, Any]]
     investigation_findings: str
     grep_evidence: list[dict[str, Any]]
+    graph_context: dict[str, Any]
     patch_failure_count: int
 
 
@@ -1588,9 +1594,11 @@ def _make_reflect_plan_node(
                 )
 
         grep_evidence = _grep_evidence_for_report(report)
+        graph_context = _graph_context_for_report(report, grep_evidence)
         state_with_evidence: GraphState = {
             **state,
             "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
+            "graph_context": graph_context.model_dump(mode="json"),
         }
         base_requirement = _build_reflection_requirement(state_with_evidence)
         plan_summary = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False)
@@ -1647,6 +1655,7 @@ def _make_reflect_plan_node(
                     "patch_failure_count": patch_failures,
                     "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
                     "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
+                    "graph_context": graph_context.model_dump(mode="json"),
                     **_investigation_state_updates(investigation_outcome),
                 }
             except Exception as exc:
@@ -1704,6 +1713,7 @@ def _make_reflect_plan_node(
                 "retry_count": retry_count + 1,
                 "patch_failure_count": patch_failures,
                 "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
+                "graph_context": graph_context.model_dump(mode="json"),
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to repair SimulationPlan",
@@ -1716,6 +1726,7 @@ def _make_reflect_plan_node(
             "retry_count": retry_count + 1,
             "patch_failure_count": patch_failures,
             "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
+            "graph_context": graph_context.model_dump(mode="json"),
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
             "plan_artifacts": _write_final_simulation_plan(
                 state,
@@ -1876,6 +1887,15 @@ def _grep_evidence_for_report(report: ValidationReport | None) -> list[Retrieved
     return gather_grep_evidence_for_issues(report.issues)
 
 
+def _graph_context_for_report(
+    report: ValidationReport | None,
+    grep_evidence: list[RetrievedEvidence],
+) -> GraphContext:
+    if report is None or not report.issues:
+        return GraphContext()
+    return gather_graph_context_for_issues(report.issues, grep_evidence)
+
+
 def _coerce_grep_evidence(raw_items: list[Any]) -> list[RetrievedEvidence]:
     evidence: list[RetrievedEvidence] = []
     for raw in raw_items:
@@ -1890,6 +1910,17 @@ def _coerce_grep_evidence(raw_items: list[Any]) -> list[RetrievedEvidence]:
     return evidence
 
 
+def _coerce_graph_context(raw_item: Any) -> GraphContext:
+    if isinstance(raw_item, GraphContext):
+        return raw_item
+    if isinstance(raw_item, dict):
+        try:
+            return GraphContext.model_validate(raw_item)
+        except Exception:
+            return GraphContext()
+    return GraphContext()
+
+
 def _repair_constraints_context() -> str:
     return (
         "\n[Repair Constraints]\n"
@@ -1897,6 +1928,7 @@ def _repair_constraints_context() -> str:
         "- Do not modify confirmed fields or expert feedback unless the issue targets them.\n"
         "- Do not invent material density, nuclide composition, benchmark facts, or cross section paths.\n"
         "- Treat grep evidence as locator context, not as final physics or nuclear-data truth.\n"
+        "- Treat graph context as relationship metadata and retrieval routing hints, not as final physics facts.\n"
     )
 
 
@@ -1907,6 +1939,7 @@ def _build_reflection_requirement(state: GraphState) -> str:
     report = state.get("validation_report")
     issue_context = _structured_issue_context(report.issues if report else [])
     grep_context = format_grep_evidence(_coerce_grep_evidence(state.get("grep_evidence", [])))
+    graph_context = format_graph_context(_coerce_graph_context(state.get("graph_context")))
     structure_guidance = ""
     if repair_errors:
         structure_guidance = (
@@ -1928,6 +1961,7 @@ def _build_reflection_requirement(state: GraphState) -> str:
         f"{structure_guidance}"
         f"{issue_context}"
         f"{grep_context}"
+        f"{graph_context}"
         f"{_repair_constraints_context()}"
         f"Validation and execution errors: {state.get('error', '')}\n"
         f"Tool results: {_compact_tool_results(tool_results)}\n"
@@ -2758,8 +2792,13 @@ SELF_REPAIRABLE_CODES = frozenset({
     "cell.region_ref_missing",
     "cell.universe_ref_missing",
     "cell.lattice_ref_missing",
+    "core.lattice_ref_missing",
     "universe.cell_ref_missing",
     "region.surface_ref_missing",
+    "axial_layer.fill_ref_missing",
+    "axial_layer.loading_ref_missing",
+    "lattice_loading.base_ref_missing",
+    "lattice_loading.override_universe_ref_missing",
     "surface.cylinder_radius_invalid",
 })
 

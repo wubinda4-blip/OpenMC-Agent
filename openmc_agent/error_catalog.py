@@ -723,6 +723,22 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             ),
         ],
     },
+    "core.lattice_ref_missing": {
+        "severity": "error",
+        "message": "core references missing lattice",
+        "schema_path": "complex_model.core.lattice_id",
+        "rule_id": "rule.core.lattice_ref_exists",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix CoreSpec.lattice_id typo or add the missing lattice.",
+                target_path="complex_model.core.lattice_id",
+            ),
+        ],
+        "route_hint": "auto_repair",
+    },
     "universe.cell_ref_missing": {
         "severity": "error",
         "message": "universe references missing cells",
@@ -782,6 +798,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
                 target_path="complex_model.core.axial_layers.fill.id",
             ),
         ],
+        "route_hint": "auto_repair",
     },
     "axial_layer.loading_ref_missing": {
         "severity": "error",
@@ -797,6 +814,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
                 target_path="complex_model.core.axial_layers.loading_id",
             ),
         ],
+        "route_hint": "auto_repair",
     },
     "lattice_loading.base_ref_missing": {
         "severity": "error",
@@ -812,6 +830,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
                 target_path="complex_model.lattice_loadings.base_lattice_id",
             ),
         ],
+        "route_hint": "auto_repair",
     },
     "lattice_loading.override_universe_ref_missing": {
         "severity": "error",
@@ -827,6 +846,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
                 target_path="complex_model.lattice_loadings.overrides",
             ),
         ],
+        "route_hint": "auto_repair",
     },
     "lattice_loading.override_position_oob": {
         "severity": "error",
