@@ -426,8 +426,8 @@ def render_openmc_core_script(
     settings_override: RunSettingsSpec | None = None,
     plot_specs: list[PlotSpec] | None = None,
 ) -> str:
-    _validate_renderable_core(spec)
     spec = _normalize_core_spec_for_rendering(spec)
+    _validate_renderable_core(spec)
     settings = settings_override or spec.settings
     material_blocks = "\n\n".join(
         _render_complex_material_definition(material)
@@ -1308,6 +1308,7 @@ def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSp
     normalized = spec.model_copy(deep=True)
     if normalized.core is None or normalized.core.lattice_id is None:
         return normalized
+    normalized = _materialize_missing_core_universe_cells(normalized)
 
     reachable = _core_reachable_universe_ids(normalized)
     direct_core_refs = _core_direct_lattice_universe_ids(normalized)
@@ -1342,6 +1343,184 @@ def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSp
     return _clone_shared_core_universe_cells(normalized, reachable)
 
 
+def _materialize_missing_core_universe_cells(spec: ComplexModelSpec) -> ComplexModelSpec:
+    cell_ids = {cell.id for cell in spec.cells}
+    missing_by_universe = {
+        universe.id: [cell_id for cell_id in universe.cell_ids if cell_id not in cell_ids]
+        for universe in spec.universes
+    }
+    missing_by_universe = {
+        universe_id: missing
+        for universe_id, missing in missing_by_universe.items()
+        if missing and not _core_universe_has_wrapper_intent(spec, universe_id)
+    }
+    if not missing_by_universe:
+        return spec
+
+    generated_cells: list[CellSpec] = []
+    generated_surfaces: list[SurfaceSpec] = []
+    generated_regions: list[RegionSpec] = []
+    region_ids = {region.id for region in spec.regions}
+    surface_ids = {surface.id for surface in spec.surfaces}
+    pin_radius = _infer_core_pin_radius(spec)
+
+    for universe_id, missing_cell_ids in missing_by_universe.items():
+        needs_pin_regions = _missing_cells_need_pin_regions(missing_cell_ids)
+        inside_region_id: str | None = None
+        outside_region_id: str | None = None
+        if needs_pin_regions:
+            surface_id = _unique_generated_id(f"__surface_{universe_id}_cyl", surface_ids)
+            surface_ids.add(surface_id)
+            inside_region_id = _unique_generated_id(f"__region_{universe_id}_inside", region_ids)
+            region_ids.add(inside_region_id)
+            outside_region_id = _unique_generated_id(f"__region_{universe_id}_outside", region_ids)
+            region_ids.add(outside_region_id)
+            generated_surfaces.append(
+                SurfaceSpec(
+                    id=surface_id,
+                    kind="zcylinder",
+                    parameters={"r": pin_radius},
+                    purpose=f"Auto-generated local pin cylinder for {universe_id}.",
+                )
+            )
+            generated_regions.extend(
+                [
+                    RegionSpec(
+                        id=inside_region_id,
+                        expression=f"-{surface_id}",
+                        surface_ids=[surface_id],
+                        purpose=f"Auto-generated inside-cylinder region for {universe_id}.",
+                    ),
+                    RegionSpec(
+                        id=outside_region_id,
+                        expression=f"+{surface_id}",
+                        surface_ids=[surface_id],
+                        purpose=f"Auto-generated moderator region for {universe_id}.",
+                    ),
+                ]
+            )
+        for cell_id in missing_cell_ids:
+            material_id = _core_material_id_for_missing_cell(spec, universe_id, cell_id)
+            if material_id is None:
+                continue
+            region_id = None
+            if needs_pin_regions:
+                region_id = outside_region_id if _cell_id_is_moderator(cell_id) else inside_region_id
+            generated_cells.append(
+                CellSpec(
+                    id=cell_id,
+                    name=f"auto cell for {cell_id}",
+                    region_id=region_id,
+                    fill_type="material",
+                    fill_id=material_id,
+                    purpose=f"Auto-generated from missing cell reference in universe {universe_id}.",
+                )
+            )
+
+    if not generated_cells:
+        return spec
+    return spec.model_copy(
+        update={
+            "surfaces": [*spec.surfaces, *generated_surfaces],
+            "regions": [*spec.regions, *generated_regions],
+            "cells": [*spec.cells, *generated_cells],
+        }
+    )
+
+
+def _core_universe_has_wrapper_intent(spec: ComplexModelSpec, universe_id: str) -> bool:
+    lattice_ids = {lattice.id for lattice in spec.lattices}
+    assembly = {assembly.id: assembly for assembly in spec.assemblies}.get(universe_id)
+    if assembly is not None and assembly.lattice_id in lattice_ids:
+        return True
+    return _core_material_id_for_wrapper_universe(spec, universe_id) is not None
+
+
+def _missing_cells_need_pin_regions(cell_ids: list[str]) -> bool:
+    has_inner = any(_cell_id_is_inner_pin_region(cell_id) for cell_id in cell_ids)
+    has_outer = any(_cell_id_is_moderator(cell_id) for cell_id in cell_ids)
+    return has_inner and has_outer
+
+
+def _cell_id_is_inner_pin_region(cell_id: str) -> bool:
+    tokens = set(cell_id.split("_"))
+    return bool(tokens & {"fuel", "cyl", "pin", "guide", "fiss", "chamber"})
+
+
+def _cell_id_is_moderator(cell_id: str) -> bool:
+    tokens = set(cell_id.split("_"))
+    return bool(tokens & {"mod", "moderator", "water"})
+
+
+def _infer_core_pin_radius(spec: ComplexModelSpec) -> float:
+    radii = [
+        float(surface.parameters["r"])
+        for surface in spec.surfaces
+        if surface.kind in {"zcylinder", "xcylinder", "ycylinder"}
+        and isinstance(surface.parameters.get("r"), (int, float))
+        and float(surface.parameters["r"]) > 0
+    ]
+    if radii:
+        return min(radii)
+    pitches = [
+        min(_rect_lattice_pitch(lattice))
+        for lattice in spec.lattices
+        if lattice.kind == "rect" and lattice.pitch_cm
+    ]
+    if pitches:
+        return min(pitches) * 0.42857142857142855
+    return 0.54
+
+
+def _core_material_id_for_missing_cell(
+    spec: ComplexModelSpec,
+    universe_id: str,
+    cell_id: str,
+) -> str | None:
+    material_ids = {material.id for material in spec.materials}
+    cell_tokens = set(cell_id.split("_"))
+    universe_tokens = set(universe_id.split("_"))
+    if cell_tokens & {"mod", "moderator", "water"} and "water" in material_ids:
+        return "water"
+    if cell_tokens & {"fiss", "chamber"}:
+        if "fiss_chamber" in material_ids:
+            return "fiss_chamber"
+        if "guide_tube" in material_ids:
+            return "guide_tube"
+    if "guide" in cell_tokens or "guide" in universe_tokens:
+        if "guide_tube" in material_ids:
+            return "guide_tube"
+        if "guide" in material_ids:
+            return "guide"
+    for token in [*cell_id.split("_"), *universe_id.split("_")]:
+        if token in material_ids:
+            return token
+    if "fuel" in cell_tokens:
+        for token in universe_id.split("_"):
+            if token in material_ids:
+                return token
+        if "fuel" in material_ids:
+            return "fuel"
+    return _core_material_id_for_empty_universe(spec, universe_id)
+
+
+def _core_material_id_for_wrapper_universe(
+    spec: ComplexModelSpec,
+    universe_id: str,
+) -> str | None:
+    if universe_id.startswith("pin_"):
+        return None
+    tokens = set(universe_id.split("_"))
+    material_id = _core_material_id_for_empty_universe(spec, universe_id)
+    if material_id is None:
+        if "water" in {material.id for material in spec.materials} and tokens & {"water", "reflector"}:
+            return "water"
+        return None
+    if material_id == "water" or tokens & {"water", "reflector", "moderator", "mod"}:
+        return material_id
+    return None
+
+
 def _core_wrapper_cell_for_universe(
     spec: ComplexModelSpec,
     universe_id: str,
@@ -1360,7 +1539,7 @@ def _core_wrapper_cell_for_universe(
         )
 
     universe = {universe.id: universe for universe in spec.universes}.get(universe_id)
-    material_id = _core_material_id_for_empty_universe(spec, universe_id)
+    material_id = _core_material_id_for_wrapper_universe(spec, universe_id)
     if material_id is not None and (not universe or not universe.cell_ids or universe_id in direct_core_refs):
         return _core_wrapper_cell(
             universe_id,
@@ -1445,11 +1624,17 @@ def _core_direct_lattice_universe_ids(spec: ComplexModelSpec) -> set[str]:
     if spec.core is None or spec.core.lattice_id is None:
         return set()
     core_lattice = _lattice_by_id(spec, spec.core.lattice_id)
-    return {
+    universe_ids = {
         universe_id
         for row in core_lattice.universe_pattern
         for universe_id in row
     }
+    universe_ids.update(
+        layer.fill_id
+        for layer in spec.core.axial_layers
+        if layer.fill_type == "universe" and layer.fill_id is not None
+    )
+    return universe_ids
 
 
 def _core_reachable_universe_ids(spec: ComplexModelSpec) -> set[str]:
@@ -1460,24 +1645,32 @@ def _core_reachable_universe_ids(spec: ComplexModelSpec) -> set[str]:
     universe_by_id = {universe.id: universe for universe in spec.universes}
     assembly_by_id = {assembly.id: assembly for assembly in spec.assemblies}
     pending_lattice_ids = [spec.core.lattice_id]
+    pending_universe_ids = [
+        layer.fill_id
+        for layer in spec.core.axial_layers
+        if layer.fill_type == "universe" and layer.fill_id is not None
+    ]
     visited_lattice_ids: set[str] = set()
     reachable_universe_ids: set[str] = set()
 
-    while pending_lattice_ids:
-        lattice_id = pending_lattice_ids.pop()
-        if lattice_id in visited_lattice_ids:
-            continue
-        visited_lattice_ids.add(lattice_id)
-        lattice = lattice_by_id.get(lattice_id)
-        if lattice is None:
-            continue
-        lattice_universe_ids = {
-            universe_id
-            for row in lattice.universe_pattern
-            for universe_id in row
-        }
-        if lattice.outer_universe_id is not None:
-            lattice_universe_ids.add(lattice.outer_universe_id)
+    while pending_lattice_ids or pending_universe_ids:
+        if pending_universe_ids:
+            lattice_universe_ids = {pending_universe_ids.pop()}
+        else:
+            lattice_id = pending_lattice_ids.pop()
+            if lattice_id in visited_lattice_ids:
+                continue
+            visited_lattice_ids.add(lattice_id)
+            lattice = lattice_by_id.get(lattice_id)
+            if lattice is None:
+                continue
+            lattice_universe_ids = {
+                universe_id
+                for row in lattice.universe_pattern
+                for universe_id in row
+            }
+            if lattice.outer_universe_id is not None:
+                lattice_universe_ids.add(lattice.outer_universe_id)
         for universe_id in lattice_universe_ids:
             if universe_id in reachable_universe_ids:
                 continue
@@ -1492,6 +1685,8 @@ def _core_reachable_universe_ids(spec: ComplexModelSpec) -> set[str]:
                 cell = cell_by_id.get(cell_id)
                 if cell is not None and cell.fill_type == "lattice" and cell.fill_id is not None:
                     pending_lattice_ids.append(cell.fill_id)
+                if cell is not None and cell.fill_type == "universe" and cell.fill_id is not None:
+                    pending_universe_ids.append(cell.fill_id)
     return reachable_universe_ids
 
 
@@ -1525,7 +1720,7 @@ def _core_universe_wrapper_fill_expression(
     if assembly is not None and assembly.lattice_id in lattice_ids:
         return f"lattices[{assembly.lattice_id!r}]"
 
-    material_id = _core_material_id_for_empty_universe(spec, universe_id)
+    material_id = _core_material_id_for_wrapper_universe(spec, universe_id)
     if material_id is not None:
         return f"materials_by_id[{material_id!r}]"
     return None
@@ -1570,6 +1765,30 @@ def _render_core_root(spec: ComplexModelSpec) -> str:
         root_name=spec.core.name,
         boundary=spec.core.boundary,
     )
+
+
+def _apply_assembly_overrides(
+    pattern: list[list[str]],
+    overrides: dict[str, list[tuple[int, int]]],
+) -> list[list[str]]:
+    """Return a copy of ``pattern`` with per-layer assembly overrides applied.
+
+    ``overrides`` maps a universe id to the (row, col) positions it should
+    occupy, matching the ``LatticeSpec.overrides`` convention (row 0 = top,
+    col 0 = left). Out-of-bounds positions raise so an invalid plan never
+    silently produces a ragged derived lattice.
+    """
+    grid = [list(row) for row in pattern]
+    for universe_id, positions in overrides.items():
+        for position in positions:
+            row, col = position
+            if not (0 <= row < len(grid) and 0 <= col < len(grid[row])):
+                raise ValueError(
+                    f"assembly_overrides position {(row, col)} for universe "
+                    f"{universe_id!r} is out of bounds"
+                )
+            grid[row][col] = universe_id
+    return grid
 
 
 def _render_axial_core_root(spec: ComplexModelSpec) -> str:
@@ -1638,10 +1857,37 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
             f"{region_name} = +assembly_xmin & -assembly_xmax & "
             f"+assembly_ymin & -assembly_ymax & +{lower_plane} & -{upper_plane}"
         )
+        fill_expr = _axial_layer_fill_expression(layer)
+        # Per-layer assembly loading: derive a dedicated RectLattice that applies
+        # this layer's overrides on top of the base lattice, so one axial slice
+        # can insert control-rod / burnable-poison assemblies without rewriting
+        # the whole loading map.
+        overrides = getattr(layer, "assembly_overrides", None)
+        if layer.fill_type == "lattice" and overrides:
+            base_id = layer.lattice_id or layer.fill_id or spec.core.lattice_id
+            base_lattice = _lattice_by_id(spec, base_id)
+            derived_pattern = _apply_assembly_overrides(
+                base_lattice.universe_pattern, overrides
+            )
+            derived_var = _safe_name("axial_lattice", layer.id)
+            base_lower_left = (
+                base_lattice.lower_left_cm or _infer_rect_lattice_lower_left(base_lattice)
+            )
+            lines.append(f"{derived_var} = openmc.RectLattice(name={layer.name!r})")
+            lines.append(f"{derived_var}.pitch = {_rect_lattice_pitch(base_lattice)!r}")
+            lines.append(f"{derived_var}.lower_left = {base_lower_left!r}")
+            lines.append(
+                f"{derived_var}.universes = {_render_universe_pattern(derived_pattern)}"
+            )
+            if base_lattice.outer_universe_id is not None:
+                lines.append(
+                    f"{derived_var}.outer = universes[{base_lattice.outer_universe_id!r}]"
+                )
+            fill_expr = derived_var
         lines.append(
             f"{cell_name} = openmc.Cell("
             f"name={layer.name!r}, "
-            f"fill={_axial_layer_fill_expression(layer)}, "
+            f"fill={fill_expr}, "
             f"region={region_name})"
         )
         root_cell_refs.append(cell_name)

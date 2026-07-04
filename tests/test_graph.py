@@ -26,6 +26,7 @@ from openmc_agent.schemas import (
     SimulationPlan,
     SimulationSpec,
     UniverseSpec,
+    ValidationIssue,
     ValidationReport,
 )
 from openmc_agent.retrieval import RetrievalStep
@@ -1501,8 +1502,37 @@ def test_capability_self_repair_classifies_structural_vs_material_gaps() -> None
         ],
     )
     repaired = _capability_self_repair_errors(structural)
-    assert any("references missing cells" in r for r in repaired)
-    assert any("pin count mismatch" in r for r in repaired)
+    # Legacy fallback path (no structured issues): returns ValidationIssue whose
+    # message mirrors the old free-text reasons/confirmations.
+    repaired_messages = [r.message for r in repaired]
+    assert any("references missing cells" in m for m in repaired_messages)
+    assert any("pin count mismatch" in m for m in repaired_messages)
+    assert all(r.code == "legacy.self_repairable" for r in repaired)
+
+    # Structured path: issues filtered by SELF_REPAIRABLE_CODES win over regex;
+    # material gaps stay out (expert fact).
+    structured_report = RenderCapabilityReport(
+        renderability="skeleton",
+        is_executable=False,
+        supported_renderer="core",
+        reasons=["universe 'water_univ' references missing cells"],
+        issues=[
+            ValidationIssue(
+                severity="error",
+                code="universe.cell_ref_missing",
+                message="universe 'water_univ' references missing cells",
+            ),
+            ValidationIssue(
+                severity="error",
+                code="material.missing_density",
+                message="material 'fuel' is missing density",
+            ),
+        ],
+    )
+    structured = _capability_self_repair_errors(structured_report)
+    structured_codes = {i.code for i in structured}
+    assert "universe.cell_ref_missing" in structured_codes
+    assert "material.missing_density" not in structured_codes
 
     material = RenderCapabilityReport(
         renderability="skeleton",
@@ -1685,6 +1715,58 @@ def _fix_missing_cell(previous_spec: SimulationPlan) -> SimulationPlan:
     fixed = previous_spec.model_copy(deep=True)
     fixed.complex_model.universes[0].cell_ids = ["fuel_cell"]
     return fixed
+
+
+def test_plan_graph_reflect_applies_auto_repair_patch(tmp_path: Path) -> None:
+    """A uniquely-solvable id typo (cell id 'fuel_cel' -> 'fuel_cell') is fixed
+    by deterministic auto_repair with no LLM call: repair_plan is not invoked,
+    patch_reason='deterministic auto-repair', patch_confidence='high'."""
+    repair_calls = {"n": 0}
+
+    def dirty_plan() -> SimulationPlan:
+        plan = _make_dirty_assembly_plan_missing_cell()
+        # Typo that resolves uniquely to 'fuel_cell' (prefix match, edit distance 1).
+        plan.complex_model.universes[0].cell_ids = ["fuel_cel"]
+        return plan
+
+    def fake_generate_plan(*, requirement, schema, model):
+        return StructuredOutputResult(ok=True, value=dirty_plan())
+
+    def fake_repair_plan(*, requirement, schema, model, previous_spec, validation_errors):
+        repair_calls["n"] += 1
+        return StructuredOutputResult(ok=True, value=_fix_missing_cell(previous_spec))
+
+    def fake_investigation(prompt: str):
+        # Investigation offers no patch; auto_repair must handle it alone.
+        return _investigation_done(patch=None, findings="")
+
+    graph = _investigation_graph(
+        tmp_path,
+        generate_plan=fake_generate_plan,
+        repair_plan=fake_repair_plan,
+        investigation_llm=fake_investigation,
+    )
+    state = graph.invoke(
+        {
+            "requirement": "fix the assembly typo",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+            "max_expert_rounds": 2,
+        }
+    )
+    # auto_repair fixed it deterministically; no whole-plan regeneration.
+    assert repair_calls["n"] == 0
+    plan_patch = state.get("plan_patch")
+    assert plan_patch
+    assert any(
+        op["path"] == "/complex_model/universes/0/cell_ids/0" for op in plan_patch
+    )
+    assert plan_patch[0]["value"] == "fuel_cell"
+    assert state.get("patch_reason") == "deterministic auto-repair"
+    assert state.get("patch_confidence") == "high"
+    assert state.get("patch_failure_count", 0) == 0
+    assert state["validation_report"].is_valid is True
 
 
 def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path) -> None:

@@ -145,6 +145,36 @@ def test_export_xml_fails_on_dangling_lattice_universe_reference(
     assert "99" in result.error
 
 
+def test_export_xml_fails_on_cell_fill_without_universe_or_lattice(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model.py"
+    model_path.write_text("print('export')\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        assert command[-1] == "model.py"
+        (tmp_path / "materials.xml").write_text("<materials />", encoding="utf-8")
+        (tmp_path / "settings.xml").write_text("<settings />", encoding="utf-8")
+        (tmp_path / "geometry.xml").write_text(
+            """<geometry>
+  <cell id="1" universe="1" />
+  <cell id="18" fill="12" universe="1" />
+</geometry>
+""",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="exported", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = export_xml(model_path)
+
+    assert result.ok is False
+    assert "cell 18" in result.error
+    assert "fill 12" in result.error
+
+
 def test_run_geometry_plots_preserves_failure_stderr(tmp_path: Path, monkeypatch) -> None:
     def fake_run(command, **kwargs):
         assert command == ["openmc", "-p"]

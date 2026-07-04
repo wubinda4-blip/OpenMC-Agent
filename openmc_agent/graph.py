@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from openmc_agent.executor import render_openmc_script
+from openmc_agent.auto_repair import auto_repair_lattice_structure
 from openmc_agent.few_shots import select_few_shots
 from openmc_agent.llm import (
     StructuredOutputResult,
@@ -35,6 +36,7 @@ from openmc_agent.schemas import (
     ResolvedExpertItem,
     SimulationPlan,
     SimulationSpec,
+    ValidationIssue,
     ValidationReport,
 )
 from openmc_agent.tools import (
@@ -104,6 +106,7 @@ class GraphState(TypedDict, total=False):
     verbose: bool
     investigation_trace: list[dict[str, Any]]
     investigation_findings: str
+    patch_failure_count: int
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -945,11 +948,12 @@ def _make_assess_plan_capability_node(max_retries: int):
         # then picks reflect vs ask_expert based on retry_count.
         events = list(state.get("human_loop_events", []))
         retry_count = state.get("retry_count", 0)
-        repair_errors: list[str] = (
+        repair_issues: list[ValidationIssue] = (
             _capability_self_repair_errors(capability)
             if capability.renderability in {"none", "skeleton"}
             else []
         )
+        repair_errors = [issue.message for issue in repair_issues]
         inject_invalid = bool(repair_errors) and retry_count < max_retries
         if inject_invalid:
             events.append(
@@ -959,7 +963,7 @@ def _make_assess_plan_capability_node(max_retries: int):
                     "max_retries": max_retries,
                     "errors": repair_errors,
                     "reason": (
-                        "structural plan defects are LLM-fixable; routing to reflect_plan "
+                        "structural plan defects are agent-fixable; routing to reflect_plan "
                         "instead of asking the expert"
                     ),
                 }
@@ -1458,6 +1462,11 @@ def _make_execute_tools_node(
     return _execute_tools
 
 
+# Number of consecutive patch failures (auto-repair or investigation) after which
+# reflect_plan stops trying patches and regenerates the whole SimulationPlan.
+PATCH_FALLBACK_THRESHOLD = 2
+
+
 def _make_reflect_plan_node(
     repair_plan: RepairPlanFn,
     *,
@@ -1471,8 +1480,9 @@ def _make_reflect_plan_node(
         plan = _coerce_simulation_plan(state.get("simulation_plan"))
         report = state.get("validation_report")
         retry_count = state.get("retry_count", 0)
+        patch_failures = state.get("patch_failure_count", 0)
         if plan is None or report is None or report.is_valid:
-            return {"retry_count": retry_count}
+            return {"retry_count": retry_count, "patch_failure_count": patch_failures}
 
         base_requirement = _build_reflection_requirement(state)
         plan_summary = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False)
@@ -1490,17 +1500,34 @@ def _make_reflect_plan_node(
             error_catalog_hints=hints,
         )
 
-        # Precision-patch path: the investigation produced a surgical JSON Patch
-        # against the SimulationPlan IR. Reuse the existing patch applier so the
-        # result goes through capability normalization + full Pydantic validation.
-        if (
-            investigation_outcome is not None
+        # Patch sources, in priority order: (1) deterministic auto-repair of
+        # uniquely-solvable id-reference typos -- no LLM call; (2) an
+        # investigation patch from the retrieval loop. Whole-plan regeneration
+        # below is the last resort, used only when no patch applies or recent
+        # patches keep failing to validate.
+        auto_patch: list[dict[str, Any]] | None = None
+        if patch_failures < PATCH_FALLBACK_THRESHOLD:
+            auto_patch = auto_repair_lattice_structure(
+                plan, issues=plan.capability_report.issues
+            )
+        investigation_patch = (
+            investigation_outcome.patch
+            if investigation_outcome is not None
             and investigation_outcome.ok
             and investigation_outcome.patch
-        ):
+            else None
+        )
+        candidate_patch = auto_patch or investigation_patch
+
+        if candidate_patch is not None and patch_failures < PATCH_FALLBACK_THRESHOLD:
+            patch_source = (
+                "deterministic auto-repair"
+                if auto_patch is not None
+                else "investigation"
+            )
             try:
                 patched_payload = _apply_json_patches(
-                    plan.model_dump(mode="json"), investigation_outcome.patch
+                    plan.model_dump(mode="json"), candidate_patch
                 )
                 patched_payload = _normalize_capability_report_for_plan_validation(
                     patched_payload
@@ -1509,29 +1536,43 @@ def _make_reflect_plan_node(
                 _progress(
                     state,
                     "reflect_plan",
-                    f"applied {len(investigation_outcome.patch)} investigation patch op(s)",
+                    f"applied {len(candidate_patch)} patch op(s) via {patch_source}",
                 )
                 return {
                     "simulation_plan": patched_plan,
                     "simulation_spec": patched_plan.model_spec,
                     "retry_count": retry_count + 1,
-                    "plan_patch": investigation_outcome.patch,
+                    "plan_patch": candidate_patch,
                     "patch_confidence": "high",
-                    "patch_reason": _truncate_text(investigation_outcome.findings, 500)
-                    or "investigation patch",
+                    "patch_reason": (
+                        patch_source
+                        if auto_patch is not None
+                        else _truncate_text(investigation_outcome.findings, 500)
+                        or "investigation patch"
+                    ),
                     "patch_error": "",
                     "error": "",
+                    "patch_failure_count": patch_failures,
                     **_investigation_state_updates(investigation_outcome),
                 }
             except Exception as exc:
+                patch_failures += 1
                 _progress(
                     state,
                     "reflect_plan",
-                    f"investigation patch failed: {exc}; falling back to repair_plan",
+                    f"{patch_source} patch failed: {exc}; "
+                    f"patch_failure_count={patch_failures}",
                 )
 
         # Fallback: regenerate the whole plan, enriched by findings when available.
         reflection_requirement = base_requirement
+        if patch_failures > 0:
+            reflection_requirement += (
+                "\n\nNote: deterministic / investigation patches were attempted but "
+                "did not validate. Carefully re-check id references (cell.fill_id, "
+                "universe.cell_ids, lattice.universe_pattern, region.surface_ids) "
+                "against the defined ids rather than guessing.\n"
+            )
         if (
             investigation_outcome is not None
             and investigation_outcome.ok
@@ -1542,7 +1583,12 @@ def _make_reflect_plan_node(
                 "Investigation findings (verified against codebase):\n"
                 f"{_truncate_text(investigation_outcome.findings, 2000)}\n"
             )
-        _progress(state, "reflect_plan", f"calling LLM reflection retry={retry_count + 1}")
+        _progress(
+            state,
+            "reflect_plan",
+            f"calling LLM reflection retry={retry_count + 1}, "
+            f"patch_failures={patch_failures}",
+        )
         result = repair_plan(
             requirement=reflection_requirement,
             schema=SimulationPlan,
@@ -1554,6 +1600,7 @@ def _make_reflect_plan_node(
             _progress(state, "reflect_plan", f"failed: {result.error}")
             return {
                 "retry_count": retry_count + 1,
+                "patch_failure_count": patch_failures,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "error": result.error or "failed to repair SimulationPlan",
                 **_investigation_state_updates(investigation_outcome),
@@ -1563,6 +1610,7 @@ def _make_reflect_plan_node(
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
             "retry_count": retry_count + 1,
+            "patch_failure_count": patch_failures,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
             "error": "",
             **_investigation_state_updates(investigation_outcome),
@@ -2401,22 +2449,50 @@ _SELF_REPAIRABLE_CAPABILITY_PATTERNS = (
 )
 
 
-def _capability_self_repair_errors(capability: RenderCapabilityReport) -> list[str]:
-    """Capability reasons/confirmations the LLM can fix itself vs. facts only a
-    human expert can supply.
+# Stable codes for plan defects the agent can fix itself (plan typos) vs. facts
+# only an expert can supply. Code-based matching replaces the fragile regex over
+# free-text renderer messages above; the regex stays as a legacy fallback for
+# renderers that do not yet emit structured issues.
+SELF_REPAIRABLE_CODES = frozenset({
+    "lattice.universe_ref_missing",
+    "lattice.shape_pattern_mismatch",
+    "lattice.pattern_ragged_rows",
+    "lattice.pin_count_mismatch",
+    "cell.material_ref_missing",
+    "cell.region_ref_missing",
+    "cell.universe_ref_missing",
+    "cell.lattice_ref_missing",
+    "universe.cell_ref_missing",
+    "region.surface_ref_missing",
+    "surface.cylinder_radius_invalid",
+})
 
-    A missing-cell reference, a pin-count mismatch, or a bad radius is a plan
-    typo -- the LLM mis-named an id or mis-counted overrides -- so it is routed
-    to reflect_plan. A missing density or composition is a real gap the expert
-    must fill, so it stays out of this set and goes to ask_expert.
+
+def _capability_self_repair_errors(
+    capability: RenderCapabilityReport,
+) -> list[ValidationIssue]:
+    """Issues the agent can fix itself (plan typos) vs. facts only an expert can supply.
+
+    Prefers structured ``capability.issues`` filtered by :data:`SELF_REPAIRABLE_CODES`;
+    falls back to the legacy regex over ``reasons`` / ``required_human_confirmations``
+    for renderers that do not yet emit structured issues. A missing density or
+    composition is a real gap the expert must fill, so those codes stay out of
+    :data:`SELF_REPAIRABLE_CODES` and route to ask_expert.
     """
+    structured = [
+        issue
+        for issue in capability.issues
+        if issue.code in SELF_REPAIRABLE_CODES
+    ]
+    if structured:
+        return list(structured)
     candidates: list[str] = []
     if capability.renderability in {"none", "skeleton"}:
         candidates.extend(capability.reasons)
     # Pin-count mismatches are also recorded as soft human confirmations on the
-    # lattice spec; they are still count/override errors the LLM can fix.
+    # lattice spec; they are still count/override errors the agent can fix.
     candidates.extend(capability.required_human_confirmations)
-    repaired = [
+    repaired_texts = [
         text
         for text in candidates
         if any(
@@ -2424,7 +2500,10 @@ def _capability_self_repair_errors(capability: RenderCapabilityReport) -> list[s
             for pattern in _SELF_REPAIRABLE_CAPABILITY_PATTERNS
         )
     ]
-    return list(dict.fromkeys(repaired))
+    return [
+        ValidationIssue(severity="error", code="legacy.self_repairable", message=text)
+        for text in dict.fromkeys(repaired_texts)
+    ]
 
 
 def _capability_for_plan(plan: SimulationPlan) -> RenderCapabilityReport:

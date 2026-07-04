@@ -263,6 +263,60 @@ def test_generate_structured_output_returns_readable_error_on_invalid_json() -> 
     assert "Could not parse model response" in result.error
 
 
+def test_generate_structured_output_repairs_missing_commas_between_fields() -> None:
+    client = FakeClient(
+        """
+        {
+          "name": "Water"
+          "density_unit": "g/cm3",
+          "density_value": 1.0,
+          "composition": [
+            {"name": "H1", "percent": 2.0, "percent_type": "ao"},
+            {"name": "O16", "percent": 1.0, "percent_type": "ao"}
+          ]
+        }
+        """
+    )
+
+    result = generate_structured_output(
+        requirement="创建水材料",
+        schema=MaterialSpec,
+        model="test:material-model",
+        client=client,
+    )
+
+    assert result.ok is True
+    assert result.value is not None
+    assert result.value.name == "Water"
+
+
+def test_generate_structured_output_repairs_missing_commas_between_array_objects() -> None:
+    client = FakeClient(
+        """
+        {
+          "name": "Water",
+          "density_unit": "g/cm3",
+          "density_value": 1.0,
+          "composition": [
+            {"name": "H1", "percent": 2.0, "percent_type": "ao"}
+            {"name": "O16", "percent": 1.0, "percent_type": "ao"}
+          ]
+        }
+        """
+    )
+
+    result = generate_structured_output(
+        requirement="创建水材料",
+        schema=MaterialSpec,
+        model="test:material-model",
+        client=client,
+    )
+
+    assert result.ok is True
+    assert result.value is not None
+    assert [item.name for item in result.value.composition] == ["H1", "O16"]
+
+
 def test_generate_structured_output_returns_readable_error_on_client_failure() -> None:
     result = generate_structured_output(
         requirement="创建 UO2 燃料",

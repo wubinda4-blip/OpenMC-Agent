@@ -26,17 +26,29 @@ from openmc_agent.renderers.skeleton import (
     _write_todo,
     emit_skeleton,
 )
+from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.schemas import (
     ComplexMaterialSpec,
     ComplexModelSpec,
     LatticeSpec,
     RenderCapabilityReport,
     SimulationPlan,
+    ValidationIssue,
 )
 from openmc_agent.validator import validate_openmc_script
 
 
 _COMPOSITE_REGION_SURFACE_KINDS = {"rectangular_prism", "hexagonal_prism"}
+
+
+def _iss(code: str, message: str, schema_path: str = "") -> ValidationIssue:
+    """Build a structured diagnostic issue with a stable code.
+
+    Registered codes pull severity/knowledge/repair_hints from
+    :data:`error_catalog.ERROR_CATALOG`; unknown codes degrade gracefully via
+    :func:`issue_from_catalog` so every diagnostic still carries a stable code.
+    """
+    return issue_from_catalog(code, message=message, schema_path=schema_path or None)
 
 
 class RectAssemblyRenderer(BaseRenderer):
@@ -62,7 +74,8 @@ class RectAssemblyRenderer(BaseRenderer):
                 supported_renderer="assembly",
                 executable_subsystems=[],
                 unsupported_subsystems=_assembly_subsystems(model),
-                reasons=errors,
+                reasons=[issue.message for issue in errors],
+                issues=errors,
                 warnings=warnings,
                 required_human_confirmations=_material_confirmations(model, deps),
             )
@@ -127,25 +140,25 @@ class RectAssemblyRenderer(BaseRenderer):
 def _assembly_diagnostics(
     model: ComplexModelSpec,
     deps: ActiveDependencies,
-) -> tuple[list[str], list[str]]:
-    """Return (blocking_errors, warnings). Empty error list means exportable.
+) -> tuple[list[ValidationIssue], list[str]]:
+    """Return (blocking_issues, warnings). Empty issue list means exportable.
 
     ``deps`` partitions declared objects by reachability from the default
     lattice. Only *active* materials can block the default model; gaps in
     candidate / inactive materials become warnings instead.
     """
-    errors: list[str] = []
+    errors: list[ValidationIssue] = []
     warnings: list[str] = []
 
     # Check 2: at least one rect lattice.
     rect_lattices = [lat for lat in model.lattices if lat.kind == "rect"]
     if not model.lattices:
-        errors.append("assembly renderer requires a RectLattice")
+        errors.append(_iss("assembly.requires_lattice", "assembly renderer requires a RectLattice", "complex_model.lattices"))
     elif not rect_lattices:
-        errors.append("assembly renderer currently supports RectLattice only")
+        errors.append(_iss("assembly.requires_rect_lattice", "assembly renderer currently supports RectLattice only", "complex_model.lattices"))
 
     if not model.assemblies or model.assemblies[0].lattice_id is None:
-        errors.append("assembly renderer requires an AssemblySpec with lattice_id")
+        errors.append(_iss("assembly.requires_assembly_spec", "assembly renderer requires an AssemblySpec with lattice_id", "complex_model.assemblies"))
 
     material_ids = {material.id for material in model.materials}
     region_ids = {region.id for region in model.regions}
@@ -160,11 +173,11 @@ def _assembly_diagnostics(
     cell_ids = {cell.id for cell in model.cells}
 
     if not model.cells:
-        errors.append("assembly renderer requires cells")
+        errors.append(_iss("assembly.requires_cells", "assembly renderer requires cells", "complex_model.cells"))
     if not model.universes:
-        errors.append("assembly renderer requires universes")
+        errors.append(_iss("assembly.requires_universes", "assembly renderer requires universes", "complex_model.universes"))
     if not model.materials:
-        errors.append("assembly renderer requires materials")
+        errors.append(_iss("assembly.requires_materials", "assembly renderer requires materials", "complex_model.materials"))
 
     # Check 8: material completeness (density + composition/chemical_formula).
     # Only materials reachable from the default lattice (active) can block;
@@ -187,24 +200,30 @@ def _assembly_diagnostics(
     # Check 5: cell.region_id references an existing region (when set).
     for cell in model.cells:
         if cell.region_id is not None and cell.region_id not in region_like_ids:
-            errors.append(
-                f"cell {cell.id!r} references missing region {cell.region_id!r}"
-            )
+            errors.append(_iss(
+                "cell.region_ref_missing",
+                f"cell {cell.id!r} references missing region {cell.region_id!r}",
+                f"complex_model.cells.{cell.id}.region_id",
+            ))
 
     # Check 6: region.surface_ids reference existing surfaces.
     for region in model.regions:
         missing = [sid for sid in region.surface_ids if sid not in surface_ids]
         if missing:
-            errors.append(
-                f"region {region.id!r} references missing surfaces: {missing}"
-            )
+            errors.append(_iss(
+                "region.surface_ref_missing",
+                f"region {region.id!r} references missing surfaces: {missing}",
+                f"complex_model.regions.{region.id}.surface_ids",
+            ))
 
     # Check 7: material cells reference existing materials.
     for cell in model.cells:
         if cell.fill_type == "material" and cell.fill_id and cell.fill_id not in material_ids:
-            errors.append(
-                f"cell {cell.id!r} references missing material {cell.fill_id!r}"
-            )
+            errors.append(_iss(
+                "cell.material_ref_missing",
+                f"cell {cell.id!r} references missing material {cell.fill_id!r}",
+                f"complex_model.cells.{cell.id}.fill_id",
+            ))
 
     # Universe -> cell references.
     for universe in model.universes:
@@ -212,9 +231,11 @@ def _assembly_diagnostics(
         if not missing:
             continue
         if universe.id in deps.universe_ids:
-            errors.append(
-                f"universe {universe.id!r} references missing cells: {missing}"
-            )
+            errors.append(_iss(
+                "universe.cell_ref_missing",
+                f"universe {universe.id!r} references missing cells: {missing}",
+                f"complex_model.universes.{universe.id}.cell_ids",
+            ))
         else:
             warnings.append(
                 f"inactive candidate universe {universe.id!r} references missing "
@@ -224,9 +245,17 @@ def _assembly_diagnostics(
     # Existing reflector / control-rod reference checks.
     for reflector in model.reflectors:
         if reflector.material_id not in material_ids:
-            errors.append(f"reflector {reflector.id!r} references missing material")
+            errors.append(_iss(
+                "reflector.material_ref_missing",
+                f"reflector {reflector.id!r} references missing material",
+                f"complex_model.reflectors.{reflector.id}.material_id",
+            ))
         if reflector.region_id is None or reflector.region_id not in region_like_ids:
-            errors.append(f"reflector {reflector.id!r} requires a valid region_id")
+            errors.append(_iss(
+                "reflector.region_ref_missing",
+                f"reflector {reflector.id!r} requires a valid region_id",
+                f"complex_model.reflectors.{reflector.id}.region_id",
+            ))
 
     lattice_universe_ids = {
         uid
@@ -236,23 +265,29 @@ def _assembly_diagnostics(
     }
     for control_rod in model.control_rods:
         if control_rod.absorber_material_id not in material_ids:
-            errors.append(
-                f"control rod {control_rod.id!r} references missing absorber material"
-            )
+            errors.append(_iss(
+                "control_rod.material_ref_missing",
+                f"control rod {control_rod.id!r} references missing absorber material",
+                f"complex_model.control_rods.{control_rod.id}.absorber_material_id",
+            ))
         if (
             control_rod.guide_tube_region_id is not None
             and control_rod.guide_tube_region_id not in region_like_ids
         ):
-            errors.append(
-                f"control rod {control_rod.id!r} references missing guide_tube_region_id"
-            )
+            errors.append(_iss(
+                "control_rod.region_ref_missing",
+                f"control rod {control_rod.id!r} references missing guide_tube_region_id",
+                f"complex_model.control_rods.{control_rod.id}.guide_tube_region_id",
+            ))
         if control_rod.guide_tube_region_id is None and not any(
             position_id in lattice_universe_ids for position_id in control_rod.position_ids
         ):
-            errors.append(
+            errors.append(_iss(
+                "control_rod.position_ref_missing",
                 f"control rod {control_rod.id!r} must reference a lattice universe "
-                "position or a guide_tube_region_id"
-            )
+                "position or a guide_tube_region_id",
+                f"complex_model.control_rods.{control_rod.id}.position_ids",
+            ))
 
     # Check 9 + 10: cylinder radii positive and within pitch/2.
     errors.extend(_cylinder_geometry_errors(model, warnings))
@@ -271,13 +306,18 @@ def _assembly_diagnostics(
 def _lattice_pattern_errors(
     lattice: LatticeSpec,
     universe_ids: set[str],
-) -> list[str]:
-    errors: list[str] = []
+) -> list[ValidationIssue]:
+    errors: list[ValidationIssue] = []
+    schema_base = f"complex_model.lattices.{lattice.id}.universe_pattern"
     pattern = lattice.universe_pattern
     if not pattern:
         if lattice.kind == "rect":
             errors.append(
-                f"lattice {lattice.id!r} requires universe_pattern before export"
+                _iss(
+                    "lattice.pattern_missing",
+                    f"lattice {lattice.id!r} requires universe_pattern before export",
+                    schema_base,
+                )
             )
         return errors
     if lattice.shape is not None:
@@ -290,8 +330,12 @@ def _lattice_pattern_errors(
             actual_cols = len(pattern[0]) if pattern else 0
             if expected_rows != actual_rows or expected_cols != actual_cols:
                 errors.append(
-                    f"lattice {lattice.id!r} shape {list(expected)} does not match "
-                    f"universe_pattern dimensions {actual_rows}x{actual_cols}"
+                    _iss(
+                        "lattice.shape_pattern_mismatch",
+                        f"lattice {lattice.id!r} shape {list(expected)} does not match "
+                        f"universe_pattern dimensions {actual_rows}x{actual_cols}",
+                        schema_base,
+                    )
                 )
     else:
         # Without an explicit shape, just confirm the pattern is rectangular.
@@ -299,7 +343,11 @@ def _lattice_pattern_errors(
             col_counts = {len(row) for row in pattern}
             if len(col_counts) > 1:
                 errors.append(
-                    f"lattice {lattice.id!r} universe_pattern rows have unequal lengths"
+                    _iss(
+                        "lattice.pattern_ragged_rows",
+                        f"lattice {lattice.id!r} universe_pattern rows have unequal lengths",
+                        schema_base,
+                    )
                 )
 
     missing = [
@@ -310,8 +358,12 @@ def _lattice_pattern_errors(
     ]
     if missing:
         errors.append(
-            f"lattice {lattice.id!r} universe_pattern references missing universes: "
-            f"{_dedupe(missing)}"
+            _iss(
+                "lattice.universe_ref_missing",
+                f"lattice {lattice.id!r} universe_pattern references missing universes: "
+                f"{_dedupe(missing)}",
+                schema_base,
+            )
         )
 
     # Hard gate at export: a pin-count mismatch must block XML export so a wrong
@@ -329,8 +381,12 @@ def _lattice_pattern_errors(
         ]
         if count_mismatches:
             errors.append(
-                f"lattice {lattice.id!r} pin counts do not match expected_counts: "
-                + "; ".join(count_mismatches)
+                _iss(
+                    "lattice.pin_count_mismatch",
+                    f"lattice {lattice.id!r} pin counts do not match expected_counts: "
+                    + "; ".join(count_mismatches),
+                    schema_base,
+                )
             )
     return errors
 
@@ -348,11 +404,12 @@ def _shape_to_rows_cols(shape: tuple[int, ...]) -> tuple[int, int] | None:
 def _cylinder_geometry_errors(
     model: ComplexModelSpec,
     warnings: list[str],
-) -> list[str]:
-    errors: list[str] = []
+) -> list[ValidationIssue]:
+    errors: list[ValidationIssue] = []
     radii: list[float] = []
     for surface in model.surfaces:
         if surface.kind in {"zcylinder", "ycylinder", "xcylinder"}:
+            schema_path = f"complex_model.surfaces.{surface.id}.parameters.r"
             r = surface.parameters.get("r")
             if r is None:
                 warnings.append(
@@ -362,12 +419,18 @@ def _cylinder_geometry_errors(
             try:
                 radius = float(r)
             except (TypeError, ValueError):
-                errors.append(f"{surface.kind} surface {surface.id!r} has non-numeric radius {r!r}")
+                errors.append(_iss(
+                    "surface.cylinder_radius_invalid",
+                    f"{surface.kind} surface {surface.id!r} has non-numeric radius {r!r}",
+                    schema_path,
+                ))
                 continue
             if radius <= 0:
-                errors.append(
-                    f"{surface.kind} surface {surface.id!r} radius must be positive, got {radius}"
-                )
+                errors.append(_iss(
+                    "surface.cylinder_radius_invalid",
+                    f"{surface.kind} surface {surface.id!r} radius must be positive, got {radius}",
+                    schema_path,
+                ))
             else:
                 radii.append(radius)
 
@@ -378,10 +441,12 @@ def _cylinder_geometry_errors(
         else:
             max_radius = max(radii)
             if max_radius >= pitch / 2.0:
-                errors.append(
+                errors.append(_iss(
+                    "surface.cylinder_radius_invalid",
                     f"maximum cylinder outer radius {max_radius} must be less than "
-                    f"pitch/2 ({pitch / 2.0})"
-                )
+                    f"pitch/2 ({pitch / 2.0})",
+                    "complex_model.surfaces.parameters.r",
+                ))
     return errors
 
 
@@ -415,7 +480,7 @@ def _assembly_subsystems(model: ComplexModelSpec) -> list[str]:
 def _material_completeness_messages(
     model: ComplexModelSpec,
     deps: ActiveDependencies,
-    errors: list[str],
+    errors: list[ValidationIssue],
 ) -> list[str]:
     """Split material gaps into blocking errors (active) and warnings (inactive).
 
@@ -435,18 +500,27 @@ def _material_completeness_messages(
             and not material.chemical_formula
         )
         mixed_percent_types = _material_has_mixed_percent_types(material)
+        schema_path = f"complex_model.materials.{material.id}"
         if material.id in deps.material_ids:
             if missing_density:
-                errors.append(f"material {material.id!r} is missing density")
+                errors.append(_iss(
+                    "material.missing_density",
+                    f"material {material.id!r} is missing density",
+                    schema_path,
+                ))
             if missing_composition:
-                errors.append(
-                    f"material {material.id!r} is missing composition or chemical_formula"
-                )
+                errors.append(_iss(
+                    "material.missing_composition",
+                    f"material {material.id!r} is missing composition or chemical_formula",
+                    schema_path,
+                ))
             if mixed_percent_types and material.chemical_formula is None:
-                errors.append(
+                errors.append(_iss(
+                    "material.mixed_percent_type",
                     f"material {material.id!r} mixes atom and weight percents "
-                    "without chemical_formula fallback"
-                )
+                    "without chemical_formula fallback",
+                    schema_path,
+                ))
             elif mixed_percent_types:
                 warnings.append(
                     f"material {material.id!r} mixes atom and weight percents; "

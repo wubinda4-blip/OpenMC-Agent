@@ -203,6 +203,20 @@ def _geometry_lattice_reference_error(geometry_path: Path) -> str:
         for universe in [cell.attrib.get("universe")]
         if universe is not None
     }
+    exported_lattice_numbers = {
+        lattice_id
+        for lattice in root.findall(".//lattice")
+        for lattice_id in [lattice.attrib.get("id")]
+        if lattice_id is not None
+    }
+    exported_fill_numbers = exported_universe_numbers | exported_lattice_numbers
+    missing_by_cell: dict[str, str] = {}
+    for cell in root.findall(".//cell"):
+        fill = cell.attrib.get("fill")
+        cell_id = cell.attrib.get("id", "<unknown>")
+        if fill is not None and fill not in exported_fill_numbers:
+            missing_by_cell[cell_id] = fill
+
     missing_by_lattice: dict[str, list[str]] = {}
     for lattice in root.findall(".//lattice"):
         lattice_id = lattice.attrib.get("id", "<unknown>")
@@ -214,13 +228,18 @@ def _geometry_lattice_reference_error(geometry_path: Path) -> str:
         if missing:
             missing_by_lattice[lattice_id] = missing
 
-    if not missing_by_lattice:
+    if not missing_by_lattice and not missing_by_cell:
         return ""
-    details = "; ".join(
+    details_parts = [
+        f"cell {cell_id} fill {fill} is not an exported universe or lattice"
+        for cell_id, fill in sorted(missing_by_cell.items(), key=_xml_id_sort_key)
+    ]
+    details_parts.extend(
         f"lattice {lattice_id} missing universe numbers {missing}"
         for lattice_id, missing in sorted(missing_by_lattice.items(), key=_xml_id_sort_key)
     )
-    return f"geometry.xml has dangling lattice universe references: {details}"
+    details = "; ".join(details_parts)
+    return f"geometry.xml has dangling geometry references: {details}"
 
 
 def _xml_id_sort_key(item: tuple[str, object]) -> tuple[int, int | str]:

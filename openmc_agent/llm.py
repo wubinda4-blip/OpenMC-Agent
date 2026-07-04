@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -613,14 +614,47 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     if start == -1 or end == -1 or end < start:
         raise ValueError("response did not contain a JSON object")
 
+    json_text = text[start : end + 1]
     try:
-        payload = json.loads(text[start : end + 1])
+        payload = json.loads(json_text)
     except json.JSONDecodeError as exc:
-        raise ValueError(str(exc)) from exc
+        repaired_text = _repair_missing_json_commas(json_text)
+        if repaired_text == json_text:
+            raise ValueError(str(exc)) from exc
+        try:
+            payload = json.loads(repaired_text)
+        except json.JSONDecodeError:
+            raise ValueError(str(exc)) from exc
 
     if not isinstance(payload, dict):
         raise ValueError("top-level JSON value must be an object")
     return payload
+
+
+_JSON_VALUE_END_RE = re.compile(
+    r'(?m)(?P<value>(?:\}|\]|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null))'
+    r'(?P<ws>[ \t]*\r?\n[ \t]*)'
+    r'(?P<next>(?:"[^"\n\r]+":|\{))'
+)
+
+
+def _repair_missing_json_commas(text: str) -> str:
+    """Repair obvious LLM JSON punctuation misses at line boundaries.
+
+    The model most often emits almost-valid JSON with a missing comma between
+    adjacent object fields or adjacent array objects. Keep this intentionally
+    narrow: it runs only after strict parsing failed and inserts commas only
+    where a complete JSON scalar/container is followed on the next line by a
+    property name or another object.
+    """
+
+    previous = text
+    for _ in range(4):
+        repaired = _JSON_VALUE_END_RE.sub(r"\g<value>,\g<ws>\g<next>", previous)
+        if repaired == previous:
+            return repaired
+        previous = repaired
+    return previous
 
 
 def _sanitize_text(text: str) -> str:

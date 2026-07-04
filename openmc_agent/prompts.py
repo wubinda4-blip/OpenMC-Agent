@@ -71,6 +71,13 @@ SimulationPlan-specific rules:
 - For 3D rectangular core plans, use CoreSpec.boundary_conditions to specify
   xmin/xmax/ymin/ymax/zmin/zmax boundary types and CoreSpec.axial_layers to
   split fuel-height lattice regions from top/bottom reflector material regions.
+- For axial per-layer loading (e.g. a fuel region that inserts control-rod or
+  burnable-poison assemblies in some axial slices but not others), give the
+  layer fill_type='lattice' with lattice_id pointing at the base core lattice
+  and assembly_overrides={universe_id: [(row, col), ...]} for just the positions
+  that differ that slice. Do NOT re-enumerate the whole loading map per layer;
+  keep one base lattice and override only the minority positions, matching the
+  LatticeSpec.overrides (row 0 = top, col 0 = left) convention.
 """.strip()
 )
 

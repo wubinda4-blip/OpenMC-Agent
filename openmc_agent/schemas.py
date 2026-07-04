@@ -710,6 +710,25 @@ class AxialLayerSpec(AgentBaseModel):
     z_max_cm: float
     fill_type: Literal["material", "universe", "lattice", "void"] = "lattice"
     fill_id: str | None = None
+    lattice_id: str | None = Field(
+        default=None,
+        description=(
+            "Base lattice this axial layer fills. Defaults to core.lattice_id at "
+            "render time. Set explicitly when the layer needs its own assembly "
+            "loading (used together with assembly_overrides)."
+        ),
+    )
+    assembly_overrides: dict[str, list[tuple[int, int]]] | None = Field(
+        default=None,
+        description=(
+            "Per-layer assembly loading override applied on top of the layer's "
+            "lattice: universe_id -> [(row, col), ...]. Lets one layer insert "
+            "control-rod / burnable-poison assemblies without re-enumerating the "
+            "whole loading. Row 0 = top, col 0 = left (same convention as "
+            "LatticeSpec.overrides). None/empty means the layer uses its base "
+            "lattice unchanged."
+        ),
+    )
     purpose: str = ""
 
     @model_validator(mode="after")
@@ -870,6 +889,12 @@ class ValidationIssue(AgentBaseModel):
         default=False,
         description="Whether a human must confirm the proposed fix.",
     )
+
+    def __str__(self) -> str:
+        return self.message
+
+    def __contains__(self, text: object) -> bool:
+        return isinstance(text, str) and text in self.message
 
 
 class ValidationReport(AgentBaseModel):
@@ -1337,6 +1362,16 @@ class RenderCapabilityReport(AgentBaseModel):
             "Executing a plan that still has open human confirmations",
             "Vague confirmation entries that cannot be acted on",
         ],
+    )
+    issues: list[ValidationIssue] = Field(
+        default_factory=list,
+        description=(
+            "Structured renderer diagnostics with stable error codes, schema "
+            "paths, and repair hints. ``reasons`` stays the human-readable "
+            "summary; this field carries the code-level detail that "
+            "deterministic self-repair (auto_repair) and code-based routing "
+            "rely on. Pure addition: absent on legacy reports."
+        ),
     )
 
     @model_validator(mode="after")

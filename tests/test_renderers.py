@@ -241,6 +241,58 @@ def test_core_renderer_rejects_mixed_percent_material_without_formula() -> None:
     assert any("mixes atom and weight percents" in reason for reason in capability.reasons)
 
 
+def test_core_renderer_can_render_auto_materialized_missing_cells() -> None:
+    model = ComplexModelSpec(
+        name="repairable missing cells core",
+        kind="core",
+        materials=[
+            ComplexMaterialSpec(
+                id="uo2",
+                name="UO2",
+                density_unit="g/cm3",
+                density_value=10.0,
+                chemical_formula="UO2",
+                enrichment_percent=3.3,
+            ),
+            ComplexMaterialSpec(
+                id="water",
+                name="water",
+                density_unit="g/cm3",
+                density_value=0.997,
+                chemical_formula="H2O",
+            ),
+        ],
+        cells=[],
+        universes=[
+            UniverseSpec(id="pin_uo2", name="pin", cell_ids=["pin_uo2_fuel_cell", "pin_uo2_mod_cell"]),
+            UniverseSpec(id="water_universe", name="water", cell_ids=["water_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="core lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[["pin_uo2", "water_universe"]],
+            )
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_lattice"),
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 1.26), filename="core_xy.png")],
+    )
+
+    _renderer, capability = choose_renderer(plan)
+
+    assert capability.supported_renderer == "core"
+    assert capability.renderability != "skeleton"
+    assert not any("references missing cells" in reason for reason in capability.reasons)
+
+
 # -- assembly validation checks -------------------------------------------
 
 

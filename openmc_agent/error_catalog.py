@@ -583,6 +583,187 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             )
         ],
     },
+    # ----------------------------------------------- repeated-geometry refs
+    "lattice.universe_ref_missing": {
+        "severity": "error",
+        "message": "lattice universe_pattern references missing universes",
+        "schema_path": "complex_model.lattices.universe_pattern",
+        "rule_id": "rule.lattice.universe_ref_exists",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the universe id typo or add the missing universe with that exact id.",
+                target_path="complex_model.lattices.universe_pattern",
+            ),
+        ],
+    },
+    "lattice.shape_pattern_mismatch": {
+        "severity": "error",
+        "message": "lattice shape does not match universe_pattern dimensions",
+        "schema_path": "complex_model.lattices",
+        "rule_id": "rule.lattice.shape_matches_pattern",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Reconcile shape=(nx,ny) with the universe_pattern rows/cols count.",
+                target_path="complex_model.lattices.shape",
+            ),
+        ],
+    },
+    "lattice.pattern_ragged_rows": {
+        "severity": "error",
+        "message": "lattice universe_pattern rows have unequal lengths",
+        "schema_path": "complex_model.lattices.universe_pattern",
+        "rule_id": "rule.lattice.rectangular_pattern",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Pad or trim rows so every universe_pattern row has the same length.",
+                target_path="complex_model.lattices.universe_pattern",
+            ),
+        ],
+    },
+    "lattice.pin_count_mismatch": {
+        "severity": "error",
+        "message": "lattice pin counts do not match expected_counts",
+        "schema_path": "complex_model.lattices",
+        "rule_id": "rule.lattice.expected_counts",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Recompute fill_universe + overrides (row,col) positions so each universe count matches expected_counts.",
+                target_path="complex_model.lattices.overrides",
+            ),
+        ],
+    },
+    "cell.material_ref_missing": {
+        "severity": "error",
+        "message": "cell references missing material",
+        "schema_path": "complex_model.cells",
+        "rule_id": "rule.cell.material_ref_exists",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [MATERIALS_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the material id typo or add the missing material.",
+                target_path="complex_model.cells.fill_id",
+            ),
+        ],
+    },
+    "cell.region_ref_missing": {
+        "severity": "error",
+        "message": "cell references missing region",
+        "schema_path": "complex_model.cells",
+        "rule_id": "rule.cell.region_ref_exists",
+        "concept_id": "openmc.geometry.region_boolean_expression",
+        "knowledge_refs": [GEOMETRY_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the region id typo or add the missing region.",
+                target_path="complex_model.cells.region_id",
+            ),
+        ],
+    },
+    "cell.universe_ref_missing": {
+        "severity": "error",
+        "message": "cell references missing universe",
+        "schema_path": "complex_model.cells",
+        "rule_id": "rule.cell.universe_ref_exists",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the universe id typo or add the missing universe.",
+                target_path="complex_model.cells.fill_id",
+            ),
+        ],
+    },
+    "cell.lattice_ref_missing": {
+        "severity": "error",
+        "message": "cell references missing lattice",
+        "schema_path": "complex_model.cells",
+        "rule_id": "rule.cell.lattice_ref_exists",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the lattice id typo or add the missing lattice.",
+                target_path="complex_model.cells.fill_id",
+            ),
+        ],
+    },
+    "universe.cell_ref_missing": {
+        "severity": "error",
+        "message": "universe references missing cells",
+        "schema_path": "complex_model.universes.cell_ids",
+        "rule_id": "rule.universe.cell_ref_exists",
+        "concept_id": "openmc.geometry.universe",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the cell id typo or add the missing cell.",
+                target_path="complex_model.universes.cell_ids",
+            ),
+        ],
+    },
+    "region.surface_ref_missing": {
+        "severity": "error",
+        "message": "region references missing surfaces",
+        "schema_path": "complex_model.regions",
+        "rule_id": "rule.region.surface_ref_exists",
+        "concept_id": "openmc.geometry.region_surface_refs",
+        "knowledge_refs": [GEOMETRY_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the surface id typo or add the missing surface.",
+                target_path="complex_model.regions.surface_ids",
+            ),
+        ],
+    },
+    "surface.cylinder_radius_invalid": {
+        "severity": "error",
+        "message": "cylinder surface radius is invalid",
+        "schema_path": "complex_model.surfaces",
+        "rule_id": "rule.surface.cylinder_radius",
+        "concept_id": "openmc.geometry.surface_parameters",
+        "knowledge_refs": [GEOMETRY_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Set a positive numeric radius < pitch/2.",
+                target_path="complex_model.surfaces.parameters.r",
+            ),
+        ],
+    },
+    "axial_layer.ref_missing": {
+        "severity": "error",
+        "message": "axial layer references missing fill",
+        "schema_path": "complex_model.core.axial_layers",
+        "rule_id": "rule.axial_layer.fill_ref_exists",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the fill id typo or add the missing material/universe/lattice.",
+                target_path="complex_model.core.axial_layers.fill_id",
+            ),
+        ],
+    },
 }
 
 

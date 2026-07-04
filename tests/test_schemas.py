@@ -107,6 +107,25 @@ def test_axial_layer_rejects_empty_non_void_fill_and_bad_height() -> None:
         )
 
 
+def test_axial_layer_per_layer_loading_fields_default_and_accept_overrides() -> None:
+    layer = AxialLayerSpec(
+        id="fuel", name="fuel", z_min_cm=0.0, z_max_cm=10.0,
+        fill_type="lattice", fill_id="core_lattice",
+    )
+    # New WI-4 fields default to None (backward compatible with pre-WI-4 plans).
+    assert layer.lattice_id is None
+    assert layer.assembly_overrides is None
+
+    override_layer = AxialLayerSpec(
+        id="fuel", name="fuel", z_min_cm=0.0, z_max_cm=10.0,
+        fill_type="lattice", fill_id="core_lattice",
+        lattice_id="core_lattice",
+        assembly_overrides={"rod_assembly": [(0, 0), (1, 1)]},
+    )
+    assert override_layer.lattice_id == "core_lattice"
+    assert override_layer.assembly_overrides == {"rod_assembly": [(0, 0), (1, 1)]}
+
+
 def test_material_without_density_value_fails_validation() -> None:
     with pytest.raises(ValidationError) as exc_info:
         MaterialSpec(

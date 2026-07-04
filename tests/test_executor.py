@@ -980,6 +980,175 @@ def test_render_3d_rectangular_core_with_axial_water_layer_exports_xml(
     assert (tmp_path / "plots.xml").exists()
 
 
+def test_core_renderer_wraps_empty_axial_water_universe(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="axial water universe core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    chemical_formula="H2O",
+                ),
+            ],
+            cells=[CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="fuel")],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="top_reflector_universe", name="top reflector", cell_ids=[]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="core_lattice",
+                    name="core lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                )
+            ],
+            core=CoreSpec(
+                id="core",
+                name="root core",
+                lattice_id="core_lattice",
+                boundary="vacuum",
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel",
+                        name="fuel",
+                        z_min_cm=0.0,
+                        z_max_cm=10.0,
+                        fill_type="lattice",
+                        fill_id="core_lattice",
+                    ),
+                    AxialLayerSpec(
+                        id="top_reflector",
+                        name="Top water reflector",
+                        z_min_cm=10.0,
+                        z_max_cm=12.0,
+                        fill_type="universe",
+                        fill_id="top_reflector_universe",
+                    ),
+                ],
+            ),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xz", width_cm=(1.26, 12.0), filename="axial_water_universe_xz.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "cell_wrapper_top_reflector_universe = openmc.Cell" in script
+    assert "fill=materials_by_id['water']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
+    assert 'name="auto wrapper for top_reflector_universe"' in geometry_xml
+
+
+def test_axial_layer_assembly_overrides_emits_derived_lattice(tmp_path: Path) -> None:
+    """An axial layer with assembly_overrides emits a dedicated derived RectLattice
+    (its own variable + overridden universes); a layer without overrides keeps its
+    base fill. This is the WI-4 per-layer loading path."""
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="override core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel", name="fuel", density_unit="g/cm3",
+                    density_value=10.0, chemical_formula="UO2",
+                ),
+                ComplexMaterialSpec(
+                    id="water", name="water", density_unit="g/cm3",
+                    density_value=0.997,
+                    composition=[
+                        NuclideSpec(name="H1", percent=2.0),
+                        NuclideSpec(name="O16", percent=1.0),
+                    ],
+                ),
+            ],
+            cells=[
+                CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="fuel"),
+                CellSpec(id="assembly_cell", name="assembly", fill_type="lattice", fill_id="assembly_lattice"),
+                CellSpec(id="assembly2_cell", name="assembly2", fill_type="material", fill_id="fuel"),
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="assembly", name="assembly", cell_ids=["assembly_cell"]),
+                UniverseSpec(id="assembly2", name="assembly2", cell_ids=["assembly2_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice", name="asm", kind="rect",
+                    pitch_cm=(1.26, 1.26), lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["pin", "pin"], ["pin", "pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice", name="core", kind="rect",
+                    pitch_cm=(2.52, 2.52), lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["assembly"]],
+                ),
+            ],
+            core=CoreSpec(
+                id="core", name="core", lattice_id="core_lattice",
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel", name="fuel active", z_min_cm=0.0, z_max_cm=10.0,
+                        fill_type="lattice", fill_id="core_lattice",
+                        assembly_overrides={"assembly2": [(0, 0)]},
+                    ),
+                    AxialLayerSpec(
+                        id="top_water", name="top water", z_min_cm=10.0, z_max_cm=12.0,
+                        fill_type="material", fill_id="water",
+                    ),
+                ],
+            ),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True, supported_renderer="core",
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png")],
+    )
+    script = render_openmc_plan_script(plan)
+    # Derived lattice for the fuel layer (it carries assembly_overrides).
+    assert "axial_lattice_fuel = openmc.RectLattice" in script
+    # Override applied: base [["assembly"]] with assembly2 at (0,0) -> [["assembly2"]].
+    assert "axial_lattice_fuel.universes = [[universes['assembly2']]]" in script
+    # Fuel root cell fills the derived lattice, not the base core_lattice directly.
+    assert "fill=axial_lattice_fuel" in script
+    # Layer without overrides keeps its material fill.
+    assert "fill=materials_by_id['water']" in script
+
+
 def test_core_renderer_wraps_empty_assembly_universes_for_nested_lattices(
     tmp_path: Path,
 ) -> None:
@@ -1288,6 +1457,178 @@ def test_core_renderer_material_wrapper_replaces_reused_water_cell(
     assert result.returncode == 0, result.stderr or result.stdout
     geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
     assert 'name="auto wrapper for water_univ"' in geometry_xml
+
+
+def test_core_renderer_materializes_missing_pin_cells_before_validation(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="missing pin cells core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="uo2",
+                    name="UO2",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="mox43",
+                    name="MOX 4.3",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    composition=[NuclideSpec(name="U238", percent=1.0)],
+                ),
+                ComplexMaterialSpec(
+                    id="guide_tube",
+                    name="guide tube",
+                    density_unit="g/cm3",
+                    density_value=6.56,
+                    composition=[NuclideSpec(name="Zr", percent=1.0, kind="element")],
+                ),
+                ComplexMaterialSpec(
+                    id="fiss_chamber",
+                    name="fission chamber",
+                    density_unit="g/cm3",
+                    density_value=6.56,
+                    composition=[NuclideSpec(name="Zr", percent=1.0, kind="element")],
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    chemical_formula="H2O",
+                ),
+            ],
+            cells=[],
+            universes=[
+                UniverseSpec(id="pin_uo2", name="UO2 pin", cell_ids=["pin_uo2_fuel_cell", "pin_uo2_mod_cell"]),
+                UniverseSpec(id="pin_mox43", name="MOX pin", cell_ids=["pin_mox43_fuel_cell", "pin_mox43_mod_cell"]),
+                UniverseSpec(id="pin_guide", name="guide pin", cell_ids=["pin_guide_cyl_cell", "pin_guide_mod_cell"]),
+                UniverseSpec(id="pin_fiss", name="fiss pin", cell_ids=["pin_fiss_cyl_cell", "pin_fiss_mod_cell"]),
+                UniverseSpec(id="water_universe", name="water block", cell_ids=["water_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="core_lattice",
+                    name="core lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[
+                        ["pin_uo2", "pin_mox43", "water_universe"],
+                        ["pin_guide", "pin_fiss", "water_universe"],
+                    ],
+                )
+            ],
+            core=CoreSpec(id="core", name="root core", lattice_id="core_lattice", boundary="vacuum"),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(3.78, 2.52), filename="missing_cells_core_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "cell_pin_uo2_fuel_cell = openmc.Cell" in script
+    assert "fill=materials_by_id['uo2']" in script
+    assert "cell_pin_mox43_fuel_cell = openmc.Cell" in script
+    assert "fill=materials_by_id['mox43']" in script
+    assert "cell_pin_guide_cyl_cell = openmc.Cell" in script
+    assert "fill=materials_by_id['guide_tube']" in script
+    assert "cell_pin_fiss_cyl_cell = openmc.Cell" in script
+    assert "fill=materials_by_id['fiss_chamber']" in script
+    assert "cell_wrapper_water_universe = openmc.Cell" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
+    assert 'name="auto cell for pin_uo2_fuel_cell"' in geometry_xml
+    assert 'name="auto wrapper for water_universe"' in geometry_xml
+
+
+def test_core_renderer_assembly_wrapper_replaces_missing_assembly_cell(
+    tmp_path: Path,
+) -> None:
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="missing assembly cell core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="uo2",
+                    name="UO2",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                )
+            ],
+            cells=[CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="uo2")],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="uo2_assembly", name="UO2 assembly", cell_ids=["uo2_assembly_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="uo2_assembly_lattice",
+                    name="assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice",
+                    name="core lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["uo2_assembly"]],
+                ),
+            ],
+            assemblies=[
+                AssemblySpec(id="uo2_assembly", name="UO2 assembly", lattice_id="uo2_assembly_lattice"),
+            ],
+            core=CoreSpec(id="core", name="root core", lattice_id="core_lattice", boundary="vacuum"),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="assembly_missing_cell_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    assert "uo2_assembly_cell" not in script
+    assert "cell_wrapper_uo2_assembly.fill = lattices['uo2_assembly_lattice']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 def test_render_assembly_skips_inactive_candidate_material(tmp_path: Path) -> None:
