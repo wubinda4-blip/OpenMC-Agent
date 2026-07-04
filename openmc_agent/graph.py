@@ -107,6 +107,7 @@ class GraphState(TypedDict, total=False):
     resolved_expert_items: list[dict[str, Any]]
     capability_repair_errors: list[str]
     raw_llm_outputs: list[str]
+    candidate_payload: dict[str, Any] | None
     plan_artifacts: list[str]
     openmc_api_docs: list[dict[str, str]]
     few_shot_examples: list[dict[str, str]]
@@ -580,6 +581,7 @@ def _make_generate_plan_node(
                 "simulation_plan": None,
                 "simulation_spec": None,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+                "candidate_payload": result.candidate_payload,
                 "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to generate SimulationPlan",
                 "human_loop_events": events,
@@ -598,6 +600,7 @@ def _make_generate_plan_node(
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+            "candidate_payload": result.candidate_payload,
             "plan_artifacts": _write_final_simulation_plan(
                 state,
                 result.value,
@@ -642,6 +645,7 @@ def _make_repair_plan_format_node(generate_plan: GeneratePlanFn, max_retries: in
                 "simulation_spec": None,
                 "retry_count": retry_count + 1,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+                "candidate_payload": result.candidate_payload,
                 "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to repair SimulationPlan JSON format",
             }
@@ -651,6 +655,7 @@ def _make_repair_plan_format_node(generate_plan: GeneratePlanFn, max_retries: in
             "simulation_spec": result.value.model_spec,
             "retry_count": retry_count + 1,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+            "candidate_payload": result.candidate_payload,
             "plan_artifacts": _write_final_simulation_plan(
                 state,
                 result.value,
@@ -1933,6 +1938,12 @@ def _build_reflection_requirement(state: GraphState) -> str:
 def _build_format_repair_requirement(state: GraphState) -> str:
     raw_outputs = state.get("raw_llm_outputs", [])
     latest_raw = raw_outputs[-1] if raw_outputs else ""
+    candidate_payload = state.get("candidate_payload")
+    candidate_context = _candidate_payload_context(candidate_payload)
+    schema_guidance = _format_repair_schema_guidance(
+        state.get("error", ""),
+        candidate_payload,
+    )
     truncation_guidance = (
         "\nThe previous response appears truncated or too large. Do NOT attempt to "
         "reproduce large 17x17, 34x34, assembly, or core universe_pattern arrays. "
@@ -1949,10 +1960,74 @@ def _build_format_repair_requirement(state: GraphState) -> str:
         "SimulationPlan JSON object. Return a corrected SimulationPlan JSON object only. "
         "Preserve the reactor modeling facts from the case requirement and do not invent "
         "missing physical data.\n"
+        f"{schema_guidance}"
         f"{truncation_guidance}"
         f"Parse/validation error: {state.get('error', '')}\n"
+        f"{candidate_context}"
         f"Previous raw response: {_truncate_text(latest_raw, 4000)}"
     )
+
+
+def _candidate_payload_context(candidate_payload: Any) -> str:
+    if not isinstance(candidate_payload, dict):
+        return ""
+    return (
+        "Parsed candidate JSON is available. Repair this candidate locally instead of "
+        "regenerating unrelated fields:\n"
+        f"{_truncate_text(json.dumps(candidate_payload, ensure_ascii=False, indent=2), 4000)}\n"
+    )
+
+
+def _format_repair_schema_guidance(error: str, candidate_payload: Any) -> str:
+    if not _is_missing_cell_fill_id_error(error):
+        return ""
+
+    paths = _missing_cell_fill_id_paths(candidate_payload)
+    path_text = ", ".join(paths) if paths else "complex_model.cells[*].fill_id"
+    return (
+        "\n[Validation Issues]\n"
+        "- code: cell.fill_id.missing\n"
+        f"  schema_path: {path_text}\n"
+        "  message: fill_id is required unless fill_type is void.\n"
+        "  route_hint: reflect_plan\n\n"
+        "[Repair Hints]\n"
+        "- For every non-void cell, set fill_id to an already defined material, universe, "
+        "or lattice id matching fill_type.\n"
+        "- If and only if the cell is intentionally empty or outside the modeled domain, "
+        "set fill_type='void' and leave fill_id null.\n"
+        "- Do not invent material density, nuclide composition, benchmark facts, or cross "
+        "section paths while repairing this schema error.\n"
+        "- Preserve unrelated materials, dimensions, lattice maps, expert feedback, and "
+        "confirmed reactor facts.\n\n"
+    )
+
+
+def _is_missing_cell_fill_id_error(error: str) -> bool:
+    lowered = error.lower()
+    return (
+        "fill_id is required unless fill_type is void" in lowered
+        or ("complex_model.cells" in lowered and "fill_id" in lowered)
+    )
+
+
+def _missing_cell_fill_id_paths(candidate_payload: Any) -> list[str]:
+    if not isinstance(candidate_payload, dict):
+        return []
+    complex_model = candidate_payload.get("complex_model")
+    if not isinstance(complex_model, dict):
+        return []
+    cells = complex_model.get("cells")
+    if not isinstance(cells, list):
+        return []
+
+    paths: list[str] = []
+    for index, cell in enumerate(cells):
+        if not isinstance(cell, dict):
+            continue
+        fill_type = cell.get("fill_type", "material")
+        if fill_type != "void" and not cell.get("fill_id"):
+            paths.append(f"complex_model.cells[{index}].fill_id")
+    return paths
 
 
 def _looks_like_truncated_json(raw: str, error: str) -> bool:

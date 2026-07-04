@@ -704,6 +704,76 @@ def test_plan_graph_writes_candidate_payload_for_schema_failure(tmp_path: Path) 
     assert str(candidate_path) in records[0]["plan_artifacts"]
 
 
+def test_plan_graph_format_repair_uses_candidate_payload_for_missing_cell_fill_id(
+    tmp_path: Path,
+) -> None:
+    calls = {"generate": 0}
+    captured = {"repair_requirement": ""}
+    candidate = {
+        "schema_version": "simulation_plan.v2",
+        "model_spec": None,
+        "complex_model": {
+            "name": "bad assembly draft",
+            "kind": "assembly",
+            "materials": [{"id": "fuel", "name": "UO2 fuel"}],
+            "cells": [
+                {
+                    "id": "pin_fuel_cell",
+                    "name": "pin fuel",
+                    "fill_type": "material",
+                    "purpose": "fuel cell set per pin universe",
+                }
+            ],
+        },
+        "capability_report": {"is_executable": False, "supported_renderer": "none"},
+        "plot_specs": [
+            {"basis": "xy", "width_cm": [2.0, 2.0], "filename": "assembly_xy.png"}
+        ],
+    }
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        calls["generate"] += 1
+        if calls["generate"] == 1:
+            return StructuredOutputResult(
+                ok=False,
+                error=(
+                    "Could not validate model response: 1 validation error for "
+                    "SimulationPlan\ncomplex_model.cells.0\n  Value error, "
+                    "fill_id is required unless fill_type is void"
+                ),
+                raw_response=json.dumps(candidate),
+                candidate_payload=candidate,
+            )
+        captured["repair_requirement"] = requirement
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 UO2 assembly 模型",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    prompt = captured["repair_requirement"]
+    assert state["validation_report"].is_valid is True
+    assert calls["generate"] == 2
+    assert "cell.fill_id.missing" in prompt
+    assert "complex_model.cells[0].fill_id" in prompt
+    assert "pin_fuel_cell" in prompt
+    assert "Parsed candidate JSON is available" in prompt
+    assert "Do not invent material density, nuclide composition" in prompt
+
+
 def test_plan_graph_records_expert_question_when_generation_never_parses(tmp_path: Path) -> None:
     def fake_generate_plan(*, requirement: str, schema, model: str):
         return StructuredOutputResult(
