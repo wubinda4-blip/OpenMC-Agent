@@ -238,6 +238,40 @@ def test_parse_openmc_output_extracts_common_diagnostics() -> None:
     assert "Python traceback" in text
 
 
+def test_parse_openmc_output_maps_cross_sections_missing_to_stable_code() -> None:
+    report = parse_openmc_output(
+        stdout="",
+        stderr="ERROR: No cross_sections.xml was specified",
+    )
+
+    assert report.is_valid is False
+    issue = report.issues[0]
+    assert issue.code == "runtime.cross_sections_missing"
+    assert issue.route_hint == "ask_expert"
+    assert issue.requires_human_confirmation is True
+    assert any("OPENMC_CROSS_SECTIONS" in pattern for pattern in issue.grep_patterns)
+
+
+def test_parse_openmc_output_maps_geometry_overlap_to_reflect_plan() -> None:
+    report = parse_openmc_output(
+        stdout="",
+        stderr="ERROR: Overlap detected between cells 10 and 11",
+    )
+
+    assert report.is_valid is False
+    issue = report.issues[0]
+    assert issue.code == "runtime.geometry_overlap"
+    assert issue.route_hint == "reflect_plan"
+    assert issue.requires_retrieval is True
+
+
+def test_parse_openmc_output_maps_unknown_runtime_error() -> None:
+    report = parse_openmc_output(stdout="", stderr="ERROR: unexpected OpenMC failure")
+
+    assert report.is_valid is False
+    assert report.issues[0].code == "runtime.openmc_unknown_error"
+
+
 def test_parse_openmc_output_accepts_successful_cross_section_reads() -> None:
     report = parse_openmc_output(
         stdout=(
@@ -252,3 +286,64 @@ def test_parse_openmc_output_accepts_successful_cross_section_reads() -> None:
 
     assert report.is_valid is True
     assert report.errors == []
+
+
+def test_export_xml_dangling_lattice_reference_has_issue_and_auto_repair_route(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model.py"
+    model_path.write_text("print('export')\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        (tmp_path / "materials.xml").write_text("<materials />", encoding="utf-8")
+        (tmp_path / "settings.xml").write_text("<settings />", encoding="utf-8")
+        (tmp_path / "geometry.xml").write_text(
+            """<geometry>
+  <cell id="1" universe="1" />
+  <lattice id="7">
+    <universes>2</universes>
+  </lattice>
+</geometry>
+""",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="exported", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = export_xml(model_path)
+
+    assert result.ok is False
+    assert result.issues[0].code == "export_xml.dangling_lattice_universe"
+    assert result.issues[0].route_hint == "auto_repair"
+    assert "2" in result.issues[0].grep_patterns
+
+
+def test_export_xml_dangling_cell_fill_has_structured_issue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = tmp_path / "model.py"
+    model_path.write_text("print('export')\n", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        (tmp_path / "materials.xml").write_text("<materials />", encoding="utf-8")
+        (tmp_path / "settings.xml").write_text("<settings />", encoding="utf-8")
+        (tmp_path / "geometry.xml").write_text(
+            """<geometry>
+  <cell id="1" universe="1" fill="99" />
+</geometry>
+""",
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="exported", stderr="")
+
+    monkeypatch.setattr("openmc_agent.tools.subprocess.run", fake_run)
+
+    result = export_xml(model_path)
+
+    assert result.ok is False
+    assert result.issues[0].code == "export_xml.dangling_cell_fill"
+    assert result.issues[0].route_hint in {"reflect_plan", "manual_review"}
+    assert "99" in result.issues[0].grep_patterns

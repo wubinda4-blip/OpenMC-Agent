@@ -461,6 +461,45 @@ def test_rect_assembly_complete_is_exportable_or_runnable() -> None:
     assert capability.is_executable is True
 
 
+def test_hex_lattice_is_diagnosed_but_stays_skeleton() -> None:
+    model = ComplexModelSpec(
+        name="hex assembly",
+        kind="assembly",
+        materials=[_complete_fuel()],
+        cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+        lattices=[
+            LatticeSpec(
+                id="hex_lat",
+                name="hex lattice",
+                kind="hex",
+                pitch_cm=(1.26, 1.26),
+                rings=[],
+            )
+        ],
+        assemblies=[AssemblySpec(id="assembly", name="root", lattice_id="hex_lat")],
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.0, 2.0), filename="hex.png")],
+    )
+
+    _renderer, capability = choose_renderer(plan)
+
+    assert capability.renderability == "skeleton"
+    assert capability.is_executable is False
+    codes = {issue.code for issue in capability.issues}
+    assert "lattice.hex.renderer_unsupported" in codes
+    assert "lattice.hex.rings_missing" in codes
+    renderer_issue = next(
+        issue for issue in capability.issues if issue.code == "lattice.hex.renderer_unsupported"
+    )
+    assert renderer_issue.route_hint == "capability_downgrade"
+    assert "HexLattice" in renderer_issue.grep_patterns
+
+
 def test_rect_assembly_rejects_oversized_cylinder() -> None:
     plan = _assembly_plan(materials=[_complete_fuel()])
     plan.complex_model.surfaces = [

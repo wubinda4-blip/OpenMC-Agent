@@ -905,6 +905,10 @@ class ValidationIssue(AgentBaseModel):
     )
     knowledge_refs: list[KnowledgeRef] = Field(default_factory=list)
     repair_hints: list[RepairHint] = Field(default_factory=list)
+    grep_patterns: list[str] = Field(
+        default_factory=list,
+        description="Stable code/search tokens for later grep, graph, RAG, or repair routing.",
+    )
     requires_retrieval: bool = Field(
         default=False,
         description="Whether resolving this issue needs document retrieval.",
@@ -912,6 +916,17 @@ class ValidationIssue(AgentBaseModel):
     requires_human_confirmation: bool = Field(
         default=False,
         description="Whether a human must confirm the proposed fix.",
+    )
+    route_hint: Literal[
+        "auto_repair",
+        "reflect_plan",
+        "ask_expert",
+        "retrieval",
+        "capability_downgrade",
+        "manual_review",
+    ] | None = Field(
+        default=None,
+        description="Preferred deterministic route for this issue.",
     )
 
     def __str__(self) -> str:

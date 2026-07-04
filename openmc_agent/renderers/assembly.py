@@ -150,16 +150,6 @@ def _assembly_diagnostics(
     errors: list[ValidationIssue] = []
     warnings: list[str] = []
 
-    # Check 2: at least one rect lattice.
-    rect_lattices = [lat for lat in model.lattices if lat.kind == "rect"]
-    if not model.lattices:
-        errors.append(_iss("assembly.requires_lattice", "assembly renderer requires a RectLattice", "complex_model.lattices"))
-    elif not rect_lattices:
-        errors.append(_iss("assembly.requires_rect_lattice", "assembly renderer currently supports RectLattice only", "complex_model.lattices"))
-
-    if not model.assemblies or model.assemblies[0].lattice_id is None:
-        errors.append(_iss("assembly.requires_assembly_spec", "assembly renderer requires an AssemblySpec with lattice_id", "complex_model.assemblies"))
-
     material_ids = {material.id for material in model.materials}
     region_ids = {region.id for region in model.regions}
     composite_region_ids = {
@@ -171,6 +161,75 @@ def _assembly_diagnostics(
     surface_ids = {surface.id for surface in model.surfaces}
     universe_ids = {universe.id for universe in model.universes}
     cell_ids = {cell.id for cell in model.cells}
+
+    # Check 2: at least one rect lattice.
+    rect_lattices = [lat for lat in model.lattices if lat.kind == "rect"]
+    hex_lattices = [lat for lat in model.lattices if lat.kind == "hex"]
+    if not model.lattices:
+        errors.append(_iss("assembly.requires_lattice", "assembly renderer requires a RectLattice", "complex_model.lattices"))
+    elif not rect_lattices:
+        errors.append(_iss("assembly.requires_rect_lattice", "assembly renderer currently supports RectLattice only", "complex_model.lattices"))
+    for lattice in hex_lattices:
+        schema_base = f"complex_model.lattices.{lattice.id}"
+        errors.append(
+            _iss(
+                "lattice.hex.renderer_unsupported",
+                f"hex lattice {lattice.id!r} requires a HexAssemblyRenderer; current renderer output remains skeleton.",
+                schema_base,
+            )
+        )
+        if not lattice.rings:
+            errors.append(
+                _iss(
+                    "lattice.hex.rings_missing",
+                    f"hex lattice {lattice.id!r} rings are missing",
+                    f"{schema_base}.rings",
+                )
+            )
+        else:
+            invalid = _invalid_hex_ring_lengths(lattice.rings)
+            if invalid:
+                errors.append(
+                    _iss(
+                        "lattice.hex.ring_shape_invalid",
+                        f"hex lattice {lattice.id!r} has invalid ring lengths: {invalid}",
+                        f"{schema_base}.rings",
+                    )
+                )
+            missing = sorted(
+                {
+                    uid
+                    for ring in lattice.rings
+                    for uid in ring
+                    if uid not in universe_ids
+                }
+            )
+            if missing:
+                errors.append(
+                    _iss(
+                        "lattice.universe_ref_missing",
+                        f"hex lattice {lattice.id!r} rings reference missing universes: {missing}",
+                        f"{schema_base}.rings",
+                    )
+                )
+        if lattice.outer_universe_id is None:
+            errors.append(
+                _iss(
+                    "lattice.hex.outer_universe_missing",
+                    f"hex lattice {lattice.id!r} outer_universe_id is missing",
+                    f"{schema_base}.outer_universe_id",
+                )
+            )
+        errors.append(
+            _iss(
+                "lattice.hex.orientation_unverified",
+                f"hex lattice {lattice.id!r} orientation, pitch convention, and ring ordering require documentation verification before renderer work.",
+                schema_base,
+            )
+        )
+
+    if not model.assemblies or model.assemblies[0].lattice_id is None:
+        errors.append(_iss("assembly.requires_assembly_spec", "assembly renderer requires an AssemblySpec with lattice_id", "complex_model.assemblies"))
 
     if not model.cells:
         errors.append(_iss("assembly.requires_cells", "assembly renderer requires cells", "complex_model.cells"))
@@ -399,6 +458,15 @@ def _shape_to_rows_cols(shape: tuple[int, ...]) -> tuple[int, int] | None:
         n = int(shape[0])
         return n, n
     return None
+
+
+def _invalid_hex_ring_lengths(rings: list[list[str]]) -> list[str]:
+    invalid: list[str] = []
+    for index, ring in enumerate(rings):
+        expected = 1 if index == 0 else 6 * index
+        if len(ring) != expected:
+            invalid.append(f"ring {index}: expected {expected}, got {len(ring)}")
+    return invalid
 
 
 def _cylinder_geometry_errors(

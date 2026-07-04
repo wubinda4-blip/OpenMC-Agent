@@ -3,10 +3,12 @@ import sys
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from difflib import get_close_matches
 from pathlib import Path
 
+from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.executor import render_openmc_smoke_test_script
-from openmc_agent.schemas import SimulationPlan, ValidationReport
+from openmc_agent.schemas import RepairHint, SimulationPlan, ValidationIssue, ValidationReport
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,7 @@ class ToolResult:
     stderr: str = ""
     artifacts: list[str] = field(default_factory=list)
     error: str = ""
+    issues: list[ValidationIssue] = field(default_factory=list)
 
     def model_dump(self) -> dict:
         return {
@@ -30,6 +33,7 @@ class ToolResult:
             "stderr": self.stderr,
             "artifacts": self.artifacts,
             "error": self.error,
+            "issues": [issue.model_dump(mode="json") for issue in self.issues],
         }
 
 
@@ -46,10 +50,11 @@ def export_xml(model_path: str | Path, *, timeout: float = 60.0) -> ToolResult:
     )
     artifacts = _existing_xml_artifacts(path.parent)
     missing_required = _missing_required_xml_artifacts(path.parent)
-    closure_error = ""
+    closure_issues: list[ValidationIssue] = []
     if result.returncode == 0 and not missing_required:
-        closure_error = _geometry_lattice_reference_error(path.parent / "geometry.xml")
-    ok = result.returncode == 0 and not missing_required and not closure_error
+        closure_issues = _geometry_lattice_reference_issues(path.parent / "geometry.xml")
+    closure_error = _format_geometry_reference_issues(closure_issues)
+    ok = result.returncode == 0 and not missing_required and not closure_issues
     error = ""
     if result.returncode != 0:
         error = (result.stderr or result.stdout).strip()
@@ -66,6 +71,7 @@ def export_xml(model_path: str | Path, *, timeout: float = 60.0) -> ToolResult:
         stderr=result.stderr,
         artifacts=artifacts,
         error=error,
+        issues=closure_issues,
     )
 
 
@@ -162,23 +168,47 @@ def run_smoke_test(
 def parse_openmc_output(stdout: str, stderr: str) -> ValidationReport:
     combined = f"{stdout}\n{stderr}"
     lowered = combined.lower()
-    errors: list[str] = []
+    issues: list[ValidationIssue] = []
     warnings: list[str] = []
 
     if _has_cross_section_error(lowered):
-        errors.append("OpenMC cross section data is missing or not configured.")
+        code = (
+            "runtime.cross_sections_invalid"
+            if re.search(r"(invalid|not present in cross_sections\.xml|not found in cross_sections)", lowered)
+            else "runtime.cross_sections_missing"
+        )
+        issues.append(_runtime_issue(code, combined))
     if "could not be located in any cell" in lowered or "undefined" in lowered:
-        errors.append("OpenMC reported an undefined region or geometry containment issue.")
+        issues.append(
+            _runtime_issue(
+                "runtime.lost_particle",
+                combined,
+                message="OpenMC reported an undefined region or geometry containment issue.",
+            )
+        )
     if "overlap" in lowered:
-        errors.append("OpenMC reported a possible geometry overlap.")
+        issues.append(_runtime_issue("runtime.geometry_overlap", combined))
     if "lost particle" in lowered or "lost particles" in lowered:
-        errors.append("OpenMC reported lost particles.")
+        issues.append(_runtime_issue("runtime.lost_particle", combined))
+    if _has_material_missing_nuclide_data(lowered):
+        issues.append(_runtime_issue("runtime.material_missing_nuclide_data", combined))
+    if _has_geometry_load_error(lowered):
+        issues.append(_runtime_issue("runtime.dagmc_or_geometry_load_failed", combined))
     if "traceback (most recent call last)" in lowered:
-        errors.append("Python traceback occurred while preparing or running OpenMC.")
+        issues.append(
+            _runtime_issue(
+                "runtime.openmc_unknown_error",
+                combined,
+                message="Python traceback occurred while preparing or running OpenMC.",
+            )
+        )
+    if _has_unknown_runtime_error(stdout, stderr) and not issues:
+        issues.append(_runtime_issue("runtime.openmc_unknown_error", combined))
     if "warning" in lowered:
         warnings.append(_first_matching_line(combined, "warning"))
 
-    return ValidationReport(is_valid=not errors, errors=errors, warnings=warnings)
+    report = ValidationReport.from_issues(_dedupe_issues(issues))
+    return report.model_copy(update={"warnings": [*report.warnings, *warnings]})
 
 
 def _existing_xml_artifacts(path: Path) -> list[str]:
@@ -192,10 +222,21 @@ def _missing_required_xml_artifacts(path: Path) -> list[str]:
 
 
 def _geometry_lattice_reference_error(geometry_path: Path) -> str:
+    return _format_geometry_reference_issues(_geometry_lattice_reference_issues(geometry_path))
+
+
+def _geometry_lattice_reference_issues(geometry_path: Path) -> list[ValidationIssue]:
     try:
         root = ET.parse(geometry_path).getroot()
     except ET.ParseError as exc:
-        return f"geometry.xml is not valid XML: {exc}"
+        return [
+            issue_from_catalog(
+                "export_xml.geometry_reference_unknown",
+                message=f"geometry.xml is not valid XML: {exc}",
+                grep_patterns=["geometry.xml", "ParseError", str(exc)],
+                route_hint="manual_review",
+            )
+        ]
 
     exported_universe_numbers = {
         universe
@@ -227,24 +268,67 @@ def _geometry_lattice_reference_error(geometry_path: Path) -> str:
         missing = sorted(referenced - exported_universe_numbers, key=int)
         if missing:
             missing_by_lattice[lattice_id] = missing
+    missing_outer_by_lattice: dict[str, str] = {}
+    for lattice in root.findall(".//lattice"):
+        lattice_id = lattice.attrib.get("id", "<unknown>")
+        outer = lattice.attrib.get("outer")
+        if outer is not None and outer not in exported_universe_numbers:
+            missing_outer_by_lattice[lattice_id] = outer
 
-    if not missing_by_lattice and not missing_by_cell:
+    issues: list[ValidationIssue] = []
+    fill_candidates = sorted(exported_fill_numbers, key=_numeric_string_sort_key)
+    universe_candidates = sorted(exported_universe_numbers, key=_numeric_string_sort_key)
+    for cell_id, fill in sorted(missing_by_cell.items(), key=_xml_id_sort_key):
+        issues.append(
+            _dangling_issue(
+                "export_xml.dangling_cell_fill",
+                message=f"cell {cell_id} fill {fill} is not an exported universe or lattice",
+                schema_path=f"geometry.xml.cell[{cell_id}].fill",
+                source_id=cell_id,
+                missing_id=fill,
+                candidates=fill_candidates,
+            )
+        )
+    for lattice_id, missing in sorted(missing_by_lattice.items(), key=_xml_id_sort_key):
+        for missing_id in missing:
+            issues.append(
+                _dangling_issue(
+                    "export_xml.dangling_lattice_universe",
+                    message=f"lattice {lattice_id} missing universe number {missing_id}",
+                    schema_path=f"geometry.xml.lattice[{lattice_id}].universes",
+                    source_id=lattice_id,
+                    missing_id=missing_id,
+                    candidates=universe_candidates,
+                )
+            )
+    for lattice_id, missing_id in sorted(missing_outer_by_lattice.items(), key=_xml_id_sort_key):
+        issues.append(
+            _dangling_issue(
+                "export_xml.dangling_lattice_outer_universe",
+                message=f"lattice {lattice_id} outer universe {missing_id} is not exported",
+                schema_path=f"geometry.xml.lattice[{lattice_id}].outer",
+                source_id=lattice_id,
+                missing_id=missing_id,
+                candidates=universe_candidates,
+            )
+        )
+    return issues
+
+
+def _format_geometry_reference_issues(issues: list[ValidationIssue]) -> str:
+    if not issues:
         return ""
-    details_parts = [
-        f"cell {cell_id} fill {fill} is not an exported universe or lattice"
-        for cell_id, fill in sorted(missing_by_cell.items(), key=_xml_id_sort_key)
-    ]
-    details_parts.extend(
-        f"lattice {lattice_id} missing universe numbers {missing}"
-        for lattice_id, missing in sorted(missing_by_lattice.items(), key=_xml_id_sort_key)
-    )
-    details = "; ".join(details_parts)
+    details = "; ".join(issue.message for issue in issues)
     return f"geometry.xml has dangling geometry references: {details}"
 
 
 def _xml_id_sort_key(item: tuple[str, object]) -> tuple[int, int | str]:
     xml_id = item[0]
     return (0, int(xml_id)) if xml_id.isdigit() else (1, xml_id)
+
+
+def _numeric_string_sort_key(value: str) -> tuple[int, int | str]:
+    return (0, int(value)) if value.isdigit() else (1, value)
 
 
 def _plot_artifacts(path: Path) -> list[str]:
@@ -276,3 +360,142 @@ def _has_cross_section_error(lowered_text: str) -> bool:
         r"not\s+present\s+in\s+cross_sections\.xml",
     )
     return any(re.search(pattern, lowered_text) for pattern in patterns)
+
+
+def _has_material_missing_nuclide_data(lowered_text: str) -> bool:
+    patterns = (
+        r"nuclide .{0,80} not (?:found|present|available)",
+        r"not present in cross_sections\.xml",
+        r"could not find .{0,80}\.h5",
+    )
+    return any(re.search(pattern, lowered_text) for pattern in patterns)
+
+
+def _has_geometry_load_error(lowered_text: str) -> bool:
+    patterns = (
+        r"dagmc",
+        r"failed to load.{0,80}geometry",
+        r"could not load.{0,80}geometry",
+        r"error reading.{0,80}geometry\.xml",
+    )
+    return any(re.search(pattern, lowered_text) for pattern in patterns)
+
+
+def _has_unknown_runtime_error(stdout: str, stderr: str) -> bool:
+    text = f"{stdout}\n{stderr}".lower()
+    if not (stdout.strip() or stderr.strip()):
+        return False
+    return bool(stderr.strip()) and any(token in text for token in ("error", "fatal", "exception", "traceback"))
+
+
+def _runtime_issue(
+    code: str,
+    raw_output: str,
+    *,
+    message: str | None = None,
+) -> ValidationIssue:
+    summary = _first_error_summary(raw_output)
+    grep_patterns = _runtime_grep_patterns(raw_output)
+    final_message = message or None
+    if summary:
+        base = final_message or issue_from_catalog(code).message
+        final_message = f"{base} Raw OpenMC summary: {summary}"
+    return issue_from_catalog(
+        code,
+        message=final_message,
+        grep_patterns=grep_patterns,
+    )
+
+
+def _first_error_summary(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and any(token in stripped.lower() for token in ("error", "fatal", "traceback", "lost particle", "overlap")):
+            return stripped[:240]
+    return ""
+
+
+def _runtime_grep_patterns(text: str) -> list[str]:
+    patterns: list[str] = []
+    for regex in (
+        r"\b[A-Z][a-z]?\d{1,3}\b",
+        r"\bcross_sections\.xml\b",
+        r"\bOPENMC_CROSS_SECTIONS\b",
+        r"\bmaterial\s+['\"]?([\w.-]+)",
+        r"\blattice\s+['\"]?([\w.-]+)",
+        r"\buniverse\s+['\"]?([\w.-]+)",
+        r"\bcell\s+['\"]?([\w.-]+)",
+    ):
+        for match in re.finditer(regex, text, flags=re.IGNORECASE):
+            value = match.group(1) if match.groups() else match.group(0)
+            if value:
+                patterns.append(value)
+    return list(dict.fromkeys(patterns))
+
+
+def _dedupe_issues(issues: list[ValidationIssue]) -> list[ValidationIssue]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[ValidationIssue] = []
+    for issue in issues:
+        key = (issue.code, issue.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _dangling_issue(
+    code: str,
+    *,
+    message: str,
+    schema_path: str,
+    source_id: str,
+    missing_id: str,
+    candidates: list[str],
+) -> ValidationIssue:
+    close = _candidate_ids(missing_id, candidates)
+    route_hint = "auto_repair" if len(close) == 1 else ("reflect_plan" if close else "manual_review")
+    repair_hints: list[RepairHint] = []
+    if len(close) == 1:
+        replacement = close[0]
+        repair_hints.append(
+            RepairHint(
+                action="edit_field",
+                message=f"Replace missing id {missing_id!r} with the unique candidate {replacement!r}.",
+                target_path=schema_path,
+                example_patch={"replace": {missing_id: replacement}},
+            )
+        )
+    elif close:
+        repair_hints.append(
+            RepairHint(
+                action="edit_field",
+                message=f"Choose one valid referenced id for {missing_id!r}: {close}.",
+                target_path=schema_path,
+            )
+        )
+    return issue_from_catalog(
+        code,
+        message=f"{message}; source_id={source_id}; missing_id={missing_id}; candidates={close or candidates}",
+        schema_path=schema_path,
+        grep_patterns=[source_id, missing_id, *close],
+        repair_hints=repair_hints,
+        route_hint=route_hint,
+    )
+
+
+def _candidate_ids(missing_id: str, candidates: list[str]) -> list[str]:
+    if not candidates:
+        return []
+    if missing_id in candidates:
+        return [missing_id]
+    close = get_close_matches(missing_id, candidates, n=3, cutoff=0.75)
+    if close:
+        return close
+    if missing_id.isdigit():
+        value = int(missing_id)
+        near = [candidate for candidate in candidates if candidate.isdigit() and abs(int(candidate) - value) <= 1]
+        if len(near) == 1:
+            return near
+    return []

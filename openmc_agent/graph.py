@@ -14,6 +14,11 @@ from langgraph.types import interrupt
 from openmc_agent.executor import render_openmc_script
 from openmc_agent.auto_repair import auto_repair_lattice_structure
 from openmc_agent.few_shots import select_few_shots
+from openmc_agent.grep_search import (
+    RetrievedEvidence,
+    format_grep_evidence,
+    gather_grep_evidence_for_issues,
+)
 from openmc_agent.llm import (
     StructuredOutputResult,
     generate_structured_output,
@@ -108,6 +113,7 @@ class GraphState(TypedDict, total=False):
     verbose: bool
     investigation_trace: list[dict[str, Any]]
     investigation_findings: str
+    grep_evidence: list[dict[str, Any]]
     patch_failure_count: int
 
 
@@ -290,6 +296,7 @@ def build_plan_graph(
         "execute_tools",
         _make_plan_execution_router(max_retries),
         {
+            "ask": "ask_expert",
             "reflect": "reflect_plan",
             "save": "save_record",
         },
@@ -901,6 +908,10 @@ def _make_plan_execution_router(max_retries: int):
         report = state.get("validation_report")
         if report is not None and report.is_valid:
             return "save"
+        if report is not None and _report_should_ask_expert(report):
+            return "ask"
+        if report is not None and not _report_should_reflect(report):
+            return "save"
         if (
             _coerce_simulation_plan(state.get("simulation_plan")) is not None
             and state.get("retry_count", 0) < max_retries
@@ -986,6 +997,7 @@ def _make_assess_plan_capability_node(max_retries: int):
             else []
         )
         repair_errors = [issue.message for issue in repair_issues]
+        existing_issues = list(report.issues)
         inject_invalid = bool(repair_errors) and retry_count < max_retries
         if inject_invalid:
             events.append(
@@ -1005,6 +1017,7 @@ def _make_assess_plan_capability_node(max_retries: int):
                 errors=list(repair_errors),
                 warnings=warnings,
                 suggestions=suggestions,
+                issues=[*existing_issues, *repair_issues],
             )
         else:
             updated_report = ValidationReport(
@@ -1012,6 +1025,7 @@ def _make_assess_plan_capability_node(max_retries: int):
                 errors=report.errors,
                 warnings=warnings,
                 suggestions=suggestions,
+                issues=existing_issues,
             )
 
         _progress(
@@ -1522,11 +1536,62 @@ def _make_reflect_plan_node(
         if plan is None or report is None or report.is_valid:
             return {"retry_count": retry_count, "patch_failure_count": patch_failures}
 
-        base_requirement = _build_reflection_requirement(state)
+        # Patch sources, in priority order: (1) deterministic auto-repair of
+        # uniquely-solvable id-reference typos -- no LLM call; (2) an
+        # investigation patch from the retrieval loop. Whole-plan regeneration
+        # below is the last resort, used only when no patch applies or recent
+        # patches keep failing to validate.
+        auto_patch: list[dict[str, Any]] | None = None
+        if patch_failures < PATCH_FALLBACK_THRESHOLD:
+            auto_patch = auto_repair_lattice_structure(
+                plan, issues=[*plan.capability_report.issues, *report.issues]
+            )
+
+        if auto_patch is not None and patch_failures < PATCH_FALLBACK_THRESHOLD:
+            try:
+                patched_payload = _apply_json_patches(
+                    plan.model_dump(mode="json"), auto_patch
+                )
+                patched_payload = _normalize_capability_report_for_plan_validation(
+                    patched_payload
+                )
+                patched_plan = SimulationPlan.model_validate(patched_payload)
+                _progress(
+                    state,
+                    "reflect_plan",
+                    f"applied {len(auto_patch)} patch op(s) via deterministic auto-repair",
+                )
+                return {
+                    "simulation_plan": patched_plan,
+                    "simulation_spec": patched_plan.model_spec,
+                    "retry_count": retry_count + 1,
+                    "plan_patch": auto_patch,
+                    "patch_confidence": "high",
+                    "patch_reason": "deterministic auto-repair",
+                    "patch_error": "",
+                    "error": "",
+                    "patch_failure_count": patch_failures,
+                    "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
+                }
+            except Exception as exc:
+                patch_failures += 1
+                _progress(
+                    state,
+                    "reflect_plan",
+                    f"deterministic auto-repair patch failed: {exc}; "
+                    f"patch_failure_count={patch_failures}",
+                )
+
+        grep_evidence = _grep_evidence_for_report(report)
+        state_with_evidence: GraphState = {
+            **state,
+            "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
+        }
+        base_requirement = _build_reflection_requirement(state_with_evidence)
         plan_summary = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False)
         hints = _error_catalog_hints_for(report.errors)
         investigation_outcome = _run_investigation_safely(
-            state,
+            state_with_evidence,
             phase="reflect",
             task_brief=base_requirement,
             plan_summary=_truncate_text(plan_summary, 4000),
@@ -1538,16 +1603,6 @@ def _make_reflect_plan_node(
             error_catalog_hints=hints,
         )
 
-        # Patch sources, in priority order: (1) deterministic auto-repair of
-        # uniquely-solvable id-reference typos -- no LLM call; (2) an
-        # investigation patch from the retrieval loop. Whole-plan regeneration
-        # below is the last resort, used only when no patch applies or recent
-        # patches keep failing to validate.
-        auto_patch: list[dict[str, Any]] | None = None
-        if patch_failures < PATCH_FALLBACK_THRESHOLD:
-            auto_patch = auto_repair_lattice_structure(
-                plan, issues=plan.capability_report.issues
-            )
         investigation_patch = (
             investigation_outcome.patch
             if investigation_outcome is not None
@@ -1555,14 +1610,10 @@ def _make_reflect_plan_node(
             and investigation_outcome.patch
             else None
         )
-        candidate_patch = auto_patch or investigation_patch
+        candidate_patch = investigation_patch
 
         if candidate_patch is not None and patch_failures < PATCH_FALLBACK_THRESHOLD:
-            patch_source = (
-                "deterministic auto-repair"
-                if auto_patch is not None
-                else "investigation"
-            )
+            patch_source = "investigation"
             try:
                 patched_payload = _apply_json_patches(
                     plan.model_dump(mode="json"), candidate_patch
@@ -1583,15 +1634,14 @@ def _make_reflect_plan_node(
                     "plan_patch": candidate_patch,
                     "patch_confidence": "high",
                     "patch_reason": (
-                        patch_source
-                        if auto_patch is not None
-                        else _truncate_text(investigation_outcome.findings, 500)
+                        _truncate_text(investigation_outcome.findings, 500)
                         or "investigation patch"
                     ),
                     "patch_error": "",
                     "error": "",
                     "patch_failure_count": patch_failures,
                     "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
+                    "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
                     **_investigation_state_updates(investigation_outcome),
                 }
             except Exception as exc:
@@ -1648,6 +1698,7 @@ def _make_reflect_plan_node(
             return {
                 "retry_count": retry_count + 1,
                 "patch_failure_count": patch_failures,
+                "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to repair SimulationPlan",
@@ -1659,6 +1710,7 @@ def _make_reflect_plan_node(
             "simulation_spec": result.value.model_spec,
             "retry_count": retry_count + 1,
             "patch_failure_count": patch_failures,
+            "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
             "plan_artifacts": _write_final_simulation_plan(
                 state,
@@ -1727,22 +1779,119 @@ def _save_plan_record(state: GraphState) -> GraphState:
 
 
 def _execution_report_from_tool_results(results: list[ToolResult]) -> ValidationReport:
-    errors: list[str] = []
-    warnings: list[str] = []
-    suggestions: list[str] = []
+    issues: list[ValidationIssue] = []
+    legacy_errors: list[str] = []
+    legacy_warnings: list[str] = []
     for result in results:
         if not result.ok:
             message = result.error or result.stderr or result.stdout or "tool failed"
-            errors.append(f"{result.name} failed: {message}")
+            legacy_errors.append(f"{result.name} failed: {message}")
+            issues.extend(result.issues)
         diagnostics = parse_openmc_output(result.stdout, result.stderr)
-        errors.extend(diagnostics.errors)
-        warnings.extend(diagnostics.warnings)
-        suggestions.extend(diagnostics.suggestions)
-    return ValidationReport(
-        is_valid=not errors,
-        errors=errors,
-        warnings=warnings,
-        suggestions=suggestions,
+        issues.extend(diagnostics.issues)
+        legacy_warnings.extend(diagnostics.warnings)
+    report = ValidationReport.from_issues(_dedupe_validation_issues(issues))
+    return report.model_copy(
+        update={
+            "is_valid": not (legacy_errors or report.errors),
+            "errors": [*legacy_errors, *report.errors],
+            "warnings": [*report.warnings, *legacy_warnings],
+        }
+    )
+
+
+def _report_should_reflect(report: ValidationReport) -> bool:
+    if not report.issues:
+        return True
+    reflect_routes = {"auto_repair", "reflect_plan", "retrieval"}
+    blocking_routes = {"ask_expert", "manual_review", "capability_downgrade"}
+    if any(issue.route_hint in reflect_routes for issue in report.issues):
+        return True
+    if all(issue.route_hint in blocking_routes for issue in report.issues):
+        return False
+    return True
+
+
+def _report_should_ask_expert(report: ValidationReport) -> bool:
+    return bool(report.issues) and all(
+        issue.route_hint == "ask_expert" or issue.requires_human_confirmation
+        for issue in report.issues
+    )
+
+
+def _dedupe_validation_issues(issues: list[ValidationIssue]) -> list[ValidationIssue]:
+    seen: set[tuple[str, str, str | None]] = set()
+    deduped: list[ValidationIssue] = []
+    for issue in issues:
+        key = (issue.code, issue.message, issue.schema_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _structured_issue_context(issues: list[ValidationIssue]) -> str:
+    if not issues:
+        return ""
+    payload: list[dict[str, Any]] = []
+    for issue in issues[:12]:
+        payload.append(
+            {
+                "code": issue.code,
+                "severity": issue.severity,
+                "message": issue.message,
+                "schema_path": issue.schema_path,
+                "route_hint": issue.route_hint,
+                "concept_id": issue.concept_id,
+                "grep_patterns": issue.grep_patterns,
+                "repair_hints": [
+                    {
+                        "action": hint.action,
+                        "message": hint.message,
+                        "target_path": hint.target_path,
+                        "example_patch": hint.example_patch,
+                    }
+                    for hint in issue.repair_hints
+                ],
+                "requires_retrieval": issue.requires_retrieval,
+                "requires_human_confirmation": issue.requires_human_confirmation,
+            }
+        )
+    return (
+        "\n[Validation Issues]\n"
+        "Use these stable codes and paths; do not guess missing physical facts.\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+    )
+
+
+def _grep_evidence_for_report(report: ValidationReport | None) -> list[RetrievedEvidence]:
+    if report is None or not report.issues:
+        return []
+    return gather_grep_evidence_for_issues(report.issues)
+
+
+def _coerce_grep_evidence(raw_items: list[Any]) -> list[RetrievedEvidence]:
+    evidence: list[RetrievedEvidence] = []
+    for raw in raw_items:
+        if isinstance(raw, RetrievedEvidence):
+            evidence.append(raw)
+            continue
+        if isinstance(raw, dict):
+            try:
+                evidence.append(RetrievedEvidence.model_validate(raw))
+            except Exception:
+                continue
+    return evidence
+
+
+def _repair_constraints_context() -> str:
+    return (
+        "\n[Repair Constraints]\n"
+        "- Only change fields directly related to the validation issues.\n"
+        "- Do not modify confirmed fields or expert feedback unless the issue targets them.\n"
+        "- Do not invent material density, nuclide composition, benchmark facts, or cross section paths.\n"
+        "- Treat grep evidence as locator context, not as final physics or nuclear-data truth.\n"
     )
 
 
@@ -1750,6 +1899,9 @@ def _build_reflection_requirement(state: GraphState) -> str:
     tool_results = state.get("tool_results", [])
     expert_feedback = state.get("expert_feedback", [])
     repair_errors = state.get("capability_repair_errors", [])
+    report = state.get("validation_report")
+    issue_context = _structured_issue_context(report.issues if report else [])
+    grep_context = format_grep_evidence(_coerce_grep_evidence(state.get("grep_evidence", [])))
     structure_guidance = ""
     if repair_errors:
         structure_guidance = (
@@ -1769,6 +1921,9 @@ def _build_reflection_requirement(state: GraphState) -> str:
         "The current SimulationPlan failed during OpenMC expert-style execution checks. "
         "Return a corrected SimulationPlan JSON object only. Do not modify Python code directly.\n"
         f"{structure_guidance}"
+        f"{issue_context}"
+        f"{grep_context}"
+        f"{_repair_constraints_context()}"
         f"Validation and execution errors: {state.get('error', '')}\n"
         f"Tool results: {_compact_tool_results(tool_results)}\n"
         f"Human expert feedback: {expert_feedback}"
@@ -1822,11 +1977,22 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
     for item in plan.expert_assumptions:
         questions.append(f"Please confirm or correct this modeling assumption: {item}")
 
+    report = state.get("validation_report")
+    if report is not None:
+        for issue in report.issues:
+            if issue.route_hint == "ask_expert" or issue.requires_human_confirmation:
+                questions.append(f"Please provide or confirm: [{issue.code}] {issue.message}")
+
     if capability.renderability in {"none", "skeleton"}:
-        for reason in capability.reasons:
-            questions.append(f"What expert information resolves this renderability gap: {reason}")
-        for warning in capability.warnings:
-            questions.append(f"Please review this modeling warning: {warning}")
+        non_expert_routes = {"auto_repair", "reflect_plan", "retrieval", "capability_downgrade"}
+        if not any(issue.route_hint in non_expert_routes for issue in capability.issues):
+            for reason in capability.reasons:
+                questions.append(f"What expert information resolves this renderability gap: {reason}")
+            for warning in capability.warnings:
+                questions.append(f"Please review this modeling warning: {warning}")
+        for issue in capability.issues:
+            if issue.route_hint == "ask_expert" or issue.requires_human_confirmation:
+                questions.append(f"Please provide or confirm: [{issue.code}] {issue.message}")
 
     questions = list(dict.fromkeys(q for q in questions if q.strip()))
     return _filter_already_resolved_questions(questions, state)[:8]

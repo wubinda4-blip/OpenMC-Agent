@@ -422,8 +422,8 @@ def test_plan_graph_reflects_after_smoke_test_failure(tmp_path: Path) -> None:
     ):
         calls["repair"] += 1
         assert schema is SimulationPlan
-        assert any("cross section" in error for error in validation_errors)
-        assert "No cross_sections.xml" in requirement
+        assert any("overlap" in error.lower() for error in validation_errors)
+        assert "Overlap detected" in requirement
         return StructuredOutputResult(ok=True, value=make_simulation_plan())
 
     def fake_export_xml(model_path: str | Path):
@@ -439,8 +439,8 @@ def test_plan_graph_reflects_after_smoke_test_failure(tmp_path: Path) -> None:
                 name="run_smoke_test",
                 ok=False,
                 returncode=1,
-                stderr="ERROR: No cross_sections.xml was specified",
-                error="ERROR: No cross_sections.xml was specified",
+                stderr="ERROR: Overlap detected between cells 10 and 11",
+                error="ERROR: Overlap detected between cells 10 and 11",
             )
         return ToolResult(name="run_smoke_test", ok=True, returncode=0, stdout="ok")
 
@@ -465,6 +465,58 @@ def test_plan_graph_reflects_after_smoke_test_failure(tmp_path: Path) -> None:
     assert calls == {"repair": 1, "smoke": 2}
     assert state["retry_count"] == 1
     assert state["validation_report"].is_valid is True
+
+
+def test_plan_graph_does_not_reflect_cross_sections_missing(tmp_path: Path) -> None:
+    calls = {"repair": 0, "smoke": 0}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    def fake_repair_plan(**kwargs):
+        calls["repair"] += 1
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    def fake_export_xml(model_path: str | Path):
+        return ToolResult(name="export_xml", ok=True, returncode=0)
+
+    def fake_plot(run_dir: str | Path):
+        return ToolResult(name="run_geometry_plots", ok=True, returncode=0)
+
+    def fake_smoke(run_dir: str | Path, plan: SimulationPlan):
+        calls["smoke"] += 1
+        return ToolResult(
+            name="run_smoke_test",
+            ok=False,
+            returncode=1,
+            stderr="ERROR: No cross_sections.xml was specified",
+            error="ERROR: No cross_sections.xml was specified",
+        )
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        repair_plan=fake_repair_plan,
+        export_xml_tool=fake_export_xml,
+        plot_tool=fake_plot,
+        smoke_test_tool=fake_smoke,
+        max_retries=2,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 UO2 pin-cell 临界计算",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert calls == {"repair": 0, "smoke": 1}
+    assert state["validation_report"].is_valid is False
+    assert state["validation_report"].issues[0].code == "runtime.cross_sections_missing"
+    assert state["validation_report"].issues[0].route_hint == "ask_expert"
+    assert state["pending_expert_questions"]
+    assert "runtime.cross_sections_missing" in state["pending_expert_questions"][0]
 
 
 def test_plan_graph_reflects_after_plan_validation_failure(tmp_path: Path) -> None:
@@ -1786,6 +1838,7 @@ def test_plan_graph_reflect_applies_auto_repair_patch(tmp_path: Path) -> None:
     by deterministic auto_repair with no LLM call: repair_plan is not invoked,
     patch_reason='deterministic auto-repair', patch_confidence='high'."""
     repair_calls = {"n": 0}
+    reflect_investigation_calls = {"n": 0}
 
     def dirty_plan() -> SimulationPlan:
         plan = _make_dirty_assembly_plan_missing_cell()
@@ -1801,6 +1854,8 @@ def test_plan_graph_reflect_applies_auto_repair_patch(tmp_path: Path) -> None:
         return StructuredOutputResult(ok=True, value=_fix_missing_cell(previous_spec))
 
     def fake_investigation(prompt: str):
+        if "reflect problem" in prompt:
+            reflect_investigation_calls["n"] += 1
         # Investigation offers no patch; auto_repair must handle it alone.
         return _investigation_done(patch=None, findings="")
 
@@ -1821,6 +1876,7 @@ def test_plan_graph_reflect_applies_auto_repair_patch(tmp_path: Path) -> None:
     )
     # auto_repair fixed it deterministically; no whole-plan regeneration.
     assert repair_calls["n"] == 0
+    assert reflect_investigation_calls["n"] == 0
     plan_patch = state.get("plan_patch")
     assert plan_patch
     assert any(
@@ -1833,7 +1889,7 @@ def test_plan_graph_reflect_applies_auto_repair_patch(tmp_path: Path) -> None:
     assert state["validation_report"].is_valid is True
 
 
-def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path) -> None:
+def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path, monkeypatch) -> None:
     """When the investigation produces a valid JSON Patch, reflect_plan applies
     it surgically and never calls repair_plan to regenerate the whole plan."""
     repair_calls = {"n": 0}
@@ -1849,7 +1905,26 @@ def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path) -> None:
         {"op": "replace", "path": "/complex_model/universes/0/cell_ids", "value": ["fuel_cell"]}
     ]
 
+    prompts: list[str] = []
+
+    from openmc_agent.grep_search import RetrievedEvidence
+
+    monkeypatch.setattr(
+        "openmc_agent.graph.gather_grep_evidence_for_issues",
+        lambda issues: [
+            RetrievedEvidence(
+                source_type="grep",
+                locator="openmc_agent/schemas.py:100-103",
+                text="100: class UniverseSpec\n101:     cell_ids: list[str]",
+                issue_code=issues[0].code,
+                schema_path=issues[0].schema_path,
+                metadata={"matched_pattern": "cell_ids"},
+            )
+        ],
+    )
+
     def fake_investigation(prompt: str):
+        prompts.append(prompt)
         if "reflect problem" in prompt:
             return _investigation_done(patch=patch, findings="fixed missing cell reference")
         return _investigation_done()
@@ -1872,6 +1947,9 @@ def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path) -> None:
     assert repair_calls["n"] == 0
     assert state.get("plan_patch") == patch
     assert state.get("investigation_trace")
+    assert state.get("grep_evidence")
+    assert any("[Grep Evidence]" in prompt for prompt in prompts)
+    assert any("Validation Issues" in prompt or "Structured diagnostic issues" in prompt for prompt in prompts)
     assert state["validation_report"].is_valid is True
 
 

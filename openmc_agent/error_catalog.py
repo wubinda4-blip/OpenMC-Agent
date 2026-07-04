@@ -93,6 +93,22 @@ LATTICE_GUIDE = _ref(
     retrieval_query="OpenMC RectLattice HexLattice universe repeated geometry",
     concept_id="openmc.geometry.lattice",
 )
+CROSS_SECTIONS_GUIDE = _ref(
+    "openmc.usersguide.cross_sections",
+    "OpenMC cross section data configuration",
+    "openmc_docs",
+    locator="OpenMC User Guide > Cross Section Configuration",
+    retrieval_query="OpenMC cross_sections.xml OPENMC_CROSS_SECTIONS configuration",
+    concept_id="openmc.data.cross_sections",
+)
+OPENMC_RUNTIME_GUIDE = _ref(
+    "openmc.usersguide.troubleshoot",
+    "OpenMC runtime diagnostics",
+    "openmc_docs",
+    locator="OpenMC User Guide > Troubleshooting",
+    retrieval_query="OpenMC geometry overlap lost particle troubleshooting",
+    concept_id="openmc.runtime.diagnostics",
+)
 
 
 # Type alias describing one catalog entry.  Kept as a plain dict so the catalog
@@ -447,7 +463,10 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         "rule_id": "rule.lattice.hex_requires_rings",
         "concept_id": "openmc.geometry.hex_lattice",
         "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["LatticeSpec", "HexLattice", "rings", "outer_universe_id"],
+        "requires_retrieval": True,
         "requires_human_confirmation": True,
+        "route_hint": "ask_expert",
         "repair_hints": [
             _hint(
                 "add_missing_field",
@@ -824,6 +843,291 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             ),
         ],
     },
+    # -------------------------------------------------------------- runtime
+    "runtime.cross_sections_missing": {
+        "severity": "error",
+        "message": "OpenMC cross section data is missing or not configured.",
+        "schema_path": "runtime.cross_sections",
+        "rule_id": "rule.runtime.cross_sections_missing",
+        "concept_id": "openmc.data.cross_sections",
+        "knowledge_refs": [CROSS_SECTIONS_GUIDE],
+        "grep_patterns": ["cross_sections.xml", "OPENMC_CROSS_SECTIONS", "openmc_data"],
+        "requires_human_confirmation": True,
+        "route_hint": "ask_expert",
+        "repair_hints": [
+            _hint(
+                "ask_human",
+                "Ask the user to confirm the installed nuclear data library and OPENMC_CROSS_SECTIONS path; do not invent a path.",
+                target_path="environment.OPENMC_CROSS_SECTIONS",
+            )
+        ],
+    },
+    "runtime.cross_sections_invalid": {
+        "severity": "error",
+        "message": "OpenMC cross section data path or XML file is invalid.",
+        "schema_path": "runtime.cross_sections",
+        "rule_id": "rule.runtime.cross_sections_invalid",
+        "concept_id": "openmc.data.cross_sections",
+        "knowledge_refs": [CROSS_SECTIONS_GUIDE],
+        "grep_patterns": ["cross_sections.xml", "OPENMC_CROSS_SECTIONS", "not present in cross_sections.xml"],
+        "requires_human_confirmation": True,
+        "route_hint": "ask_expert",
+        "repair_hints": [
+            _hint(
+                "ask_human",
+                "Ask the user to confirm that the selected nuclides/materials exist in the configured cross section library.",
+                target_path="environment.OPENMC_CROSS_SECTIONS",
+            )
+        ],
+    },
+    "runtime.geometry_overlap": {
+        "severity": "error",
+        "message": "OpenMC reported a possible geometry overlap.",
+        "schema_path": "runtime.geometry",
+        "rule_id": "rule.runtime.geometry_overlap",
+        "concept_id": "openmc.geometry.overlap",
+        "knowledge_refs": [GEOMETRY_GUIDE, OPENMC_RUNTIME_GUIDE],
+        "grep_patterns": ["overlap", "check_overlaps", "Geometry", "Cell", "Surface"],
+        "requires_retrieval": True,
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Review OpenMC geometry overlap diagnostics, then adjust deterministic cell/surface regions rather than changing material facts.",
+                target_path="complex_model.regions",
+            )
+        ],
+    },
+    "runtime.lost_particle": {
+        "severity": "error",
+        "message": "OpenMC reported lost particles.",
+        "schema_path": "runtime.geometry",
+        "rule_id": "rule.runtime.lost_particle",
+        "concept_id": "openmc.geometry.lost_particle",
+        "knowledge_refs": [GEOMETRY_GUIDE, OPENMC_RUNTIME_GUIDE],
+        "grep_patterns": ["lost particle", "lost particles", "boundary_type", "region"],
+        "requires_retrieval": True,
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Check cell containment, boundary surfaces, and missing outer regions before changing physical parameters.",
+                target_path="complex_model.cells",
+            )
+        ],
+    },
+    "runtime.material_missing_nuclide_data": {
+        "severity": "error",
+        "message": "OpenMC reported material nuclide data missing from the configured library.",
+        "schema_path": "runtime.materials",
+        "rule_id": "rule.runtime.material_missing_nuclide_data",
+        "concept_id": "openmc.material.nuclide_data",
+        "knowledge_refs": [MATERIALS_GUIDE, CROSS_SECTIONS_GUIDE],
+        "grep_patterns": ["not present in cross_sections.xml", "Could not find nuclide", "add_nuclide"],
+        "requires_human_confirmation": True,
+        "route_hint": "ask_expert",
+        "repair_hints": [
+            _hint(
+                "ask_human",
+                "Ask the user to confirm the nuclide name and whether the configured nuclear data library contains it.",
+                target_path="complex_model.materials.composition",
+            )
+        ],
+    },
+    "runtime.dagmc_or_geometry_load_failed": {
+        "severity": "error",
+        "message": "OpenMC failed to load DAGMC or geometry input.",
+        "schema_path": "runtime.geometry",
+        "rule_id": "rule.runtime.geometry_load_failed",
+        "concept_id": "openmc.geometry.load",
+        "knowledge_refs": [GEOMETRY_GUIDE, OPENMC_RUNTIME_GUIDE],
+        "grep_patterns": ["DAGMC", "geometry.xml", "failed to load", "Geometry"],
+        "requires_retrieval": True,
+        "route_hint": "manual_review",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Inspect geometry export/load errors and verify referenced geometry files or XML artifacts exist.",
+                target_path="runtime.geometry",
+            )
+        ],
+    },
+    "runtime.openmc_unknown_error": {
+        "severity": "error",
+        "message": "OpenMC reported an unknown runtime error.",
+        "schema_path": "runtime",
+        "rule_id": "rule.runtime.unknown_error",
+        "concept_id": "openmc.runtime.diagnostics",
+        "knowledge_refs": [OPENMC_RUNTIME_GUIDE],
+        "grep_patterns": ["ERROR", "OpenMC", "Traceback", "runtime"],
+        "requires_retrieval": True,
+        "requires_human_confirmation": True,
+        "route_hint": "manual_review",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Use the raw stderr/stdout summary and stable code to investigate the OpenMC failure before attempting a patch.",
+                target_path="runtime",
+            )
+        ],
+    },
+    # ------------------------------------------------------------ export XML
+    "export_xml.dangling_cell_fill": {
+        "severity": "error",
+        "message": "geometry.xml cell fill references an unexported universe or lattice.",
+        "schema_path": "geometry.xml.cell.fill",
+        "rule_id": "rule.export_xml.cell_fill_ref_exists",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["cell", "fill", "universe", "lattice", "geometry.xml"],
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Fix the cell fill id typo or define the referenced universe/lattice before export.")
+        ],
+    },
+    "export_xml.dangling_lattice_universe": {
+        "severity": "error",
+        "message": "geometry.xml lattice universes reference an unexported universe.",
+        "schema_path": "geometry.xml.lattice.universes",
+        "rule_id": "rule.export_xml.lattice_universe_ref_exists",
+        "concept_id": "openmc.geometry.lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["lattice", "universes", "RectLattice", "HexLattice", "geometry.xml"],
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Fix the lattice universe id typo or define the referenced universe before export.")
+        ],
+    },
+    "export_xml.dangling_lattice_outer_universe": {
+        "severity": "error",
+        "message": "geometry.xml lattice outer universe references an unexported universe.",
+        "schema_path": "geometry.xml.lattice.outer",
+        "rule_id": "rule.export_xml.lattice_outer_ref_exists",
+        "concept_id": "openmc.geometry.lattice_outer",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["outer", "outer_universe", "lattice", "geometry.xml"],
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Fix lattice.outer / outer_universe_id or define the referenced outer universe.")
+        ],
+    },
+    "export_xml.dangling_region_surface": {
+        "severity": "error",
+        "message": "geometry.xml region references an unexported surface.",
+        "schema_path": "geometry.xml.cell.region",
+        "rule_id": "rule.export_xml.region_surface_ref_exists",
+        "concept_id": "openmc.geometry.region_surface_refs",
+        "knowledge_refs": [GEOMETRY_GUIDE],
+        "grep_patterns": ["region", "surface", "geometry.xml"],
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Fix the region expression/surface id typo or export the referenced surface.")
+        ],
+    },
+    "export_xml.dangling_material_ref": {
+        "severity": "error",
+        "message": "geometry.xml cell material references an unexported material.",
+        "schema_path": "geometry.xml.cell.material",
+        "rule_id": "rule.export_xml.material_ref_exists",
+        "concept_id": "openmc.material",
+        "knowledge_refs": [MATERIALS_GUIDE],
+        "grep_patterns": ["material", "cell", "geometry.xml", "materials.xml"],
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Fix the cell material id typo or export the referenced material in materials.xml.")
+        ],
+    },
+    "export_xml.dangling_universe_cell": {
+        "severity": "error",
+        "message": "geometry.xml universe references an unexported cell.",
+        "schema_path": "geometry.xml.universe.cell",
+        "rule_id": "rule.export_xml.universe_cell_ref_exists",
+        "concept_id": "openmc.geometry.universe",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["universe", "cell", "geometry.xml"],
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Fix the universe cell id typo or export the referenced cell.")
+        ],
+    },
+    "export_xml.geometry_reference_unknown": {
+        "severity": "error",
+        "message": "geometry.xml has an unknown dangling geometry reference.",
+        "schema_path": "geometry.xml",
+        "rule_id": "rule.export_xml.geometry_reference_unknown",
+        "concept_id": "openmc.geometry",
+        "knowledge_refs": [GEOMETRY_GUIDE],
+        "grep_patterns": ["geometry.xml", "cell", "lattice", "universe", "surface"],
+        "route_hint": "manual_review",
+        "repair_hints": [
+            _hint("retrieve_docs", "Inspect the XML artifact and source model to classify the dangling reference before patching.")
+        ],
+    },
+    # ----------------------------------------------------------- hex lattice
+    "lattice.hex.renderer_unsupported": {
+        "severity": "warning",
+        "message": "hex lattice renderer is not implemented; plan remains review-only skeleton.",
+        "schema_path": "complex_model.lattices",
+        "rule_id": "rule.lattice.hex_renderer_unsupported",
+        "concept_id": "openmc.geometry.hex_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["HexLattice", "hexagonal_prism", "LatticeSpec", "rings", "outer_universe_id"],
+        "requires_retrieval": True,
+        "route_hint": "capability_downgrade",
+        "repair_hints": [
+            _hint(
+                "downgrade_renderability",
+                "Keep renderability at skeleton until a HexAssemblyRenderer is implemented.",
+                target_path="capability_report.renderability",
+            )
+        ],
+    },
+    "lattice.hex.ring_shape_invalid": {
+        "severity": "error",
+        "message": "hex lattice ring lengths are invalid.",
+        "schema_path": "complex_model.lattices.rings",
+        "rule_id": "rule.lattice.hex_ring_shape",
+        "concept_id": "openmc.geometry.hex_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["HexLattice", "rings", "1, 6, 12", "LatticeSpec"],
+        "requires_retrieval": True,
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("edit_field", "Use center ring length 1 and outer ring lengths 6*n for ring index n.")
+        ],
+    },
+    "lattice.hex.outer_universe_missing": {
+        "severity": "warning",
+        "message": "hex lattice outer_universe_id is missing.",
+        "schema_path": "complex_model.lattices.outer_universe_id",
+        "rule_id": "rule.lattice.hex_outer_universe",
+        "concept_id": "openmc.geometry.hex_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["HexLattice", "outer", "outer_universe_id", "LatticeSpec"],
+        "requires_retrieval": True,
+        "route_hint": "reflect_plan",
+        "repair_hints": [
+            _hint("add_missing_field", "Set outer_universe_id when particles can leave the defined hex lattice rings.")
+        ],
+    },
+    "lattice.hex.orientation_unverified": {
+        "severity": "info",
+        "message": "hex lattice orientation, pitch convention, or ring ordering is unverified.",
+        "schema_path": "complex_model.lattices",
+        "rule_id": "rule.lattice.hex_orientation_unverified",
+        "concept_id": "openmc.geometry.hex_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["HexLattice", "orientation", "pitch", "rings", "outer_universe_id"],
+        "requires_retrieval": True,
+        "route_hint": "retrieval",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Retrieve OpenMC HexLattice documentation for rings, pitch, outer universe, and orientation before renderer work.",
+                target_path="complex_model.lattices",
+            )
+        ],
+    },
 }
 
 
@@ -836,9 +1140,9 @@ def issue_from_catalog(code: str, **overrides: Any) -> ValidationIssue:
 
     Recognized overrides: ``message``, ``schema_path``, ``rule_id``,
     ``concept_id``, ``severity``, ``requires_retrieval``,
-    ``requires_human_confirmation``.  ``knowledge_refs`` / ``repair_hints`` may
-    be supplied as lists of dicts or model instances and are merged on top of the
-    catalog defaults.
+    ``requires_human_confirmation``, ``grep_patterns``, and ``route_hint``.
+    ``knowledge_refs`` / ``repair_hints`` may be supplied as lists of dicts or
+    model instances and are merged on top of the catalog defaults.
     """
     entry = ERROR_CATALOG.get(code, {})
     severity = overrides.pop("severity", entry.get("severity", "error"))
@@ -852,6 +1156,12 @@ def issue_from_catalog(code: str, **overrides: Any) -> ValidationIssue:
     requires_human_confirmation = overrides.pop(
         "requires_human_confirmation", entry.get("requires_human_confirmation", False)
     )
+    route_hint = overrides.pop("route_hint", entry.get("route_hint"))
+    grep_patterns = list(entry.get("grep_patterns", []))
+    extra_grep_patterns = overrides.pop("grep_patterns", None)
+    if extra_grep_patterns:
+        grep_patterns.extend(str(pattern) for pattern in extra_grep_patterns)
+    grep_patterns = list(dict.fromkeys(pattern for pattern in grep_patterns if pattern))
 
     knowledge_refs = list(entry.get("knowledge_refs", []))
     extra_refs = overrides.pop("knowledge_refs", None)
@@ -878,8 +1188,10 @@ def issue_from_catalog(code: str, **overrides: Any) -> ValidationIssue:
         concept_id=concept_id,
         knowledge_refs=knowledge_refs,
         repair_hints=repair_hints,
+        grep_patterns=grep_patterns,
         requires_retrieval=requires_retrieval,
         requires_human_confirmation=requires_human_confirmation,
+        route_hint=route_hint,
     )
 
 

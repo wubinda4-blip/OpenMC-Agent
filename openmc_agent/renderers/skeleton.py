@@ -15,12 +15,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.renderers.base import BaseRenderer, RenderResult
 from openmc_agent.schemas import (
     ComplexMaterialSpec,
     ComplexModelSpec,
     RenderCapabilityReport,
     SimulationPlan,
+    ValidationIssue,
 )
 
 _HEADER_STATUS = "NOT EXECUTABLE"
@@ -95,6 +97,9 @@ class SkeletonRenderer(BaseRenderer):
             "generating a review-only skeleton.",
         ]
         subsystems = _skeleton_subsystems(plan)
+        issues = _skeleton_issues(plan)
+        if any(issue.code == "lattice.hex.renderer_unsupported" for issue in issues):
+            reasons.append("Hex lattice currently has no HexAssemblyRenderer; maximum renderability is skeleton.")
         return RenderCapabilityReport(
             renderability="skeleton",
             is_executable=False,
@@ -103,6 +108,7 @@ class SkeletonRenderer(BaseRenderer):
             unsupported_subsystems=subsystems,
             reasons=reasons,
             required_human_confirmations=_skeleton_confirmations(plan),
+            issues=issues,
         )
 
     def render(self, plan: SimulationPlan, outdir: Path) -> RenderResult:
@@ -157,6 +163,110 @@ def _header(
         for warning in warnings:
             lines.append(f"# - {_comment(warning)}")
     return "\n".join(lines)
+
+
+def _skeleton_issues(plan: SimulationPlan) -> list[ValidationIssue]:
+    model = plan.complex_model
+    if model is None:
+        return []
+    issues: list[ValidationIssue] = []
+    universe_ids = {universe.id for universe in model.universes}
+    for lattice in model.lattices:
+        if lattice.kind != "hex":
+            continue
+        schema_base = f"complex_model.lattices.{lattice.id}"
+        issues.append(
+            issue_from_catalog(
+                "lattice.hex.renderer_unsupported",
+                message=(
+                    f"hex lattice {lattice.id!r} requires a HexAssemblyRenderer; "
+                    "current renderer output remains skeleton."
+                ),
+                schema_path=schema_base,
+            )
+        )
+        if not lattice.rings:
+            issues.append(
+                issue_from_catalog(
+                    "lattice.hex.rings_missing",
+                    message=f"hex lattice {lattice.id!r} rings are missing",
+                    schema_path=f"{schema_base}.rings",
+                )
+            )
+        else:
+            invalid = _invalid_hex_ring_lengths(lattice.rings)
+            if invalid:
+                issues.append(
+                    issue_from_catalog(
+                        "lattice.hex.ring_shape_invalid",
+                        message=f"hex lattice {lattice.id!r} has invalid ring lengths: {invalid}",
+                        schema_path=f"{schema_base}.rings",
+                    )
+                )
+            missing_universes = sorted(
+                {
+                    universe_id
+                    for ring in lattice.rings
+                    for universe_id in ring
+                    if universe_id not in universe_ids
+                }
+            )
+            if missing_universes:
+                issues.append(
+                    issue_from_catalog(
+                        "lattice.universe_ref_missing",
+                        message=(
+                            f"hex lattice {lattice.id!r} rings reference missing universes: "
+                            f"{missing_universes}"
+                        ),
+                        schema_path=f"{schema_base}.rings",
+                        concept_id="openmc.geometry.hex_lattice",
+                        grep_patterns=["HexLattice", "rings", *missing_universes],
+                        route_hint="reflect_plan",
+                    )
+                )
+        if lattice.outer_universe_id is None:
+            issues.append(
+                issue_from_catalog(
+                    "lattice.hex.outer_universe_missing",
+                    message=f"hex lattice {lattice.id!r} outer_universe_id is missing",
+                    schema_path=f"{schema_base}.outer_universe_id",
+                )
+            )
+        elif lattice.outer_universe_id not in universe_ids:
+            issues.append(
+                issue_from_catalog(
+                    "lattice.universe_ref_missing",
+                    message=(
+                        f"hex lattice {lattice.id!r} outer_universe_id "
+                        f"{lattice.outer_universe_id!r} is not defined"
+                    ),
+                    schema_path=f"{schema_base}.outer_universe_id",
+                    concept_id="openmc.geometry.hex_lattice",
+                    grep_patterns=["HexLattice", "outer_universe_id", lattice.outer_universe_id],
+                    route_hint="reflect_plan",
+                )
+            )
+        issues.append(
+            issue_from_catalog(
+                "lattice.hex.orientation_unverified",
+                message=(
+                    f"hex lattice {lattice.id!r} orientation, pitch convention, and "
+                    "ring ordering require documentation verification before renderer work."
+                ),
+                schema_path=schema_base,
+            )
+        )
+    return issues
+
+
+def _invalid_hex_ring_lengths(rings: list[list[str]]) -> list[str]:
+    invalid: list[str] = []
+    for index, ring in enumerate(rings):
+        expected = 1 if index == 0 else 6 * index
+        if len(ring) != expected:
+            invalid.append(f"ring {index}: expected {expected}, got {len(ring)}")
+    return invalid
 
 
 def _materials_section(model: ComplexModelSpec) -> str:
