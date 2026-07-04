@@ -843,12 +843,29 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
                 f"{lattice.outer_universe_id!r}"
             )
     for layer in spec.core.axial_layers:
-        if layer.fill_type == "material" and layer.fill_id not in material_ids:
-            raise ValueError(f"axial layer {layer.id!r} references missing material {layer.fill_id!r}")
-        if layer.fill_type == "universe" and layer.fill_id not in universe_ids:
-            raise ValueError(f"axial layer {layer.id!r} references missing universe {layer.fill_id!r}")
-        if layer.fill_type == "lattice" and layer.fill_id not in lattice_ids:
-            raise ValueError(f"axial layer {layer.id!r} references missing lattice {layer.fill_id!r}")
+        fill = layer.fill
+        fill_schema = f"complex_model.core.axial_layers.{layer.id}.fill.id"
+        if fill.type == "material" and fill.id not in material_ids:
+            raise ValueError(f"axial layer {layer.id!r} references missing material {fill.id!r}")
+        if fill.type == "universe" and fill.id not in universe_ids:
+            raise ValueError(f"axial layer {layer.id!r} references missing universe {fill.id!r}")
+        if fill.type == "lattice" and fill.id not in lattice_ids:
+            if layer.loading_id is None:
+                raise ValueError(f"axial layer {layer.id!r} references missing lattice {fill.id!r}")
+            loading = _loading_by_id(spec, layer.loading_id)
+            if fill.id != _loading_derived_lattice_id(loading):
+                raise ValueError(f"axial layer {layer.id!r} references missing lattice {fill.id!r} at {fill_schema}")
+        if layer.loading_id is not None:
+            if fill.type != "lattice":
+                raise ValueError(f"axial layer {layer.id!r} uses loading_id with non-lattice fill")
+            loading = _loading_by_id(spec, layer.loading_id)
+            if loading.base_lattice_id not in lattice_ids:
+                raise ValueError(f"lattice loading {loading.id!r} references missing base lattice {loading.base_lattice_id!r}")
+            base_lattice = _lattice_by_id(spec, loading.base_lattice_id)
+            for universe_id, positions in loading.overrides.items():
+                if universe_id not in universe_ids:
+                    raise ValueError(f"lattice loading {loading.id!r} override references missing universe {universe_id!r}")
+                _check_loading_positions_in_bounds(loading.id, base_lattice, universe_id, positions)
 
 
 def _complex_enrichment_kwargs(spec: ComplexMaterialSpec) -> dict[str, str | float]:
@@ -1630,9 +1647,9 @@ def _core_direct_lattice_universe_ids(spec: ComplexModelSpec) -> set[str]:
         for universe_id in row
     }
     universe_ids.update(
-        layer.fill_id
+        layer.fill.id
         for layer in spec.core.axial_layers
-        if layer.fill_type == "universe" and layer.fill_id is not None
+        if layer.fill.type == "universe" and layer.fill.id is not None
     )
     return universe_ids
 
@@ -1646,9 +1663,9 @@ def _core_reachable_universe_ids(spec: ComplexModelSpec) -> set[str]:
     assembly_by_id = {assembly.id: assembly for assembly in spec.assemblies}
     pending_lattice_ids = [spec.core.lattice_id]
     pending_universe_ids = [
-        layer.fill_id
+        layer.fill.id
         for layer in spec.core.axial_layers
-        if layer.fill_type == "universe" and layer.fill_id is not None
+        if layer.fill.type == "universe" and layer.fill.id is not None
     ]
     visited_lattice_ids: set[str] = set()
     reachable_universe_ids: set[str] = set()
@@ -1767,11 +1784,11 @@ def _render_core_root(spec: ComplexModelSpec) -> str:
     )
 
 
-def _apply_assembly_overrides(
+def _apply_lattice_loading_overrides(
     pattern: list[list[str]],
     overrides: dict[str, list[tuple[int, int]]],
 ) -> list[list[str]]:
-    """Return a copy of ``pattern`` with per-layer assembly overrides applied.
+    """Return a copy of ``pattern`` with lattice-loading overrides applied.
 
     ``overrides`` maps a universe id to the (row, col) positions it should
     occupy, matching the ``LatticeSpec.overrides`` convention (row 0 = top,
@@ -1784,11 +1801,39 @@ def _apply_assembly_overrides(
             row, col = position
             if not (0 <= row < len(grid) and 0 <= col < len(grid[row])):
                 raise ValueError(
-                    f"assembly_overrides position {(row, col)} for universe "
+                    f"lattice loading override position {(row, col)} for universe "
                     f"{universe_id!r} is out of bounds"
                 )
             grid[row][col] = universe_id
     return grid
+
+
+def _loading_derived_lattice_id(loading: object) -> str:
+    derived = getattr(loading, "derived_lattice_id", None)
+    return derived or f"{getattr(loading, 'id')}_lattice"
+
+
+def _loading_by_id(spec: ComplexModelSpec, loading_id: str | None) -> object:
+    for loading in spec.lattice_loadings:
+        if loading.id == loading_id:
+            return loading
+    raise ValueError(f"axial layer references missing loading_id={loading_id!r}")
+
+
+def _check_loading_positions_in_bounds(
+    loading_id: str,
+    base_lattice: LatticeSpec,
+    universe_id: str,
+    positions: list[tuple[int, int]],
+) -> None:
+    for row, col in positions:
+        in_rows = 0 <= row < len(base_lattice.universe_pattern)
+        in_cols = in_rows and 0 <= col < len(base_lattice.universe_pattern[row])
+        if not (in_rows and in_cols):
+            raise ValueError(
+                f"lattice loading {loading_id!r} override position {(row, col)} "
+                f"for universe {universe_id!r} is out of bounds"
+            )
 
 
 def _render_axial_core_root(spec: ComplexModelSpec) -> str:
@@ -1858,22 +1903,18 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
             f"+assembly_ymin & -assembly_ymax & +{lower_plane} & -{upper_plane}"
         )
         fill_expr = _axial_layer_fill_expression(layer)
-        # Per-layer assembly loading: derive a dedicated RectLattice that applies
-        # this layer's overrides on top of the base lattice, so one axial slice
-        # can insert control-rod / burnable-poison assemblies without rewriting
-        # the whole loading map.
-        overrides = getattr(layer, "assembly_overrides", None)
-        if layer.fill_type == "lattice" and overrides:
-            base_id = layer.lattice_id or layer.fill_id or spec.core.lattice_id
-            base_lattice = _lattice_by_id(spec, base_id)
-            derived_pattern = _apply_assembly_overrides(
-                base_lattice.universe_pattern, overrides
+        if layer.loading_id is not None:
+            loading = _loading_by_id(spec, layer.loading_id)
+            base_lattice = _lattice_by_id(spec, loading.base_lattice_id)
+            derived_pattern = _apply_lattice_loading_overrides(
+                base_lattice.universe_pattern, loading.overrides
             )
             derived_var = _safe_name("axial_lattice", layer.id)
+            derived_id = _loading_derived_lattice_id(loading)
             base_lower_left = (
                 base_lattice.lower_left_cm or _infer_rect_lattice_lower_left(base_lattice)
             )
-            lines.append(f"{derived_var} = openmc.RectLattice(name={layer.name!r})")
+            lines.append(f"{derived_var} = openmc.RectLattice(name={derived_id!r})")
             lines.append(f"{derived_var}.pitch = {_rect_lattice_pitch(base_lattice)!r}")
             lines.append(f"{derived_var}.lower_left = {base_lower_left!r}")
             lines.append(
@@ -1883,6 +1924,7 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
                 lines.append(
                     f"{derived_var}.outer = universes[{base_lattice.outer_universe_id!r}]"
                 )
+            lines.append(f"lattices[{derived_id!r}] = {derived_var}")
             fill_expr = derived_var
         lines.append(
             f"{cell_name} = openmc.Cell("
@@ -1910,8 +1952,9 @@ def _root_boundary_type(boundary: str | None) -> str:
 
 
 def _axial_layer_fill_expression(layer: object) -> str:
-    fill_type = getattr(layer, "fill_type")
-    fill_id = getattr(layer, "fill_id")
+    fill = getattr(layer, "fill")
+    fill_type = getattr(fill, "type")
+    fill_id = getattr(fill, "id")
     if fill_type == "void":
         return "None"
     if fill_type == "material":

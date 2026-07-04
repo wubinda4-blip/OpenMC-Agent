@@ -43,10 +43,11 @@ FEW_SHOT_EXAMPLES = (
         structured_outline=(
             "Use complex_model.kind='core', CoreSpec, ReflectorSpec, ControlRodSpec, "
             "assembly ids, lattice ids, CoreSpec.boundary_conditions for the six outer faces, "
-            "CoreSpec.axial_layers for fuel-height and axial reflector regions; set "
-            "AxialLayerSpec.assembly_overrides (universe_id -> [(row, col)]) when an axial "
-            "slice needs a different assembly loading (e.g. control rods inserted only in "
-            "part of the fuel height). supported_renderer='core' for complete rectangular "
+            "CoreSpec.axial_layers with fill={type,id} for fuel-height and axial reflector "
+            "regions; define lattice_loadings with base_lattice_id + overrides and reference "
+            "them through AxialLayerSpec.loading_id when an axial slice needs a different "
+            "assembly loading (e.g. control rods inserted only in part of the fuel height). "
+            "supported_renderer='core' for complete rectangular "
             "core lattices, and explicit human-confirmation items for missing dimensions."
         ),
     ),

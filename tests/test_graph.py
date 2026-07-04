@@ -553,6 +553,19 @@ def test_plan_graph_repairs_malformed_raw_plan_response(tmp_path: Path) -> None:
     assert state["validation_report"].is_valid is True
     assert state["raw_llm_outputs"] == ["not json"]
 
+    first_meta = tmp_path / "plan_artifacts" / "000_generate_plan" / "meta.json"
+    first_raw = tmp_path / "plan_artifacts" / "000_generate_plan" / "raw_response.txt"
+    second_validated = tmp_path / "plan_artifacts" / "001_repair_plan_format" / "validated_plan.json"
+    final_plan = tmp_path / "simulation_plan.json"
+    assert first_raw.read_text(encoding="utf-8") == "not json"
+    assert json.loads(first_meta.read_text(encoding="utf-8"))["ok"] is False
+    assert not (tmp_path / "plan_artifacts" / "000_generate_plan" / "candidate_plan.json").exists()
+    assert second_validated.exists()
+    assert final_plan.exists()
+    assert json.loads(final_plan.read_text(encoding="utf-8")) == state[
+        "simulation_plan"
+    ].model_dump(mode="json")
+
 
 def test_plan_graph_format_repair_guides_truncated_large_patterns(tmp_path: Path) -> None:
     calls = {"generate": 0}
@@ -589,6 +602,54 @@ def test_plan_graph_format_repair_guides_truncated_large_patterns(tmp_path: Path
 
     assert calls["generate"] == 2
     assert state["validation_report"].is_valid is True
+
+
+def test_plan_graph_writes_candidate_payload_for_schema_failure(tmp_path: Path) -> None:
+    calls = {"generate": 0}
+    candidate = {"model_spec": {"name": "bad draft"}}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        calls["generate"] += 1
+        if calls["generate"] == 1:
+            return StructuredOutputResult(
+                ok=False,
+                error="Could not validate model response: plot_specs missing",
+                raw_response='{"model_spec":{"name":"bad draft"}}',
+                candidate_payload=candidate,
+                parse_notes=["repaired_missing_json_commas"],
+            )
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "建立一个 UO2 pin-cell 临界计算",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    candidate_path = tmp_path / "plan_artifacts" / "000_generate_plan" / "candidate_plan.json"
+    meta = json.loads(
+        (tmp_path / "plan_artifacts" / "000_generate_plan" / "meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    records = load_jsonl_records(tmp_path / "runs.jsonl")
+
+    assert state["validation_report"].is_valid is True
+    assert json.loads(candidate_path.read_text(encoding="utf-8")) == candidate
+    assert meta["parse_notes"] == ["repaired_missing_json_commas"]
+    assert str(candidate_path) in state["plan_artifacts"]
+    assert str(candidate_path) in records[0]["plan_artifacts"]
 
 
 def test_plan_graph_records_expert_question_when_generation_never_parses(tmp_path: Path) -> None:
@@ -1429,8 +1490,11 @@ def test_render_plan_script_uses_actual_render_result_capability(
 
     assert state["simulation_plan"].capability_report.renderability == "skeleton"
     sidecar = json.loads((tmp_path / "capability_report.json").read_text(encoding="utf-8"))
+    final_plan = json.loads((tmp_path / "simulation_plan.json").read_text(encoding="utf-8"))
     assert sidecar["renderability"] == "skeleton"
     assert sidecar["is_executable"] is False
+    assert final_plan["capability_report"]["renderability"] == "skeleton"
+    assert final_plan == state["simulation_plan"].model_dump(mode="json")
 
 
 def test_structural_renderability_gap_survives_material_expert_feedback() -> None:

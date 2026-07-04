@@ -703,41 +703,65 @@ class CoreBoundarySpec(AgentBaseModel):
     zmax: BoundaryType | None = None
 
 
+class FillRefSpec(AgentBaseModel):
+    type: Literal["material", "universe", "lattice", "void"] = Field(
+        description="OpenMC object kind used as a fill."
+    )
+    id: str | None = Field(
+        default=None,
+        description="Referenced material, universe, or lattice id. Omit for void.",
+    )
+
+    @model_validator(mode="after")
+    def validate_fill_id(self) -> "FillRefSpec":
+        if self.type == "void":
+            object.__setattr__(self, "id", None)
+            return self
+        if not self.id:
+            raise ValueError("fill.id is required unless fill.type is void")
+        return self
+
+
 class AxialLayerSpec(AgentBaseModel):
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     z_min_cm: float
     z_max_cm: float
-    fill_type: Literal["material", "universe", "lattice", "void"] = "lattice"
-    fill_id: str | None = None
-    lattice_id: str | None = Field(
-        default=None,
-        description=(
-            "Base lattice this axial layer fills. Defaults to core.lattice_id at "
-            "render time. Set explicitly when the layer needs its own assembly "
-            "loading (used together with assembly_overrides)."
-        ),
+    fill: FillRefSpec = Field(
+        description="Final OpenMC object filled into this axial root cell."
     )
-    assembly_overrides: dict[str, list[tuple[int, int]]] | None = Field(
-        default=None,
-        description=(
-            "Per-layer assembly loading override applied on top of the layer's "
-            "lattice: universe_id -> [(row, col), ...]. Lets one layer insert "
-            "control-rod / burnable-poison assemblies without re-enumerating the "
-            "whole loading. Row 0 = top, col 0 = left (same convention as "
-            "LatticeSpec.overrides). None/empty means the layer uses its base "
-            "lattice unchanged."
-        ),
-    )
+    loading_id: str | None = None
     purpose: str = ""
 
     @model_validator(mode="after")
     def validate_layer(self) -> "AxialLayerSpec":
         if self.z_max_cm <= self.z_min_cm:
             raise ValueError("axial layer z_max_cm must exceed z_min_cm")
-        if self.fill_type != "void" and not self.fill_id:
-            raise ValueError("axial layer fill_id is required unless fill_type is void")
         return self
+
+
+class LatticeLoadingSpec(AgentBaseModel):
+    id: str = Field(min_length=1)
+    base_lattice_id: str = Field(
+        min_length=1,
+        description="Existing LatticeSpec id used as the base loading.",
+    )
+    derived_lattice_id: str | None = Field(
+        default=None,
+        description="Optional id for the renderer-generated derived lattice.",
+    )
+    overrides: dict[str, list[tuple[int, int]]] = Field(
+        default_factory=dict,
+        description="Universe id -> [(row, col)] overrides applied to base_lattice_id.",
+    )
+    purpose: str = ""
+
+    @field_validator("overrides", mode="before")
+    @classmethod
+    def _coerce_none_to_empty_dict(cls, value: Any) -> Any:
+        if value is None:
+            return {}
+        return value
 
 
 class CoreSpec(AgentBaseModel):
@@ -1189,6 +1213,7 @@ class ComplexModelSpec(AgentBaseModel):
             "Mismatched lattice pitch and the pitch implied by the pin pattern",
         ],
     )
+    lattice_loadings: list[LatticeLoadingSpec] = Field(default_factory=list)
     assemblies: list[AssemblySpec] = Field(default_factory=list)
     core: CoreSpec | None = None
     reflectors: list[ReflectorSpec] = Field(default_factory=list)
@@ -1225,6 +1250,7 @@ class ComplexModelSpec(AgentBaseModel):
                 self.cells,
                 self.universes,
                 self.lattices,
+                self.lattice_loadings,
                 self.assemblies,
                 self.core,
                 self.reflectors,
@@ -1298,7 +1324,6 @@ class ComplexModelSpec(AgentBaseModel):
         if len(rect_lattice_ids) == 1:
             return rect_lattice_ids[0]
         return None
-
 
 class RenderCapabilityReport(AgentBaseModel):
     renderability: Renderability = KnowledgeField(

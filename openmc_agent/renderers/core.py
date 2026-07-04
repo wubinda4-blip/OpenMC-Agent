@@ -210,46 +210,60 @@ def _core_renderability_errors(model: Any) -> list[ValidationIssue]:
                 f"complex_model.lattices.{lattice.id}.outer_universe_id",
             ))
     if model.core is not None:
+        loading_by_id = {loading.id: loading for loading in model.lattice_loadings}
         for layer in model.core.axial_layers:
-            layer_fill_schema = f"complex_model.core.axial_layers.{layer.id}.fill_id"
-            if layer.fill_type == "material" and layer.fill_id not in material_ids:
-                errors.append(_iss("axial_layer.ref_missing", f"axial layer {layer.id!r} references missing material {layer.fill_id!r}", layer_fill_schema))
-            if layer.fill_type == "universe" and layer.fill_id not in universe_ids:
-                errors.append(_iss("axial_layer.ref_missing", f"axial layer {layer.id!r} references missing universe {layer.fill_id!r}", layer_fill_schema))
-            if layer.fill_type == "lattice" and layer.fill_id not in lattice_ids:
-                errors.append(_iss("axial_layer.ref_missing", f"axial layer {layer.id!r} references missing lattice {layer.fill_id!r}", layer_fill_schema))
-            # Per-layer loading (WI-4): validate lattice_id and assembly_overrides
-            # universe references and (row, col) bounds against the base lattice.
-            if getattr(layer, "lattice_id", None) and layer.lattice_id not in lattice_ids:
-                errors.append(_iss(
-                    "axial_layer.ref_missing",
-                    f"axial layer {layer.id!r} references missing lattice_id {layer.lattice_id!r}",
-                    f"complex_model.core.axial_layers.{layer.id}.lattice_id",
-                ))
-            overrides = getattr(layer, "assembly_overrides", None)
-            if overrides:
-                base_id = getattr(layer, "lattice_id", None) or layer.fill_id
-                base_lattice = next((lat for lat in model.lattices if lat.id == base_id), None)
-                override_schema = f"complex_model.core.axial_layers.{layer.id}.assembly_overrides"
-                for universe_id, positions in overrides.items():
+            layer_fill_schema = f"complex_model.core.axial_layers.{layer.id}.fill.id"
+            fill = layer.fill
+            if fill.type == "material" and fill.id not in material_ids:
+                errors.append(_iss("axial_layer.fill_ref_missing", f"axial layer {layer.id!r} references missing material {fill.id!r}", layer_fill_schema))
+            if fill.type == "universe" and fill.id not in universe_ids:
+                errors.append(_iss("axial_layer.fill_ref_missing", f"axial layer {layer.id!r} references missing universe {fill.id!r}", layer_fill_schema))
+            if fill.type == "lattice":
+                loading = loading_by_id.get(layer.loading_id) if layer.loading_id else None
+                derived_id = None if loading is None else loading.derived_lattice_id or f"{loading.id}_lattice"
+                if fill.id not in lattice_ids and fill.id != derived_id:
+                    errors.append(_iss("axial_layer.fill_ref_missing", f"axial layer {layer.id!r} references missing lattice {fill.id!r}", layer_fill_schema))
+            if layer.loading_id is not None:
+                if fill.type != "lattice":
+                    errors.append(_iss(
+                        "axial_layer.loading_ref_missing",
+                        f"axial layer {layer.id!r} uses loading_id with non-lattice fill",
+                        f"complex_model.core.axial_layers.{layer.id}.loading_id",
+                    ))
+                loading = loading_by_id.get(layer.loading_id)
+                if loading is None:
+                    errors.append(_iss(
+                        "axial_layer.loading_ref_missing",
+                        f"axial layer {layer.id!r} references missing loading_id {layer.loading_id!r}",
+                        f"complex_model.core.axial_layers.{layer.id}.loading_id",
+                    ))
+                    continue
+                base_lattice = next((lat for lat in model.lattices if lat.id == loading.base_lattice_id), None)
+                if base_lattice is None:
+                    errors.append(_iss(
+                        "lattice_loading.base_ref_missing",
+                        f"lattice loading {loading.id!r} references missing base_lattice_id {loading.base_lattice_id!r}",
+                        f"complex_model.lattice_loadings.{loading.id}.base_lattice_id",
+                    ))
+                    continue
+                override_schema = f"complex_model.lattice_loadings.{loading.id}.overrides"
+                for universe_id, positions in loading.overrides.items():
                     if universe_id not in universe_ids:
                         errors.append(_iss(
-                            "axial_layer.override_universe_ref_missing",
-                            f"axial layer {layer.id!r} override references missing universe {universe_id!r}",
+                            "lattice_loading.override_universe_ref_missing",
+                            f"lattice loading {loading.id!r} override references missing universe {universe_id!r}",
                             override_schema,
                         ))
-                    if base_lattice is not None:
-                        pattern_rows = len(base_lattice.universe_pattern)
-                        for pos in positions:
-                            row, col = pos
-                            in_rows = 0 <= row < pattern_rows
-                            in_cols = in_rows and 0 <= col < len(base_lattice.universe_pattern[row])
-                            if not (in_rows and in_cols):
-                                errors.append(_iss(
-                                    "axial_layer.override_out_of_bounds",
-                                    f"axial layer {layer.id!r} override position {(row, col)} for universe {universe_id!r} is out of bounds",
-                                    override_schema,
-                                ))
+                    pattern_rows = len(base_lattice.universe_pattern)
+                    for row, col in positions:
+                        in_rows = 0 <= row < pattern_rows
+                        in_cols = in_rows and 0 <= col < len(base_lattice.universe_pattern[row])
+                        if not (in_rows and in_cols):
+                            errors.append(_iss(
+                                "lattice_loading.override_position_oob",
+                                f"lattice loading {loading.id!r} override position {(row, col)} for universe {universe_id!r} is out of bounds",
+                                override_schema,
+                            ))
     return errors
 
 
@@ -395,9 +409,9 @@ def _core_direct_lattice_universe_ids(model: Any) -> set[str]:
         for universe_id in row
     }
     universe_ids.update(
-        layer.fill_id
+        layer.fill.id
         for layer in model.core.axial_layers
-        if layer.fill_type == "universe" and layer.fill_id is not None
+        if layer.fill.type == "universe" and layer.fill.id is not None
     )
     return universe_ids
 
@@ -411,9 +425,9 @@ def _core_reachable_universe_ids(model: Any) -> set[str]:
     assembly_by_id = {assembly.id: assembly for assembly in model.assemblies}
     pending_lattice_ids = [model.core.lattice_id]
     pending_universe_ids = [
-        layer.fill_id
+        layer.fill.id
         for layer in model.core.axial_layers
-        if layer.fill_type == "universe" and layer.fill_id is not None
+        if layer.fill.type == "universe" and layer.fill.id is not None
     ]
     visited_lattice_ids: set[str] = set()
     reachable_universe_ids: set[str] = set()

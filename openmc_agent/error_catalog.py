@@ -749,10 +749,10 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             ),
         ],
     },
-    "axial_layer.ref_missing": {
+    "axial_layer.fill_ref_missing": {
         "severity": "error",
         "message": "axial layer references missing fill",
-        "schema_path": "complex_model.core.axial_layers",
+        "schema_path": "complex_model.core.axial_layers.fill.id",
         "rule_id": "rule.axial_layer.fill_ref_exists",
         "concept_id": "openmc.geometry.cell_fill",
         "knowledge_refs": [LATTICE_GUIDE],
@@ -760,7 +760,67 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             _hint(
                 "edit_field",
                 "Fix the fill id typo or add the missing material/universe/lattice.",
-                target_path="complex_model.core.axial_layers.fill_id",
+                target_path="complex_model.core.axial_layers.fill.id",
+            ),
+        ],
+    },
+    "axial_layer.loading_ref_missing": {
+        "severity": "error",
+        "message": "axial layer references missing lattice loading",
+        "schema_path": "complex_model.core.axial_layers.loading_id",
+        "rule_id": "rule.axial_layer.loading_ref_exists",
+        "concept_id": "openmc.geometry.lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix loading_id or add the corresponding lattice_loadings entry.",
+                target_path="complex_model.core.axial_layers.loading_id",
+            ),
+        ],
+    },
+    "lattice_loading.base_ref_missing": {
+        "severity": "error",
+        "message": "lattice loading references missing base lattice",
+        "schema_path": "complex_model.lattice_loadings.base_lattice_id",
+        "rule_id": "rule.lattice_loading.base_ref_exists",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix base_lattice_id or add the missing base lattice.",
+                target_path="complex_model.lattice_loadings.base_lattice_id",
+            ),
+        ],
+    },
+    "lattice_loading.override_universe_ref_missing": {
+        "severity": "error",
+        "message": "lattice loading override references missing universe",
+        "schema_path": "complex_model.lattice_loadings.overrides",
+        "rule_id": "rule.lattice_loading.override_universe_ref_exists",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the override universe id typo or add the missing universe.",
+                target_path="complex_model.lattice_loadings.overrides",
+            ),
+        ],
+    },
+    "lattice_loading.override_position_oob": {
+        "severity": "error",
+        "message": "lattice loading override position is out of bounds",
+        "schema_path": "complex_model.lattice_loadings.overrides",
+        "rule_id": "rule.lattice_loading.override_position_bounds",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Move override positions inside the base lattice row/column bounds.",
+                target_path="complex_model.lattice_loadings.overrides",
             ),
         ],
     },

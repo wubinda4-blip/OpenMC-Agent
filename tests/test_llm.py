@@ -9,6 +9,7 @@ from openmc_agent.llm import (
     DeepSeekChatClient,
     ZhipuChatClient,
     generate_structured_output,
+    normalize_capability_report,
     set_llm_progress,
 )
 
@@ -172,6 +173,64 @@ def test_generate_structured_output_parses_simulation_plan() -> None:
     assert "execution_check" in prompt
 
 
+def test_generate_structured_output_accepts_core_axial_layer_fill_ref() -> None:
+    payload = {
+        "schema_version": "simulation_plan.v2",
+        "model_spec": None,
+        "complex_model": {
+            "name": "3D core draft",
+            "kind": "core",
+            "lattices": [
+                {
+                    "id": "core_lattice",
+                    "name": "core lattice",
+                    "kind": "rect",
+                    "pitch_cm": [21.5, 21.5],
+                    "universe_pattern": [],
+                }
+            ],
+            "core": {
+                "id": "core",
+                "name": "core",
+                "lattice_id": "core_lattice",
+                "axial_layers": [
+                    {
+                        "id": "fuel_layer",
+                        "name": "fuel layer",
+                        "z_min_cm": 0.0,
+                        "z_max_cm": 100.0,
+                        "fill": {"type": "lattice", "id": "core_lattice"},
+                    }
+                ],
+            },
+        },
+        "capability_report": {
+            "is_executable": False,
+            "supported_renderer": "none",
+            "executable_subsystems": [],
+        },
+        "plot_specs": [
+            {"basis": "xy", "width_cm": [21.5, 21.5], "filename": "core_xy.png"}
+        ],
+    }
+
+    result = generate_structured_output(
+        requirement="建立一个三维堆芯模型",
+        schema=SimulationPlan,
+        model="test:plan-model",
+        client=FakeClient(json.dumps(payload)),
+        normalizer=normalize_capability_report,
+    )
+
+    assert result.ok is True
+    assert result.value is not None
+    layer = result.value.complex_model.core.axial_layers[0]
+    assert layer.fill.id == "core_lattice"
+    assert result.candidate_payload["complex_model"]["core"]["axial_layers"][0][
+        "fill"
+    ] == {"type": "lattice", "id": "core_lattice"}
+
+
 def test_generate_structured_output_reports_missing_plan_plot_specs() -> None:
     result = generate_structured_output(
         requirement="建立一个 UO2 pin-cell",
@@ -288,6 +347,9 @@ def test_generate_structured_output_repairs_missing_commas_between_fields() -> N
     assert result.ok is True
     assert result.value is not None
     assert result.value.name == "Water"
+    assert result.candidate_payload is not None
+    assert result.candidate_payload["name"] == "Water"
+    assert "repaired_missing_json_commas" in (result.parse_notes or [])
 
 
 def test_generate_structured_output_repairs_missing_commas_between_array_objects() -> None:
@@ -328,6 +390,41 @@ def test_generate_structured_output_returns_readable_error_on_client_failure() -
     assert result.ok is False
     assert result.value is None
     assert "Model call failed" in result.error
+
+
+def test_generate_structured_output_keeps_candidate_payload_on_schema_failure() -> None:
+    result = generate_structured_output(
+        requirement="创建材料但缺少 composition",
+        schema=MaterialSpec,
+        model="test:material-model",
+        client=FakeClient(
+            """
+            {
+              "name": "Incomplete",
+              "density_unit": "g/cm3",
+              "density_value": 1.0
+            }
+            """
+        ),
+    )
+
+    assert result.ok is False
+    assert result.candidate_payload is not None
+    assert result.candidate_payload["name"] == "Incomplete"
+    assert "Could not validate model response" in result.error
+
+
+def test_generate_structured_output_has_no_candidate_payload_on_unparseable_text() -> None:
+    result = generate_structured_output(
+        requirement="创建 UO2 燃料",
+        schema=MaterialSpec,
+        model="test:material-model",
+        client=FakeClient("not json"),
+    )
+
+    assert result.ok is False
+    assert result.candidate_payload is None
+    assert result.raw_response == "not json"
 
 
 class FakeHttpResponse:

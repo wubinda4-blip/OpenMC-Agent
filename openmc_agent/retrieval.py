@@ -477,6 +477,8 @@ def _build_investigation_prompt(
         "4. Only patch fields you VERIFIED against retrieved evidence (grep/read results).\n"
         "5. If the defect is structural and too large for a surgical patch (e.g. an entire "
         "lattice universe_pattern is wrong), set patch=null and explain in no_patch_reason. "
+        "Do not patch renderer-generated derived axial lattices directly; patch the source "
+        "IR in complex_model.lattice_loadings instead. "
         "A full plan regeneration will follow.\n"
         "6. Do NOT patch capability_report -- it is locally recomputed.\n"
         "7. Do NOT pass 'roots' in arguments; roots are system-controlled.\n"

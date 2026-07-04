@@ -431,6 +431,7 @@ def _plan_transcript_data(
         "investigation_trace": state.get("investigation_trace", []),
         "investigation_findings": state.get("investigation_findings", ""),
         "raw_llm_outputs": state.get("raw_llm_outputs", []),
+        "plan_artifacts": state.get("plan_artifacts", []),
         "model_path": str(model_path) if model_path is not None else None,
         "error": state.get("error", ""),
     }
@@ -550,6 +551,9 @@ def _format_plan_transcript(data: dict) -> str:
         "",
         "[9b] 检索发现",
         str(data.get("investigation_findings", "")),
+        "",
+        "[9c] Plan artifacts",
+        "\n".join(data.get("plan_artifacts", []) or ["(none)"]),
         "",
         "[10] 渲染结果摘要",
         "\n".join(data.get("render_outcome", {}).get("lines", []) or ["(no render outcome)"]),

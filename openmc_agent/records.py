@@ -64,6 +64,7 @@ def append_simulation_record(
     pending_expert_questions: list[str] | None = None,
     human_loop_events: list[dict[str, Any]] | None = None,
     investigation_trace: list[dict[str, Any]] | None = None,
+    plan_artifacts: list[str] | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     record = {
@@ -81,6 +82,7 @@ def append_simulation_record(
         "pending_expert_questions": pending_expert_questions or [],
         "human_loop_events": human_loop_events or [],
         "investigation_trace": investigation_trace or [],
+        "plan_artifacts": plan_artifacts or [],
         "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
     }
 

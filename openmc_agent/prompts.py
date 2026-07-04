@@ -73,11 +73,13 @@ SimulationPlan-specific rules:
   split fuel-height lattice regions from top/bottom reflector material regions.
 - For axial per-layer loading (e.g. a fuel region that inserts control-rod or
   burnable-poison assemblies in some axial slices but not others), give the
-  layer fill_type='lattice' with lattice_id pointing at the base core lattice
-  and assembly_overrides={universe_id: [(row, col), ...]} for just the positions
-  that differ that slice. Do NOT re-enumerate the whole loading map per layer;
-  keep one base lattice and override only the minority positions, matching the
-  LatticeSpec.overrides (row 0 = top, col 0 = left) convention.
+  axial layer as fill={"type":"lattice","id":"<actual lattice id>"}. For a
+  derived loading, add complex_model.lattice_loadings entries with
+  base_lattice_id + overrides={universe_id: [(row, col), ...]} and point the
+  layer's loading_id at that source IR entry. Do NOT re-enumerate the whole
+  loading map per layer; keep one base lattice and override only the minority
+  positions, matching the LatticeSpec.overrides (row 0 = top, col 0 = left)
+  convention.
 """.strip()
 )
 

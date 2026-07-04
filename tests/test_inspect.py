@@ -255,6 +255,11 @@ def test_inspect_requirement_plan_mode_shows_tool_results(tmp_path: Path) -> Non
     ]
     assert "[9] 工具执行结果" in result.transcript
     assert "run_smoke_test" in result.transcript
+    assert "[9c] Plan artifacts" in result.transcript
+    assert "simulation_plan.json" in result.transcript
+    assert "raw_response.txt" in result.transcript
+    assert '{"ok": true}' not in result.transcript
+    assert result.transcript_data["plan_artifacts"]
     assert (tmp_path / "transcript.json").exists()
 
 

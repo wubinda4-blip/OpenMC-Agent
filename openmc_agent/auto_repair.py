@@ -1,10 +1,11 @@
 """Deterministic id-reference repair for repeated-geometry plans.
 
 Produces RFC 6902 JSON Patch ops that fix *uniquely-solvable* id-reference
-typos in a ``SimulationPlan``'s ``complex_model``: a ``cell.fill_id``, a
+typos in a ``SimulationPlan``'s ``complex_model``: a ``cell.fill_id``, an
 ``universe.cell_ids`` entry, a ``lattice.universe_pattern`` entry, a
-``region.surface_ids`` entry, a ``cell.region_id``, or an axial-layer
-``fill_id`` that points at an id which does not exist but resolves to exactly
+``region.surface_ids`` entry, a ``cell.region_id``, an axial-layer
+``fill.id`` / ``loading_id``, or a lattice-loading reference that points at an
+id which does not exist but resolves to exactly
 one candidate by prefix/suffix or edit distance.
 
 Design constraints:
@@ -37,7 +38,10 @@ _ID_REF_CODES = frozenset({
     "universe.cell_ref_missing",
     "region.surface_ref_missing",
     "lattice.universe_ref_missing",
-    "axial_layer.ref_missing",
+    "axial_layer.fill_ref_missing",
+    "axial_layer.loading_ref_missing",
+    "lattice_loading.base_ref_missing",
+    "lattice_loading.override_universe_ref_missing",
 })
 
 
@@ -172,18 +176,54 @@ def auto_repair_lattice_structure(
                     universe_ids,
                 )
 
-    # Axial-layer fill_id.
+    loading_ids = {loading.id for loading in model.lattice_loadings}
+
+    # Axial-layer fill.id + loading_id.
     if model.core is not None:
         for i, layer in enumerate(model.core.axial_layers):
-            if layer.fill_type == "void" or not layer.fill_id:
-                continue
-            pool = fill_pools.get(layer.fill_type)
-            if pool is None or layer.fill_id in pool:
-                continue
+            if layer.fill.type != "void" and layer.fill.id:
+                pool = fill_pools.get(layer.fill.type)
+                if pool is not None and layer.fill.id not in pool:
+                    replace_if_resolved(
+                        f"/complex_model/core/axial_layers/{i}/fill/id",
+                        layer.fill.id,
+                        pool,
+                    )
+            if layer.loading_id is not None and layer.loading_id not in loading_ids:
+                replace_if_resolved(
+                    f"/complex_model/core/axial_layers/{i}/loading_id",
+                    layer.loading_id,
+                    loading_ids,
+                )
+
+    # Lattice loading base_lattice_id + override universe ids.
+    for i, loading in enumerate(model.lattice_loadings):
+        if loading.base_lattice_id not in lattice_ids:
             replace_if_resolved(
-                f"/complex_model/core/axial_layers/{i}/fill_id",
-                layer.fill_id,
-                pool,
+                f"/complex_model/lattice_loadings/{i}/base_lattice_id",
+                loading.base_lattice_id,
+                lattice_ids,
             )
+        for universe_id in loading.overrides:
+            if universe_id in universe_ids:
+                continue
+            resolved = _resolve_id(universe_id, universe_ids)
+            if resolved is not None and resolved != universe_id:
+                value = loading.overrides[universe_id]
+                old_key = _encode_json_pointer_part(universe_id)
+                new_key = _encode_json_pointer_part(resolved)
+                ops.append({
+                    "op": "remove",
+                    "path": f"/complex_model/lattice_loadings/{i}/overrides/{old_key}",
+                })
+                ops.append({
+                    "op": "add",
+                    "path": f"/complex_model/lattice_loadings/{i}/overrides/{new_key}",
+                    "value": value,
+                })
 
     return ops or None
+
+
+def _encode_json_pointer_part(part: str) -> str:
+    return part.replace("~", "~0").replace("/", "~1")

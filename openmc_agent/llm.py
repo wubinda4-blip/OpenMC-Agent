@@ -108,6 +108,8 @@ class StructuredOutputResult(Generic[T]):
     value: T | None = None
     error: str = ""
     raw_response: str = ""
+    candidate_payload: dict[str, Any] | None = None
+    parse_notes: list[str] | None = None
 
 
 class OpenAICompatibleChatClient:
@@ -361,12 +363,13 @@ def generate_structured_output(
     raw_content = _extract_content(response)
     sanitized_raw_content = _sanitize_text(raw_content)
     try:
-        payload = _parse_json_object(raw_content)
+        payload, parse_notes = _parse_json_object(raw_content)
     except ValueError as exc:
         return StructuredOutputResult(
             ok=False,
             error=_sanitize_text(f"Could not parse model response: {exc}"),
             raw_response=sanitized_raw_content,
+            parse_notes=[],
         )
 
     if normalizer is not None:
@@ -379,9 +382,17 @@ def generate_structured_output(
             ok=False,
             error=_sanitize_text(f"Could not validate model response: {exc}"),
             raw_response=sanitized_raw_content,
+            candidate_payload=payload,
+            parse_notes=parse_notes,
         )
 
-    return StructuredOutputResult(ok=True, value=value, raw_response=sanitized_raw_content)
+    return StructuredOutputResult(
+        ok=True,
+        value=value,
+        raw_response=sanitized_raw_content,
+        candidate_payload=payload,
+        parse_notes=parse_notes,
+    )
 
 
 def repair_structured_output(
@@ -440,7 +451,7 @@ def _repair_guidance_for_errors(validation_errors: list[str]) -> str:
 
 
 def normalize_capability_report(raw: dict[str, Any]) -> dict[str, Any]:
-    """Force capability_report consistency for non-executable complex-only plans.
+    """Normalize deterministic SimulationPlan draft inconsistencies.
 
     The LLM sometimes emits a complex-only plan that is marked
     ``is_executable=false`` but keeps ``supported_renderer`` set to a concrete
@@ -470,7 +481,6 @@ def normalize_capability_report(raw: dict[str, Any]) -> dict[str, Any]:
             f"(was {previous_renderer!r})"
         )
     return raw
-
 
 def _build_messages(requirement: str, schema: type[BaseModel]) -> list[dict[str, str]]:
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
@@ -599,7 +609,8 @@ def _extract_content(response: Any) -> str:
         raise ValueError(f"Unexpected response shape: {exc}") from exc
 
 
-def _parse_json_object(content: str) -> dict[str, Any]:
+def _parse_json_object(content: str) -> tuple[dict[str, Any], list[str]]:
+    parse_notes: list[str] = []
     text = content.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -608,6 +619,7 @@ def _parse_json_object(content: str) -> dict[str, Any]:
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+        parse_notes.append("stripped_markdown_fence")
 
     start = text.find("{")
     end = text.rfind("}")
@@ -623,12 +635,13 @@ def _parse_json_object(content: str) -> dict[str, Any]:
             raise ValueError(str(exc)) from exc
         try:
             payload = json.loads(repaired_text)
+            parse_notes.append("repaired_missing_json_commas")
         except json.JSONDecodeError:
             raise ValueError(str(exc)) from exc
 
     if not isinstance(payload, dict):
         raise ValueError("top-level JSON value must be an object")
-    return payload
+    return payload, parse_notes
 
 
 _JSON_VALUE_END_RE = re.compile(

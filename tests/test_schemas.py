@@ -13,7 +13,9 @@ from openmc_agent.schemas import (
     CoreBoundarySpec,
     ExecutionCheckSpec,
     GeometrySpec,
+    FillRefSpec,
     LatticeSpec,
+    LatticeLoadingSpec,
     MaterialSpec,
     NuclideSpec,
     PebbleSpec,
@@ -69,22 +71,20 @@ def test_core_3d_axial_layers_and_boundary_spec_validate() -> None:
                 name="fuel active height",
                 z_min_cm=0.0,
                 z_max_cm=192.78,
-                fill_type="lattice",
-                fill_id="core_lattice",
+                fill={"type": "lattice", "id": "core_lattice"},
             ),
             AxialLayerSpec(
                 id="top_water",
                 name="top water reflector",
                 z_min_cm=192.78,
                 z_max_cm=214.2,
-                fill_type="material",
-                fill_id="water",
+                fill={"type": "material", "id": "water"},
             ),
         ],
     )
 
     assert core.boundary_conditions.xmin == "reflective"
-    assert core.axial_layers[1].fill_type == "material"
+    assert core.axial_layers[1].fill.type == "material"
 
 
 def test_axial_layer_rejects_empty_non_void_fill_and_bad_height() -> None:
@@ -94,8 +94,7 @@ def test_axial_layer_rejects_empty_non_void_fill_and_bad_height() -> None:
             name="fuel",
             z_min_cm=1.0,
             z_max_cm=1.0,
-            fill_type="lattice",
-            fill_id="core_lattice",
+            fill={"type": "lattice", "id": "core_lattice"},
         )
     with pytest.raises(ValidationError):
         AxialLayerSpec(
@@ -103,27 +102,33 @@ def test_axial_layer_rejects_empty_non_void_fill_and_bad_height() -> None:
             name="fuel",
             z_min_cm=0.0,
             z_max_cm=1.0,
-            fill_type="lattice",
+            fill={"type": "lattice"},
         )
 
 
-def test_axial_layer_per_layer_loading_fields_default_and_accept_overrides() -> None:
+def test_fill_ref_and_axial_layer_loading_fields_validate() -> None:
+    assert FillRefSpec(type="void", id="ignored").id is None
+    with pytest.raises(ValidationError):
+        FillRefSpec(type="material")
+
     layer = AxialLayerSpec(
         id="fuel", name="fuel", z_min_cm=0.0, z_max_cm=10.0,
-        fill_type="lattice", fill_id="core_lattice",
+        fill={"type": "lattice", "id": "core_lattice"},
     )
-    # New WI-4 fields default to None (backward compatible with pre-WI-4 plans).
-    assert layer.lattice_id is None
-    assert layer.assembly_overrides is None
+    assert layer.loading_id is None
 
-    override_layer = AxialLayerSpec(
+    loading_layer = AxialLayerSpec(
         id="fuel", name="fuel", z_min_cm=0.0, z_max_cm=10.0,
-        fill_type="lattice", fill_id="core_lattice",
-        lattice_id="core_lattice",
-        assembly_overrides={"rod_assembly": [(0, 0), (1, 1)]},
+        fill={"type": "lattice", "id": "rodded_loading_lattice"},
+        loading_id="rodded_loading",
     )
-    assert override_layer.lattice_id == "core_lattice"
-    assert override_layer.assembly_overrides == {"rod_assembly": [(0, 0), (1, 1)]}
+    loading = LatticeLoadingSpec(
+        id="rodded_loading",
+        base_lattice_id="core_lattice",
+        overrides={"rod_assembly": [(0, 0), (1, 1)]},
+    )
+    assert loading_layer.loading_id == "rodded_loading"
+    assert loading.overrides == {"rod_assembly": [(0, 0), (1, 1)]}
 
 
 def test_material_without_density_value_fails_validation() -> None:

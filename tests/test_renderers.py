@@ -11,12 +11,14 @@ from openmc_agent.renderers.pin_cell import PinCellRenderer
 from openmc_agent.renderers.skeleton import SkeletonRenderer
 from openmc_agent.schemas import (
     AssemblySpec,
+    AxialLayerSpec,
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
     CoreSpec,
     ExecutionCheckSpec,
     GeometrySpec,
+    LatticeLoadingSpec,
     LatticeSpec,
     MaterialSpec,
     NuclideSpec,
@@ -291,6 +293,60 @@ def test_core_renderer_can_render_auto_materialized_missing_cells() -> None:
     assert capability.supported_renderer == "core"
     assert capability.renderability != "skeleton"
     assert not any("references missing cells" in reason for reason in capability.reasons)
+
+
+def test_core_renderer_reports_lattice_loading_reference_errors() -> None:
+    model = ComplexModelSpec(
+        name="bad loading core",
+        kind="core",
+        materials=[_complete_fuel()],
+        cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="pin", name="pin", cell_ids=["fuel_cell"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="core lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[["pin"]],
+            )
+        ],
+        lattice_loadings=[
+            LatticeLoadingSpec(
+                id="bad_loading",
+                base_lattice_id="missing_lattice",
+                overrides={"missing_universe": [(3, 0)]},
+            )
+        ],
+        core=CoreSpec(
+            id="core",
+            name="core",
+            lattice_id="core_lattice",
+            axial_layers=[
+                AxialLayerSpec(
+                    id="fuel",
+                    name="fuel",
+                    z_min_cm=0.0,
+                    z_max_cm=1.0,
+                    fill={"type": "lattice", "id": "bad_loading_lattice"},
+                    loading_id="bad_loading",
+                )
+            ],
+        ),
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="core_xy.png")],
+    )
+
+    _renderer, capability = choose_renderer(plan)
+
+    assert capability.renderability == "skeleton"
+    codes = {issue.code for issue in capability.issues}
+    assert "lattice_loading.base_ref_missing" in codes
 
 
 # -- assembly validation checks -------------------------------------------

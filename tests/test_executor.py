@@ -28,6 +28,7 @@ from openmc_agent.schemas import (
     CoreSpec,
     ExecutionCheckSpec,
     GeometrySpec,
+    LatticeLoadingSpec,
     LatticeSpec,
     MaterialSpec,
     NuclideSpec,
@@ -928,16 +929,14 @@ def test_render_3d_rectangular_core_with_axial_water_layer_exports_xml(
                         name="fuel active height",
                         z_min_cm=0.0,
                         z_max_cm=10.0,
-                        fill_type="lattice",
-                        fill_id="core_lattice",
+                        fill={"type": "lattice", "id": "core_lattice"},
                     ),
                     AxialLayerSpec(
                         id="top_water",
                         name="top water reflector",
                         z_min_cm=10.0,
                         z_max_cm=12.0,
-                        fill_type="material",
-                        fill_id="water",
+                        fill={"type": "material", "id": "water"},
                     ),
                 ],
             ),
@@ -1031,16 +1030,14 @@ def test_core_renderer_wraps_empty_axial_water_universe(
                         name="fuel",
                         z_min_cm=0.0,
                         z_max_cm=10.0,
-                        fill_type="lattice",
-                        fill_id="core_lattice",
+                        fill={"type": "lattice", "id": "core_lattice"},
                     ),
                     AxialLayerSpec(
                         id="top_reflector",
                         name="Top water reflector",
                         z_min_cm=10.0,
                         z_max_cm=12.0,
-                        fill_type="universe",
-                        fill_id="top_reflector_universe",
+                        fill={"type": "universe", "id": "top_reflector_universe"},
                     ),
                 ],
             ),
@@ -1071,10 +1068,8 @@ def test_core_renderer_wraps_empty_axial_water_universe(
     assert 'name="auto wrapper for top_reflector_universe"' in geometry_xml
 
 
-def test_axial_layer_assembly_overrides_emits_derived_lattice(tmp_path: Path) -> None:
-    """An axial layer with assembly_overrides emits a dedicated derived RectLattice
-    (its own variable + overridden universes); a layer without overrides keeps its
-    base fill. This is the WI-4 per-layer loading path."""
+def test_axial_layer_lattice_loading_emits_derived_lattice(tmp_path: Path) -> None:
+    """An axial layer with loading_id emits a dedicated derived RectLattice."""
     plan = SimulationPlan(
         schema_version="simulation_plan.v2",
         model_spec=None,
@@ -1117,17 +1112,25 @@ def test_axial_layer_assembly_overrides_emits_derived_lattice(tmp_path: Path) ->
                     universe_pattern=[["assembly"]],
                 ),
             ],
+            lattice_loadings=[
+                LatticeLoadingSpec(
+                    id="rodded_loading",
+                    base_lattice_id="core_lattice",
+                    derived_lattice_id="rodded_loading_lattice",
+                    overrides={"assembly2": [(0, 0)]},
+                )
+            ],
             core=CoreSpec(
                 id="core", name="core", lattice_id="core_lattice",
                 axial_layers=[
                     AxialLayerSpec(
                         id="fuel", name="fuel active", z_min_cm=0.0, z_max_cm=10.0,
-                        fill_type="lattice", fill_id="core_lattice",
-                        assembly_overrides={"assembly2": [(0, 0)]},
+                        fill={"type": "lattice", "id": "rodded_loading_lattice"},
+                        loading_id="rodded_loading",
                     ),
                     AxialLayerSpec(
                         id="top_water", name="top water", z_min_cm=10.0, z_max_cm=12.0,
-                        fill_type="material", fill_id="water",
+                        fill={"type": "material", "id": "water"},
                     ),
                 ],
             ),
@@ -1139,10 +1142,11 @@ def test_axial_layer_assembly_overrides_emits_derived_lattice(tmp_path: Path) ->
         plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png")],
     )
     script = render_openmc_plan_script(plan)
-    # Derived lattice for the fuel layer (it carries assembly_overrides).
+    # Derived lattice for the fuel layer (it carries lattice-loading overrides).
     assert "axial_lattice_fuel = openmc.RectLattice" in script
     # Override applied: base [["assembly"]] with assembly2 at (0,0) -> [["assembly2"]].
     assert "axial_lattice_fuel.universes = [[universes['assembly2']]]" in script
+    assert "lattices['rodded_loading_lattice'] = axial_lattice_fuel" in script
     # Fuel root cell fills the derived lattice, not the base core_lattice directly.
     assert "fill=axial_lattice_fuel" in script
     # Layer without overrides keeps its material fill.

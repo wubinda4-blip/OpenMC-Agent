@@ -6,6 +6,7 @@ import functools
 import json
 import re
 import sqlite3
+from datetime import datetime, timezone
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -101,6 +102,7 @@ class GraphState(TypedDict, total=False):
     resolved_expert_items: list[dict[str, Any]]
     capability_repair_errors: list[str]
     raw_llm_outputs: list[str]
+    plan_artifacts: list[str]
     openmc_api_docs: list[dict[str, str]]
     few_shot_examples: list[dict[str, str]]
     verbose: bool
@@ -559,12 +561,19 @@ def _make_generate_plan_node(
             schema=SimulationPlan,
             model=model,
         )
+        artifact_paths = _write_plan_generation_artifacts(
+            state,
+            phase="generate_plan",
+            result=result,
+            retry_count=state.get("retry_count", 0),
+        )
         if not result.ok or result.value is None:
             _progress(state, "generate_plan", f"failed: {result.error}")
             return {
                 "simulation_plan": None,
                 "simulation_spec": None,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+                "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to generate SimulationPlan",
                 "human_loop_events": events,
                 **_investigation_state_updates(investigation_outcome),
@@ -582,6 +591,11 @@ def _make_generate_plan_node(
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+            "plan_artifacts": _write_final_simulation_plan(
+                state,
+                result.value,
+                existing_paths=artifact_paths,
+            ),
             "needs_regeneration": False,
             "expert_feedback_action": "none",
             "human_loop_events": events,
@@ -608,6 +622,12 @@ def _make_repair_plan_format_node(generate_plan: GeneratePlanFn, max_retries: in
             schema=SimulationPlan,
             model=model,
         )
+        artifact_paths = _write_plan_generation_artifacts(
+            state,
+            phase="repair_plan_format",
+            result=result,
+            retry_count=retry_count + 1,
+        )
         if not result.ok or result.value is None:
             _progress(state, "repair_plan_format", f"failed: {result.error}")
             return {
@@ -615,6 +635,7 @@ def _make_repair_plan_format_node(generate_plan: GeneratePlanFn, max_retries: in
                 "simulation_spec": None,
                 "retry_count": retry_count + 1,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+                "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to repair SimulationPlan JSON format",
             }
         _progress(state, "repair_plan_format", "format repair produced a SimulationPlan")
@@ -623,6 +644,11 @@ def _make_repair_plan_format_node(generate_plan: GeneratePlanFn, max_retries: in
             "simulation_spec": result.value.model_spec,
             "retry_count": retry_count + 1,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+            "plan_artifacts": _write_final_simulation_plan(
+                state,
+                result.value,
+                existing_paths=artifact_paths,
+            ),
             "error": "",
         }
 
@@ -758,10 +784,16 @@ def _make_validate_plan_node(max_retries: int):
                 )
             return updates
         _progress(state, "validate_plan", "passed")
+        artifact_paths = (
+            _write_final_simulation_plan(state, plan)
+            if plan is not None
+            else state.get("plan_artifacts", [])
+        )
         return {
             "validation_report": report,
             "retry_history": history,
             "simulation_spec": plan.model_spec if plan is not None else None,
+            "plan_artifacts": artifact_paths,
             "error": "",
         }
 
@@ -997,6 +1029,7 @@ def _make_assess_plan_capability_node(max_retries: int):
             "validation_report": updated_report,
             "capability_repair_errors": repair_errors,
             "human_loop_events": events,
+            "plan_artifacts": _write_final_simulation_plan(state, updated_plan),
         }
 
     return _assess_plan_capability
@@ -1293,6 +1326,7 @@ def _patch_plan_from_expert_feedback(state: GraphState) -> GraphState:
         "expert_feedback_action": "none",
         "needs_regeneration": False,
         "human_loop_events": events,
+        "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
         "error": "",
     }
 
@@ -1346,10 +1380,13 @@ def _render_plan_script(state: GraphState) -> GraphState:
     if result.errors:
         _progress(state, "render_plan_script", f"renderer failed: {result.errors}")
         return {
+            "simulation_plan": plan,
+            "simulation_spec": plan.model_spec,
             "validation_report": ValidationReport(
                 is_valid=False,
                 errors=result.errors,
             ),
+            "plan_artifacts": _write_final_simulation_plan(state, plan),
             "error": "; ".join(result.errors),
         }
 
@@ -1365,6 +1402,7 @@ def _render_plan_script(state: GraphState) -> GraphState:
         "simulation_spec": plan.model_spec,
         "script": result.script,
         "model_path": str(model_path),
+        "plan_artifacts": _write_final_simulation_plan(state, plan),
     }
 
 
@@ -1553,6 +1591,7 @@ def _make_reflect_plan_node(
                     "patch_error": "",
                     "error": "",
                     "patch_failure_count": patch_failures,
+                    "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
                     **_investigation_state_updates(investigation_outcome),
                 }
             except Exception as exc:
@@ -1570,7 +1609,9 @@ def _make_reflect_plan_node(
             reflection_requirement += (
                 "\n\nNote: deterministic / investigation patches were attempted but "
                 "did not validate. Carefully re-check id references (cell.fill_id, "
-                "universe.cell_ids, lattice.universe_pattern, region.surface_ids) "
+                "universe.cell_ids, lattice.universe_pattern, region.surface_ids, "
+                "core.axial_layers.fill.id, core.axial_layers.loading_id, "
+                "lattice_loadings.base_lattice_id) "
                 "against the defined ids rather than guessing.\n"
             )
         if (
@@ -1596,12 +1637,19 @@ def _make_reflect_plan_node(
             previous_spec=plan,
             validation_errors=report.errors,
         )
+        artifact_paths = _write_plan_generation_artifacts(
+            state,
+            phase="reflect_plan",
+            result=result,
+            retry_count=retry_count + 1,
+        )
         if not result.ok or result.value is None:
             _progress(state, "reflect_plan", f"failed: {result.error}")
             return {
                 "retry_count": retry_count + 1,
                 "patch_failure_count": patch_failures,
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+                "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to repair SimulationPlan",
                 **_investigation_state_updates(investigation_outcome),
             }
@@ -1612,6 +1660,11 @@ def _make_reflect_plan_node(
             "retry_count": retry_count + 1,
             "patch_failure_count": patch_failures,
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
+            "plan_artifacts": _write_final_simulation_plan(
+                state,
+                result.value,
+                existing_paths=artifact_paths,
+            ),
             "error": "",
             **_investigation_state_updates(investigation_outcome),
         }
@@ -1639,6 +1692,7 @@ def _save_record(state: GraphState) -> GraphState:
         pending_expert_questions=state.get("pending_expert_questions", []),
         human_loop_events=state.get("human_loop_events", []),
         investigation_trace=state.get("investigation_trace", []),
+        plan_artifacts=state.get("plan_artifacts", []),
     )
     _progress(state, "save_record", "record saved")
     return {}
@@ -1666,6 +1720,7 @@ def _save_plan_record(state: GraphState) -> GraphState:
         pending_expert_questions=state.get("pending_expert_questions", []),
         human_loop_events=state.get("human_loop_events", []),
         investigation_trace=state.get("investigation_trace", []),
+        plan_artifacts=state.get("plan_artifacts", []),
     )
     _progress(state, "save_record", "record saved")
     return {}
@@ -2642,6 +2697,88 @@ def _append_raw_llm_output(state: GraphState, raw_response: str) -> list[str]:
     if raw_response:
         outputs.append(raw_response)
     return outputs
+
+
+def _write_plan_generation_artifacts(
+    state: GraphState,
+    *,
+    phase: str,
+    result: StructuredOutputResult[SimulationPlan],
+    retry_count: int,
+) -> list[str]:
+    output_dir = Path(state.get("output_dir", "data/runs"))
+    artifacts_dir = output_dir / "plan_artifacts"
+    stage_index = _next_plan_artifact_index(state)
+    stage_dir = artifacts_dir / f"{stage_index:03d}_{phase}"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    paths = list(state.get("plan_artifacts", []))
+    stage_paths: list[str] = []
+    if result.raw_response:
+        raw_path = stage_dir / "raw_response.txt"
+        raw_path.write_text(result.raw_response, encoding="utf-8")
+        stage_paths.append(str(raw_path))
+    if result.candidate_payload is not None:
+        candidate_path = stage_dir / "candidate_plan.json"
+        _write_json_file(candidate_path, result.candidate_payload)
+        stage_paths.append(str(candidate_path))
+    if result.value is not None:
+        validated_path = stage_dir / "validated_plan.json"
+        _write_json_file(validated_path, result.value.model_dump(mode="json"))
+        stage_paths.append(str(validated_path))
+
+    meta_path = stage_dir / "meta.json"
+    _write_json_file(
+        meta_path,
+        {
+            "phase": phase,
+            "ok": result.ok,
+            "error": result.error,
+            "parse_notes": result.parse_notes or [],
+            "retry_count": retry_count,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "artifacts": stage_paths,
+        },
+    )
+    stage_paths.append(str(meta_path))
+    paths.extend(stage_paths)
+    return paths
+
+
+def _write_final_simulation_plan(
+    state: GraphState,
+    plan: SimulationPlan,
+    *,
+    existing_paths: list[str] | None = None,
+) -> list[str]:
+    output_dir = Path(state.get("output_dir", "data/runs"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = output_dir / "simulation_plan.json"
+    _write_json_file(plan_path, plan.model_dump(mode="json"))
+    paths = existing_paths if existing_paths is not None else state.get("plan_artifacts", [])
+    return _append_plan_artifact_path(paths, plan_path)
+
+
+def _next_plan_artifact_index(state: GraphState) -> int:
+    count = 0
+    for path in state.get("plan_artifacts", []):
+        artifact_path = Path(path)
+        if artifact_path.name == "meta.json" and artifact_path.parent.parent.name == "plan_artifacts":
+            count += 1
+    return count
+
+
+def _append_plan_artifact_path(paths: list[str], path: Path) -> list[str]:
+    text = str(path)
+    updated = list(paths)
+    if text not in updated:
+        updated.append(text)
+    return updated
+
+
+def _write_json_file(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _compact_tool_results(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:

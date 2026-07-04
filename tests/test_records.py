@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from openmc_agent.records import append_material_record, load_jsonl_records
+from openmc_agent.records import append_material_record, append_simulation_record, load_jsonl_records
 from openmc_agent.schemas import MaterialSpec, NuclideSpec, ValidationReport
 
 
@@ -58,4 +58,27 @@ def test_append_material_record_accumulates_multiple_records(tmp_path: Path) -> 
         "material-0",
         "material-1",
         "material-2",
+    ]
+
+
+def test_append_simulation_record_writes_plan_artifacts(tmp_path: Path) -> None:
+    records_path = tmp_path / "simulation_runs.jsonl"
+
+    append_simulation_record(
+        requirement="建立一个 UO2 pin-cell",
+        model="test:model",
+        simulation_spec=None,
+        validation_report=ValidationReport(is_valid=False, errors=["missing plan"]),
+        path=records_path,
+        plan_artifacts=[
+            str(tmp_path / "simulation_plan.json"),
+            str(tmp_path / "plan_artifacts" / "000_generate_plan" / "meta.json"),
+        ],
+    )
+
+    records = load_jsonl_records(records_path)
+
+    assert records[0]["plan_artifacts"] == [
+        str(tmp_path / "simulation_plan.json"),
+        str(tmp_path / "plan_artifacts" / "000_generate_plan" / "meta.json"),
     ]

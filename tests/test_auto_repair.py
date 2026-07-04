@@ -7,9 +7,12 @@ import pytest
 from openmc_agent.auto_repair import _resolve_id, auto_repair_lattice_structure
 from openmc_agent.graph import _apply_json_patches
 from openmc_agent.schemas import (
+    AxialLayerSpec,
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
+    CoreSpec,
+    LatticeLoadingSpec,
     LatticeSpec,
     PlotSpec,
     RegionSpec,
@@ -202,6 +205,134 @@ def test_applied_patch_validates_and_clears_defect():
     patched_payload = _apply_json_patches(plan.model_dump(mode="json"), patch)
     repaired = SimulationPlan.model_validate(patched_payload)
     assert repaired.complex_model.cells[0].fill_id == "fuel_universe"
+
+
+def test_repairs_axial_layer_fill_ref_typo():
+    model = ComplexModelSpec(
+        name="m",
+        kind="core",
+        materials=[_mat("water")],
+        cells=[CellSpec(id="c1", name="c", fill_type="material", fill_id="water")],
+        universes=[UniverseSpec(id="u1", name="u", cell_ids=["c1"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="lat",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["u1"]],
+            )
+        ],
+        core=CoreSpec(
+            id="core",
+            name="core",
+            lattice_id="core_lattice",
+            axial_layers=[
+                AxialLayerSpec(
+                    id="water",
+                    name="water",
+                    z_min_cm=0.0,
+                    z_max_cm=1.0,
+                    fill={"type": "material", "id": "watr"},
+                )
+            ],
+        ),
+    )
+    patch = auto_repair_lattice_structure(_plan(model))
+    assert patch == [
+        {"op": "replace", "path": "/complex_model/core/axial_layers/0/fill/id", "value": "water"}
+    ]
+
+
+def test_repairs_axial_layer_loading_id_and_base_lattice_typos():
+    model = ComplexModelSpec(
+        name="m",
+        kind="core",
+        materials=[_mat("fuel")],
+        cells=[CellSpec(id="c1", name="c", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="u1", name="u", cell_ids=["c1"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="lat",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["u1"]],
+            )
+        ],
+        lattice_loadings=[
+            LatticeLoadingSpec(id="rodded_loading", base_lattice_id="core_lattic")
+        ],
+        core=CoreSpec(
+            id="core",
+            name="core",
+            lattice_id="core_lattice",
+            axial_layers=[
+                AxialLayerSpec(
+                    id="fuel",
+                    name="fuel",
+                    z_min_cm=0.0,
+                    z_max_cm=1.0,
+                    fill={"type": "lattice", "id": "rodded_loading_lattice"},
+                    loading_id="rodded_loadin",
+                )
+            ],
+        ),
+    )
+    patch = auto_repair_lattice_structure(_plan(model))
+    assert patch == [
+        {
+            "op": "replace",
+            "path": "/complex_model/core/axial_layers/0/loading_id",
+            "value": "rodded_loading",
+        },
+        {
+            "op": "replace",
+            "path": "/complex_model/lattice_loadings/0/base_lattice_id",
+            "value": "core_lattice",
+        },
+    ]
+
+
+def test_repairs_lattice_loading_override_universe_key_typo():
+    model = ComplexModelSpec(
+        name="m",
+        kind="core",
+        materials=[_mat("fuel")],
+        cells=[CellSpec(id="c1", name="c", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="control_assembly", name="u", cell_ids=["c1"])],
+        lattices=[
+            LatticeSpec(
+                id="core_lattice",
+                name="lat",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["control_assembly"]],
+            )
+        ],
+        lattice_loadings=[
+            LatticeLoadingSpec(
+                id="rodded_loading",
+                base_lattice_id="core_lattice",
+                overrides={"control_assembl": [(0, 0)]},
+            )
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_lattice"),
+    )
+    plan = _plan(model)
+    patch = auto_repair_lattice_structure(plan)
+    assert patch == [
+        {"op": "remove", "path": "/complex_model/lattice_loadings/0/overrides/control_assembl"},
+        {
+            "op": "add",
+            "path": "/complex_model/lattice_loadings/0/overrides/control_assembly",
+            "value": [(0, 0)],
+        },
+    ]
+    repaired = SimulationPlan.model_validate(_apply_json_patches(plan.model_dump(mode="json"), patch))
+    assert repaired.complex_model.lattice_loadings[0].overrides == {
+        "control_assembly": [(0, 0)]
+    }
 
 
 def test_returns_none_for_clean_plan():
