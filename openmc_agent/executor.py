@@ -1467,34 +1467,50 @@ def _ensure_core_lattice_outer_universes(spec: ComplexModelSpec) -> ComplexModel
 
 
 def _ensure_core_lattice_placement(spec: ComplexModelSpec) -> ComplexModelSpec:
-    """Pin the core lattice to the non-negative quadrant when its position is unset.
+    """Place the core lattice at the non-negative corner; center nested lattices.
 
-    The C5G7 quarter-core / case3.md convention is non-negative coordinates: the
-    core occupies ``[0, W] x [0, H]`` with the origin at a core corner. The
-    renderer defaults every lattice to origin-centered via
-    ``_infer_rect_lattice_lower_left`` (correct for pin/assembly local frames) but
-    for the *global* core lattice this desyncs from the plot origin the LLM writes
-    under the non-negative mental model, so the plot viewport misses the fuel.
-    When the core lattice has neither ``lower_left_cm`` nor ``center_cm`` set,
-    place it at ``(0, 0)`` so the global frame matches the non-negative convention.
-    Explicit LLM placement is always respected. Pin/assembly lattices are
-    untouched because their ``lower_left_cm`` stays ``None`` and they keep the
-    centered local frame.
+    The C5G7 quarter-core / case3.md convention is non-negative global
+    coordinates: the core occupies ``[0, W] x [0, H]`` with the origin at a
+    core corner, matching the plot origin the LLM writes under the non-negative
+    mental model. When the core lattice has neither ``lower_left_cm`` nor
+    ``center_cm`` set, place it at ``(0, 0)``; explicit LLM placement of the
+    core lattice is always respected.
+
+    Nested rectangular lattices (pin/assembly lattices wrapped in a universe and
+    reused by the core lattice) live in their universe's local frame: OpenMC
+    aligns the wrapped universe's origin to the center of each core-lattice
+    cell, so a nested lattice must be centered on that origin
+    (``lower_left = -cols*pitch/2, -rows*pitch/2``) to fill the cell. LLM plans
+    often write ``lower_left_cm=[0,0]`` for these nested lattices too, which
+    shifts the lattice into one quadrant of the cell and leaves only ~1/4 of it
+    visible (the rest falls outside the cell and is replaced by ``outer``).
+    Force the centered local frame for every non-core rectangular lattice so the
+    full assembly renders. Standalone assembly rendering (which fills a root
+    cell that carries an explicit region) does not route through this core
+    normalization, so its non-negative frame is unaffected.
     """
     if spec.core is None or spec.core.lattice_id is None:
         return spec
-    core_lattice = next(
-        (lat for lat in spec.lattices if lat.id == spec.core.lattice_id), None
-    )
-    if core_lattice is None:
+    core_lattice_id = spec.core.lattice_id
+    new_lattices: list[LatticeSpec] = []
+    changed = False
+    for lat in spec.lattices:
+        if lat.id == core_lattice_id:
+            if lat.lower_left_cm is None and lat.center_cm is None:
+                lat = lat.model_copy(update={"lower_left_cm": (0.0, 0.0)})
+                changed = True
+        elif lat.kind == "rect" and lat.universe_pattern:
+            # The lattice is reused inside a core-lattice cell via its universe,
+            # so it must be centered in that universe's local frame; an LLM-style
+            # [0,0] lower_left would push it into one quadrant of the cell.
+            centered = _infer_rect_lattice_lower_left(lat)
+            if tuple(lat.lower_left_cm or ()) != centered:
+                lat = lat.model_copy(update={"lower_left_cm": centered})
+                changed = True
+        new_lattices.append(lat)
+    if not changed:
         return spec
-    if core_lattice.lower_left_cm is not None or core_lattice.center_cm is not None:
-        return spec
-    placed = core_lattice.model_copy(update={"lower_left_cm": (0.0, 0.0)})
-    lattices = [
-        placed if lat.id == core_lattice.id else lat for lat in spec.lattices
-    ]
-    return spec.model_copy(update={"lattices": lattices})
+    return spec.model_copy(update={"lattices": new_lattices})
 
 
 def _reconcile_plot_origins(

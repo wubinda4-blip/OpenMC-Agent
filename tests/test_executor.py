@@ -2107,6 +2107,79 @@ def test_core_lattice_respects_explicit_lower_left() -> None:
     assert "assembly_x_max = 32.84" in script  # -10 + 2*21.42
 
 
+def test_core_renderer_centers_nested_pin_lattice_in_local_frame() -> None:
+    """Nested pin/assembly lattices are centered; only the core lattice is at (0,0).
+
+    OpenMC aligns a lattice-filled universe's origin to the center of each
+    core-lattice cell, so a pin lattice reused inside such a universe must be
+    centered (lower_left = -cols*pitch/2) to fill the cell. An LLM-style
+    lower_left=[0,0] pushes it into one quadrant and only ~1/4 of the pins
+    render (the rest is replaced by ``outer``) — the C5G7 "assembly shrinks to
+    a quarter" regression. Single-layer assembly rendering is unaffected: it
+    fills a root cell that carries an explicit region.
+    """
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="nested core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel", name="fuel", density_unit="g/cm3",
+                    density_value=10.0, chemical_formula="UO2", enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water", name="water", density_unit="g/cm3",
+                    density_value=0.997, chemical_formula="H2O",
+                ),
+            ],
+            cells=[CellSpec(id="pin_cell", name="fuel pin", fill_type="material", fill_id="fuel")],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="fuel_assembly", name="fuel assembly", cell_ids=[]),
+                UniverseSpec(id="water_assembly", name="water assembly", cell_ids=[]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="fuel_assembly_lattice", name="2x2 pin lattice", kind="rect",
+                    pitch_cm=(1.26, 1.26), lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["pin", "pin"], ["pin", "pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice", name="1x2 core lattice", kind="rect",
+                    pitch_cm=(2.52, 2.52), lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["fuel_assembly", "water_assembly"]],
+                ),
+            ],
+            assemblies=[
+                AssemblySpec(id="fuel_assembly", name="fuel assembly", lattice_id="fuel_assembly_lattice"),
+            ],
+            core=CoreSpec(
+                id="core", name="root core", lattice_id="core_lattice",
+                boundary="mixed",
+                boundary_conditions=CoreBoundarySpec(
+                    xmin="reflective", xmax="vacuum", ymin="vacuum",
+                    ymax="reflective", zmin="reflective", zmax="vacuum",
+                ),
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel", name="fuel active", z_min_cm=0.0, z_max_cm=10.0,
+                        fill={"type": "lattice", "id": "core_lattice"},
+                    ),
+                ],
+            ),
+        ),
+        capability_report=RenderCapabilityReport(is_executable=True, supported_renderer="core"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png")],
+    )
+    script = render_openmc_plan_script(plan)
+    # Nested pin lattice centered in its universe local frame: -2*1.26/2 = -1.26
+    assert "lattice_fuel_assembly_lattice.lower_left = (-1.26, -1.26)" in script
+    # The global core lattice keeps the non-negative frame.
+    assert "lattice_core_lattice.lower_left = (0.0, 0.0)" in script
+
+
 def test_plot_origin_on_x_boundary_nudged_to_assembly_center() -> None:
     """A yz slice at x = core x-edge is moved to the nearest assembly center.
 
