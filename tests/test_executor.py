@@ -259,6 +259,71 @@ def test_render_openmc_plan_script_uses_structured_plot_specs() -> None:
     assert "settings.particles = 120" in smoke_script
 
 
+def _pin_cell_plan(*, temperature_interpolation: bool) -> SimulationPlan:
+    spec = SimulationSpec(
+        name="UO2 pin-cell",
+        pin_cell=PinCellSpec(
+            fuel=MaterialSpec(
+                name="UO2 fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[NuclideSpec(name="U235", percent=4.95)],
+                temperature_k=565.0,
+            ),
+            moderator=MaterialSpec(
+                name="Water",
+                density_unit="g/cm3",
+                density_value=1.0,
+                composition=[NuclideSpec(name="H1", percent=2.0)],
+            ),
+            geometry=GeometrySpec(fuel_radius_cm=0.41, pitch_cm=1.26),
+        ),
+        settings=RunSettingsSpec(
+            batches=6, inactive=1, particles=50,
+            temperature_interpolation=temperature_interpolation,
+        ),
+    )
+    return SimulationPlan(
+        model_spec=spec,
+        plot_specs=[
+            PlotSpec(
+                basis="xy",
+                origin=(0.0, 0.0, 0.0),
+                width_cm=(1.26, 1.26),
+                pixels=(200, 200),
+                color_by="material",
+                filename="pin_cell_xy.png",
+            )
+        ],
+        execution_check=ExecutionCheckSpec(
+            settings=RunSettingsSpec(
+                batches=4, inactive=1, particles=20,
+                temperature_interpolation=temperature_interpolation,
+            )
+        ),
+    )
+
+
+def test_temperature_interpolation_emits_method_key_for_ce_pin_cell() -> None:
+    """Regression: 565 K operating temps need temperature method=interpolation.
+
+    OpenMC's temperature dict has no 'interpolation' key; the correct API is
+    settings.temperature['method'] = 'interpolation'. A wrong key is silently
+    ignored by the C++ reader and OpenMC still aborts on the missing temp.
+    """
+    script = render_openmc_plan_script(_pin_cell_plan(temperature_interpolation=True))
+    smoke_script = render_openmc_smoke_test_script(_pin_cell_plan(temperature_interpolation=True))
+    assert "settings.temperature['method'] = 'interpolation'" in script
+    assert "settings.temperature['method'] = 'interpolation'" in smoke_script
+    # The legacy/wrong key must never be emitted.
+    assert "temperature['interpolation']" not in script
+
+
+def test_temperature_interpolation_disabled_omits_line() -> None:
+    script = render_openmc_plan_script(_pin_cell_plan(temperature_interpolation=False))
+    assert "temperature['method']" not in script
+
+
 def test_render_openmc_plan_script_for_rectangular_assembly_exports_xml(
     tmp_path: Path,
 ) -> None:

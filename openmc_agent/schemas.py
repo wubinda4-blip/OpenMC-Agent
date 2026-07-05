@@ -1125,6 +1125,24 @@ class RunSettingsSpec(AgentBaseModel):
             "Leaving energy_mode implicit when using macroscopic materials",
         ],
     )
+    temperature_interpolation: bool = KnowledgeField(
+        default=True,
+        description=(
+            "Interpolate nuclear cross sections between available library "
+            "temperatures when a material's temperature is not in the data "
+            "library (e.g. 565 K PWR operating temp against 294/600 K grids). "
+            "No-op when the exact temperature exists; ignored for multi-group "
+            "models. Without this, OpenMC aborts on any intermediate temperature."
+        ),
+        concept_id="openmc.settings.temperature",
+        doc_refs=["openmc.usersguide.settings"],
+        retrieval_queries=[
+            "OpenMC settings temperature interpolation cross sections intermediate",
+        ],
+        common_errors=[
+            "Disabling interpolation when material temps fall between library grids",
+        ],
+    )
     seed: int | None = KnowledgeField(
         default=None,
         ge=1,

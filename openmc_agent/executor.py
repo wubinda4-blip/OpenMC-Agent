@@ -167,6 +167,7 @@ cells = [fuel_cell, gap_cell, clad_cell, moderator_cell]
 
     plots_block = _render_plots_block(plot_specs or [])
     energy_mode_block = _render_optional_energy_mode(settings)
+    temperature_block = _render_optional_temperature_interpolation(settings)
 
     return f'''"""Generated OpenMC pin-cell model for {spec.name}."""
 
@@ -195,6 +196,7 @@ geometry = openmc.Geometry(root_universe)
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
 {energy_mode_block}
+{temperature_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -256,6 +258,7 @@ def render_openmc_assembly_script(
     root_block = _render_assembly_root(spec)
     plots_block = _render_plots_block(plot_specs or [])
     energy_mode_block = _render_optional_energy_mode(settings, spec)
+    temperature_block = _render_optional_temperature_interpolation(settings, spec)
 
     return f'''"""Generated OpenMC assembly model for {spec.name}."""
 
@@ -295,6 +298,7 @@ geometry = openmc.Geometry(root_universe)
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
 {energy_mode_block}
+{temperature_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -349,6 +353,7 @@ def render_openmc_triso_script(
     layer_blocks = _render_triso_layer_universe(triso)
     plots_block = _render_plots_block(plot_specs or [])
     energy_mode_block = _render_optional_energy_mode(settings, spec)
+    temperature_block = _render_optional_temperature_interpolation(settings, spec)
 
     return f'''"""Generated OpenMC TRISO/pebble model for {spec.name}."""
 
@@ -403,6 +408,7 @@ geometry = openmc.Geometry(root_universe)
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
 {energy_mode_block}
+{temperature_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -459,6 +465,7 @@ def render_openmc_core_script(
     plot_specs = _reconcile_plot_origins(spec, plot_specs or [])
     plots_block = _render_plots_block(plot_specs)
     energy_mode_block = _render_optional_energy_mode(settings, spec)
+    temperature_block = _render_optional_temperature_interpolation(settings, spec)
 
     return f'''"""Generated OpenMC core model for {spec.name}."""
 
@@ -500,6 +507,7 @@ geometry = openmc.Geometry(root_universe)
 settings = openmc.Settings()
 settings.run_mode = {settings.run_mode!r}
 {energy_mode_block}
+{temperature_block}
 settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
@@ -2429,6 +2437,25 @@ def _render_optional_energy_mode(
     if energy_mode is None:
         return ""
     return f"settings.energy_mode = {energy_mode!r}"
+
+
+def _render_optional_temperature_interpolation(
+    settings: RunSettingsSpec,
+    spec: ComplexModelSpec | None = None,
+) -> str:
+    # Continuous-energy reactor models usually set material temperatures that
+    # don't match the HDF5 library grid (e.g. 565 K vs 294/600 K). Without
+    # temperature handling OpenMC aborts on the missing temperature. The
+    # 'method=interpolation' setting linearly interpolates between the bracketing
+    # library temperatures and is a no-op when the exact temperature exists.
+    # It is irrelevant for multi-group models.
+    if not settings.temperature_interpolation:
+        return ""
+    if settings.energy_mode == "multi-group":
+        return ""
+    if spec is not None and _model_uses_mgxs(spec):
+        return ""
+    return "settings.temperature['method'] = 'interpolation'"
 
 
 def _render_benchmark_imports(spec: ComplexModelSpec) -> str:
