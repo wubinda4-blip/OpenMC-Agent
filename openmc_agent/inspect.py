@@ -49,6 +49,7 @@ def inspect_requirement(
     generate_spec: GenerateSpecFn = generate_structured_output,
     repair_spec: RepairSpecFn = repair_structured_output,
     use_plan: bool = False,
+    operating_state: str | None = None,
     enable_plots: bool = False,
     enable_smoke_test: bool = False,
     expert_feedback: list[str] | None = None,
@@ -65,6 +66,10 @@ def inspect_requirement(
     verbose: bool = False,
 ) -> InspectResult:
     set_llm_progress(verbose)
+    if operating_state:
+        requirement = compose_operating_state_requirement(
+            requirement, operating_state
+        )
     if use_plan:
         return _inspect_plan_requirement(
             requirement,
@@ -151,6 +156,7 @@ def inspect_markdown_file(
     max_retries: int = 3,
     generate_spec: GenerateSpecFn = generate_structured_output,
     repair_spec: RepairSpecFn = repair_structured_output,
+    operating_state: str | None = None,
     **kwargs,
 ) -> InspectResult:
     requirement = read_markdown_requirement(path)
@@ -161,6 +167,7 @@ def inspect_markdown_file(
         max_retries=max_retries,
         generate_spec=generate_spec,
         repair_spec=repair_spec,
+        operating_state=operating_state,
         **kwargs,
     )
 
@@ -173,6 +180,29 @@ def read_markdown_requirement(path: str | Path) -> str:
     if not text:
         raise ValueError(f"Markdown requirement file is empty: {md_path}")
     return text
+
+
+def compose_operating_state_requirement(
+    requirement: str, operating_state: str
+) -> str:
+    """Prepend an explicit 'model only this operating state' directive to the
+    full requirement text.
+
+    The original problem description is kept verbatim below the directive so
+    shared geometry/material context is preserved; the LLM is told to extract
+    only the requested state's parameters and ignore the others.
+    """
+    state = operating_state.strip()
+    header = (
+        "=== Operating-state selection ===\n"
+        f'This problem description defines multiple operating states '
+        f'(e.g., 1A/1B/1C/...). Model ONLY operating state "{state}" in this '
+        f"run. Extract its parameters from the state table / description below "
+        f"and ignore all other states; do not merge or average parameters "
+        f"across states.\n\n"
+        "=== Original problem description ===\n"
+    )
+    return header + requirement
 
 
 def _export_xml(model_path: Path) -> tuple[bool, str]:
@@ -607,6 +637,13 @@ def main(argv: list[str] | None = None) -> int:
         "--md-file",
         help="Read the natural-language modeling requirement from a Markdown file",
     )
+    parser.add_argument(
+        "--state",
+        dest="operating_state",
+        default=None,
+        help="Select one operating state (e.g., 1A) when the markdown describes "
+             "multiple states; only that state is modeled.",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--output-dir", default="data/runs/inspect")
     parser.add_argument("--max-retries", type=int, default=3)
@@ -673,6 +710,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             max_retries=args.max_retries,
             use_plan=use_plan,
+            operating_state=args.operating_state,
             enable_plots=args.plot,
             enable_smoke_test=args.smoke_test,
             expert_feedback=expert_feedback,
@@ -690,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             max_retries=args.max_retries,
             use_plan=use_plan,
+            operating_state=args.operating_state,
             enable_plots=args.plot,
             enable_smoke_test=args.smoke_test,
             expert_feedback=expert_feedback,

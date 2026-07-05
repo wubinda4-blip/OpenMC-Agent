@@ -2,7 +2,12 @@ import json
 from pathlib import Path
 
 from openmc_agent.inspect import InspectResult
-from openmc_agent.inspect import inspect_markdown_file, inspect_requirement, main
+from openmc_agent.inspect import (
+    compose_operating_state_requirement,
+    inspect_markdown_file,
+    inspect_requirement,
+    main,
+)
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.schemas import (
     AssemblySpec,
@@ -208,6 +213,85 @@ def test_inspect_cli_accepts_markdown_file(
 
     assert exit_code == 0
     assert "建立一个 UO2 pin-cell 临界计算" in capsys.readouterr().out
+
+
+def test_compose_operating_state_requirement_prepends_directive() -> None:
+    composed = compose_operating_state_requirement(
+        "# 算例\n\n建立 UO2 pin-cell\n", "1A"
+    )
+    assert composed.startswith("=== Operating-state selection ===")
+    assert '"1A"' in composed
+    assert "Original problem description" in composed
+    # The original markdown is kept verbatim below the directive.
+    assert "# 算例" in composed
+    assert "建立 UO2 pin-cell" in composed
+    # The directive precedes the original description.
+    assert composed.index("Operating-state selection") < composed.index("# 算例")
+
+
+def test_inspect_markdown_file_injects_operating_state(tmp_path: Path) -> None:
+    md_path = tmp_path / "requirement.md"
+    md_path.write_text(
+        "# 算例\n\n本题分为多个计算工况：1A / 1B。\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str] = {}
+
+    def fake_generate_spec(*, requirement: str, schema, model: str):
+        captured["requirement"] = requirement
+        return StructuredOutputResult(ok=True, value=make_spec())
+
+    result = inspect_markdown_file(
+        md_path,
+        operating_state="1A",
+        output_dir=tmp_path / "output",
+        generate_spec=fake_generate_spec,
+    )
+
+    assert result.ok is True
+    assert captured["requirement"].startswith("=== Operating-state selection ===")
+    assert '"1A"' in captured["requirement"]
+    assert "# 算例" in captured["requirement"]
+
+
+def test_inspect_cli_passes_state_to_markdown_file(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    md_path = tmp_path / "requirement.md"
+    md_path.write_text("建立一个 UO2 pin-cell 临界计算\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def fake_inspect_markdown_file(path, **kwargs):
+        captured["path"] = path
+        captured["operating_state"] = kwargs.get("operating_state")
+        return type(
+            "Result",
+            (),
+            {
+                "ok": True,
+                "transcript": "[1] 用户需求\n建立一个 UO2 pin-cell 临界计算",
+            },
+        )()
+
+    monkeypatch.setattr(
+        "openmc_agent.inspect.inspect_markdown_file",
+        fake_inspect_markdown_file,
+    )
+
+    exit_code = main(
+        [
+            "--md-file",
+            str(md_path),
+            "--state",
+            "1A",
+        ]
+    )
+
+    assert exit_code == 0
+    assert Path(captured["path"]) == md_path
+    assert captured["operating_state"] == "1A"
 
 
 def test_inspect_requirement_plan_mode_shows_tool_results(tmp_path: Path) -> None:

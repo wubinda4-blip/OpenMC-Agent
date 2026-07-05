@@ -11,6 +11,7 @@ MAX_RETRIES=""
 STREAM="${OPENMC_AGENT_STREAM:-1}"
 MD_FILE=""
 REQUIREMENT=""
+OPERATING_STATE=""
 ENABLE_PLOT=0
 ENABLE_SMOKE=0
 JSON_OUTPUT=1
@@ -25,6 +26,9 @@ Usage:
 Options:
   --md-file PATH          Read requirement from a Markdown file.
   --requirement TEXT      Natural-language requirement.
+  --state ID              Select one operating state (e.g., 1A) when the
+                          markdown describes multiple states; only that
+                          state is modeled.
   --model PROVIDER:MODEL  LLM model as 'provider:model'. Default: zhipu:glm-5.2
                           Examples: zhipu:glm-5.2, deepseek:deepseek-chat,
                           deepseek:deepseek-reasoner.
@@ -56,6 +60,7 @@ Examples:
   scripts/run_inspect.sh --md-file Input/case1.md
   scripts/run_inspect.sh --requirement "建立一个 UO2 pin-cell 临界计算" --full
   scripts/run_inspect.sh --model deepseek:deepseek-chat --md-file Input/case2.md --full --text
+  scripts/run_inspect.sh --md-file Input/VERA1_problem.md --state 1A --text
 EOF
 }
 
@@ -67,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --requirement)
       REQUIREMENT="${2:-}"
+      shift 2
+      ;;
+    --state)
+      OPERATING_STATE="${2:-}"
       shift 2
       ;;
     --model)
@@ -215,6 +224,10 @@ if [[ -n "$MD_FILE" ]]; then
   cmd+=(--md-file "$MD_FILE")
 else
   cmd+=("$REQUIREMENT")
+fi
+
+if [[ -n "$OPERATING_STATE" ]]; then
+  cmd+=(--state "$OPERATING_STATE")
 fi
 
 echo "[2/5] Conda environment activated: $CONDA_ENV" >&2
