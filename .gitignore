@@ -46,12 +46,20 @@ summary.h5
 tallies.out
 *.xml.gz
 
-# Manual agent run outputs (regenerable via scripts/run_inspect.sh)
-data/runs/manual/
+# Agent run instance outputs are regenerable. Only the curated evaluation/
+# and inspect/ fixture directories stay tracked; ignore every other run
+# directory under data/runs/ (VERA1, case3, manual, future instances).
+# Patterns above (statepoint/summary/tallies) are extension-based and
+# already match at any depth.
+data/runs/*/
+!data/runs/evaluation/
+!data/runs/inspect/
 
-# Plan-generation runtime artifacts (regenerable)
-data/runs/plan_artifacts/
-data/runs/simulation_plan.json
+# Plan-generation artifacts (regenerable) at root or any nested run dir,
+# kept explicit in case a run lands outside data/runs/ or a plan file is
+# written at the data/runs/ root rather than inside an instance dir.
+**/plan_artifacts/
+**/simulation_plan.json
 
 # Local planning notes — keep private, do not track
 Plan.md
