@@ -259,7 +259,19 @@ def graph_context_to_evidence(context: GraphContext) -> list[RetrievedEvidence]:
 
 def format_graph_context(context: GraphContext, *, limit: int = 12) -> str:
     """Render a compact GraphContext block for reflection prompts."""
-    if not context.nodes and not context.warnings:
+    if not (
+        context.nodes
+        or context.warnings
+        or context.start_nodes
+        or context.related_schema_paths
+        or context.related_concept_ids
+        or context.related_error_codes
+        or context.related_doc_refs
+        or context.related_api_refs
+        or context.related_example_refs
+        or context.repair_policies
+        or context.retrieval_hints
+    ):
         return ""
     lines = [
         "\n[Graph Context]",

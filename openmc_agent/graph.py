@@ -14,16 +14,8 @@ from langgraph.types import interrupt
 from openmc_agent.executor import render_openmc_script
 from openmc_agent.auto_repair import auto_repair_lattice_structure
 from openmc_agent.few_shots import select_few_shots
-from openmc_agent.grep_search import (
-    RetrievedEvidence,
-    format_grep_evidence,
-    gather_grep_evidence_for_issues,
-)
-from openmc_agent.knowledge_graph import (
-    GraphContext,
-    format_graph_context,
-    gather_graph_context_for_issues,
-)
+from openmc_agent.grep_search import RetrievedEvidence
+from openmc_agent.knowledge_graph import GraphContext
 from openmc_agent.llm import (
     StructuredOutputResult,
     generate_structured_output,
@@ -37,6 +29,12 @@ from openmc_agent.retrieval import (
     RetrievalOutcome,
     ToolSpec,
     run_retrieval_loop,
+)
+from openmc_agent.retrieval_orchestrator import (
+    RetrievalContext,
+    format_retrieval_context,
+    gather_retrieval_context_for_issues,
+    retrieval_context_from_raw,
 )
 from openmc_agent.schemas import (
     ComplexModelSpec,
@@ -61,6 +59,14 @@ from openmc_agent.validator import (
     validate_openmc_script,
     validate_simulation_plan,
     validate_simulation_spec,
+)
+from openmc_agent.workflow_trace import (
+    TraceConfig,
+    TraceRecorder,
+    preview_plan,
+    summarize_capability_report,
+    summarize_retrieval_context as summarize_retrieval_context_for_trace,
+    summarize_validation_report,
 )
 
 
@@ -119,9 +125,13 @@ class GraphState(TypedDict, total=False):
     verbose: bool
     investigation_trace: list[dict[str, Any]]
     investigation_findings: str
+    retrieval_context: dict[str, Any]
+    retrieval_prompt: str
     grep_evidence: list[dict[str, Any]]
     graph_context: dict[str, Any]
+    rag_evidence: list[dict[str, Any]]
     patch_failure_count: int
+    trace: dict[str, Any]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -592,6 +602,12 @@ def _make_generate_plan_node(
                 "error": result.error or "failed to generate SimulationPlan",
                 "human_loop_events": events,
                 **_investigation_state_updates(investigation_outcome),
+                **_trace_event_update(
+                    state,
+                    "plan_generated",
+                    summary="SimulationPlan generation failed",
+                    metadata={"success": False, "error": result.error},
+                ),
             }
         _progress(
             state,
@@ -616,6 +632,13 @@ def _make_generate_plan_node(
             "expert_feedback_action": "none",
             "human_loop_events": events,
             **_investigation_state_updates(investigation_outcome),
+            **_trace_event_update(
+                state,
+                "plan_generated",
+                summary=f"generated SimulationPlan name={_plan_name(result.value)!r}",
+                plan=result.value,
+                metadata={"success": True},
+            ),
         }
 
     return _generate_plan
@@ -739,12 +762,24 @@ def _make_validate_spec_node(max_retries: int):
                 "validation_report": report,
                 "retry_history": history,
                 "error": "; ".join(report.errors),
+                **_trace_event_update(
+                    state,
+                    "validation_completed",
+                    summary=f"SimulationSpec validation failed with {len(report.errors)} error(s)",
+                    report=report,
+                ),
             }
         _progress(state, "validate_spec", "passed")
         return {
             "validation_report": report,
             "retry_history": history,
             "error": "",
+            **_trace_event_update(
+                state,
+                "validation_completed",
+                summary="SimulationSpec validation passed",
+                report=report,
+            ),
         }
 
     return _validate_spec
@@ -794,6 +829,13 @@ def _make_validate_plan_node(max_retries: int):
                 "validation_report": report,
                 "retry_history": history,
                 "error": "; ".join(report.errors),
+                **_trace_event_update(
+                    state,
+                    "validation_completed",
+                    summary=f"SimulationPlan validation failed with {len(report.errors)} error(s)",
+                    report=report,
+                    plan=plan,
+                ),
             }
             if plan is None and _plan_generation_needs_expert_question(report.errors):
                 updates["pending_expert_questions"] = _plan_generation_expert_questions(
@@ -813,6 +855,13 @@ def _make_validate_plan_node(max_retries: int):
             "simulation_spec": plan.model_spec if plan is not None else None,
             "plan_artifacts": artifact_paths,
             "error": "",
+            **_trace_event_update(
+                state,
+                "validation_completed",
+                summary="SimulationPlan validation passed",
+                report=report,
+                plan=plan,
+            ),
         }
 
     return _validate_plan
@@ -1009,7 +1058,12 @@ def _make_assess_plan_capability_node(max_retries: int):
         )
         repair_errors = [issue.message for issue in repair_issues]
         existing_issues = list(report.issues)
-        inject_invalid = bool(repair_errors) and retry_count < max_retries
+        deterministic_repair_available = bool(
+            repair_issues and auto_repair_lattice_structure(updated_plan, repair_issues)
+        )
+        inject_invalid = bool(repair_errors) and (
+            retry_count < max_retries or deterministic_repair_available
+        )
         if inject_invalid:
             events.append(
                 {
@@ -1055,6 +1109,22 @@ def _make_assess_plan_capability_node(max_retries: int):
             "capability_repair_errors": repair_errors,
             "human_loop_events": events,
             "plan_artifacts": _write_final_simulation_plan(state, updated_plan),
+            **_trace_event_update(
+                state,
+                "capability_assessed",
+                summary=(
+                    f"renderer={capability.supported_renderer} "
+                    f"renderability={capability.renderability}"
+                ),
+                report=updated_report,
+                capability=capability,
+                plan=updated_plan,
+                metadata={
+                    "unsupported_subsystems": capability.unsupported_subsystems,
+                    "required_human_confirmations": capability.required_human_confirmations,
+                    "self_repair_error_count": len(repair_errors),
+                },
+            ),
         }
 
     return _assess_plan_capability
@@ -1069,6 +1139,12 @@ def _ask_expert(state: GraphState) -> GraphState:
     events = list(state.get("human_loop_events", []))
 
     if not questions:
+        trace_update = _trace_event_update(
+            state,
+            "ask_expert_completed",
+            summary="no expert questions pending",
+            metadata={"question_count": 0, "feedback_present": False},
+        )
         return {
             **plan_update,
             "pending_expert_questions": [],
@@ -1076,6 +1152,7 @@ def _ask_expert(state: GraphState) -> GraphState:
             "needs_regeneration": False,
             "expert_feedback_action": "none",
             "human_loop_events": state.get("human_loop_events", []),
+            **trace_update,
         }
 
     if round_count >= max_rounds:
@@ -1095,6 +1172,27 @@ def _ask_expert(state: GraphState) -> GraphState:
                 "reason": "max_expert_rounds reached or expert loop disabled",
             }
         )
+        start_update = _trace_event_update(
+            state,
+            "ask_expert_started",
+            summary=f"{len(questions)} expert question(s) pending",
+            metadata={
+                "question_count": len(questions),
+                "questions": questions,
+                "feedback_present": False,
+            },
+        )
+        completed_update = _trace_event_update(
+            {**state, **start_update},
+            "ask_expert_completed",
+            summary="expert questions not asked; max rounds reached or disabled",
+            metadata={
+                "question_count": len(questions),
+                "questions": questions,
+                "feedback_present": False,
+                "requires_human_confirmation_count": len(questions),
+            },
+        )
         return {
             **plan_update,
             "pending_expert_questions": questions,
@@ -1102,6 +1200,7 @@ def _ask_expert(state: GraphState) -> GraphState:
             "needs_regeneration": False,
             "expert_feedback_action": "none",
             "human_loop_events": events,
+            **completed_update,
         }
 
     prompt_round = round_count + 1
@@ -1109,6 +1208,13 @@ def _ask_expert(state: GraphState) -> GraphState:
         state,
         "ask_expert",
         f"interrupting for expert feedback round {prompt_round}/{max_rounds}",
+    )
+    start_update = _trace_event_update(
+        state,
+        "ask_expert_started",
+        summary=f"asking {len(questions)} expert question(s)",
+        metadata={"question_count": len(questions), "questions": questions},
+        round_index=prompt_round,
     )
     resume_payload = interrupt(
         {
@@ -1148,6 +1254,18 @@ def _ask_expert(state: GraphState) -> GraphState:
         )
 
     if not should_continue or not feedback_items:
+        completed_update = _trace_event_update(
+            {**state, **start_update},
+            "ask_expert_completed",
+            summary="expert feedback was empty or deferred",
+            metadata={
+                "question_count": len(questions),
+                "questions": questions,
+                "feedback_present": bool(feedback_items),
+                "requires_human_confirmation_count": len(questions),
+            },
+            round_index=prompt_round,
+        )
         return {
             **plan_update,
             "pending_expert_questions": questions,
@@ -1157,10 +1275,23 @@ def _ask_expert(state: GraphState) -> GraphState:
             "expert_feedback_action": "continue",
             "resolved_expert_items": resolved_items,
             "human_loop_events": events,
+            **completed_update,
         }
 
     feedback = list(state.get("expert_feedback", []))
     feedback.extend(feedback_items)
+    completed_update = _trace_event_update(
+        {**state, **start_update},
+        "ask_expert_completed",
+        summary=f"received {len(feedback_items)} expert feedback item(s)",
+        metadata={
+            "question_count": len(questions),
+            "questions": questions,
+            "feedback_present": True,
+            "feedback_count": len(feedback_items),
+        },
+        round_index=prompt_round,
+    )
     return {
         **plan_update,
         "expert_feedback": feedback,
@@ -1172,6 +1303,7 @@ def _ask_expert(state: GraphState) -> GraphState:
         "resolved_expert_items": resolved_items,
         "human_loop_events": events,
         "error": "",
+        **completed_update,
     }
 
 
@@ -1358,18 +1490,31 @@ def _patch_plan_from_expert_feedback(state: GraphState) -> GraphState:
 
 def _render_script(state: GraphState) -> GraphState:
     _progress(state, "render_script", "rendering OpenMC Python model.py")
+    start_update = _trace_event_update(
+        state,
+        "render_started",
+        summary="rendering SimulationSpec to model.py",
+    )
     report = state.get("validation_report")
     spec = state.get("simulation_spec")
     if spec is None or report is None or not report.is_valid:
-        return {}
+        return start_update
 
     script = render_openmc_script(spec)
     script_report = validate_openmc_script(script, spec)
     if not script_report.is_valid:
         _progress(state, "render_script", f"failed script validation: {script_report.errors}")
+        completed_update = _trace_event_update(
+            {**state, **start_update},
+            "render_completed",
+            summary="SimulationSpec render failed script validation",
+            report=script_report,
+            metadata={"success": False},
+        )
         return {
             "validation_report": script_report,
             "error": "; ".join(script_report.errors),
+            **completed_update,
         }
 
     output_dir = Path(state.get("output_dir", "data/runs"))
@@ -1377,21 +1522,40 @@ def _render_script(state: GraphState) -> GraphState:
     model_path = output_dir / "model.py"
     model_path.write_text(script, encoding="utf-8")
     _progress(state, "render_script", f"wrote {model_path}")
-    return {"script": script, "model_path": str(model_path)}
+    completed_update = _trace_event_update(
+        {**state, **start_update},
+        "render_completed",
+        summary=f"wrote {model_path}",
+        report=report,
+        metadata={"success": True, "model_path": str(model_path)},
+    )
+    return {"script": script, "model_path": str(model_path), **completed_update}
 
 
 def _render_plan_script(state: GraphState) -> GraphState:
     _progress(state, "render_plan_script", "rendering OpenMC Python model.py from SimulationPlan")
+    start_update = _trace_event_update(
+        state,
+        "render_started",
+        summary="rendering SimulationPlan to model.py",
+    )
     report = state.get("validation_report")
     plan = _coerce_simulation_plan(state.get("simulation_plan"))
     if plan is None or report is None or not report.is_valid:
         _progress(state, "render_plan_script", "skipped: plan is not valid")
-        return {}
+        return start_update
 
     renderer, capability = choose_renderer(plan)
     if renderer is None or capability.renderability == "none":
         _progress(state, "render_plan_script", "skipped: no renderer for this plan")
-        return {}
+        completed_update = _trace_event_update(
+            {**state, **start_update},
+            "render_completed",
+            summary="render skipped: no renderer",
+            capability=capability,
+            metadata={"success": False, "reason": "no renderer"},
+        )
+        return completed_update
 
     output_dir = Path(state.get("output_dir", "data/runs"))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1404,15 +1568,30 @@ def _render_plan_script(state: GraphState) -> GraphState:
 
     if result.errors:
         _progress(state, "render_plan_script", f"renderer failed: {result.errors}")
+        result_report = ValidationReport(
+            is_valid=False,
+            errors=result.errors,
+        )
+        completed_update = _trace_event_update(
+            {**state, **start_update},
+            "render_completed",
+            summary="renderer failed",
+            report=result_report,
+            capability=result.capability,
+            plan=plan,
+            metadata={
+                "success": False,
+                "renderer": result.renderer_name,
+                "errors": result.errors,
+            },
+        )
         return {
             "simulation_plan": plan,
             "simulation_spec": plan.model_spec,
-            "validation_report": ValidationReport(
-                is_valid=False,
-                errors=result.errors,
-            ),
+            "validation_report": result_report,
             "plan_artifacts": _write_final_simulation_plan(state, plan),
             "error": "; ".join(result.errors),
+            **completed_update,
         }
 
     model_path = output_dir / "model.py"
@@ -1422,12 +1601,29 @@ def _render_plan_script(state: GraphState) -> GraphState:
         f"wrote {model_path} (renderer={result.renderer_name}, "
         f"renderability={result.renderability})",
     )
+    completed_update = _trace_event_update(
+        {**state, **start_update},
+        "render_completed",
+        summary=(
+            f"wrote {model_path} with renderer={result.renderer_name} "
+            f"renderability={result.renderability}"
+        ),
+        report=report,
+        capability=result.capability,
+        plan=plan,
+        metadata={
+            "success": True,
+            "renderer": result.renderer_name,
+            "model_path": str(model_path),
+        },
+    )
     return {
         "simulation_plan": plan,
         "simulation_spec": plan.model_spec,
         "script": result.script,
         "model_path": str(model_path),
         "plan_artifacts": _write_final_simulation_plan(state, plan),
+        **completed_update,
     }
 
 
@@ -1463,12 +1659,36 @@ def _make_execute_tools_node(
                 "tool_results": [result.model_dump() for result in results],
                 "validation_report": report,
                 "error": "",
+                **_trace_event_update(
+                    state,
+                    "export_xml_completed",
+                    summary="export skipped because model is not executable",
+                    report=report,
+                    capability=plan.capability_report,
+                    metadata={"success": False, "skipped": True, "renderability": renderability},
+                ),
             }
 
         _progress(state, "execute_tools", "running export_xml")
         export_result = export_xml_tool(Path(model_path))
         results.append(export_result)
         _progress(state, "execute_tools", f"export_xml ok={export_result.ok}")
+        trace_update = _trace_event_update(
+            state,
+            "export_xml_completed",
+            summary=f"export_xml ok={export_result.ok}",
+            report=ValidationReport.from_issues(
+                export_result.issues,
+                is_valid=export_result.ok,
+            ),
+            capability=plan.capability_report,
+            metadata={
+                "success": export_result.ok,
+                "returncode": export_result.returncode,
+                "error": export_result.error,
+                "artifacts": export_result.artifacts,
+            },
+        )
 
         if enable_plots and export_result.ok and plan.plot_specs:
             _progress(state, "execute_tools", f"running run_geometry_plots count={len(plan.plot_specs)}")
@@ -1495,6 +1715,22 @@ def _make_execute_tools_node(
             )
             results.append(smoke_test_tool(output_dir, plan))
             _progress(state, "execute_tools", f"run_smoke_test ok={results[-1].ok}")
+            smoke_result = results[-1]
+            trace_update = _trace_event_update(
+                {**state, **trace_update},
+                "smoke_test_completed",
+                summary=f"run_smoke_test ok={smoke_result.ok}",
+                report=ValidationReport.from_issues(
+                    smoke_result.issues,
+                    is_valid=smoke_result.ok,
+                ),
+                capability=plan.capability_report,
+                metadata={
+                    "success": smoke_result.ok,
+                    "returncode": smoke_result.returncode,
+                    "error": smoke_result.error,
+                },
+            )
         elif not enable_smoke_test:
             _progress(state, "execute_tools", "skipping run_smoke_test because --smoke-test is disabled")
         elif renderability != "runnable":
@@ -1520,6 +1756,7 @@ def _make_execute_tools_node(
             "validation_report": report,
             "retry_history": history,
             "error": "; ".join(report.errors),
+            **trace_update,
         }
 
     return _execute_tools
@@ -1547,6 +1784,16 @@ def _make_reflect_plan_node(
         if plan is None or report is None or report.is_valid:
             return {"retry_count": retry_count, "patch_failure_count": patch_failures}
 
+        reflect_start_update = _trace_event_update(
+            state,
+            "reflect_plan_started",
+            summary="reflect_plan handling invalid SimulationPlan",
+            report=report,
+            plan=plan,
+            metadata={"llm_called": False, "patch_failure_count": patch_failures},
+        )
+        trace_state: GraphState = {**state, **reflect_start_update}
+
         # Patch sources, in priority order: (1) deterministic auto-repair of
         # uniquely-solvable id-reference typos -- no LLM call; (2) an
         # investigation patch from the retrieval loop. Whole-plan regeneration
@@ -1554,6 +1801,20 @@ def _make_reflect_plan_node(
         # patches keep failing to validate.
         auto_patch: list[dict[str, Any]] | None = None
         if patch_failures < PATCH_FALLBACK_THRESHOLD:
+            auto_attempt_update = _trace_event_update(
+                trace_state,
+                "auto_repair_attempted",
+                summary="attempting deterministic lattice auto-repair",
+                report=report,
+                plan=plan,
+                metadata={
+                    "attempted_issue_codes": [
+                        issue.code for issue in [*plan.capability_report.issues, *report.issues]
+                    ],
+                    "patch_failure_count": patch_failures,
+                },
+            )
+            trace_state = {**trace_state, **auto_attempt_update}
             auto_patch = auto_repair_lattice_structure(
                 plan, issues=[*plan.capability_report.issues, *report.issues]
             )
@@ -1572,6 +1833,30 @@ def _make_reflect_plan_node(
                     "reflect_plan",
                     f"applied {len(auto_patch)} patch op(s) via deterministic auto-repair",
                 )
+                auto_completed_update = _trace_event_update(
+                    trace_state,
+                    "auto_repair_completed",
+                    summary="deterministic auto-repair succeeded",
+                    report=report,
+                    plan=patched_plan,
+                    metadata={
+                        "success": True,
+                        "patch_count": len(auto_patch),
+                        "changed_paths": [patch.get("path") for patch in auto_patch],
+                    },
+                )
+                reflect_completed_update = _trace_event_update(
+                    {**trace_state, **auto_completed_update},
+                    "reflect_plan_completed",
+                    summary="reflect_plan completed via deterministic auto-repair without LLM",
+                    report=report,
+                    plan=patched_plan,
+                    metadata={
+                        "llm_called": False,
+                        "plan_changed": True,
+                        "patch_count": len(auto_patch),
+                    },
+                )
                 return {
                     "simulation_plan": patched_plan,
                     "simulation_spec": patched_plan.model_spec,
@@ -1583,6 +1868,7 @@ def _make_reflect_plan_node(
                     "error": "",
                     "patch_failure_count": patch_failures,
                     "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
+                    **reflect_completed_update,
                 }
             except Exception as exc:
                 patch_failures += 1
@@ -1592,13 +1878,44 @@ def _make_reflect_plan_node(
                     f"deterministic auto-repair patch failed: {exc}; "
                     f"patch_failure_count={patch_failures}",
                 )
+                auto_completed_update = _trace_event_update(
+                    trace_state,
+                    "auto_repair_completed",
+                    summary="deterministic auto-repair failed to apply",
+                    report=report,
+                    plan=plan,
+                    metadata={
+                        "success": False,
+                        "patch_count": len(auto_patch or []),
+                        "failure_reason": str(exc),
+                    },
+                )
+                trace_state = {**trace_state, **auto_completed_update}
 
-        grep_evidence = _grep_evidence_for_report(report)
-        graph_context = _graph_context_for_report(report, grep_evidence)
+        retrieval_started_update = _trace_event_update(
+            trace_state,
+            "retrieval_started",
+            summary="running retrieval orchestrator for reflect_plan",
+            report=report,
+            plan=plan,
+            metadata={"policy": "default", "issue_count": len(report.issues)},
+        )
+        trace_state = {**trace_state, **retrieval_started_update}
+        retrieval_context = _retrieval_context_for_report(report)
+        retrieval_completed_update = _trace_event_update(
+            trace_state,
+            "retrieval_completed",
+            summary=retrieval_context.summary or "retrieval completed",
+            report=report,
+            retrieval_context=retrieval_context,
+            plan=plan,
+            metadata={"warnings": retrieval_context.warnings},
+        )
+        trace_state = {**trace_state, **retrieval_completed_update}
         state_with_evidence: GraphState = {
             **state,
-            "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
-            "graph_context": graph_context.model_dump(mode="json"),
+            **trace_state,
+            **_retrieval_state_updates(retrieval_context),
         }
         base_requirement = _build_reflection_requirement(state_with_evidence)
         plan_summary = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False)
@@ -1640,6 +1957,20 @@ def _make_reflect_plan_node(
                     "reflect_plan",
                     f"applied {len(candidate_patch)} patch op(s) via {patch_source}",
                 )
+                reflect_completed_update = _trace_event_update(
+                    state_with_evidence,
+                    "reflect_plan_completed",
+                    summary=f"reflect_plan completed via {patch_source} patch",
+                    report=report,
+                    retrieval_context=retrieval_context,
+                    plan=patched_plan,
+                    metadata={
+                        "llm_called": False,
+                        "plan_changed": True,
+                        "patch_count": len(candidate_patch),
+                        "changed_paths": [patch.get("path") for patch in candidate_patch],
+                    },
+                )
                 return {
                     "simulation_plan": patched_plan,
                     "simulation_spec": patched_plan.model_spec,
@@ -1654,9 +1985,9 @@ def _make_reflect_plan_node(
                     "error": "",
                     "patch_failure_count": patch_failures,
                     "plan_artifacts": _write_final_simulation_plan(state, patched_plan),
-                    "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
-                    "graph_context": graph_context.model_dump(mode="json"),
+                    **_retrieval_state_updates(retrieval_context),
                     **_investigation_state_updates(investigation_outcome),
+                    **reflect_completed_update,
                 }
             except Exception as exc:
                 patch_failures += 1
@@ -1709,24 +2040,45 @@ def _make_reflect_plan_node(
         )
         if not result.ok or result.value is None:
             _progress(state, "reflect_plan", f"failed: {result.error}")
+            reflect_completed_update = _trace_event_update(
+                state_with_evidence,
+                "reflect_plan_completed",
+                summary="LLM reflection failed",
+                report=report,
+                retrieval_context=retrieval_context,
+                plan=plan,
+                metadata={
+                    "llm_called": True,
+                    "plan_changed": False,
+                    "failure_reason": result.error,
+                },
+            )
             return {
                 "retry_count": retry_count + 1,
                 "patch_failure_count": patch_failures,
-                "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
-                "graph_context": graph_context.model_dump(mode="json"),
+                **_retrieval_state_updates(retrieval_context),
                 "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
                 "plan_artifacts": artifact_paths,
                 "error": result.error or "failed to repair SimulationPlan",
                 **_investigation_state_updates(investigation_outcome),
+                **reflect_completed_update,
             }
         _progress(state, "reflect_plan", "reflection produced a new SimulationPlan")
+        reflect_completed_update = _trace_event_update(
+            state_with_evidence,
+            "reflect_plan_completed",
+            summary="LLM reflection produced a new SimulationPlan",
+            report=report,
+            retrieval_context=retrieval_context,
+            plan=result.value,
+            metadata={"llm_called": True, "plan_changed": True},
+        )
         return {
             "simulation_plan": result.value,
             "simulation_spec": result.value.model_spec,
             "retry_count": retry_count + 1,
             "patch_failure_count": patch_failures,
-            "grep_evidence": [item.model_dump(mode="json") for item in grep_evidence],
-            "graph_context": graph_context.model_dump(mode="json"),
+            **_retrieval_state_updates(retrieval_context),
             "raw_llm_outputs": _append_raw_llm_output(state, result.raw_response),
             "plan_artifacts": _write_final_simulation_plan(
                 state,
@@ -1735,6 +2087,7 @@ def _make_reflect_plan_node(
             ),
             "error": "",
             **_investigation_state_updates(investigation_outcome),
+            **reflect_completed_update,
         }
 
     return _reflect_plan
@@ -1763,7 +2116,16 @@ def _save_record(state: GraphState) -> GraphState:
         plan_artifacts=state.get("plan_artifacts", []),
     )
     _progress(state, "save_record", "record saved")
-    return {}
+    return _trace_event_update(
+        state,
+        "workflow_failed" if state.get("error") else "workflow_completed",
+        summary="SimulationSpec workflow saved",
+        report=report,
+        metadata={
+            "model_path": state.get("model_path"),
+            "retry_count": state.get("retry_count", 0),
+        },
+    )
 
 
 def _save_plan_record(state: GraphState) -> GraphState:
@@ -1791,7 +2153,18 @@ def _save_plan_record(state: GraphState) -> GraphState:
         plan_artifacts=state.get("plan_artifacts", []),
     )
     _progress(state, "save_record", "record saved")
-    return {}
+    return _trace_event_update(
+        state,
+        "workflow_failed" if state.get("error") else "workflow_completed",
+        summary="SimulationPlan workflow saved",
+        report=report,
+        plan=plan,
+        metadata={
+            "model_path": state.get("model_path"),
+            "retry_count": state.get("retry_count", 0),
+            "pending_expert_questions": state.get("pending_expert_questions", []),
+        },
+    )
 
 
 def _execution_report_from_tool_results(results: list[ToolResult]) -> ValidationReport:
@@ -1881,19 +2254,21 @@ def _structured_issue_context(issues: list[ValidationIssue]) -> str:
     )
 
 
-def _grep_evidence_for_report(report: ValidationReport | None) -> list[RetrievedEvidence]:
+def _retrieval_context_for_report(report: ValidationReport | None) -> RetrievalContext:
     if report is None or not report.issues:
-        return []
-    return gather_grep_evidence_for_issues(report.issues)
+        return RetrievalContext()
+    return gather_retrieval_context_for_issues(report.issues)
 
 
-def _graph_context_for_report(
-    report: ValidationReport | None,
-    grep_evidence: list[RetrievedEvidence],
-) -> GraphContext:
-    if report is None or not report.issues:
-        return GraphContext()
-    return gather_graph_context_for_issues(report.issues, grep_evidence)
+def _retrieval_state_updates(context: RetrievalContext) -> dict[str, Any]:
+    graph_context = context.graph_context or GraphContext()
+    return {
+        "retrieval_context": context.model_dump(mode="json"),
+        "retrieval_prompt": format_retrieval_context(context),
+        "grep_evidence": [item.model_dump(mode="json") for item in context.grep_evidence],
+        "graph_context": graph_context.model_dump(mode="json"),
+        "rag_evidence": [item.model_dump(mode="json") for item in context.rag_evidence],
+    }
 
 
 def _coerce_grep_evidence(raw_items: list[Any]) -> list[RetrievedEvidence]:
@@ -1908,6 +2283,10 @@ def _coerce_grep_evidence(raw_items: list[Any]) -> list[RetrievedEvidence]:
             except Exception:
                 continue
     return evidence
+
+
+def _coerce_rag_evidence(raw_items: list[Any]) -> list[RetrievedEvidence]:
+    return _coerce_grep_evidence(raw_items)
 
 
 def _coerce_graph_context(raw_item: Any) -> GraphContext:
@@ -1929,6 +2308,9 @@ def _repair_constraints_context() -> str:
         "- Do not invent material density, nuclide composition, benchmark facts, or cross section paths.\n"
         "- Treat grep evidence as locator context, not as final physics or nuclear-data truth.\n"
         "- Treat graph context as relationship metadata and retrieval routing hints, not as final physics facts.\n"
+        "- Use RAG evidence only as documentation context for API usage, syntax, and explanations.\n"
+        "- RAG evidence must not be used to invent nuclear data paths, material densities, compositions, or benchmark constants.\n"
+        "- If an issue requires human confirmation, preserve that requirement even when RAG evidence explains the topic.\n"
     )
 
 
@@ -1938,8 +2320,17 @@ def _build_reflection_requirement(state: GraphState) -> str:
     repair_errors = state.get("capability_repair_errors", [])
     report = state.get("validation_report")
     issue_context = _structured_issue_context(report.issues if report else [])
-    grep_context = format_grep_evidence(_coerce_grep_evidence(state.get("grep_evidence", [])))
-    graph_context = format_graph_context(_coerce_graph_context(state.get("graph_context")))
+    retrieval_prompt = state.get("retrieval_prompt") or format_retrieval_context(
+        retrieval_context_from_raw(state.get("retrieval_context"))
+    )
+    if not retrieval_prompt:
+        retrieval_prompt = format_retrieval_context(
+            RetrievalContext(
+                grep_evidence=_coerce_grep_evidence(state.get("grep_evidence", [])),
+                graph_context=_coerce_graph_context(state.get("graph_context")),
+                rag_evidence=_coerce_rag_evidence(state.get("rag_evidence", [])),
+            )
+        )
     structure_guidance = ""
     if repair_errors:
         structure_guidance = (
@@ -1960,8 +2351,7 @@ def _build_reflection_requirement(state: GraphState) -> str:
         "Return a corrected SimulationPlan JSON object only. Do not modify Python code directly.\n"
         f"{structure_guidance}"
         f"{issue_context}"
-        f"{grep_context}"
-        f"{graph_context}"
+        f"{retrieval_prompt}"
         f"{_repair_constraints_context()}"
         f"Validation and execution errors: {state.get('error', '')}\n"
         f"Tool results: {_compact_tool_results(tool_results)}\n"
@@ -2977,6 +3367,85 @@ def _append_raw_llm_output(state: GraphState, raw_response: str) -> list[str]:
     if raw_response:
         outputs.append(raw_response)
     return outputs
+
+
+def _trace_event_update(
+    state: GraphState,
+    event_type: str,
+    *,
+    summary: str = "",
+    report: ValidationReport | None = None,
+    capability: RenderCapabilityReport | None = None,
+    retrieval_context: RetrievalContext | None = None,
+    plan: SimulationPlan | None = None,
+    metadata: dict[str, Any] | None = None,
+    round_index: int | None = None,
+) -> dict[str, Any]:
+    """Return a state update with one appended trace event.
+
+    Trace failures are intentionally swallowed so observability never changes
+    workflow behavior.
+    """
+    try:
+        recorder = TraceRecorder(config=TraceConfig(), trace=state.get("trace"))
+        if recorder.trace.user_request_preview is None and state.get("requirement"):
+            recorder.trace.user_request_preview = _truncate_text(
+                state.get("requirement", ""), recorder.config.max_preview_chars
+            )
+        active_report = report or state.get("validation_report")
+        issues = list(active_report.issues) if active_report is not None else []
+        active_plan = plan or _coerce_simulation_plan(state.get("simulation_plan"))
+        active_capability = capability
+        if active_capability is None and active_plan is not None:
+            active_capability = active_plan.capability_report
+        event_metadata: dict[str, Any] = dict(metadata or {})
+        if report is not None:
+            event_metadata.update(summarize_validation_report(report))
+        if capability is not None:
+            event_metadata.update(summarize_capability_report(capability))
+        if retrieval_context is not None:
+            event_metadata["retrieval"] = summarize_retrieval_context_for_trace(
+                retrieval_context
+            )
+        if plan is not None and recorder.config.capture_plan_preview:
+            event_metadata["plan_preview"] = preview_plan(
+                plan, recorder.config.max_preview_chars
+            )
+        recorder.add_event(
+            event_type,  # type: ignore[arg-type]
+            round_index=(
+                round_index
+                if round_index is not None
+                else state.get("retry_count", 0)
+            ),
+            summary=summary,
+            issue_codes=[issue.code for issue in issues],
+            route_hints=[issue.route_hint for issue in issues if issue.route_hint],
+            renderability=(
+                active_capability.renderability if active_capability is not None else None
+            ),
+            supported_renderer=(
+                active_capability.supported_renderer
+                if active_capability is not None
+                else None
+            ),
+            metadata=event_metadata,
+        )
+        if event_type in {"workflow_completed", "workflow_failed"}:
+            if event_type == "workflow_failed" or state.get("error"):
+                recorder.trace.final_status = "failed"
+            elif active_capability is not None and active_capability.renderability == "skeleton":
+                recorder.trace.final_status = "skeleton"
+            elif active_report is not None and active_report.is_valid:
+                recorder.trace.final_status = "valid"
+            else:
+                recorder.trace.final_status = "invalid"
+            if active_capability is not None:
+                recorder.trace.final_renderability = active_capability.renderability
+                recorder.trace.final_supported_renderer = active_capability.supported_renderer
+        return {"trace": recorder.export_json()}
+    except Exception:
+        return {}
 
 
 def _write_plan_generation_artifacts(

@@ -7,6 +7,7 @@ import pytest
 from openmc_agent.auto_repair import _resolve_id, auto_repair_lattice_structure
 from openmc_agent.graph import _apply_json_patches
 from openmc_agent.schemas import (
+    AssemblySpec,
     AxialLayerSpec,
     CellSpec,
     ComplexMaterialSpec,
@@ -160,6 +161,89 @@ def test_repairs_lattice_universe_pattern_typo():
     assert patch == [
         {"op": "replace", "path": "/complex_model/lattices/0/universe_pattern/0/0",
          "value": "fuel_universe"}
+    ]
+
+
+def test_adds_missing_core_assembly_wrapper_universes():
+    model = ComplexModelSpec(
+        name="m",
+        kind="core",
+        materials=[_mat("fuel")],
+        cells=[CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="fuel")],
+        universes=[UniverseSpec(id="pin_universe", name="pin", cell_ids=["pin_cell"])],
+        lattices=[
+            LatticeSpec(
+                id="uo2_lattice",
+                name="uo2 assembly",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["pin_universe"]],
+            ),
+            LatticeSpec(
+                id="mox_lattice",
+                name="mox assembly",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["pin_universe"]],
+            ),
+            LatticeSpec(
+                id="core_lattice",
+                name="core",
+                kind="rect",
+                pitch_cm=(10.0, 10.0),
+                universe_pattern=[["mox_assembly", "uo2_assembly"]],
+            ),
+        ],
+        assemblies=[
+            AssemblySpec(id="mox_assembly", name="mox", lattice_id="mox_lattice"),
+            AssemblySpec(id="uo2_assembly", name="uo2", lattice_id="uo2_lattice"),
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_lattice"),
+    )
+    issues = [
+        ValidationIssue(
+            severity="error",
+            code="lattice.universe_ref_missing",
+            message="lattice 'core_lattice' references missing universes: ['mox_assembly', 'uo2_assembly']",
+        )
+    ]
+
+    patch = auto_repair_lattice_structure(_plan(model), issues=issues)
+
+    assert patch == [
+        {
+            "op": "add",
+            "path": "/complex_model/universes/1",
+            "value": {
+                "id": "mox_assembly",
+                "name": "mox_assembly",
+                "cell_ids": [],
+                "purpose": (
+                    "Auto-added empty assembly wrapper universe for a core lattice "
+                    "reference to AssemblySpec 'mox_assembly'."
+                ),
+            },
+        },
+        {
+            "op": "add",
+            "path": "/complex_model/universes/2",
+            "value": {
+                "id": "uo2_assembly",
+                "name": "uo2_assembly",
+                "cell_ids": [],
+                "purpose": (
+                    "Auto-added empty assembly wrapper universe for a core lattice "
+                    "reference to AssemblySpec 'uo2_assembly'."
+                ),
+            },
+        },
+    ]
+    patched_payload = _apply_json_patches(_plan(model).model_dump(mode="json"), patch)
+    repaired = SimulationPlan.model_validate(patched_payload)
+    assert [universe.id for universe in repaired.complex_model.universes] == [
+        "pin_universe",
+        "mox_assembly",
+        "uo2_assembly",
     ]
 
 

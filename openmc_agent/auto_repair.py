@@ -2,7 +2,8 @@
 
 Produces RFC 6902 JSON Patch ops that fix *uniquely-solvable* id-reference
 typos in a ``SimulationPlan``'s ``complex_model``: a ``cell.fill_id``, a core
-``lattice_id``, an ``universe.cell_ids`` entry, a ``lattice.universe_pattern`` entry, a
+``lattice_id``, an ``universe.cell_ids`` entry, a ``lattice.universe_pattern`` entry,
+or a missing empty assembly wrapper universe for a core lattice; a
 ``region.surface_ids`` entry, a ``cell.region_id``, an axial-layer
 ``fill.id`` / ``loading_id``, or a lattice-loading reference that points at an
 id which does not exist but resolves to exactly
@@ -118,6 +119,11 @@ def auto_repair_lattice_structure(
     region_ids = {region.id for region in model.regions}
     lattice_ids = {lattice.id for lattice in model.lattices}
     surface_ids = {surface.id for surface in model.surfaces}
+    assembly_lattice_by_id = {
+        assembly.id: assembly.lattice_id
+        for assembly in model.assemblies
+        if assembly.lattice_id in lattice_ids
+    }
 
     fill_pools = {
         "material": material_ids,
@@ -165,17 +171,42 @@ def auto_repair_lattice_structure(
                 f"/complex_model/regions/{i}/surface_ids/{j}", surface_id, surface_ids
             )
 
-    # Lattice universe_pattern -> universe ids.
+    # Lattice universe_pattern -> universe ids.  For core lattices, a pattern
+    # may intentionally reference AssemblySpec ids; add the empty universe shell
+    # that the core renderer later wraps with the assembly lattice.
+    missing_assembly_universes: list[str] = []
+    seen_missing_assembly_universes: set[str] = set()
     for i, lattice in enumerate(model.lattices):
         for r, row in enumerate(lattice.universe_pattern):
             for c, universe_id in enumerate(row):
                 if universe_id in universe_ids:
+                    continue
+                if (
+                    universe_id in assembly_lattice_by_id
+                    and universe_id not in seen_missing_assembly_universes
+                ):
+                    seen_missing_assembly_universes.add(universe_id)
+                    missing_assembly_universes.append(universe_id)
                     continue
                 replace_if_resolved(
                     f"/complex_model/lattices/{i}/universe_pattern/{r}/{c}",
                     universe_id,
                     universe_ids,
                 )
+    for offset, universe_id in enumerate(missing_assembly_universes):
+        ops.append({
+            "op": "add",
+            "path": f"/complex_model/universes/{len(model.universes) + offset}",
+            "value": {
+                "id": universe_id,
+                "name": universe_id,
+                "cell_ids": [],
+                "purpose": (
+                    "Auto-added empty assembly wrapper universe for a core lattice "
+                    f"reference to AssemblySpec {universe_id!r}."
+                ),
+            },
+        })
 
     loading_ids = {loading.id for loading in model.lattice_loadings}
 

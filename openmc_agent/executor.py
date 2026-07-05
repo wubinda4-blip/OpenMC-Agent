@@ -445,7 +445,8 @@ def render_openmc_core_script(
     core_universe_wrappers = "# Core universes were normalized before rendering."
     assert spec.core is not None
     root_block = _render_core_root(spec)
-    plots_block = _render_plots_block(plot_specs or [])
+    plot_specs = _reconcile_plot_origins(spec, plot_specs or [])
+    plots_block = _render_plots_block(plot_specs)
     energy_mode_block = _render_optional_energy_mode(settings, spec)
 
     return f'''"""Generated OpenMC core model for {spec.name}."""
@@ -1357,7 +1358,230 @@ def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSp
             "universes": normalized_universes,
         }
     )
-    return _clone_shared_core_universe_cells(normalized, reachable)
+    normalized = _clone_shared_core_universe_cells(normalized, reachable)
+    normalized = _ensure_core_lattice_outer_universes(normalized)
+    return _ensure_core_lattice_placement(normalized)
+
+
+def _ensure_core_lattice_outer_universes(spec: ComplexModelSpec) -> ComplexModelSpec:
+    """Add a deterministic moderator outer universe for reachable core lattices.
+
+    OpenMC requires a lattice ``outer`` universe whenever particles can leave the
+    defined lattice indices. Nested assembly lattices inside a core are especially
+    sensitive to this because local coordinates can briefly step outside the
+    finite pin map during plotting or tracking.
+    """
+    outer_universe_id, spec = _core_default_outer_universe(spec)
+    if outer_universe_id is None:
+        return spec
+
+    reachable_lattice_ids = _core_reachable_lattice_ids(spec)
+    if not reachable_lattice_ids:
+        return spec
+
+    changed = False
+    lattices: list[LatticeSpec] = []
+    for lattice in spec.lattices:
+        if (
+            lattice.kind == "rect"
+            and lattice.id in reachable_lattice_ids
+            and lattice.outer_universe_id is None
+        ):
+            lattices.append(lattice.model_copy(update={"outer_universe_id": outer_universe_id}))
+            changed = True
+        else:
+            lattices.append(lattice)
+    if not changed:
+        return spec
+    return spec.model_copy(update={"lattices": lattices})
+
+
+def _ensure_core_lattice_placement(spec: ComplexModelSpec) -> ComplexModelSpec:
+    """Pin the core lattice to the non-negative quadrant when its position is unset.
+
+    The C5G7 quarter-core / case3.md convention is non-negative coordinates: the
+    core occupies ``[0, W] x [0, H]`` with the origin at a core corner. The
+    renderer defaults every lattice to origin-centered via
+    ``_infer_rect_lattice_lower_left`` (correct for pin/assembly local frames) but
+    for the *global* core lattice this desyncs from the plot origin the LLM writes
+    under the non-negative mental model, so the plot viewport misses the fuel.
+    When the core lattice has neither ``lower_left_cm`` nor ``center_cm`` set,
+    place it at ``(0, 0)`` so the global frame matches the non-negative convention.
+    Explicit LLM placement is always respected. Pin/assembly lattices are
+    untouched because their ``lower_left_cm`` stays ``None`` and they keep the
+    centered local frame.
+    """
+    if spec.core is None or spec.core.lattice_id is None:
+        return spec
+    core_lattice = next(
+        (lat for lat in spec.lattices if lat.id == spec.core.lattice_id), None
+    )
+    if core_lattice is None:
+        return spec
+    if core_lattice.lower_left_cm is not None or core_lattice.center_cm is not None:
+        return spec
+    placed = core_lattice.model_copy(update={"lower_left_cm": (0.0, 0.0)})
+    lattices = [
+        placed if lat.id == core_lattice.id else lat for lat in spec.lattices
+    ]
+    return spec.model_copy(update={"lattices": lattices})
+
+
+def _reconcile_plot_origins(
+    spec: ComplexModelSpec, plot_specs: list[PlotSpec]
+) -> list[PlotSpec]:
+    """Nudge slice-plot origins that land exactly on a core boundary surface.
+
+    OpenMC cell regions are open intervals (``+x_min`` means ``x > x_min``), so a
+    slice taken exactly at a reflective/vacuum boundary surface samples no cell
+    and renders as a uniform fill. When a plot's slice-level coordinate (``y`` for
+    an ``xz`` basis, ``x`` for a ``yz`` basis) coincides with a core lattice edge,
+    move it to the core-center assembly coordinate so the slice intersects the
+    active fuel/moderator interior (the edge nearest a vacuum boundary is often a
+    reflector-only row, e.g. C5G7's outer water row), and append the adjustment to
+    the plot's ``purpose`` so the rendered
+    script records why the origin differs from the LLM-supplied value. ``xy``
+    slices sample at ``z`` whose extent comes from axial layers rather than the
+    core lattice, so they are left untouched here.
+    """
+    if spec.core is None or spec.core.lattice_id is None:
+        return list(plot_specs)
+    core_lattice = next(
+        (lat for lat in spec.lattices if lat.id == spec.core.lattice_id), None
+    )
+    if (
+        core_lattice is None
+        or core_lattice.kind != "rect"
+        or not core_lattice.universe_pattern
+        or not core_lattice.universe_pattern[0]
+    ):
+        return list(plot_specs)
+    lower_left = core_lattice.lower_left_cm
+    if lower_left is None or len(lower_left) < 2:
+        return list(plot_specs)
+    pitch = core_lattice.pitch_cm
+    if len(pitch) < 2:
+        return list(plot_specs)
+    pitch_x, pitch_y = pitch[0], pitch[1]
+    cols = len(core_lattice.universe_pattern[0])
+    rows = len(core_lattice.universe_pattern)
+    x_min, y_min = lower_left[0], lower_left[1]
+    x_max = x_min + cols * pitch_x
+    y_max = y_min + rows * pitch_y
+    x_centers = [x_min + pitch_x * (i + 0.5) for i in range(cols)]
+    y_centers = [y_min + pitch_y * (j + 0.5) for j in range(rows)]
+
+    tol = 1e-6
+
+    def _nudge_to_interior(
+        value: float,
+        boundary_low: float,
+        boundary_high: float,
+        centers: list[float],
+    ) -> tuple[float, bool]:
+        # Either edge samples no cell; move the slice to the core-center assembly.
+        # The centermost row/column always lies in the active fuel/moderator
+        # interior, whereas the edge nearest a vacuum boundary is often a
+        # reflector-only row (e.g. C5G7's outer water row) and would render as a
+        # uniform fill even after the boundary nudge.
+        if abs(value - boundary_low) < tol or abs(value - boundary_high) < tol:
+            return centers[len(centers) // 2], True
+        return value, False
+
+    boundary_note = (
+        "OpenMC cell regions are open intervals, so a slice exactly on a "
+        "reflective/vacuum boundary surface samples no cell"
+    )
+    reconciled: list[PlotSpec] = []
+    for plot in plot_specs:
+        origin = list(plot.origin)
+        adjustments: list[str] = []
+        if plot.basis == "xz":
+            moved_y, moved = _nudge_to_interior(origin[1], y_min, y_max, y_centers)
+            if moved:
+                adjustments.append(f"origin y {origin[1]:.6g} -> {moved_y:.6g}")
+                origin[1] = moved_y
+        elif plot.basis == "yz":
+            moved_x, moved = _nudge_to_interior(origin[0], x_min, x_max, x_centers)
+            if moved:
+                adjustments.append(f"origin x {origin[0]:.6g} -> {moved_x:.6g}")
+                origin[0] = moved_x
+        if not adjustments:
+            reconciled.append(plot)
+            continue
+        note = (
+            "renderer nudged "
+            + "; ".join(adjustments)
+            + f" to the core-center assembly ({boundary_note})"
+        )
+        purpose = (plot.purpose + " | " if plot.purpose else "") + note
+        reconciled.append(
+            plot.model_copy(update={"origin": tuple(origin), "purpose": purpose})
+        )
+    return reconciled
+
+
+def _core_default_outer_universe(
+    spec: ComplexModelSpec,
+) -> tuple[str | None, ComplexModelSpec]:
+    preferred = (
+        "water_universe",
+        "moderator_universe",
+        "reflector_universe",
+        "coolant_universe",
+        "water",
+        "moderator",
+        "reflector",
+        "coolant",
+    )
+    universe_ids = {universe.id for universe in spec.universes}
+    for universe_id in preferred:
+        if universe_id in universe_ids:
+            return universe_id, spec
+    for universe in spec.universes:
+        tokens = set(universe.id.split("_"))
+        if tokens & {"water", "moderator", "reflector", "coolant"}:
+            return universe.id, spec
+
+    material_id = _core_default_outer_material_id(spec)
+    if material_id is None:
+        return None, spec
+
+    cell_ids = {cell.id for cell in spec.cells}
+    universe_ids = {universe.id for universe in spec.universes}
+    cell_id = _unique_generated_id("__outer_water_cell", cell_ids)
+    universe_id = _unique_generated_id("__outer_water_universe", universe_ids)
+    cell = CellSpec(
+        id=cell_id,
+        name="auto outer moderator cell",
+        fill_type="material",
+        fill_id=material_id,
+        purpose="Auto-generated outer universe for finite core RectLattice objects.",
+    )
+    universe = UniverseSpec(
+        id=universe_id,
+        name="auto outer moderator universe",
+        cell_ids=[cell_id],
+        purpose="Auto-generated outer universe for finite core RectLattice objects.",
+    )
+    return universe_id, spec.model_copy(
+        update={
+            "cells": [*spec.cells, cell],
+            "universes": [*spec.universes, universe],
+        }
+    )
+
+
+def _core_default_outer_material_id(spec: ComplexModelSpec) -> str | None:
+    material_ids = [material.id for material in spec.materials]
+    for material_id in ("water", "moderator", "coolant", "reflector"):
+        if material_id in material_ids:
+            return material_id
+    for material_id in material_ids:
+        tokens = set(material_id.split("_"))
+        if tokens & {"water", "moderator", "coolant", "reflector"}:
+            return material_id
+    return None
 
 
 def _materialize_missing_core_universe_cells(spec: ComplexModelSpec) -> ComplexModelSpec:
@@ -1705,6 +1929,60 @@ def _core_reachable_universe_ids(spec: ComplexModelSpec) -> set[str]:
                 if cell is not None and cell.fill_type == "universe" and cell.fill_id is not None:
                     pending_universe_ids.append(cell.fill_id)
     return reachable_universe_ids
+
+
+def _core_reachable_lattice_ids(spec: ComplexModelSpec) -> set[str]:
+    if spec.core is None or spec.core.lattice_id is None:
+        return set()
+    lattice_by_id = {lattice.id: lattice for lattice in spec.lattices}
+    cell_by_id = {cell.id: cell for cell in spec.cells}
+    universe_by_id = {universe.id: universe for universe in spec.universes}
+    assembly_by_id = {assembly.id: assembly for assembly in spec.assemblies}
+    pending_lattice_ids = [spec.core.lattice_id]
+    pending_universe_ids = [
+        layer.fill.id
+        for layer in spec.core.axial_layers
+        if layer.fill.type == "universe" and layer.fill.id is not None
+    ]
+    reachable_lattice_ids: set[str] = set()
+    visited_universe_ids: set[str] = set()
+
+    while pending_lattice_ids or pending_universe_ids:
+        if pending_lattice_ids:
+            lattice_id = pending_lattice_ids.pop()
+            if lattice_id in reachable_lattice_ids:
+                continue
+            lattice = lattice_by_id.get(lattice_id)
+            if lattice is None:
+                continue
+            reachable_lattice_ids.add(lattice_id)
+            pending_universe_ids.extend(
+                universe_id
+                for row in lattice.universe_pattern
+                for universe_id in row
+            )
+            if lattice.outer_universe_id is not None:
+                pending_universe_ids.append(lattice.outer_universe_id)
+            continue
+
+        universe_id = pending_universe_ids.pop()
+        if universe_id in visited_universe_ids:
+            continue
+        visited_universe_ids.add(universe_id)
+        assembly = assembly_by_id.get(universe_id)
+        if assembly is not None and assembly.lattice_id is not None:
+            pending_lattice_ids.append(assembly.lattice_id)
+        universe = universe_by_id.get(universe_id)
+        if universe is None:
+            continue
+        for cell_id in universe.cell_ids:
+            cell = cell_by_id.get(cell_id)
+            if cell is not None and cell.fill_type == "lattice" and cell.fill_id is not None:
+                pending_lattice_ids.append(cell.fill_id)
+            if cell is not None and cell.fill_type == "universe" and cell.fill_id is not None:
+                pending_universe_ids.append(cell.fill_id)
+
+    return reachable_lattice_ids
 
 
 def _core_auto_wrappable_universe_ids(spec: ComplexModelSpec) -> set[str]:
@@ -2119,36 +2397,50 @@ def _render_materials_cross_sections_assignment(spec: ComplexModelSpec) -> str:
     return "materials.cross_sections = mg_cross_sections_file"
 
 
+_PLOT_OUTPUT_DIR = "plots"
+
+
 def _render_plots_block(plot_specs: list[PlotSpec]) -> str:
+    """Render one ``openmc.Plot`` per (plot, color_by) pair under ``plots/``.
+
+    Each structured plot spec is expanded into two OpenMC plots — colored by
+    ``material`` and by ``cell`` — so a reviewer sees both the material layout and
+    the cell/universe structure from a single slice. Files land in the ``plots/``
+    subdirectory (created at script run time) to keep the run folder tidy.
+    """
     if not plot_specs:
         return ""
 
-    blocks: list[str] = ["", "# Geometry plots selected by the structured plan."]
+    blocks: list[str] = [
+        "",
+        "# Geometry plots selected by the structured plan.",
+        "import os",
+        f"os.makedirs({_PLOT_OUTPUT_DIR!r}, exist_ok=True)",
+    ]
     plot_names: list[str] = []
     for index, plot in enumerate(plot_specs):
-        variable_name = f"plot_{index}"
-        plot_names.append(variable_name)
-        filename = _openmc_plot_filename(plot.filename)
-        blocks.extend(
-            [
-                f"{variable_name} = openmc.Plot()",
-                f"{variable_name}.basis = {plot.basis!r}",
-                f"{variable_name}.origin = {plot.origin!r}",
-                f"{variable_name}.width = {plot.width_cm!r}",
-                f"{variable_name}.pixels = {plot.pixels!r}",
-                f"{variable_name}.color_by = {plot.color_by!r}",
-                f"{variable_name}.filename = {filename!r}",
-                "",
-            ]
-        )
+        stem = Path(plot.filename).stem
+        for color_by in ("material", "cell"):
+            variable_name = f"plot_{index}_{color_by}"
+            plot_names.append(variable_name)
+            filename = f"{_PLOT_OUTPUT_DIR}/{stem}_{color_by}"
+            if plot.purpose:
+                blocks.append(
+                    f"# {variable_name} ({plot.basis}, by {color_by}): {plot.purpose}"
+                )
+            blocks.extend(
+                [
+                    f"{variable_name} = openmc.Plot()",
+                    f"{variable_name}.basis = {plot.basis!r}",
+                    f"{variable_name}.origin = {plot.origin!r}",
+                    f"{variable_name}.width = {plot.width_cm!r}",
+                    f"{variable_name}.pixels = {plot.pixels!r}",
+                    f"{variable_name}.color_by = {color_by!r}",
+                    f"{variable_name}.filename = {filename!r}",
+                    "",
+                ]
+            )
 
     blocks.append(f"plots = openmc.Plots([{', '.join(plot_names)}])")
     blocks.append("plots.export_to_xml()")
     return "\n".join(blocks)
-
-
-def _openmc_plot_filename(filename: str) -> str:
-    path = Path(filename)
-    if path.suffix.lower() == ".png":
-        return str(path.with_suffix(""))
-    return filename

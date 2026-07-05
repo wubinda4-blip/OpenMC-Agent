@@ -241,12 +241,16 @@ def test_render_openmc_plan_script_uses_structured_plot_specs() -> None:
     script = render_openmc_plan_script(plan)
     smoke_script = render_openmc_smoke_test_script(plan)
 
-    assert "plot_0 = openmc.Plot()" in script
-    assert "plot_0.basis = 'xz'" in script
-    assert "plot_0.width = (1.26, 2.0)" in script
-    assert "plot_0.pixels = (640, 480)" in script
-    assert "plot_0.color_by = 'cell'" in script
-    assert "plot_0.filename = 'pin_cell_xz'" in script
+    assert "os.makedirs('plots', exist_ok=True)" in script
+    assert "plot_0_material = openmc.Plot()" in script
+    assert "plot_0_cell = openmc.Plot()" in script
+    assert "plot_0_cell.basis = 'xz'" in script
+    assert "plot_0_cell.width = (1.26, 2.0)" in script
+    assert "plot_0_cell.pixels = (640, 480)" in script
+    assert "plot_0_cell.color_by = 'cell'" in script
+    assert "plot_0_cell.filename = 'plots/pin_cell_xz_cell'" in script
+    assert "plot_0_material.color_by = 'material'" in script
+    assert "plot_0_material.filename = 'plots/pin_cell_xz_material'" in script
     assert "plots.export_to_xml()" in script
     assert "settings.batches = 60" in script
     assert "settings.particles = 2000" in script
@@ -959,7 +963,7 @@ def test_render_3d_rectangular_core_with_axial_water_layer_exports_xml(
     assert "assembly_zmin = openmc.ZPlane(z0=assembly_z_min, boundary_type='reflective')" in script
     assert "root_cell_top_water = openmc.Cell" in script
     assert "fill=materials_by_id['water']" in script
-    assert "plot_1.basis = 'xz'" in script
+    assert "plot_1_cell.basis = 'xz'" in script
 
     model_path = tmp_path / "model.py"
     model_path.write_text(script, encoding="utf-8")
@@ -1235,6 +1239,8 @@ def test_core_renderer_wraps_empty_assembly_universes_for_nested_lattices(
 
     assert "cell_wrapper_fuel_assembly = openmc.Cell" in script
     assert "cell_wrapper_fuel_assembly.fill = lattices['fuel_assembly_lattice']" in script
+    assert "lattice_fuel_assembly_lattice.outer = universes['water_assembly']" in script
+    assert "lattice_core_lattice.outer = universes['water_assembly']" in script
     assert "cell_wrapper_water_assembly = openmc.Cell" in script
     assert "fill=materials_by_id['water']" in script
 
@@ -1253,6 +1259,7 @@ def test_core_renderer_wraps_empty_assembly_universes_for_nested_lattices(
     geometry_xml = (tmp_path / "geometry.xml").read_text(encoding="utf-8")
     assert 'name="auto wrapper for fuel_assembly"' in geometry_xml
     assert 'name="auto wrapper for water_assembly"' in geometry_xml
+    assert "<outer>" in geometry_xml
     assert (tmp_path / "plots.xml").exists()
 
 
@@ -1920,3 +1927,180 @@ def test_render_rectangular_core_lattice_exports_xml(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr or result.stdout
     assert (tmp_path / "geometry.xml").exists()
     assert (tmp_path / "plots.xml").exists()
+
+
+def _quarter_core_plan(
+    *,
+    lower_left_cm: tuple[float, float] | None,
+    plot_specs: list[PlotSpec] | None = None,
+) -> SimulationPlan:
+    return SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="quarter core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=3.0,
+                    composition=[
+                        NuclideSpec(name="U235", percent=4.95),
+                        NuclideSpec(name="U238", percent=95.05),
+                        NuclideSpec(name="O16", percent=200.0),
+                    ],
+                )
+            ],
+            cells=[
+                CellSpec(
+                    id="assembly_cell",
+                    name="assembly",
+                    fill_type="material",
+                    fill_id="fuel",
+                )
+            ],
+            universes=[
+                UniverseSpec(
+                    id="assembly_universe",
+                    name="assembly",
+                    cell_ids=["assembly_cell"],
+                )
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="core_lattice",
+                    name="core lattice",
+                    kind="rect",
+                    pitch_cm=(21.42, 21.42),
+                    lower_left_cm=lower_left_cm,
+                    universe_pattern=[
+                        ["assembly_universe", "assembly_universe"],
+                        ["assembly_universe", "assembly_universe"],
+                    ],
+                )
+            ],
+            core=CoreSpec(
+                id="core",
+                name="core",
+                lattice_id="core_lattice",
+                boundary="mixed",
+                boundary_conditions=CoreBoundarySpec(
+                    xmin="reflective",
+                    xmax="vacuum",
+                    ymin="vacuum",
+                    ymax="reflective",
+                    zmin="reflective",
+                    zmax="vacuum",
+                ),
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel_layer",
+                        name="fuel layer",
+                        z_min_cm=0.0,
+                        z_max_cm=100.0,
+                        fill={"type": "lattice", "id": "core_lattice"},
+                    )
+                ],
+            ),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="core",
+            executable_subsystems=["rect_lattice", "core"],
+        ),
+        plot_specs=plot_specs
+        or [PlotSpec(basis="xy", width_cm=(42.84, 42.84), filename="core_xy.png")],
+    )
+
+
+def test_core_lattice_falls_back_to_non_negative_quadrant() -> None:
+    """A core lattice with no explicit placement sits in [0, W] x [0, H].
+
+    The C5G7 / case3.md convention is non-negative coordinates with the origin at
+    a core corner, matching the plot origin the LLM writes. The renderer must
+    place the *global* core lattice at (0, 0) when neither lower_left_cm nor
+    center_cm is set, so the plot viewport lands on the fuel instead of the
+    moderator-only outer ring.
+    """
+    script = render_openmc_plan_script(_quarter_core_plan(lower_left_cm=None))
+
+    assert "lattice_core_lattice.lower_left = (0.0, 0.0)" in script
+    assert "assembly_x_min = 0.0" in script
+    assert "assembly_x_max = 42.84" in script
+    assert "assembly_y_min = 0.0" in script
+    assert "assembly_y_max = 42.84" in script
+
+
+def test_core_lattice_respects_explicit_lower_left() -> None:
+    """An explicit lower_left_cm is not overridden by the non-negative fallback."""
+    script = render_openmc_plan_script(_quarter_core_plan(lower_left_cm=(-10.0, -10.0)))
+
+    assert "lattice_core_lattice.lower_left = (-10.0, -10.0)" in script
+    assert "assembly_x_min = -10.0" in script
+    assert "assembly_x_max = 32.84" in script  # -10 + 2*21.42
+
+
+def test_plot_origin_on_x_boundary_nudged_to_assembly_center() -> None:
+    """A yz slice at x = core x-edge is moved to the nearest assembly center.
+
+    OpenMC cell regions are open intervals, so a slice at x=0 (reflective edge) or
+    x=W (vacuum edge) samples no cell and renders as a uniform fill. The renderer
+    must move it to the nearest assembly-center x and record the adjustment.
+    """
+    plan = _quarter_core_plan(
+        lower_left_cm=None,
+        plot_specs=[
+            PlotSpec(
+                basis="yz",
+                origin=(0.0, 21.42, 50.0),
+                width_cm=(42.84, 100.0),
+                filename="core_yz_sym.png",
+            )
+        ],
+    )
+    script = render_openmc_plan_script(plan)
+
+    # x=0 (xmin reflective edge) -> core-center assembly 32.13
+    assert "plot_0_cell.origin = (32.13, 21.42, 50.0)" in script
+    assert "renderer nudged origin x 0 -> 32.13" in script
+
+
+def test_plot_origin_on_y_boundary_nudged_for_xz_slice() -> None:
+    """An xz slice at y = core y-edge is moved to the nearest assembly center."""
+    plan = _quarter_core_plan(
+        lower_left_cm=None,
+        plot_specs=[
+            PlotSpec(
+                basis="xz",
+                origin=(21.42, 0.0, 50.0),
+                width_cm=(42.84, 100.0),
+                filename="core_xz_sym.png",
+            )
+        ],
+    )
+    script = render_openmc_plan_script(plan)
+
+    # y=0 (ymin vacuum edge) -> core-center assembly 32.13
+    assert "plot_0_cell.origin = (21.42, 32.13, 50.0)" in script
+    assert "renderer nudged origin y 0 -> 32.13" in script
+
+
+def test_plot_origin_interior_is_not_modified() -> None:
+    """A slice whose coordinate is strictly interior is left untouched."""
+    plan = _quarter_core_plan(
+        lower_left_cm=None,
+        plot_specs=[
+            PlotSpec(
+                basis="yz",
+                origin=(10.71, 21.42, 50.0),
+                width_cm=(42.84, 100.0),
+                filename="core_yz_interior.png",
+            )
+        ],
+    )
+    script = render_openmc_plan_script(plan)
+
+    assert "plot_0_cell.origin = (10.71, 21.42, 50.0)" in script
+    assert "renderer nudged" not in script

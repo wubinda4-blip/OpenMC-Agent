@@ -1,0 +1,44 @@
+[
+  {
+    "case_id": "pin-cell-valid",
+    "category": "pin_cell",
+    "user_request": "Build a valid UO2 pin cell.",
+    "expected_issue_codes": [],
+    "expected_renderability": "runnable",
+    "expected_supported_renderer": "pin_cell",
+    "should_require_human_confirmation": false,
+    "should_trigger_retrieval": false
+  },
+  {
+    "case_id": "hex-lattice-unsupported",
+    "category": "hex_lattice",
+    "user_request": "Build a hexagonal assembly lattice.",
+    "expected_issue_codes": ["lattice.hex.renderer_unsupported"],
+    "expected_renderability": "skeleton",
+    "expected_supported_renderer": "assembly",
+    "should_require_human_confirmation": true,
+    "should_trigger_retrieval": true
+  },
+  {
+    "case_id": "runtime-geometry-overlap",
+    "category": "runtime_error",
+    "user_request": "Diagnose an OpenMC geometry overlap.",
+    "expected_issue_codes": ["runtime.geometry_overlap"],
+    "should_trigger_retrieval": true
+  },
+  {
+    "case_id": "cross-sections-missing",
+    "category": "runtime_error",
+    "user_request": "Handle missing cross_sections.xml.",
+    "expected_issue_codes": ["runtime.cross_sections_missing"],
+    "should_require_human_confirmation": true,
+    "should_trigger_retrieval": false
+  },
+  {
+    "case_id": "dangling-lattice-universe",
+    "category": "export_xml_error",
+    "user_request": "Fix a lattice universe reference that export_xml rejected.",
+    "expected_issue_codes": ["export_xml.dangling_lattice_universe"],
+    "should_trigger_retrieval": true
+  }
+]

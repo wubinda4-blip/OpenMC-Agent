@@ -617,6 +617,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
                 target_path="complex_model.lattices.universe_pattern",
             ),
         ],
+        "route_hint": "auto_repair",
     },
     "lattice.shape_pattern_mismatch": {
         "severity": "error",

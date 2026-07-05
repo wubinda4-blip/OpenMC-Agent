@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
+from pydantic import Field, model_validator
+
+from openmc_agent.schemas import AgentBaseModel
 from openmc_agent.executor import build_openmc_material
 from openmc_agent.graph import build_graph, build_plan_graph
 from openmc_agent.llm import (
@@ -17,9 +20,24 @@ from openmc_agent.records import (
 )
 from openmc_agent.schemas import MaterialSpec, SimulationPlan, SimulationSpec, ValidationReport
 from openmc_agent.tools import export_xml, run_geometry_plots, run_smoke_test
+from openmc_agent.workflow_trace import WorkflowTrace, trace_from_raw
 
 
 CaseKind = Literal["material", "pin_cell", "repair", "impossible"]
+EvaluationCategory = Literal[
+    "material",
+    "pin_cell",
+    "assembly",
+    "core",
+    "hex_lattice",
+    "triso",
+    "runtime_error",
+    "export_xml_error",
+    "expert_feedback",
+    "repair",
+    "impossible",
+    "unknown",
+]
 GenerateMaterialFn = Callable[..., StructuredOutputResult[MaterialSpec]]
 GenerateSimulationFn = Callable[..., StructuredOutputResult[SimulationSpec]]
 RepairSimulationFn = Callable[..., StructuredOutputResult[SimulationSpec]]
@@ -27,20 +45,86 @@ GeneratePlanFn = Callable[..., StructuredOutputResult[SimulationPlan]]
 RepairPlanFn = Callable[..., StructuredOutputResult[SimulationPlan]]
 
 
-@dataclass(frozen=True)
-class EvaluationCase:
+class EvaluationCase(AgentBaseModel):
+    """Evaluation case metadata.
+
+    The class accepts the legacy positional shape
+    ``EvaluationCase(case_id, kind, requirement)`` used by the smoke runner and
+    the newer trace-evaluation fields ``category`` / ``user_request``.
+    """
+
     case_id: str
-    kind: CaseKind
-    requirement: str
+    category: EvaluationCategory = "unknown"
+    user_request: str = ""
+    expected_issue_codes: list[str] = Field(default_factory=list)
+    expected_renderability: str | None = None
+    expected_supported_renderer: str | None = None
+    should_require_human_confirmation: bool | None = None
+    should_trigger_retrieval: bool | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def __init__(self, *args: Any, **data: Any) -> None:
+        if args:
+            if len(args) != 3:
+                raise TypeError("EvaluationCase positional form is (case_id, kind, requirement)")
+            data.setdefault("case_id", args[0])
+            data.setdefault("category", args[1])
+            data.setdefault("user_request", args[2])
+        if "kind" in data and "category" not in data:
+            data["category"] = data.pop("kind")
+        if "requirement" in data and "user_request" not in data:
+            data["user_request"] = data.pop("requirement")
+        super().__init__(**data)
+
+    @property
+    def kind(self) -> str:
+        return self.category
+
+    @property
+    def requirement(self) -> str:
+        return self.user_request
 
 
-@dataclass(frozen=True)
-class EvaluationResult:
-    case: EvaluationCase
-    completed: bool
+class EvaluationResult(AgentBaseModel):
+    """Result for either a legacy smoke case or a trace-evaluation case."""
+
+    case: EvaluationCase | None = None
+    completed: bool | None = None
     output_path: str | None = None
     error: str = ""
     retry_count: int = 0
+    case_id: str = ""
+    passed: bool = False
+    observed_issue_codes: list[str] = Field(default_factory=list)
+    observed_renderability: str | None = None
+    observed_supported_renderer: str | None = None
+    triggered_retrieval: bool = False
+    required_human_confirmation: bool = False
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    failure_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def fill_compatibility_fields(self) -> "EvaluationResult":
+        if self.case is not None and not self.case_id:
+            self.case_id = self.case.case_id
+        if self.completed is None:
+            self.completed = self.passed
+        else:
+            self.passed = bool(self.completed)
+        if self.error and not self.failure_reasons and not self.passed:
+            self.failure_reasons = [self.error]
+        return self
+
+
+class EvaluationMetrics(AgentBaseModel):
+    case_count: int
+    pass_count: int
+    fail_count: int
+    pass_rate: float
+    issue_code_precision: float | None = None
+    issue_code_recall: float | None = None
+    retrieval_trigger_rate: float | None = None
+    human_confirmation_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +234,171 @@ def format_summary(summary: EvaluationSummary) -> str:
         detail = result.output_path or result.error
         lines.append(f"{status} {result.case.case_id}: {detail}")
     return "\n".join(lines)
+
+
+def evaluate_trace_against_case(
+    trace: WorkflowTrace | dict[str, Any],
+    case: EvaluationCase,
+) -> EvaluationResult:
+    """Evaluate one trace against a lightweight expected-case contract."""
+    workflow_trace = trace_from_raw(trace)
+    observed_issue_codes = _trace_issue_codes(workflow_trace)
+    observed_renderability = workflow_trace.final_renderability or _latest_event_field(
+        workflow_trace, "renderability"
+    )
+    observed_supported_renderer = (
+        workflow_trace.final_supported_renderer
+        or _latest_event_field(workflow_trace, "supported_renderer")
+    )
+    triggered_retrieval = any(
+        event.event_type in {"retrieval_started", "retrieval_completed"}
+        for event in workflow_trace.events
+    )
+    required_human_confirmation = _trace_requires_human_confirmation(workflow_trace)
+
+    failure_reasons: list[str] = []
+    expected_codes = set(case.expected_issue_codes)
+    observed_codes = set(observed_issue_codes)
+    if expected_codes and not expected_codes.issubset(observed_codes):
+        missing = sorted(expected_codes - observed_codes)
+        failure_reasons.append(f"missing expected issue codes: {', '.join(missing)}")
+    if (
+        case.expected_renderability is not None
+        and observed_renderability != case.expected_renderability
+    ):
+        failure_reasons.append(
+            "renderability mismatch: "
+            f"expected={case.expected_renderability} observed={observed_renderability}"
+        )
+    if (
+        case.expected_supported_renderer is not None
+        and observed_supported_renderer != case.expected_supported_renderer
+    ):
+        failure_reasons.append(
+            "supported_renderer mismatch: "
+            f"expected={case.expected_supported_renderer} observed={observed_supported_renderer}"
+        )
+    if (
+        case.should_trigger_retrieval is not None
+        and triggered_retrieval != case.should_trigger_retrieval
+    ):
+        failure_reasons.append(
+            "retrieval trigger mismatch: "
+            f"expected={case.should_trigger_retrieval} observed={triggered_retrieval}"
+        )
+    if (
+        case.should_require_human_confirmation is not None
+        and required_human_confirmation != case.should_require_human_confirmation
+    ):
+        failure_reasons.append(
+            "human confirmation mismatch: "
+            f"expected={case.should_require_human_confirmation} "
+            f"observed={required_human_confirmation}"
+        )
+
+    precision = _precision(observed_codes, expected_codes)
+    recall = _recall(observed_codes, expected_codes)
+    return EvaluationResult(
+        case=case,
+        case_id=case.case_id,
+        passed=not failure_reasons,
+        observed_issue_codes=observed_issue_codes,
+        observed_renderability=observed_renderability,
+        observed_supported_renderer=observed_supported_renderer,
+        triggered_retrieval=triggered_retrieval,
+        required_human_confirmation=required_human_confirmation,
+        metrics={
+            "issue_code_precision": precision,
+            "issue_code_recall": recall,
+            "event_count": len(workflow_trace.events),
+        },
+        failure_reasons=failure_reasons,
+    )
+
+
+def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationMetrics:
+    """Aggregate trace-evaluation results into small benchmark metrics."""
+    case_count = len(results)
+    pass_count = sum(result.passed for result in results)
+    fail_count = case_count - pass_count
+    precisions = [
+        value
+        for result in results
+        if (value := result.metrics.get("issue_code_precision")) is not None
+    ]
+    recalls = [
+        value
+        for result in results
+        if (value := result.metrics.get("issue_code_recall")) is not None
+    ]
+    return EvaluationMetrics(
+        case_count=case_count,
+        pass_count=pass_count,
+        fail_count=fail_count,
+        pass_rate=pass_count / case_count if case_count else 0.0,
+        issue_code_precision=sum(precisions) / len(precisions) if precisions else None,
+        issue_code_recall=sum(recalls) / len(recalls) if recalls else None,
+        retrieval_trigger_rate=(
+            sum(result.triggered_retrieval for result in results) / case_count
+            if case_count
+            else None
+        ),
+        human_confirmation_rate=(
+            sum(result.required_human_confirmation for result in results) / case_count
+            if case_count
+            else None
+        ),
+    )
+
+
+def _trace_issue_codes(trace: WorkflowTrace) -> list[str]:
+    seen: set[str] = set()
+    codes: list[str] = []
+    for event in trace.events:
+        for code in event.issue_codes:
+            if code not in seen:
+                seen.add(code)
+                codes.append(code)
+        metadata_codes = event.metadata.get("issue_codes")
+        if isinstance(metadata_codes, list):
+            for code in metadata_codes:
+                if isinstance(code, str) and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
+    return codes
+
+
+def _latest_event_field(trace: WorkflowTrace, field_name: str) -> str | None:
+    for event in reversed(trace.events):
+        value = getattr(event, field_name, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _trace_requires_human_confirmation(trace: WorkflowTrace) -> bool:
+    for event in trace.events:
+        if event.metadata.get("requires_human_confirmation_count", 0):
+            return True
+        if event.metadata.get("required_human_confirmations"):
+            return True
+        if event.event_type.startswith("ask_expert"):
+            return True
+    return False
+
+
+def _precision(observed: set[str], expected: set[str]) -> float | None:
+    if not observed and not expected:
+        return None
+    if not observed:
+        return 0.0
+    return len(observed & expected) / len(observed)
+
+
+def _recall(observed: set[str], expected: set[str]) -> float | None:
+    if not expected:
+        return None
+    return len(observed & expected) / len(expected)
 
 
 def main() -> int:

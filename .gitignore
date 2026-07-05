@@ -49,5 +49,9 @@ tallies.out
 # Manual agent run outputs (regenerable via scripts/run_inspect.sh)
 data/runs/manual/
 
+# Plan-generation runtime artifacts (regenerable)
+data/runs/plan_artifacts/
+data/runs/simulation_plan.json
+
 # Local planning notes — keep private, do not track
 Plan.md

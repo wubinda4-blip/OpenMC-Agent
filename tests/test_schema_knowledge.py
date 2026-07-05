@@ -378,6 +378,7 @@ def test_unknown_catalog_code_falls_back_to_minimal_issue() -> None:
 
 def test_catalog_routes_core_axial_and_loading_refs_to_auto_repair() -> None:
     for code in (
+        "lattice.universe_ref_missing",
         "core.lattice_ref_missing",
         "axial_layer.fill_ref_missing",
         "axial_layer.loading_ref_missing",

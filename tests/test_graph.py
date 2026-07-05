@@ -14,6 +14,7 @@ from openmc_agent.schemas import (
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
+    CoreSpec,
     ExecutionCheckSpec,
     GeometrySpec,
     LatticeSpec,
@@ -404,7 +405,10 @@ def test_plan_graph_executes_export_plot_and_smoke_tools(tmp_path: Path) -> None
         "run_geometry_plots",
         "run_smoke_test",
     ]
-    assert "plot_0.basis = 'xy'" in Path(state["model_path"]).read_text(encoding="utf-8")
+    model_text = Path(state["model_path"]).read_text(encoding="utf-8")
+    # Each plot spec expands into two plots (material + cell color_by).
+    assert "plot_0_material.basis = 'xy'" in model_text
+    assert "plot_0_cell.basis = 'xy'" in model_text
 
 
 def test_plan_graph_reflects_after_smoke_test_failure(tmp_path: Path) -> None:
@@ -1800,6 +1804,101 @@ def test_pending_expert_questions_excludes_self_repairable_core_lattice_refs() -
     assert not questions
 
 
+def test_pending_expert_questions_excludes_missing_core_lattice_universes() -> None:
+    from openmc_agent.graph import _pending_expert_questions
+
+    plan = make_simulation_plan().model_copy(
+        update={
+            "capability_report": RenderCapabilityReport(
+                renderability="skeleton",
+                is_executable=False,
+                supported_renderer="core",
+                reasons=[
+                    "lattice 'core_lattice' references missing universes: "
+                    "['mox_assembly', 'uo2_assembly']"
+                ],
+                issues=[
+                    issue_from_catalog(
+                        "lattice.universe_ref_missing",
+                        message=(
+                            "lattice 'core_lattice' references missing universes: "
+                            "['mox_assembly', 'uo2_assembly']"
+                        ),
+                        schema_path="complex_model.lattices.core_lattice.universe_pattern",
+                    ),
+                ],
+            )
+        }
+    )
+
+    questions = _pending_expert_questions({"simulation_plan": plan})
+
+    assert not questions
+
+
+def test_assess_routes_deterministic_capability_repair_after_retry_limit() -> None:
+    from openmc_agent.graph import _make_assess_plan_capability_node
+
+    plan = SimulationPlan(
+        complex_model=ComplexModelSpec(
+            name="core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    chemical_formula="UO2",
+                    density_value=10.0,
+                    density_unit="g/cm3",
+                )
+            ],
+            cells=[CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="fuel")],
+            universes=[UniverseSpec(id="pin_universe", name="pin", cell_ids=["pin_cell"])],
+            lattices=[
+                LatticeSpec(
+                    id="mox_lattice",
+                    name="mox lattice",
+                    kind="rect",
+                    pitch_cm=(1.0, 1.0),
+                    universe_pattern=[["pin_universe"]],
+                ),
+                LatticeSpec(
+                    id="core_radial",
+                    name="core radial",
+                    kind="rect",
+                    pitch_cm=(10.0, 10.0),
+                    universe_pattern=[["mox_assembly"]],
+                ),
+            ],
+            assemblies=[
+                AssemblySpec(id="mox_assembly", name="mox", lattice_id="mox_lattice")
+            ],
+            core=CoreSpec(id="core", name="core", lattice_id="core_radial"),
+        ),
+        capability_report=RenderCapabilityReport(
+            renderability="none", is_executable=False, supported_renderer="none"
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(10.0, 10.0), filename="core_xy.png")],
+    )
+    assess = _make_assess_plan_capability_node(max_retries=0)
+
+    updates = assess(
+        {
+            "simulation_plan": plan,
+            "validation_report": ValidationReport(is_valid=True),
+            "retry_count": 0,
+            "run_dir": "",
+        }
+    )
+
+    report = updates["validation_report"]
+    assert report.is_valid is False
+    assert updates["capability_repair_errors"] == [
+        "lattice 'core_radial' references missing universes: ['mox_assembly']"
+    ]
+    assert [issue.code for issue in report.issues] == ["lattice.universe_ref_missing"]
+
+
 def test_plan_graph_reflects_on_structural_capability_errors(tmp_path: Path) -> None:
     """A structural plan defect (a universe referencing a missing cell) must be
     fixed by the LLM via reflect_plan, not presented to the expert. The expert
@@ -2042,19 +2141,45 @@ def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path, monkeypa
     prompts: list[str] = []
 
     from openmc_agent.grep_search import RetrievedEvidence
+    from openmc_agent.knowledge_graph import GraphContext
+    from openmc_agent.retrieval_orchestrator import RetrievalContext
 
     monkeypatch.setattr(
-        "openmc_agent.graph.gather_grep_evidence_for_issues",
-        lambda issues: [
-            RetrievedEvidence(
-                source_type="grep",
-                locator="openmc_agent/schemas.py:100-103",
-                text="100: class UniverseSpec\n101:     cell_ids: list[str]",
-                issue_code=issues[0].code,
-                schema_path=issues[0].schema_path,
-                metadata={"matched_pattern": "cell_ids"},
-            )
-        ],
+        "openmc_agent.graph.gather_retrieval_context_for_issues",
+        lambda issues: RetrievalContext(
+            issues=issues,
+            grep_evidence=[
+                RetrievedEvidence(
+                    source_type="grep",
+                    locator="openmc_agent/schemas.py:100-103",
+                    text="100: class UniverseSpec\n101:     cell_ids: list[str]",
+                    issue_code=issues[0].code,
+                    schema_path=issues[0].schema_path,
+                    metadata={"matched_pattern": "cell_ids"},
+                )
+            ],
+            graph_context=GraphContext(
+                related_schema_paths=["UniverseSpec.cell_ids"],
+                retrieval_hints=["UniverseSpec cell_ids reference validation"],
+            ),
+            graph_evidence=[
+                RetrievedEvidence(
+                    source_type="graph",
+                    locator="schema.UniverseSpec.cell_ids",
+                    text="Universe cell_ids must reference defined cell ids.",
+                )
+            ],
+            merged_evidence=[
+                RetrievedEvidence(
+                    source_type="grep",
+                    locator="openmc_agent/schemas.py:100-103",
+                    text="100: class UniverseSpec\n101:     cell_ids: list[str]",
+                    issue_code=issues[0].code,
+                    schema_path=issues[0].schema_path,
+                    metadata={"matched_pattern": "cell_ids"},
+                )
+            ],
+        ),
     )
 
     def fake_investigation(prompt: str):
