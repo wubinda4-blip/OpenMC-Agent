@@ -397,7 +397,12 @@ def _read_expert_feedback(payload: dict[str, Any]) -> str:
     for index, question in enumerate(questions, start=1):
         print(f"{index}. {question}", file=sys.stderr)
     print("请输入专家反馈；直接回车表示暂不补充并继续当前产物:", file=sys.stderr)
-    return sys.stdin.readline().strip()
+    # 直接读字节并以 replace 解码:在 utf-8 locale 下 sys.stdin 默认 errors=
+    # surrogateescape,IME/终端送入的残字节(如 0xE5 0xAE)会被解码成 lone
+    # surrogate (U+DCxx),下游 pydantic_core 无法把含 lone surrogate 的字符串
+    # 编码为合法 UTF-8,会抛 string_unicode ValidationError。replace 把残字节
+    # 替换成 U+FFFD,保证下游拿到的始终是合法 Unicode。
+    return sys.stdin.buffer.readline().decode("utf-8", "replace").strip()
 
 
 def _legacy_transcript_data(
