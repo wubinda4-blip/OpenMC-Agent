@@ -421,6 +421,39 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             )
         ],
     },
+    "material.pin_cell.mixed_percent_no_formula": {
+        "severity": "error",
+        "message": "pin-cell material mixes atom and weight percents without chemical_formula fallback",
+        "schema_path": "model_spec.pin_cell",
+        "rule_id": "rule.material.pin_cell_mixed_percent_requires_formula",
+        "concept_id": "openmc.material.percent_type",
+        "knowledge_refs": [MATERIALS_GUIDE],
+        "grep_patterns": ["percent_type", "ao", "wo", "add_elements_from_formula", "chemical_formula"],
+        "repair_hints": [
+            _hint(
+                "add_missing_field",
+                "Set chemical_formula (e.g. 'UO2') so the renderer uses add_elements_from_formula, or unify the composition to a single percent_type.",
+                target_path="model_spec.pin_cell",
+                example_patch={"chemical_formula": "UO2"},
+            ),
+        ],
+    },
+    "material.pin_cell.mixed_percent_formula_fallback": {
+        "severity": "warning",
+        "message": "pin-cell material mixes atom and weight percents; renderer will use chemical_formula fallback",
+        "schema_path": "model_spec.pin_cell",
+        "rule_id": "rule.material.pin_cell_mixed_percent_formula_fallback",
+        "concept_id": "openmc.material.percent_type",
+        "knowledge_refs": [MATERIALS_GUIDE],
+        "grep_patterns": ["percent_type", "ao", "wo", "add_elements_from_formula", "chemical_formula"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Confirm the chemical_formula and enrichment (U235 wt% in composition or enrichment_percent) are correct, or unify percent_type to avoid the fallback.",
+                target_path="model_spec.pin_cell",
+            ),
+        ],
+    },
     "cell.fill_id.missing": {
         "severity": "error",
         "message": "fill_id is required unless fill_type is void",

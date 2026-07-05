@@ -77,6 +77,32 @@ def validate_simulation_spec(spec: SimulationSpec) -> ValidationReport:
     if spec.settings.inactive >= spec.settings.batches:
         add_issue(issues, "settings.inactive.not_less_than_batches")
 
+    pin_cell_materials = [spec.pin_cell.fuel, spec.pin_cell.moderator]
+    if spec.pin_cell.cladding is not None:
+        pin_cell_materials.append(spec.pin_cell.cladding)
+    for material in pin_cell_materials:
+        percent_types = {component.percent_type for component in material.composition}
+        if len(percent_types) <= 1:
+            continue
+        if material.chemical_formula is None:
+            add_issue(
+                issues,
+                "material.pin_cell.mixed_percent_no_formula",
+                message=(
+                    f"material {material.name!r} mixes atom and weight percents "
+                    "without chemical_formula fallback"
+                ),
+            )
+        else:
+            add_issue(
+                issues,
+                "material.pin_cell.mixed_percent_formula_fallback",
+                message=(
+                    f"material {material.name!r} mixes atom and weight percents; "
+                    "renderer will use chemical_formula fallback"
+                ),
+            )
+
     return ValidationReport.from_issues(issues)
 
 

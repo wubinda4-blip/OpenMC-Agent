@@ -147,6 +147,122 @@ def test_existing_pin_cell_still_works(tmp_path: Path) -> None:
     assert (tmp_path / "model.py").exists()
 
 
+# -- pin cell mixed percent_type handling ---------------------------------
+
+
+def _mixed_pin_cell_plan(
+    *,
+    chemical_formula: str | None = None,
+    enrichment_percent: float | None = None,
+) -> SimulationPlan:
+    """VERA-style pin cell whose fuel mixes wo (U isotopes) and ao (O16)."""
+    fuel = MaterialSpec(
+        name="UO2 Fuel",
+        density_unit="g/cm3",
+        density_value=10.257,
+        composition=[
+            NuclideSpec(name="U234", percent=0.0263, percent_type="wo"),
+            NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+            NuclideSpec(name="U238", percent=96.8594, percent_type="wo"),
+            NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+        ],
+        chemical_formula=chemical_formula,
+        enrichment_percent=enrichment_percent,
+    )
+    moderator = MaterialSpec(
+        name="Water",
+        density_unit="g/cm3",
+        density_value=0.743,
+        composition=[
+            NuclideSpec(name="H1", percent=2.0),
+            NuclideSpec(name="O16", percent=1.0),
+        ],
+    )
+    spec = SimulationSpec(
+        name="VERA pin-cell",
+        pin_cell=PinCellSpec(
+            fuel=fuel,
+            moderator=moderator,
+            geometry=GeometrySpec(fuel_radius_cm=0.4096, pitch_cm=1.26),
+        ),
+    )
+    return SimulationPlan(
+        model_spec=spec,
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.26, 1.26), filename="pin.png")],
+        execution_check=ExecutionCheckSpec(
+            settings=RunSettingsSpec(batches=5, inactive=1, particles=100)
+        ),
+    )
+
+
+def test_pin_cell_mixed_percent_without_formula_is_blocked(tmp_path: Path) -> None:
+    """Mixed ao/wo without chemical_formula must not reach the renderer."""
+    from openmc_agent.validator import validate_simulation_spec
+
+    plan = _mixed_pin_cell_plan()  # no chemical_formula
+    report = validate_simulation_spec(plan.model_spec)
+    assert not report.is_valid
+    assert any("mixes atom and weight percents" in error for error in report.errors)
+    assert any(
+        issue.code == "material.pin_cell.mixed_percent_no_formula"
+        for issue in report.issues
+    )
+
+    renderer, _capability = choose_renderer(plan)
+    # The pin-cell renderer is skipped; skeleton fallback handles it.
+    assert not isinstance(renderer, PinCellRenderer)
+
+
+def test_pin_cell_mixed_percent_uses_formula_fallback(tmp_path: Path) -> None:
+    """With chemical_formula, the renderer emits add_elements_from_formula."""
+    from openmc_agent.validator import validate_simulation_spec
+
+    plan = _mixed_pin_cell_plan(chemical_formula="UO2", enrichment_percent=3.1)
+    report = validate_simulation_spec(plan.model_spec)
+    assert report.is_valid  # warning only, not an error
+    assert any("chemical_formula fallback" in warning for warning in report.warnings)
+
+    renderer, capability = choose_renderer(plan)
+    assert isinstance(renderer, PinCellRenderer)
+    assert capability.is_executable
+
+    result = renderer.render(plan, tmp_path)
+    assert "add_elements_from_formula('UO2'" in result.script
+    assert "enrichment=3.1" in result.script
+    # The fuel (material_0) goes through the formula fallback, so it must not
+    # emit any add_nuclide call (moderator still does, which is fine).
+    assert "material_0.add_nuclide" not in result.script
+
+
+def test_pin_cell_formula_fallback_infers_enrichment_from_composition(
+    tmp_path: Path,
+) -> None:
+    """U235 wt% in composition is used when enrichment_percent is null."""
+    plan = _mixed_pin_cell_plan(chemical_formula="UO2")  # enrichment_percent None
+    renderer, _capability = choose_renderer(plan)
+    assert isinstance(renderer, PinCellRenderer)
+    result = renderer.render(plan, tmp_path)
+    assert "add_elements_from_formula('UO2'" in result.script
+    assert "enrichment=3.1" in result.script
+
+
+def test_build_openmc_material_raises_on_mixed_without_formula() -> None:
+    """Runtime build path defends against mixed percents like the codegen path."""
+    from openmc_agent.executor import build_openmc_material
+
+    spec = MaterialSpec(
+        name="bad fuel",
+        density_unit="g/cm3",
+        density_value=10.0,
+        composition=[
+            NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+            NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+        ],
+    )
+    with pytest.raises(ValueError, match="mixes atom and weight percents"):
+        build_openmc_material(spec)
+
+
 # -- skeleton for incomplete assembly -------------------------------------
 
 

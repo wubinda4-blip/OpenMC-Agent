@@ -27,6 +27,11 @@ from openmc_agent.reachability import (
 
 
 def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
+    if _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
+        raise ValueError(
+            f"material {spec.name!r} mixes atom and weight percents without "
+            "chemical_formula fallback"
+        )
     material = openmc.Material(name=spec.name)
     material.set_density(spec.density_unit, spec.density_value)
     if spec.temperature_k is not None:
@@ -35,19 +40,25 @@ def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
     if spec.volume_cm3 is not None:
         material.volume = spec.volume_cm3
 
-    for component in spec.composition:
-        if component.kind == "element":
-            material.add_element(
-                component.name,
-                component.percent,
-                component.percent_type,
-            )
-        else:
-            material.add_nuclide(
-                component.name,
-                component.percent,
-                component.percent_type,
-            )
+    if _use_chemical_formula_for_material(spec):
+        material.add_elements_from_formula(
+            spec.chemical_formula,
+            **_material_enrichment_kwargs(spec),
+        )
+    else:
+        for component in spec.composition:
+            if component.kind == "element":
+                material.add_element(
+                    component.name,
+                    component.percent,
+                    component.percent_type,
+                )
+            else:
+                material.add_nuclide(
+                    component.name,
+                    component.percent,
+                    component.percent_type,
+                )
 
     for sab_name in spec.sab:
         material.add_s_alpha_beta(sab_name)
@@ -576,17 +587,24 @@ def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
         lines.append(f"{variable_name}.depletable = {spec.depletable!r}")
     if spec.volume_cm3 is not None:
         lines.append(f"{variable_name}.volume = {spec.volume_cm3!r}")
-    for component in spec.composition:
-        if component.kind == "element":
-            lines.append(
-                f"{variable_name}.add_element("
-                f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
-            )
-        else:
-            lines.append(
-                f"{variable_name}.add_nuclide("
-                f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
-            )
+    if _use_chemical_formula_for_material(spec):
+        enrichment_args = _render_material_enrichment_args(spec)
+        lines.append(
+            f"{variable_name}.add_elements_from_formula("
+            f"{spec.chemical_formula!r}{enrichment_args})"
+        )
+    else:
+        for component in spec.composition:
+            if component.kind == "element":
+                lines.append(
+                    f"{variable_name}.add_element("
+                    f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
+                )
+            else:
+                lines.append(
+                    f"{variable_name}.add_nuclide("
+                    f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
+                )
     for sab_name in spec.sab:
         lines.append(f"{variable_name}.add_s_alpha_beta({sab_name!r})")
     return "\n".join(lines)
@@ -675,7 +693,7 @@ def _material_is_macroscopic(material: ComplexMaterialSpec) -> bool:
     return material.macroscopic is not None
 
 
-def _material_has_mixed_percent_types(material: ComplexMaterialSpec) -> bool:
+def _material_has_mixed_percent_types(material: MaterialSpec | ComplexMaterialSpec) -> bool:
     percent_types = {component.percent_type for component in material.composition}
     return len(percent_types) > 1
 
@@ -691,6 +709,50 @@ def _use_chemical_formula_for_complex_material(material: ComplexMaterialSpec) ->
     if material.chemical_formula is None:
         return False
     return not material.composition or _material_has_mixed_percent_types(material)
+
+
+def _use_chemical_formula_for_material(spec: MaterialSpec) -> bool:
+    """Pin-cell counterpart of :func:`_use_chemical_formula_for_complex_material`.
+
+    A pin-cell ``MaterialSpec`` always carries an explicit composition, so the
+    formula fallback only needs to engage when those entries mix ``ao`` and
+    ``wo`` percent types and a ``chemical_formula`` is available to fall back to.
+    """
+    if spec.chemical_formula is None:
+        return False
+    return _material_has_mixed_percent_types(spec)
+
+
+def _material_enrichment_kwargs(spec: MaterialSpec) -> dict[str, float | str]:
+    """Build enrichment kwargs for ``add_elements_from_formula`` on a pin-cell spec.
+
+    Prefers an explicit ``enrichment_percent``. When it is missing, fall back to
+    the ``U235`` weight percent found in ``composition``: plans commonly record
+    the enrichment on the U235 nuclide entry (per benchmark tables such as
+    VERA's wt% isotopics) and leave ``enrichment_percent`` null, so this recovers
+    the intended enrichment for the chemical-formula fallback instead of
+    silently rendering natural-uranium UO2.
+    """
+    enrichment = spec.enrichment_percent
+    if enrichment is None:
+        target = spec.enrichment_target or "U235"
+        for component in spec.composition:
+            if component.name == target and component.percent_type == "wo":
+                enrichment = component.percent
+                break
+    if enrichment is None:
+        return {}
+    kwargs: dict[str, float | str] = {"enrichment": enrichment}
+    if spec.enrichment_target and spec.enrichment_target != "U235":
+        kwargs["enrichment_target"] = spec.enrichment_target
+    return kwargs
+
+
+def _render_material_enrichment_args(spec: MaterialSpec) -> str:
+    kwargs = _material_enrichment_kwargs(spec)
+    if not kwargs:
+        return ""
+    return "".join(f", {key}={value!r}" for key, value in kwargs.items())
 
 
 def _renderable_assembly_materials(
