@@ -44,7 +44,10 @@ def set_llm_progress(enabled: bool) -> None:
 
 def _llm_log(message: str) -> None:
     if _llm_progress_enabled:
-        print(f"[llm] {message}", file=sys.stderr, flush=True)
+        # print_line atomically moves past any in-place status line so this
+        # transition log (POST, stream finished, model responded, errors) gets
+        # its own clean row instead of being overprinted by the status.
+        _stderr_status.print_line(f"[llm] {message}")
 
 
 def _normalize_log(message: str) -> None:
@@ -55,7 +58,71 @@ def _normalize_log(message: str) -> None:
     silent in library/test usage.
     """
     if _llm_progress_enabled:
-        print(f"[normalize] {message}", file=sys.stderr, flush=True)
+        _stderr_status.print_line(f"[normalize] {message}")
+
+
+class _StderrStatus:
+    """Single-line, in-place stderr status that replaces scrolling progress lines.
+
+    The heartbeat thread and the SSE streaming loop used to print a fresh
+    ``[llm] ...`` line every few seconds, flooding the terminal during a long
+    reasoning-model call. This helper renders those periodic updates on one
+    line (carriage return + clear-to-end), so the screen no longer scrolls.
+
+    It is a no-op when progress logging is disabled (library/test usage) or
+    when stderr is not a TTY, so redirected logs collect no ``\\r``/``\\033[K``
+    noise. Thread-safe: the heartbeat daemon thread and the streaming main
+    thread share one lock and one line; the last writer wins.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = False
+
+    @staticmethod
+    def _enabled() -> bool:
+        return (
+            _llm_progress_enabled
+            and sys.stderr.isatty()
+            and os.getenv("TERM", "") != "dumb"
+        )
+
+    def update(self, text: str) -> None:
+        """Rewrite the status line in place. No-op unless on a TTY."""
+        if not self._enabled():
+            return
+        with self._lock:
+            sys.stderr.write("\r\033[K" + text)
+            sys.stderr.flush()
+            self._active = True
+
+    def clear(self) -> None:
+        """Erase the status line if one is currently shown."""
+        with self._lock:
+            if not self._active:
+                return
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+            self._active = False
+
+    def print_line(self, text: str) -> None:
+        """Print a finalized, newline-terminated line atomically.
+
+        Holds the lock across clear+write so the heartbeat/streaming thread
+        cannot interleave an in-place update between erasing the status line
+        and emitting this log row (which would splice the log onto the tail
+        of the status text). When no status line is active (e.g. stderr is a
+        file), this is just an ordinary line write with no control bytes.
+        """
+        with self._lock:
+            if self._active:
+                sys.stderr.write("\r\033[K")
+                self._active = False
+            sys.stderr.write(text + "\n")
+            sys.stderr.flush()
+
+
+_stderr_status = _StderrStatus()
 
 
 def _heartbeat_seconds() -> float:
@@ -88,7 +155,10 @@ def _start_heartbeat(started_at: float) -> _HeartbeatHandle | None:
     def _loop() -> None:
         interval = _heartbeat_seconds()
         while not stop.wait(interval):
-            _llm_log(f"... still waiting for LLM response ({time.monotonic() - started_at:.0f}s elapsed)")
+            _stderr_status.update(
+                f"[llm] ... still waiting for LLM response "
+                f"({time.monotonic() - started_at:.0f}s elapsed)"
+            )
 
     thread = threading.Thread(target=_loop, daemon=True, name="openmc-llm-heartbeat")
     thread.start()
@@ -100,6 +170,8 @@ def _stop_heartbeat(handle: _HeartbeatHandle | None) -> None:
         return
     handle.stop.set()
     handle.thread.join(timeout=1.0)
+    # Erase any lingering "still waiting" status so the next log line starts clean.
+    _stderr_status.clear()
 
 
 @dataclass(frozen=True)
@@ -568,8 +640,8 @@ def _consume_sse_stream(
                 content_parts.append(text)
             now = time.monotonic()
             if _llm_progress_enabled and now - last_progress >= 5.0:
-                _llm_log(
-                    f"... streaming, {chunk_count} chunks / "
+                _stderr_status.update(
+                    f"[llm] ... streaming, {chunk_count} chunks / "
                     f"{sum(len(p) for p in content_parts)} content chars "
                     f"({time.monotonic() - started_at:.0f}s elapsed)"
                 )

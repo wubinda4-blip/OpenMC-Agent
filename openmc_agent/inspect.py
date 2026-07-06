@@ -1,7 +1,11 @@
 import argparse
 import json
+import os
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -389,20 +393,177 @@ def _interrupt_payload(state: dict) -> dict | None:
     return value if isinstance(value, dict) else {"value": value}
 
 
-def _read_expert_feedback(payload: dict[str, Any]) -> str:
-    round_index = payload.get("round", "?")
-    max_rounds = payload.get("max_rounds", "?")
-    questions = payload.get("questions") or []
-    print(f"专家反馈轮次 {round_index}/{max_rounds}", file=sys.stderr)
-    for index, question in enumerate(questions, start=1):
-        print(f"{index}. {question}", file=sys.stderr)
-    print("请输入专家反馈；直接回车表示暂不补充并继续当前产物:", file=sys.stderr)
+def _eprint(*parts: str) -> None:
+    print("".join(parts), file=sys.stderr, flush=True)
+
+
+def _stderr_supports_ansi() -> bool:
+    if os.getenv("NO_COLOR"):
+        return False
+    if os.getenv("TERM", "") == "dumb":
+        return False
+    return sys.stderr.isatty()
+
+
+def _bold(text: str) -> str:
+    return f"\033[1m{text}\033[0m" if _stderr_supports_ansi() else text
+
+
+def _dim(text: str) -> str:
+    return f"\033[2m{text}\033[0m" if _stderr_supports_ansi() else text
+
+
+def _terminal_width(default: int = 72) -> int:
+    try:
+        return max(40, shutil.get_terminal_size((default, 20)).columns)
+    except OSError:
+        return default
+
+
+def _print_feedback_panel(
+    round_index: Any,
+    max_rounds: Any,
+    questions: list[str],
+    instruction: str,
+) -> None:
+    width = _terminal_width()
+    _eprint()
+    _eprint(_dim("─" * width))
+    _eprint(f"  {_bold('专家反馈')}  {_dim(f'· 轮次 {round_index}/{max_rounds}')}")
+    if questions:
+        for index, question in enumerate(questions, start=1):
+            _eprint(f"    {_bold(f'{index}.')} {question}")
+    else:
+        _eprint("    （无具体问题，可自由补充建模要点）")
+    if instruction:
+        _eprint(f"  {_dim(instruction)}")
+    _eprint(_dim("─" * width))
+    _eprint(
+        "  "
+        + _dim("多行输入，")
+        + _bold("空行结束")
+        + _dim("；")
+        + _bold("直接回车")
+        + _dim("＝接受当前产物继续；")
+        + _bold(":e")
+        + _dim("＝用 $EDITOR 输入")
+    )
+
+
+def _read_decoded_line() -> str | None:
     # 直接读字节并以 replace 解码:在 utf-8 locale 下 sys.stdin 默认 errors=
     # surrogateescape,IME/终端送入的残字节(如 0xE5 0xAE)会被解码成 lone
     # surrogate (U+DCxx),下游 pydantic_core 无法把含 lone surrogate 的字符串
     # 编码为合法 UTF-8,会抛 string_unicode ValidationError。replace 把残字节
     # 替换成 U+FFFD,保证下游拿到的始终是合法 Unicode。
-    return sys.stdin.buffer.readline().decode("utf-8", "replace").strip()
+    raw = sys.stdin.buffer.readline()
+    if not raw:  # EOF
+        return None
+    return raw.decode("utf-8", "replace")
+
+
+def _accumulate_inline(first_line: str | None) -> str:
+    lines: list[str] = []
+    if first_line is not None:
+        lines.append(first_line)
+    while True:
+        line = _read_decoded_line()
+        if line is None or line.strip() == "":
+            break
+        lines.append(line)
+    return "".join(lines)
+
+
+def _edit_in_external_editor() -> str | None:
+    """Open $EDITOR on a temp file and return its contents, or None if unavailable.
+
+    Honors ``OPENMC_AGENT_EDITOR`` > ``EDITOR`` > ``VISUAL``; otherwise falls
+    back to nano/vim/vi on PATH. Returns None when stdin is not a TTY or no
+    editor is found so the caller can degrade to inline multi-line input.
+    """
+    if not sys.stdin.isatty():
+        return None
+    editor = (
+        os.environ.get("OPENMC_AGENT_EDITOR")
+        or os.environ.get("EDITOR")
+        or os.environ.get("VISUAL")
+    )
+    if editor:
+        command = shlex.split(editor)
+    else:
+        found = shutil.which("nano") or shutil.which("vim") or shutil.which("vi")
+        if not found:
+            return None
+        command = [found]
+
+    handle = tempfile.NamedTemporaryFile(
+        "w+", suffix=".md", delete=False, encoding="utf-8"
+    )
+    handle.write(
+        "# 在下方输入专家反馈，保存退出即提交。以 '#' 开头的注释行会被忽略。\n\n"
+    )
+    handle.flush()
+    path = handle.name
+    handle.close()
+    try:
+        subprocess.run([*command, path], check=False)
+        with open(path, "r", encoding="utf-8") as reader:
+            text = reader.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    kept = [
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    ]
+    return "\n".join(kept).strip()
+
+
+def _read_feedback_input() -> str:
+    first = _read_decoded_line()
+    if first is None:
+        return ""
+    first_stripped = first.strip()
+
+    if first_stripped in (":e", ":editor"):
+        edited = _edit_in_external_editor()
+        if edited is not None:
+            return edited
+        _eprint(_dim("（未找到可用编辑器，改为 inline 多行输入，空行结束）"))
+        return _accumulate_inline(first_line=None)
+
+    if first_stripped == "":
+        return ""
+    return _accumulate_inline(first_line=first)
+
+
+def _read_expert_feedback(payload: dict[str, Any]) -> str:
+    """Render the expert-feedback panel and collect the expert's reply.
+
+    Returns the feedback text (possibly multi-line); an empty string means
+    "accept the current artifact and continue" — the contract the LangGraph
+    resume in ``_invoke_plan_graph_with_optional_feedback`` relies on.
+    """
+    round_index = payload.get("round", "?")
+    max_rounds = payload.get("max_rounds", "?")
+    questions = payload.get("questions") or []
+    instruction = payload.get("instruction") or ""
+
+    _print_feedback_panel(round_index, max_rounds, questions, instruction)
+
+    feedback = _read_feedback_input().strip()
+    if feedback:
+        line_count = feedback.count("\n") + 1
+        _eprint(
+            _dim(
+                f"已收到专家反馈（{line_count} 行 / {len(feedback)} 字符），"
+                "写回图状态并继续。"
+            )
+        )
+    else:
+        _eprint(_dim("未输入反馈，按当前产物继续。"))
+    return feedback
 
 
 def _legacy_transcript_data(
