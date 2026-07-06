@@ -26,7 +26,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from openmc_agent.schemas import SimulationPlan, ValidationIssue
+from openmc_agent.lattice_validation import (
+    canonical_pin_map_rows,
+    is_structural_error_confirmation,
+    lattice_id_from_schema_path,
+)
+from openmc_agent.schemas import AssemblySpec, SimulationPlan, ValidationIssue
 
 
 # Codes whose only fix is renaming a typo'd reference to an existing id.
@@ -97,20 +102,70 @@ def _resolve_id(typo: str, pool: set[str]) -> str | None:
     return None
 
 
+def _associate_assembly_wrapper(
+    universe_id: str,
+    assemblies: list[AssemblySpec],
+) -> int | None:
+    """Return the index of the assembly a core-lattice wrapper reference points at.
+
+    The LLM often names the wrapper universe after the assembly lattice id or
+    assembly id rather than copying assembly.id exactly -- e.g. it writes
+    ``uo2_assembly_univ`` in ``core_lattice.universe_pattern`` while
+    ``assembly.lattice_id`` is ``uo2_assembly`` and ``assembly.id`` is
+    ``uo2_assy``. This returns the unique assembly whose ``lattice_id`` or
+    ``id`` is a substring of ``universe_id``, so the caller can add the wrapper
+    universe and rename ``assembly.id`` to match the reference. Returns
+    ``None`` on zero or ambiguous matches so the caller falls back to
+    edit-distance repair.
+    """
+    candidates: list[int] = []
+    for idx, assembly in enumerate(assemblies):
+        if assembly.lattice_id and assembly.lattice_id in universe_id:
+            candidates.append(idx)
+        elif assembly.id and assembly.id in universe_id:
+            candidates.append(idx)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def auto_repair_lattice_structure(
     plan: SimulationPlan,
     issues: list[ValidationIssue] | None = None,
+    *,
+    requirement: str = "",
 ) -> list[dict[str, Any]] | None:
-    """Return RFC 6902 patch ops for uniquely-solvable id-reference typos.
+    """Return RFC 6902 patch ops for deterministic lattice repairs.
+
+    Two repair families, both applied as RFC 6902 ops:
+
+    1. Uniquely-solvable id-reference typos (cell.fill_id, universe.cell_ids,
+       lattice.universe_pattern entries, etc.).
+    2. Pin-count mismatch on a lattice whose canonical pin map is carried in
+       ``requirement``: the parsed canonical grid is the ground truth and
+       overwrites the LLM's expanded ``universe_pattern`` directly. The LLM
+       cannot reliably hand-edit a dense matrix even with cell-level
+       coordinates (C5G7 case3: three reflections returned a byte-identical
+       wrong 17x17), so this deterministic overwrite is the reliable fix.
 
     Returns ``None`` when no deterministic repair applies (so the caller knows
-    to fall through to the LLM path). When ``issues`` is provided and none carry
-    an id-reference code, returns ``None`` immediately without scanning.
+    to fall through to the LLM path). When ``issues`` is provided and none
+    carry a repairable code, returns ``None`` immediately without scanning.
     """
     model = plan.complex_model
     if model is None:
         return None
-    if issues is not None and not any(issue.code in _ID_REF_CODES for issue in issues):
+    has_id_ref = issues is not None and any(
+        issue.code in _ID_REF_CODES for issue in issues
+    )
+    has_pin_mismatch = issues is not None and any(
+        issue.code == "lattice.pin_count_mismatch" for issue in issues
+    )
+    if (
+        issues is not None
+        and not has_id_ref
+        and not (has_pin_mismatch and requirement)
+    ):
         return None
 
     material_ids = {material.id for material in model.materials}
@@ -172,21 +227,32 @@ def auto_repair_lattice_structure(
             )
 
     # Lattice universe_pattern -> universe ids.  For core lattices, a pattern
-    # may intentionally reference AssemblySpec ids; add the empty universe shell
-    # that the core renderer later wraps with the assembly lattice.
+    # may intentionally reference assembly wrapper universes. Two naming shapes
+    # are supported:
+    # 1. the reference equals an AssemblySpec id -> add the empty wrapper shell;
+    # 2. the reference embeds the assembly lattice_id/id (e.g. 'uo2_assembly_univ'
+    #    for lattice_id 'uo2_assembly') but differs from assembly.id -> add the
+    #    wrapper AND rename assembly.id to the referenced name, otherwise the
+    #    core renderer's assembly.id lookup misses and the plan loops.
     missing_assembly_universes: list[str] = []
     seen_missing_assembly_universes: set[str] = set()
+    assembly_renames: dict[int, str] = {}
     for i, lattice in enumerate(model.lattices):
         for r, row in enumerate(lattice.universe_pattern):
             for c, universe_id in enumerate(row):
                 if universe_id in universe_ids:
                     continue
-                if (
-                    universe_id in assembly_lattice_by_id
-                    and universe_id not in seen_missing_assembly_universes
-                ):
-                    seen_missing_assembly_universes.add(universe_id)
-                    missing_assembly_universes.append(universe_id)
+                if universe_id in assembly_lattice_by_id:
+                    if universe_id not in seen_missing_assembly_universes:
+                        seen_missing_assembly_universes.add(universe_id)
+                        missing_assembly_universes.append(universe_id)
+                    continue
+                assoc_idx = _associate_assembly_wrapper(universe_id, model.assemblies)
+                if assoc_idx is not None:
+                    if universe_id not in seen_missing_assembly_universes:
+                        seen_missing_assembly_universes.add(universe_id)
+                        missing_assembly_universes.append(universe_id)
+                        assembly_renames[assoc_idx] = universe_id
                     continue
                 replace_if_resolved(
                     f"/complex_model/lattices/{i}/universe_pattern/{r}/{c}",
@@ -207,6 +273,13 @@ def auto_repair_lattice_structure(
                 ),
             },
         })
+    for assembly_idx, new_id in assembly_renames.items():
+        if model.assemblies[assembly_idx].id != new_id:
+            ops.append({
+                "op": "replace",
+                "path": f"/complex_model/assemblies/{assembly_idx}/id",
+                "value": new_id,
+            })
 
     loading_ids = {loading.id for loading in model.lattice_loadings}
 
@@ -259,6 +332,47 @@ def auto_repair_lattice_structure(
                     "path": f"/complex_model/lattice_loadings/{i}/overrides/{new_key}",
                     "value": value,
                 })
+
+    # Pin-count mismatch: overwrite universe_pattern from the requirement's
+    # canonical pin map. Only lattices the caller flagged (via a mismatch issue
+    # with a schema_path) are touched, and only when the canonical shape matches
+    # exactly -- never overwrite a lattice that was not reported as mismatched.
+    if has_pin_mismatch and requirement:
+        mismatched_ids = {
+            lattice_id_from_schema_path(issue.schema_path)
+            for issue in issues or []
+            if issue.code == "lattice.pin_count_mismatch"
+        }
+        for index, lattice in enumerate(model.lattices):
+            if lattice.id not in mismatched_ids:
+                continue
+            rows = canonical_pin_map_rows(lattice, requirement)
+            if rows is not None:
+                ops.append(
+                    {
+                        "op": "replace",
+                        "path": f"/complex_model/lattices/{index}/universe_pattern",
+                        "value": rows,
+                    }
+                )
+                # Drop any stale structural confirmation on this lattice (e.g.
+                # "pin count mismatch ..."): the pattern is now canonical, and a
+                # stale confirmation would be re-asked by ask_expert, whose
+                # feedback can trigger regenerate_plan and discard this fix.
+                existing = list(lattice.requires_human_confirmation or [])
+                kept = [
+                    item
+                    for item in existing
+                    if not is_structural_error_confirmation(item)
+                ]
+                if kept != existing:
+                    ops.append(
+                        {
+                            "op": "replace",
+                            "path": f"/complex_model/lattices/{index}/requires_human_confirmation",
+                            "value": kept,
+                        }
+                    )
 
     return ops or None
 

@@ -271,7 +271,7 @@ def test_reflect_plan_auto_repair_success_records_no_llm(monkeypatch) -> None:
     report = ValidationReport.from_issues([issue])
     calls = {"repair": 0}
 
-    def fake_auto_repair(_plan, issues):
+    def fake_auto_repair(_plan, issues, **_kwargs):
         return [
             {
                 "op": "replace",

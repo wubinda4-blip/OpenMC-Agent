@@ -5,7 +5,15 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from openmc_agent.error_catalog import issue_from_catalog
-from openmc_agent.graph import _render_plan_script, build_graph, build_plan_graph
+from openmc_agent.graph import (
+    _core_lattice_naming_guidance,
+    _pending_expert_questions,
+    _pin_count_mismatch_context,
+    _render_plan_script,
+    build_graph,
+    build_plan_graph,
+)
+from openmc_agent.validator import validate_simulation_plan
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.records import load_jsonl_records
 from openmc_agent.renderers.base import RenderResult
@@ -701,6 +709,116 @@ def test_plan_graph_format_repair_guides_truncated_large_patterns(tmp_path: Path
 
     assert calls["generate"] == 2
     assert state["validation_report"].is_valid is True
+
+
+def test_pin_count_mismatch_context_locates_mispositioned_pins_from_canonical_map() -> None:
+    """reflect_plan gets cell-level locations, not just a count diff.
+
+    Regression for the C5G7 MOX case: three LLM reflections returned a
+    byte-identical wrong 17x17 pattern because the prompt only said 'mox7 -2,
+    mox87 +2'. With the canonical pin map carried in the requirement, the
+    mismatch context now pinpoints the exact (row, col) cells to rewrite and
+    echoes the canonical rows so the LLM stops re-guessing from symmetry.
+    """
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="mox check",
+            kind="assembly",
+            materials=[
+                ComplexMaterialSpec(
+                    id="m",
+                    name="mat",
+                    density_unit="g/cm3",
+                    density_value=1.0,
+                    chemical_formula="H2O",
+                )
+            ],
+            cells=[CellSpec(id="c1", name="cell", fill_type="material", fill_id="m")],
+            universes=[
+                UniverseSpec(id="mox43_pin", name="A", cell_ids=["c1"]),
+                UniverseSpec(id="mox7_pin", name="B", cell_ids=["c1"]),
+                UniverseSpec(id="mox87_pin", name="C", cell_ids=["c1"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="mox_assembly",
+                    name="MOX assembly",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[
+                        ["mox43_pin", "mox43_pin", "mox43_pin"],
+                        ["mox43_pin", "mox87_pin", "mox43_pin"],
+                        ["mox43_pin", "mox43_pin", "mox43_pin"],
+                    ],
+                    expected_counts={"mox43_pin": 8, "mox7_pin": 1},
+                )
+            ],
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True, supported_renderer="assembly"
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.0, 1.0), filename="p.png")],
+    )
+    report = validate_simulation_plan(plan)
+    state = {
+        "simulation_plan": plan,
+        "validation_report": report,
+        "requirement": (
+            "### MOX 符号表\n\n"
+            "| 符号 | 含义 | 建议 pin universe |\n|---|---|---|\n"
+            "| A | 4.3% MOX | `mox43_pin` |\n"
+            "| B | 7.0% MOX | `mox7_pin` |\n"
+            "| C | 8.7% MOX | `mox87_pin` |\n\n"
+            "### MOX canonical pin map\n\n```text\n"
+            "R01: A A A\nR02: A B A\nR03: A A A\n```\n"
+        ),
+    }
+    ctx = _pin_count_mismatch_context(state)
+    assert "R02C02" in ctx
+    assert "mox7_pin" in ctx
+    assert "mox87_pin" in ctx
+    assert "A B A" in ctx
+
+
+def test_core_lattice_naming_guidance_targets_assembly_id_mismatch() -> None:
+    g = _core_lattice_naming_guidance()
+    assert "assembly.id" in g
+    assert "core" in g.lower()
+
+
+def test_pending_expert_questions_skips_structural_error_confirmations() -> None:
+    """LLM-written structural confirmations must not become expert questions.
+
+    The C5G7 regression: the LLM put 'pin count mismatch' into the lattice's
+    requires_human_confirmation, so ask_expert re-asked it as an expert
+    question, and the feedback triggered regenerate_plan -- discarding the
+    deterministic fix. Structural markers are filtered; physics questions pass.
+    """
+    plan = make_pin_count_mismatch_core_plan()
+    plan = plan.model_copy(
+        update={
+            "capability_report": plan.capability_report.model_copy(
+                update={
+                    "required_human_confirmations": [
+                        "lattice mox_assembly: pin count mismatch vs "
+                        "expected_counts: mox7 expected 100, got 90",
+                        "fuel temperature 900K",
+                    ]
+                }
+            )
+        }
+    )
+    state = {
+        "simulation_plan": plan,
+        "validation_report": ValidationReport(is_valid=True),
+    }
+    questions = _pending_expert_questions(state)
+    assert not any(
+        "pin count" in q.lower() or "mismatch" in q.lower() for q in questions
+    )
+    assert any("temperature" in q.lower() for q in questions)
 
 
 def test_plan_graph_reflection_includes_hard_counts_and_mismatch_context(

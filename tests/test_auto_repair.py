@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from openmc_agent.auto_repair import _resolve_id, auto_repair_lattice_structure
+from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.graph import _apply_json_patches
 from openmc_agent.schemas import (
     AssemblySpec,
@@ -487,3 +488,219 @@ def test_returns_none_for_clean_plan():
         universes=[UniverseSpec(id="u1", name="u", cell_ids=["c1"])],
     )
     assert auto_repair_lattice_structure(_plan(model)) is None
+
+
+# ---------------------------------------------------------------------------
+# Canonical pin-map overwrite (pin-count mismatch repair)
+# ---------------------------------------------------------------------------
+
+_MOX3X3_REQ = (
+    "### MOX 符号表\n\n"
+    "| 符号 | 含义 | 建议 pin universe |\n|---|---|---|\n"
+    "| A | 4.3% MOX | `mox43_pin` |\n"
+    "| B | 7.0% MOX | `mox7_pin` |\n"
+    "| C | 8.7% MOX | `mox87_pin` |\n\n"
+    "### MOX canonical pin map\n\n```text\n"
+    "R01: A A A\nR02: A B A\nR03: A A A\n```\n"
+)
+
+
+def _mox_pin_count_model() -> ComplexModelSpec:
+    return ComplexModelSpec(
+        name="mox check",
+        kind="assembly",
+        cells=[
+            CellSpec(id="c43", name="c", fill_type="void"),
+            CellSpec(id="c7", name="c", fill_type="void"),
+            CellSpec(id="c87", name="c", fill_type="void"),
+        ],
+        universes=[
+            UniverseSpec(id="mox43_pin", name="A", cell_ids=["c43"]),
+            UniverseSpec(id="mox7_pin", name="B", cell_ids=["c7"]),
+            UniverseSpec(id="mox87_pin", name="C", cell_ids=["c87"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="mox_assembly",
+                name="MOX assembly",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[
+                    ["mox43_pin", "mox43_pin", "mox43_pin"],
+                    ["mox43_pin", "mox87_pin", "mox43_pin"],  # canonical says mox7_pin
+                    ["mox43_pin", "mox43_pin", "mox43_pin"],
+                ],
+                expected_counts={"mox43_pin": 8, "mox7_pin": 1},
+            )
+        ],
+    )
+
+
+def _pin_count_mismatch_issue() -> ValidationIssue:
+    return issue_from_catalog(
+        "lattice.pin_count_mismatch",
+        message="lattice 'mox_assembly' pin counts mismatch",
+        schema_path="complex_model.lattices.mox_assembly.universe_pattern",
+        route_hint="reflect_plan",
+    )
+
+
+def test_auto_repair_overwrites_pattern_from_canonical_pin_map() -> None:
+    """Pin-count mismatch + canonical map => deterministic pattern overwrite.
+
+    The LLM cannot reliably hand-edit a dense universe_pattern even with
+    cell-level coordinates (C5G7 case3: three reflections returned a byte-
+    identical wrong 17x17). auto_repair emits a single replace op restoring
+    the canonical ground-truth grid.
+    """
+    plan = _plan(_mox_pin_count_model())
+    patch = auto_repair_lattice_structure(
+        plan, issues=[_pin_count_mismatch_issue()], requirement=_MOX3X3_REQ
+    )
+    assert patch is not None
+    replace_ops = [
+        op
+        for op in patch
+        if op.get("op") == "replace"
+        and op.get("path") == "/complex_model/lattices/0/universe_pattern"
+    ]
+    assert len(replace_ops) == 1
+    assert replace_ops[0]["value"][1][1] == "mox7_pin"
+    patched = _apply_json_patches(plan.model_dump(mode="json"), patch)
+    grid = patched["complex_model"]["lattices"][0]["universe_pattern"]
+    assert grid[1][1] == "mox7_pin"
+
+
+def test_auto_repair_skips_canonical_overwrite_without_requirement() -> None:
+    """No requirement text => no canonical map => no overwrite (and no id-ref ops
+    because the pattern universe ids are all valid)."""
+    plan = _plan(_mox_pin_count_model())
+    assert (
+        auto_repair_lattice_structure(plan, issues=[_pin_count_mismatch_issue()])
+        is None
+    )
+
+
+def test_auto_repair_skips_canonical_overwrite_without_mismatch_issue() -> None:
+    """A requirement alone must not overwrite a lattice the caller did not flag."""
+    plan = _plan(_mox_pin_count_model())
+    patch = auto_repair_lattice_structure(plan, issues=None, requirement=_MOX3X3_REQ)
+    if patch:
+        assert not any(
+            op.get("op") == "replace"
+            and "universe_pattern" in op.get("path", "")
+            for op in patch
+        )
+
+
+def test_auto_repair_canonical_overwrite_clears_stale_pin_count_confirmation() -> None:
+    """Overwriting universe_pattern must also drop a stale pin-count confirmation.
+
+    The C5G7 regression: the LLM wrote 'pin count mismatch' into
+    lattice.requires_human_confirmation. Even after the deterministic overwrite
+    fixed the counts, ask_expert kept re-surfacing that confirmation, and the
+    resulting expert feedback triggered regenerate_plan -- discarding the fix.
+    Clearing the stale confirmation breaks that loop.
+    """
+    model = _mox_pin_count_model()
+    model.lattices[0].requires_human_confirmation = [
+        "pin count mismatch vs expected_counts: mox7_pin: expected 100, got 90"
+    ]
+    plan = _plan(model)
+    patch = auto_repair_lattice_structure(
+        plan, issues=[_pin_count_mismatch_issue()], requirement=_MOX3X3_REQ
+    )
+    assert patch is not None
+    conf_ops = [
+        op
+        for op in patch
+        if op.get("op") == "replace"
+        and op.get("path") == "/complex_model/lattices/0/requires_human_confirmation"
+    ]
+    assert len(conf_ops) == 1
+    assert conf_ops[0]["value"] == []
+
+
+def test_auto_repair_unifies_core_assembly_wrapper_naming() -> None:
+    """core_lattice references wrapper universes whose names differ from assembly.id.
+
+    The C5G7 regression: the LLM put 'uo2_assembly_univ' / 'mox_assembly_univ'
+    in core_lattice.universe_pattern, but assembly.id is 'uo2_assy' / 'mox_assy'.
+    auto_repair must (a) add the wrapper universes under the referenced names
+    and (b) rename assembly.id to match, so the renderer's assembly.id lookup
+    succeeds. Without this, the missing-universe error loops until retry exhaust
+    and regenerate_plan re-introduces the pin-count defect.
+    """
+    model = ComplexModelSpec(
+        name="core",
+        kind="core",
+        materials=[_mat("water")],
+        cells=[CellSpec(id="c1", name="c", fill_type="material", fill_id="water")],
+        universes=[
+            UniverseSpec(id="water_reflector", name="water", cell_ids=["c1"]),
+            UniverseSpec(id="uo2_pin", name="uo2", cell_ids=["c1"]),
+            UniverseSpec(id="mox_pin", name="mox", cell_ids=["c1"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="uo2_assembly",
+                name="uo2",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["uo2_pin"]],
+            ),
+            LatticeSpec(
+                id="mox_assembly",
+                name="mox",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[["mox_pin"]],
+            ),
+            LatticeSpec(
+                id="core_lattice",
+                name="core",
+                kind="rect",
+                pitch_cm=(1.0, 1.0),
+                universe_pattern=[
+                    ["uo2_assembly_univ", "mox_assembly_univ", "water_reflector"],
+                    ["mox_assembly_univ", "uo2_assembly_univ", "water_reflector"],
+                    ["water_reflector", "water_reflector", "water_reflector"],
+                ],
+            ),
+        ],
+        assemblies=[
+            AssemblySpec(id="uo2_assy", name="uo2 assembly", lattice_id="uo2_assembly"),
+            AssemblySpec(id="mox_assy", name="mox assembly", lattice_id="mox_assembly"),
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="core_lattice"),
+    )
+    issue = issue_from_catalog(
+        "lattice.universe_ref_missing",
+        message=(
+            "lattice 'core_lattice' references missing universes: "
+            "['uo2_assembly_univ', 'mox_assembly_univ']"
+        ),
+        schema_path="complex_model.lattices.core_lattice.universe_pattern",
+        route_hint="auto_repair",
+    )
+    patch = auto_repair_lattice_structure(_plan(model), issues=[issue])
+
+    # wrapper universes added under the referenced names
+    added_ids = {
+        o.get("value", {}).get("id")
+        for o in (patch or [])
+        if o.get("op") == "add" and "/universes/" in o.get("path", "")
+    }
+    assert "uo2_assembly_univ" in added_ids
+    assert "mox_assembly_univ" in added_ids
+
+    # assembly.id renamed to match the core reference
+    renamed_values = {
+        o["value"]
+        for o in (patch or [])
+        if o.get("op") == "replace"
+        and "/assemblies/" in o.get("path", "")
+        and o.get("path", "").endswith("/id")
+    }
+    assert "uo2_assembly_univ" in renamed_values
+    assert "mox_assembly_univ" in renamed_values

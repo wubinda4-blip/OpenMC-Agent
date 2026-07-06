@@ -16,6 +16,11 @@ from openmc_agent.auto_repair import auto_repair_lattice_structure
 from openmc_agent.few_shots import select_few_shots
 from openmc_agent.grep_search import RetrievedEvidence
 from openmc_agent.knowledge_graph import GraphContext
+from openmc_agent.lattice_validation import (
+    extract_canonical_pin_map,
+    is_structural_error_confirmation,
+    lattice_cell_mismatches,
+)
 from openmc_agent.llm import (
     StructuredOutputResult,
     generate_structured_output,
@@ -1081,7 +1086,12 @@ def _make_assess_plan_capability_node(max_retries: int):
         repair_errors = [issue.message for issue in repair_issues]
         existing_issues = list(report.issues)
         deterministic_repair_available = bool(
-            repair_issues and auto_repair_lattice_structure(updated_plan, repair_issues)
+            repair_issues
+            and auto_repair_lattice_structure(
+                updated_plan,
+                repair_issues,
+                requirement=state.get("requirement", ""),
+            )
         )
         inject_invalid = bool(repair_errors) and (
             retry_count < max_retries or deterministic_repair_available
@@ -1838,7 +1848,9 @@ def _make_reflect_plan_node(
             )
             trace_state = {**trace_state, **auto_attempt_update}
             auto_patch = auto_repair_lattice_structure(
-                plan, issues=[*plan.capability_report.issues, *report.issues]
+                plan,
+                issues=[*plan.capability_report.issues, *report.issues],
+                requirement=state.get("requirement", ""),
             )
 
         if auto_patch is not None and patch_failures < PATCH_FALLBACK_THRESHOLD:
@@ -2520,6 +2532,11 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
     questions: list[str] = []
     capability = plan.capability_report
     for item in capability.required_human_confirmations:
+        if is_structural_error_confirmation(item):
+            # LLMs sometimes record structural defects (pin-count mismatch,
+            # missing-universe refs) here; those are agent-fixable, not expert
+            # questions, and re-asking them can trigger regenerate_plan.
+            continue
         questions.append(f"Please provide or confirm: {item}")
     for item in plan.expert_assumptions:
         questions.append(f"Please confirm or correct this modeling assumption: {item}")
@@ -2534,6 +2551,8 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
         non_expert_routes = {"auto_repair", "reflect_plan", "retrieval", "capability_downgrade"}
         if not any(issue.route_hint in non_expert_routes for issue in capability.issues):
             for reason in capability.reasons:
+                if is_structural_error_confirmation(reason):
+                    continue
                 questions.append(f"What expert information resolves this renderability gap: {reason}")
             for warning in capability.warnings:
                 questions.append(f"Please review this modeling warning: {warning}")
@@ -3388,6 +3407,25 @@ def _hard_count_constraints_context(state: GraphState) -> str:
     )
 
 
+def _core_lattice_naming_guidance() -> str:
+    """Static rule injected into generation/reflection prompts.
+
+    The C5G7 regression: the LLM wrote 'uo2_assembly_univ' in core_lattice but
+    set assembly.id to 'uo2_assy'. The core renderer looks up assemblies by id,
+    so any mismatch blocks export and loops reflect_plan. auto_repair now
+    unifies the names deterministically; stating the rule up front keeps the
+    LLM from introducing the mismatch in the first place.
+    """
+    return (
+        "\n[Core Lattice Naming]\n"
+        "Each assembly slot in a core lattice's universe_pattern MUST equal the\n"
+        "id of an AssemblySpec -- the wrapper universe id is exactly assembly.id.\n"
+        "Do NOT invent names like '<lattice_id>_univ' or '<assembly>_univ' that\n"
+        "differ from assembly.id; the core renderer looks up assemblies by id and\n"
+        "any mismatch blocks export.\n"
+    )
+
+
 def _pin_count_mismatch_context(state: GraphState) -> str:
     report = state.get("validation_report")
     if report is None:
@@ -3399,10 +3437,14 @@ def _pin_count_mismatch_context(state: GraphState) -> str:
     ]
     if not mismatches:
         return ""
-    lines = [
-        f"- {issue.schema_path or '<unknown path>'}: {issue.message}"
-        for issue in mismatches[:8]
-    ]
+    plan = _coerce_simulation_plan(state.get("simulation_plan"))
+    requirement = state.get("requirement", "")
+    lines: list[str] = []
+    for issue in mismatches[:8]:
+        lines.append(f"- {issue.schema_path or '<unknown path>'}: {issue.message}")
+        location = _pin_count_mismatch_location(plan, issue, requirement)
+        if location:
+            lines.append(location)
     return (
         "\n[Pin Count Mismatch Evidence]\n"
         "The current IR expands to counts that disagree with expected_counts. "
@@ -3411,6 +3453,71 @@ def _pin_count_mismatch_context(state: GraphState) -> str:
         + "\n".join(lines)
         + "\n"
     )
+
+
+def _lattice_id_from_schema_path(schema_path: str | None) -> str | None:
+    """Extract the lattice id from ``complex_model.lattices.<id>.universe_pattern``."""
+    if not schema_path:
+        return None
+    parts = schema_path.split(".")
+    try:
+        return parts[parts.index("lattices") + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def _pin_count_mismatch_location(
+    plan: SimulationPlan | None,
+    issue: ValidationIssue,
+    requirement: str,
+) -> str:
+    """Pinpoint the exact cells to rewrite using the requirement's canonical pin map.
+
+    A count diff alone ('mox7 -2, mox87 +2') does not tell the LLM which of 289
+    positions are wrong, so repeated reflections return a byte-identical wrong
+    pattern. When the input document carries a canonical pin map for this
+    lattice, compare it cell by cell and list the mis-positioned coordinates
+    alongside the authoritative rows.
+    """
+    if plan is None or plan.complex_model is None or not requirement:
+        return ""
+    lattice_id = _lattice_id_from_schema_path(issue.schema_path)
+    if not lattice_id:
+        return ""
+    lattice = next(
+        (lat for lat in plan.complex_model.lattices if lat.id == lattice_id),
+        None,
+    )
+    if lattice is None or not lattice.universe_pattern:
+        return ""
+    canonical = extract_canonical_pin_map(requirement, lattice_id)
+    if canonical is None:
+        return ""
+    diffs = lattice_cell_mismatches(lattice.universe_pattern, canonical.rows)
+    total = sum(len(row) for row in lattice.universe_pattern)
+    parts: list[str] = []
+    if diffs:
+        if len(diffs) <= max(8, total // 4):
+            cell_lines = [
+                f"  R{row:02d}C{col:02d}: expected {expected!r}, got {actual!r}"
+                for row, col, expected, actual in diffs[:64]
+            ]
+            parts.append(
+                "Exact cells whose universe differs from the canonical pin map "
+                "(row/col are 1-indexed; rewrite each to the expected universe):\n"
+                + "\n".join(cell_lines)
+            )
+        else:
+            parts.append(
+                f"{len(diffs)}/{total} cells differ from the canonical map -- the "
+                "pattern is broadly wrong; rebuild universe_pattern row by row "
+                "from the canonical map below rather than patching individual cells."
+            )
+    parts.append(
+        "Canonical pin map (transcribe row by row from R01; do NOT infer from "
+        "symmetry or from the count diff):\n" + canonical.raw_text.strip()
+    )
+    return "\n".join(parts)
 
 
 def _requirement_with_expert_feedback(state: GraphState) -> str:
@@ -3458,6 +3565,7 @@ def _augmented_plan_requirement(state: GraphState) -> str:
     parts = [
         base,
         _hard_count_constraints_context(state),
+        _core_lattice_naming_guidance(),
         "",
         "OpenMC API context retrieved from local Python introspection and official docs references:",
         _compact_context(docs),
