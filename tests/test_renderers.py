@@ -411,6 +411,44 @@ def test_core_renderer_can_render_auto_materialized_missing_cells() -> None:
     assert not any("references missing cells" in reason for reason in capability.reasons)
 
 
+def test_core_renderer_blocks_lattice_expected_count_mismatch() -> None:
+    model = ComplexModelSpec(
+        name="pin count core",
+        kind="core",
+        materials=[_complete_fuel()],
+        cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+        universes=[
+            UniverseSpec(id="pin_a", name="pin A", cell_ids=["fuel_cell"]),
+            UniverseSpec(id="pin_b", name="pin B", cell_ids=["fuel_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="mox_assembly_lattice",
+                name="MOX assembly lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[["pin_a", "pin_a"], ["pin_a", "pin_b"]],
+                expected_counts={"pin_a": 2, "pin_b": 2},
+            )
+        ],
+        core=CoreSpec(id="core", name="core", lattice_id="mox_assembly_lattice"),
+    )
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png")],
+    )
+
+    _renderer, capability = choose_renderer(plan)
+
+    assert capability.supported_renderer == "core"
+    assert capability.renderability == "skeleton"
+    assert any(issue.code == "lattice.pin_count_mismatch" for issue in capability.issues)
+    assert any("pin counts do not match expected_counts" in reason for reason in capability.reasons)
+
+
 def test_core_renderer_reports_lattice_loading_reference_errors() -> None:
     model = ComplexModelSpec(
         name="bad loading core",

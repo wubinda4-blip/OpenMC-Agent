@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openmc_agent.executor import render_openmc_assembly_script
+from openmc_agent.lattice_validation import lattice_pin_count_issues
 from openmc_agent.renderers.base import BaseRenderer, RenderResult, low_cost_runnable
 from openmc_agent.reachability import (
     ActiveDependencies,
@@ -426,27 +427,8 @@ def _lattice_pattern_errors(
         )
 
     # Hard gate at export: a pin-count mismatch must block XML export so a wrong
-    # map can never become a runnable model. (The schema records the same mismatch
-    # as a soft confirmation so the workflow can still emit a reviewable skeleton.)
-    if lattice.expected_counts:
-        actual_counts: dict[str, int] = {}
-        for row in pattern:
-            for uid in row:
-                actual_counts[uid] = actual_counts.get(uid, 0) + 1
-        count_mismatches = [
-            f"{uid}: expected {expected}, got {actual_counts.get(uid, 0)}"
-            for uid, expected in lattice.expected_counts.items()
-            if actual_counts.get(uid, 0) != expected
-        ]
-        if count_mismatches:
-            errors.append(
-                _iss(
-                    "lattice.pin_count_mismatch",
-                    f"lattice {lattice.id!r} pin counts do not match expected_counts: "
-                    + "; ".join(count_mismatches),
-                    schema_base,
-                )
-            )
+    # map can never become a runnable model.
+    errors.extend(lattice_pin_count_issues([lattice], message_style="renderer"))
     return errors
 
 

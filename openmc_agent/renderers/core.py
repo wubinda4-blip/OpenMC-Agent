@@ -7,6 +7,7 @@ from typing import Any
 
 from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.executor import render_openmc_core_script
+from openmc_agent.lattice_validation import lattice_pin_count_issues
 from openmc_agent.renderers.base import BaseRenderer, RenderResult, low_cost_runnable
 from openmc_agent.renderers.skeleton import emit_skeleton
 from openmc_agent.renderers.triso import _write_full_model
@@ -209,6 +210,7 @@ def _core_renderability_errors(model: Any) -> list[ValidationIssue]:
                 f"{lattice.outer_universe_id!r}",
                 f"complex_model.lattices.{lattice.id}.outer_universe_id",
             ))
+        errors.extend(lattice_pin_count_issues([lattice], message_style="renderer"))
     if model.core is not None:
         loading_by_id = {loading.id: loading for loading in model.lattice_loadings}
         for layer in model.core.axial_layers:

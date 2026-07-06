@@ -120,6 +120,8 @@ class GraphState(TypedDict, total=False):
     raw_llm_outputs: list[str]
     candidate_payload: dict[str, Any] | None
     plan_artifacts: list[str]
+    hard_count_constraints: str
+    pin_count_mismatch_context: str
     openmc_api_docs: list[dict[str, str]]
     few_shot_examples: list[dict[str, str]]
     verbose: bool
@@ -338,7 +340,10 @@ def _receive_requirement(state: GraphState) -> GraphState:
         _progress(state, "receive_requirement", "failed: requirement is empty")
         return {"error": "requirement is required"}
     _progress(state, "receive_requirement", f"received {len(requirement)} characters")
-    return {"requirement": requirement}
+    return {
+        "requirement": requirement,
+        "hard_count_constraints": _extract_hard_count_constraints(requirement),
+    }
 
 
 def _make_generate_spec_node(generate_spec: GenerateSpecFn):
@@ -825,16 +830,33 @@ def _make_validate_plan_node(max_retries: int):
 
         if not report.is_valid:
             _progress(state, "validate_plan", f"failed with {len(report.errors)} error(s)")
+            invalid_plan = _plan_with_validation_failure_capability(plan, report)
+            state_plan = (
+                invalid_plan
+                if retry_count >= max_retries
+                else plan
+            )
+            artifact_paths = (
+                _write_final_simulation_plan(state, invalid_plan)
+                if invalid_plan is not None
+                else state.get("plan_artifacts", [])
+            )
             updates: GraphState = {
+                "simulation_plan": state_plan,
+                "simulation_spec": state_plan.model_spec if state_plan is not None else None,
                 "validation_report": report,
                 "retry_history": history,
                 "error": "; ".join(report.errors),
+                "pin_count_mismatch_context": _pin_count_mismatch_context(
+                    {**state, "validation_report": report}
+                ),
+                "plan_artifacts": artifact_paths,
                 **_trace_event_update(
                     state,
                     "validation_completed",
                     summary=f"SimulationPlan validation failed with {len(report.errors)} error(s)",
                     report=report,
-                    plan=plan,
+                    plan=invalid_plan or plan,
                 ),
             }
             if plan is None and _plan_generation_needs_expert_question(report.errors):
@@ -2208,6 +2230,29 @@ def _report_should_ask_expert(report: ValidationReport) -> bool:
     )
 
 
+def _plan_with_validation_failure_capability(
+    plan: SimulationPlan | None,
+    report: ValidationReport,
+) -> SimulationPlan | None:
+    if plan is None:
+        return None
+    existing = plan.capability_report
+    supported_renderer = existing.supported_renderer
+    if supported_renderer == "none" and plan.complex_model is not None:
+        supported_renderer = plan.complex_model.kind if plan.complex_model.kind in {"assembly", "core", "triso"} else "none"
+    capability = existing.model_copy(
+        update={
+            "renderability": "skeleton" if supported_renderer != "none" else "none",
+            "is_executable": False,
+            "supported_renderer": supported_renderer,
+            "executable_subsystems": [],
+            "reasons": list(dict.fromkeys([*existing.reasons, *report.errors])),
+            "issues": _dedupe_validation_issues([*existing.issues, *report.issues]),
+        }
+    )
+    return plan.model_copy(update={"capability_report": capability})
+
+
 def _dedupe_validation_issues(issues: list[ValidationIssue]) -> list[ValidationIssue]:
     seen: set[tuple[str, str, str | None]] = set()
     deduped: list[ValidationIssue] = []
@@ -2345,11 +2390,14 @@ def _build_reflection_requirement(state: GraphState) -> str:
             "- Keep material values, geometry dimensions, and physical facts unchanged.\n"
             f"Structural errors to fix now: {repair_errors}\n"
         )
+    pin_count_context = _pin_count_mismatch_context(state)
     return (
         f"{state.get('requirement', '')}\n\n"
         "The current SimulationPlan failed during OpenMC expert-style execution checks. "
         "Return a corrected SimulationPlan JSON object only. Do not modify Python code directly.\n"
         f"{structure_guidance}"
+        f"{_hard_count_constraints_context(state)}"
+        f"{pin_count_context}"
         f"{issue_context}"
         f"{retrieval_prompt}"
         f"{_repair_constraints_context()}"
@@ -3285,6 +3333,85 @@ def _plan_human_confirmations(plan: SimulationPlan) -> list[str]:
     return list(dict.fromkeys(confirmations))
 
 
+_COUNT_CONSTRAINT_KEYWORDS = (
+    "expected_counts",
+    "pin count",
+    "pin-count",
+    "棒位",
+    "总数",
+    "共有",
+    "检查",
+    "燃料棒",
+    "导向管",
+    "裂变室",
+    "MOX",
+    "UO2",
+    "mox",
+    "uo2",
+)
+
+
+def _extract_hard_count_constraints(requirement: str, *, limit: int = 18) -> str:
+    """Extract bounded source lines that look like hard count constraints."""
+    lines: list[str] = []
+    for raw_line in requirement.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        has_digit = bool(re.search(r"\d", line))
+        has_count_unit = bool(
+            re.search(r"(个|根|位置|count|counts|total|expected)", line, re.IGNORECASE)
+        )
+        has_keyword = any(keyword in line for keyword in _COUNT_CONSTRAINT_KEYWORDS)
+        if has_digit and has_count_unit and has_keyword:
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return "\n".join(dict.fromkeys(lines))
+
+
+def _hard_count_constraints_context(state: GraphState) -> str:
+    constraints = state.get("hard_count_constraints") or _extract_hard_count_constraints(
+        state.get("requirement", "")
+    )
+    if not constraints:
+        return ""
+    return (
+        "\n[Hard Count Constraints From Input]\n"
+        "Treat these source-text counts as hard constraints. For any lattice that "
+        "uses these counts, encode them in expected_counts and ensure the expanded "
+        "universe_pattern matches them exactly. During repair, prefer fixing "
+        "fill_universe/overrides/universe_pattern; change expected_counts only if "
+        "the original input count was transcribed incorrectly.\n"
+        f"{_truncate_text(constraints, 2500)}\n"
+    )
+
+
+def _pin_count_mismatch_context(state: GraphState) -> str:
+    report = state.get("validation_report")
+    if report is None:
+        return ""
+    mismatches = [
+        issue
+        for issue in report.issues
+        if issue.code == "lattice.pin_count_mismatch"
+    ]
+    if not mismatches:
+        return ""
+    lines = [
+        f"- {issue.schema_path or '<unknown path>'}: {issue.message}"
+        for issue in mismatches[:8]
+    ]
+    return (
+        "\n[Pin Count Mismatch Evidence]\n"
+        "The current IR expands to counts that disagree with expected_counts. "
+        "Re-read the input rows/regions and correct the lattice map before any "
+        "render/export step.\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _requirement_with_expert_feedback(state: GraphState) -> str:
     requirement = state["requirement"]
     feedback = state.get("expert_feedback", [])
@@ -3329,6 +3456,7 @@ def _augmented_plan_requirement(state: GraphState) -> str:
     few_shots = state.get("few_shot_examples", [])
     parts = [
         base,
+        _hard_count_constraints_context(state),
         "",
         "OpenMC API context retrieved from local Python introspection and official docs references:",
         _compact_context(docs),

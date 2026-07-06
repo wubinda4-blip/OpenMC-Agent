@@ -86,6 +86,48 @@ def make_simulation_plan() -> SimulationPlan:
     )
 
 
+def make_pin_count_mismatch_core_plan() -> SimulationPlan:
+    return SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="pin count core",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                )
+            ],
+            cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+            universes=[
+                UniverseSpec(id="pin_a", name="pin A", cell_ids=["fuel_cell"]),
+                UniverseSpec(id="pin_b", name="pin B", cell_ids=["fuel_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="mox_assembly_lattice",
+                    name="MOX assembly lattice",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=[["pin_a", "pin_a"], ["pin_a", "pin_b"]],
+                    expected_counts={"pin_a": 2, "pin_b": 2},
+                )
+            ],
+            core=CoreSpec(id="core", name="core", lattice_id="mox_assembly_lattice"),
+        ),
+        capability_report=RenderCapabilityReport(
+            renderability="runnable",
+            is_executable=True,
+            supported_renderer="core",
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png")],
+    )
+
+
 def make_plan_with_fuel_confirmations(confirmations: list[str]) -> SimulationPlan:
     spec = make_simulation_spec()
     fuel = spec.pin_cell.fuel.model_copy(
@@ -659,6 +701,80 @@ def test_plan_graph_format_repair_guides_truncated_large_patterns(tmp_path: Path
 
     assert calls["generate"] == 2
     assert state["validation_report"].is_valid is True
+
+
+def test_plan_graph_reflection_includes_hard_counts_and_mismatch_context(
+    tmp_path: Path,
+) -> None:
+    captured = {"repair_requirement": ""}
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        assert "[Hard Count Constraints From Input]" in requirement
+        assert "64 根 4.3% MOX" in requirement
+        return StructuredOutputResult(ok=True, value=make_pin_count_mismatch_core_plan())
+
+    def fake_repair_plan(*, requirement: str, schema, model: str, previous_spec, validation_errors):
+        captured["repair_requirement"] = requirement
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        repair_plan=fake_repair_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=1,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": (
+                "MOX 组件内共有 64 根 4.3% MOX 燃料棒、100 根 7.0% MOX "
+                "燃料棒、100 根 8.7% MOX 燃料棒、24 个导向管位置和 1 个裂变室位置。"
+            ),
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    assert state["validation_report"].is_valid is True
+    assert "[Hard Count Constraints From Input]" in captured["repair_requirement"]
+    assert "[Pin Count Mismatch Evidence]" in captured["repair_requirement"]
+    assert "lattice.pin_count_mismatch" in json.dumps(
+        state["trace"], ensure_ascii=False
+    )
+
+
+def test_plan_graph_downgrades_invalid_final_plan_when_retry_exhausted(
+    tmp_path: Path,
+) -> None:
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(ok=True, value=make_pin_count_mismatch_core_plan())
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=lambda model_path: ToolResult(name="export_xml", ok=True),
+        plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
+        smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
+        max_retries=0,
+    )
+
+    state = graph.invoke(
+        {
+            "requirement": "MOX 组件内共有 64 根 4.3% MOX 燃料棒。",
+            "model": "test:model",
+            "output_dir": str(tmp_path),
+            "records_path": str(tmp_path / "runs.jsonl"),
+        }
+    )
+
+    final_plan = json.loads((tmp_path / "simulation_plan.json").read_text(encoding="utf-8"))
+    assert state["validation_report"].is_valid is False
+    assert final_plan["capability_report"]["renderability"] == "skeleton"
+    assert final_plan["capability_report"]["is_executable"] is False
+    assert final_plan["capability_report"]["issues"][0]["code"] == "lattice.pin_count_mismatch"
+    assert not (tmp_path / "model.py").exists()
 
 
 def test_plan_graph_writes_candidate_payload_for_schema_failure(tmp_path: Path) -> None:
