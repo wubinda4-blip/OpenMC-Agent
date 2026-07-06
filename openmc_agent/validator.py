@@ -12,8 +12,11 @@ that match on ``report.errors`` text keep working.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from openmc_agent.error_catalog import add_issue, issue_from_catalog
 from openmc_agent.schemas import (
+    ComplexModelSpec,
     SimulationPlan,
     SimulationSpec,
     ValidationIssue,
@@ -128,7 +131,67 @@ def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
     ):
         add_issue(issues, "plan.executable.unsupported_renderer")
 
+    if plan.complex_model is not None:
+        issues.extend(_lattice_pin_count_issues(plan.complex_model))
+
     return ValidationReport.from_issues(issues)
+
+
+def _lattice_pin_count_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
+    """Check each lattice's expanded ``universe_pattern`` against ``expected_counts``.
+
+    ``LatticeSpec.expected_counts`` is the universe_id -> expected-occurrence map
+    transcribed from the input document's pin-count table (e.g. C5G7 MOX
+    64/100/100/24/1) -- the deterministic ground truth the LLM is bad at
+    reproducing when hand-expanding a dense coordinate description into a 17x17
+    matrix. Comparing the expanded pattern against it catches those errors with a
+    precise per-material diff the ``reflect_plan`` loop can act on, instead of
+    asking the LLM to fix a mismatch it cannot see. Lattices without
+    ``expected_counts`` are skipped, so the check is opt-in and never fires on
+    legacy plans.
+    """
+    issues: list[ValidationIssue] = []
+    for lattice in model.lattices:
+        expected = lattice.expected_counts
+        if not expected:
+            continue
+        pattern = lattice.universe_pattern
+        actual: Counter[str] = Counter(
+            universe_id for row in pattern for universe_id in row
+        )
+        diff_parts: list[str] = []
+        for universe_id in sorted(set(actual) | set(expected)):
+            actual_count = actual.get(universe_id, 0)
+            expected_count = expected.get(universe_id, 0)
+            if actual_count != expected_count:
+                diff_parts.append(
+                    f"{universe_id}: actual={actual_count} expected={expected_count} "
+                    f"(diff {actual_count - expected_count:+d})"
+                )
+        if not diff_parts:
+            continue
+        total_cells = sum(len(row) for row in pattern)
+        expected_total = sum(expected.values())
+        shape_note = ""
+        if expected_total != total_cells:
+            shape_note = (
+                f" (expected_counts sum {expected_total} != rows*cols {total_cells})"
+            )
+        add_issue(
+            issues,
+            "lattice.pin_count_mismatch",
+            message=(
+                f"lattice {lattice.id!r} pin counts mismatch — "
+                + "; ".join(diff_parts)
+                + shape_note
+                + ". Re-read the input document's per-ring/per-region pin "
+                  "description and correct universe_pattern, or fix expected_counts "
+                  "if the pattern is already correct."
+            ),
+            schema_path=f"complex_model.lattices.{lattice.id}.universe_pattern",
+            route_hint="reflect_plan",
+        )
+    return issues
 
 
 def validate_openmc_script(

@@ -1,13 +1,22 @@
 from openmc_agent.executor import render_openmc_script
 from openmc_agent.schemas import (
+    ComplexModelSpec,
     GeometrySpec,
+    LatticeSpec,
     MaterialSpec,
     NuclideSpec,
     PinCellSpec,
+    PlotSpec,
+    RenderCapabilityReport,
     SettingsSpec,
+    SimulationPlan,
     SimulationSpec,
 )
-from openmc_agent.validator import validate_openmc_script, validate_simulation_spec
+from openmc_agent.validator import (
+    validate_openmc_script,
+    validate_simulation_plan,
+    validate_simulation_spec,
+)
 
 
 def make_standard_spec() -> SimulationSpec:
@@ -80,3 +89,97 @@ def test_validate_openmc_script_accepts_rendered_script() -> None:
 
     assert report.is_valid is True
     assert report.errors == []
+
+
+def _plan_with_lattice(
+    expected_counts: dict[str, int] | None,
+    pattern: list[list[str]],
+) -> SimulationPlan:
+    """Minimal core plan carrying one lattice for pin-count validation tests."""
+    return SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="pin-count check",
+            kind="core",
+            lattices=[
+                LatticeSpec(
+                    id="assm",
+                    name="assm",
+                    kind="rect",
+                    pitch_cm=(1.26, 1.26),
+                    universe_pattern=pattern,
+                    expected_counts=expected_counts,
+                )
+            ],
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True, supported_renderer="core"
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.0, 1.0), filename="p.png")],
+    )
+
+
+def test_validate_plan_flags_lattice_pin_count_mismatch() -> None:
+    """A wrong pin map is caught with a per-material diff routed to reflect_plan.
+
+    This is the C5G7 MOX regression: the LLM hand-expands a dense coordinate
+    description and miscounts. ``expected_counts`` (transcribed from the input
+    document) is the deterministic ground truth; the validator surfaces the exact
+    diff so reflect_plan can fix it instead of guessing.
+    """
+    plan = _plan_with_lattice(
+        expected_counts={"A": 2, "B": 4},
+        pattern=[["A", "A", "A"], ["A", "B", "B"]],
+    )
+
+    report = validate_simulation_plan(plan)
+
+    assert report.is_valid is False
+    mismatches = [i for i in report.issues if i.code == "lattice.pin_count_mismatch"]
+    assert len(mismatches) == 1
+    msg = mismatches[0].message
+    assert "A: actual=4 expected=2 (diff +2)" in msg
+    assert "B: actual=2 expected=4 (diff -2)" in msg
+    assert mismatches[0].route_hint == "reflect_plan"
+    assert mismatches[0].severity == "error"
+    assert mismatches[0].schema_path == "complex_model.lattices.assm.universe_pattern"
+
+
+def test_validate_plan_accepts_matching_expected_counts() -> None:
+    plan = _plan_with_lattice(
+        expected_counts={"A": 4, "B": 2},
+        pattern=[["A", "A", "A"], ["A", "B", "B"]],
+    )
+
+    report = validate_simulation_plan(plan)
+
+    assert report.is_valid is True
+    assert not any(i.code == "lattice.pin_count_mismatch" for i in report.issues)
+
+
+def test_validate_plan_skips_lattices_without_expected_counts() -> None:
+    """Legacy plans without expected_counts are unaffected (opt-in check)."""
+    plan = _plan_with_lattice(
+        expected_counts=None,
+        pattern=[["A", "A", "A"], ["A", "B", "B"]],
+    )
+
+    report = validate_simulation_plan(plan)
+
+    assert not any(i.code == "lattice.pin_count_mismatch" for i in report.issues)
+
+
+def test_validate_plan_pin_count_mismatch_includes_shape_note() -> None:
+    """When expected_counts sum != rows*cols, the diff message says so."""
+    plan = _plan_with_lattice(
+        expected_counts={"A": 2, "B": 1},
+        pattern=[["A", "A", "A"], ["A", "B", "B"]],
+    )
+
+    report = validate_simulation_plan(plan)
+
+    mismatch = next(
+        i for i in report.issues if i.code == "lattice.pin_count_mismatch"
+    )
+    assert "expected_counts sum 3 != rows*cols 6" in mismatch.message
