@@ -1881,6 +1881,26 @@ def test_capability_self_repair_classifies_structural_vs_material_gaps() -> None
     # Material gaps are expert facts, not LLM typos.
     assert _capability_self_repair_errors(material) == []
 
+    # Mixed ao/wo percent types are NOT a missing-data gap: the composition is
+    # all there, just on mixed bases, so the agent can self-repair (unify to one
+    # basis or add chemical_formula) instead of bothering the expert. Contrast
+    # with missing_density/missing_composition above, which stay ask_expert.
+    mixed_report = RenderCapabilityReport(
+        renderability="skeleton",
+        is_executable=False,
+        supported_renderer="core",
+        issues=[
+            ValidationIssue(
+                severity="error",
+                code="material.mixed_percent_type",
+                message="material 'fuel' mixes atom and weight percents",
+            ),
+        ],
+    )
+    assert {issue.code for issue in _capability_self_repair_errors(mixed_report)} == {
+        "material.mixed_percent_type"
+    }
+
     clean = RenderCapabilityReport(renderability="exportable", supported_renderer="assembly")
     assert _capability_self_repair_errors(clean) == []
 

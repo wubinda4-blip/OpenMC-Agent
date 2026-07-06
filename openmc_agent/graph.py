@@ -3238,6 +3238,7 @@ SELF_REPAIRABLE_CODES = frozenset({
     "lattice_loading.base_ref_missing",
     "lattice_loading.override_universe_ref_missing",
     "surface.cylinder_radius_invalid",
+    "material.mixed_percent_type",
 })
 
 

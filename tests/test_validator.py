@@ -1,5 +1,6 @@
 from openmc_agent.executor import render_openmc_script
 from openmc_agent.schemas import (
+    ComplexMaterialSpec,
     ComplexModelSpec,
     GeometrySpec,
     LatticeSpec,
@@ -183,3 +184,95 @@ def test_validate_plan_pin_count_mismatch_includes_shape_note() -> None:
         i for i in report.issues if i.code == "lattice.pin_count_mismatch"
     )
     assert "expected_counts sum 3 != rows*cols 6" in mismatch.message
+
+
+def _plan_with_materials(materials: list[ComplexMaterialSpec]) -> SimulationPlan:
+    """Minimal core plan carrying materials for percent-type validation tests."""
+    return SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="material check",
+            kind="core",
+            materials=materials,
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True, supported_renderer="core"
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(1.0, 1.0), filename="p.png")],
+    )
+
+
+def test_validate_plan_flags_material_mixed_percent_type() -> None:
+    """Mixed ao/wo without chemical_formula is flagged and routed to reflect_plan.
+
+    The VERA UO2 regression: U isotopes in 'wo' but O16 in 'ao' from a
+    stoichiometric O/U ratio. The validator surfaces it at plan-validation time so
+    SELF_REPAIRABLE_CODES routes it to reflect_plan instead of ask_expert.
+    """
+    plan = _plan_with_materials(
+        [
+            ComplexMaterialSpec(
+                id="fuel",
+                name="UO2 fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[
+                    NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+                    NuclideSpec(name="U238", percent=96.9, percent_type="wo"),
+                    NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+                ],
+            ),
+        ]
+    )
+
+    report = validate_simulation_plan(plan)
+
+    assert report.is_valid is False
+    issues = [i for i in report.issues if i.code == "material.mixed_percent_type"]
+    assert len(issues) == 1
+    assert issues[0].route_hint == "reflect_plan"
+    assert issues[0].severity == "error"
+    assert "'ao'" in issues[0].message and "'wo'" in issues[0].message
+
+
+def test_validate_plan_accepts_mixed_percent_with_chemical_formula() -> None:
+    """Mixed ao/wo with chemical_formula is legal (executor formula fallback)."""
+    plan = _plan_with_materials(
+        [
+            ComplexMaterialSpec(
+                id="fuel",
+                name="UO2 fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[
+                    NuclideSpec(name="U235", percent=3.1, percent_type="wo"),
+                    NuclideSpec(name="U238", percent=96.9, percent_type="wo"),
+                    NuclideSpec(name="O16", percent=2.0, percent_type="ao"),
+                ],
+                chemical_formula="UO2",
+            ),
+        ]
+    )
+
+    report = validate_simulation_plan(plan)
+
+    assert not any(i.code == "material.mixed_percent_type" for i in report.issues)
+
+
+def test_validate_plan_skips_macroscopic_materials_for_percent_check() -> None:
+    """Macroscopic materials carry no nuclide composition and are exempt."""
+    plan = _plan_with_materials(
+        [
+            ComplexMaterialSpec(
+                id="water",
+                name="C5G7 water",
+                density_unit="macro",
+                macroscopic="water",
+            ),
+        ]
+    )
+
+    report = validate_simulation_plan(plan)
+
+    assert not any(i.code == "material.mixed_percent_type" for i in report.issues)

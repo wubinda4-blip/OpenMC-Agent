@@ -15,6 +15,7 @@ from __future__ import annotations
 from openmc_agent.error_catalog import add_issue, issue_from_catalog
 from openmc_agent.lattice_validation import lattice_pin_count_issues
 from openmc_agent.schemas import (
+    ComplexModelSpec,
     SimulationPlan,
     SimulationSpec,
     ValidationIssue,
@@ -107,6 +108,44 @@ def validate_simulation_spec(spec: SimulationSpec) -> ValidationReport:
     return ValidationReport.from_issues(issues)
 
 
+def _complex_material_mixed_percent_issues(
+    model: ComplexModelSpec,
+) -> list[ValidationIssue]:
+    """Flag materials that mix ao/wo without a chemical_formula fallback.
+
+    Mirrors the renderer-level ``material.mixed_percent_type`` check but runs at
+    plan-validation time so the defect is surfaced -- and, via
+    SELF_REPAIRABLE_CODES, routed to reflect_plan -- before capability rendering.
+    A material with ``chemical_formula`` is legal: the executor normalizes it
+    through ``add_elements_from_formula``. Macroscopic materials carry no nuclide
+    composition and are exempt.
+    """
+    issues: list[ValidationIssue] = []
+    for material in model.materials:
+        if material.macroscopic is not None:
+            continue
+        if material.chemical_formula is not None:
+            continue
+        if not material.composition:
+            continue
+        percent_types = {component.percent_type for component in material.composition}
+        if len(percent_types) > 1:
+            add_issue(
+                issues,
+                "material.mixed_percent_type",
+                message=(
+                    f"material {material.id!r} mixes atom and weight percents "
+                    f"({sorted(percent_types)}) without a chemical_formula fallback; "
+                    "use a single percent_type per material -- prefer 'wo' so isotope "
+                    "enrichments stay exact (O in UO2 ~= 11.85 wo, H in H2O ~= 11.19 wo, "
+                    "O in H2O ~= 88.81 wo) -- or set chemical_formula (e.g. 'UO2', 'H2O')"
+                ),
+                route_hint="reflect_plan",
+                severity="error",
+            )
+    return issues
+
+
 def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
     """Validate a :class:`SimulationPlan`, merging any pin-cell spec issues."""
     issues: list[ValidationIssue] = []
@@ -131,6 +170,7 @@ def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
 
     if plan.complex_model is not None:
         issues.extend(lattice_pin_count_issues(plan.complex_model.lattices))
+        issues.extend(_complex_material_mixed_percent_issues(plan.complex_model))
 
     return ValidationReport.from_issues(issues)
 
