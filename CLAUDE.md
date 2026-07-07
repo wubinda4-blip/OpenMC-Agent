@@ -36,6 +36,13 @@ git push origin <当前分支>
   - 在维护记录中追加变更摘要。
 - 相关 strategy 文档也要保持与代码一致；过时文档应合并后删除。
 
+## 通用性约束
+
+- 该 openmc-agent 是**通用**的，覆盖 PWR/BWR/VVER/HTGR/SFR/CANDU/MOX 等多种堆型，不能为了某一种堆型写死规则或固化行为。
+- 堆型相关的材料、几何、栅格、边界约定必须由**输入文档驱动**，不得硬编码到代码里。
+- 系统提示（prompts）、validator、renderer、few-shots、guard 里只能写**堆型无关的通用机制**——例如 spacer grid、repeated geometry、axial overlay、lattice overrides 都是通用抽象，不是 PWR 等单一堆型专属。
+- 新增能力时按通用机制设计；若某堆型需要特殊处理，走 input-driven 的通用字段或 human confirmation，而不是在规则里固化单一堆型假设。
+
 ## 安全边界
 
 - 不读取或输出 secrets、tokens、private keys。
