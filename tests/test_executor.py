@@ -676,6 +676,32 @@ def test_rectangular_prism_width_pair_is_normalized_for_openmc_api() -> None:
 
 
 @pytest.mark.parametrize(
+    "pitch_value, expected_width, expected_height",
+    [
+        ([1.26, 1.26], 1.26, 1.26),  # pair -- the LLM form that crashed OpenMC
+        (1.26, 1.26, 1.26),          # scalar square pitch
+        ([1.26, 1.4], 1.26, 1.4),    # non-square pair
+    ],
+)
+def test_rectangular_prism_pitch_is_translated_to_width_height(
+    pitch_value, expected_width: float, expected_height: float
+) -> None:
+    """LLM plans write ``pitch=[px, py]`` for the pin-cell box; OpenMC's
+    RectangularPrism has no ``pitch`` kwarg (width/height only). The renderer
+    must translate it or export_xml fails with 'unexpected keyword argument'."""
+    surface = SurfaceSpec(
+        id="pin_box", kind="rectangular_prism", parameters={"pitch": pitch_value}
+    )
+
+    constructor = _surface_constructor(surface)
+
+    assert "openmc.model.RectangularPrism" in constructor
+    assert f"width={expected_width}" in constructor
+    assert f"height={expected_height}" in constructor
+    assert "pitch=" not in constructor
+
+
+@pytest.mark.parametrize(
     "kind,alias,canonical",
     [
         ("xplane", "x", "x0"),

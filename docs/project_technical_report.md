@@ -332,6 +332,13 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
 
+### 2026-07-07（rectangular_prism `pitch` kwarg 修复 —— export_xml TypeError）
+
+- **根因**：LLM 把 pin-cell 盒写成 `rectangular_prism` surface 且参数用 `pitch=[1.26, 1.26]`。`executor.py` `_rectangular_prism_kwargs` 只归一化 `width`/`height` 和 `xmin/xmax/ymin/ymax` 区间（hexagonal_prism 路径有 `pitch→edge_length`，rectangular 没有），`pitch` 原样传给 `openmc.model.RectangularPrism(pitch=...)` → `TypeError: unexpected keyword argument 'pitch'`（OpenMC 的 RectangularPrism 只接受 `width`/`height`）。导致 `export_xml` 在构造 pin_box region 时崩溃，XML 一个都导不出。
+- **修复**：`_rectangular_prism_kwargs` 在最前面把 `pitch`（pair 或 scalar）翻译成 `width`/`height`，只在缺 width/height 时填，不覆盖显式值。
+- **回归测试（`tests/test_executor.py`）**：parametrize 覆盖 `pitch=[1.26,1.26]` / `pitch=1.26`（scalar）/ `pitch=[1.26,1.4]`（非方形）→ 断言生成 `width=`/`height=` 且无 `pitch=`。原 `width` pair 测试保持绿。
+- 全量测试：`570 passed, 2 skipped`。
+
 ### 2026-07-07（Step 3 overlay cell 复用 bug 修复 —— VERA3 source rejection 真正根因）
 
 完成并验证：

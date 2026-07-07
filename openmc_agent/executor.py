@@ -1121,6 +1121,21 @@ def _composite_surface_constructor(constructor: str, params: dict[str, object]) 
 
 def _rectangular_prism_kwargs(params: dict[str, object]) -> dict[str, object]:
     """Normalize bounded rectangular-prism params to OpenMC's width/height API."""
+    # OpenMC's RectangularPrism takes width/height, not pitch. The IR/LLM often
+    # writes pitch=[px, py] (or a scalar square pitch) to describe the pin-cell
+    # box; translate it before the constructor sees it (otherwise OpenMC raises
+    # "unexpected keyword argument 'pitch'").
+    if "pitch" in params and "width" not in params and "height" not in params:
+        pitch_value = params.pop("pitch")
+        pitch_pair = _as_float_pair(pitch_value)
+        if pitch_pair is not None:
+            params["width"] = pitch_pair[0]
+            params["height"] = pitch_pair[1]
+        else:
+            scalar = _as_float(pitch_value)
+            params["width"] = scalar
+            params["height"] = scalar
+
     width_pair = _as_float_pair(params.get("width"))
     if width_pair is not None:
         params["width"] = width_pair[0]
