@@ -312,6 +312,16 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 
 ## 9. 维护记录
 
+### 2026-07-07（Step 4 续：抑制环境已满足的核数据库路径专家问题）
+
+完成并验证：
+
+- **修复 ask_expert 反复询问已配置的 `OPENMC_CROSS_SECTIONS`**。根因：`few_shots`/`prompts` 引导 LLM 把核数据库路径写进 `capability.required_human_confirmations`（典型措辞 "Cross sections library path (OPENMC_CROSS_SECTIONS) must be set by the user."），`_pending_expert_questions` 无条件把它包成专家问题，且 agent 从不检测环境变量——即使环境已配好仍反复打扰用户。
+- **修复点（`openmc_agent/graph.py`）**：新增 `_cross_sections_env_available`（`OPENMC_CROSS_SECTIONS` 非空且文件存在）/`_is_cross_sections_confirmation`（文本匹配）/`_cross_sections_question_resolved_by_env`（组合判定）。在 `_pending_expert_questions` 对 **capability 阶段** 确认项（`required_human_confirmations` + `capability.issues`）做环境自检抑制。
+- **关键边界**：**不**抑制 `validation_report.issues` 里的 runtime issue（如 `runtime.cross_sections_missing`）——那是 OpenMC 实际运行失败，即使环境变量设了也可能真失败（路径失效/子进程未继承/hdf5 版本不符），必须保留 ask_expert 路由。读环境变量值 ≠ 发明路径，human-confirmation 安全边界不变。
+- **测试**：`tests/test_graph.py` 新增文本匹配单测 +「环境已配则抑制」+「环境未配则保留」两个端到端用例；既有 `test_plan_graph_does_not_reflect_cross_sections_missing` 守卫 runtime issue 不被误抑制。
+- 全量测试通过：`552 passed, 2 skipped`。
+
 ### 2026-07-07（Step 4 续：surface 轴截距别名归一化）
 
 完成并验证：

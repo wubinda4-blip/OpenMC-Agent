@@ -821,6 +821,97 @@ def test_pending_expert_questions_skips_structural_error_confirmations() -> None
     assert any("temperature" in q.lower() for q in questions)
 
 
+def test_cross_sections_confirmation_marker_matching() -> None:
+    from openmc_agent.graph import _is_cross_sections_confirmation
+
+    assert _is_cross_sections_confirmation(
+        "Cross sections library path (OPENMC_CROSS_SECTIONS) must be set by the user."
+    )
+    assert _is_cross_sections_confirmation(
+        "OPENMC_CROSS_SECTIONS environment variable is not set"
+    )
+    assert _is_cross_sections_confirmation("nuclear data path / library version")
+    assert not _is_cross_sections_confirmation("fuel temperature 900K")
+    assert not _is_cross_sections_confirmation("UO2 density 10.4 g/cm3")
+    assert not _is_cross_sections_confirmation("boundary condition reflective")
+
+
+def test_pending_expert_questions_skips_cross_sections_when_env_is_set(
+    monkeypatch, tmp_path
+) -> None:
+    """The nuclear-data path is an environment config, not a modeling fact.
+
+    Regression: the LLM (guided by few-shots/prompts) always wrote
+    'OPENMC_CROSS_SECTIONS must be set by the user' into
+    required_human_confirmations, so ask_expert re-asked it every run even
+    though the user's environment already had the library configured. When
+    OPENMC_CROSS_SECTIONS points at a readable file, suppress that item and
+    keep genuine physics gaps.
+    """
+    cs_file = tmp_path / "cross_sections.xml"
+    cs_file.write_text("<cross_sections/>")
+    monkeypatch.setenv("OPENMC_CROSS_SECTIONS", str(cs_file))
+
+    plan = make_simulation_plan().model_copy(
+        update={
+            "capability_report": make_simulation_plan()
+            .capability_report.model_copy(
+                update={
+                    "required_human_confirmations": [
+                        "Cross sections library path (OPENMC_CROSS_SECTIONS) "
+                        "must be set by the user.",
+                        "fuel density missing for UO2 pellet",
+                    ]
+                }
+            )
+        }
+    )
+    state = {
+        "simulation_plan": plan,
+        "validation_report": ValidationReport(is_valid=True),
+    }
+
+    questions = _pending_expert_questions(state)
+
+    assert not any(
+        "cross_section" in q.lower() or "openmc_cross_sections" in q.lower()
+        for q in questions
+    )
+    assert any("density" in q.lower() for q in questions)
+
+
+def test_pending_expert_questions_keeps_cross_sections_when_env_unset(
+    monkeypatch,
+) -> None:
+    """When the env var is genuinely missing, the path IS a real fact gap."""
+    monkeypatch.delenv("OPENMC_CROSS_SECTIONS", raising=False)
+
+    plan = make_simulation_plan().model_copy(
+        update={
+            "capability_report": make_simulation_plan()
+            .capability_report.model_copy(
+                update={
+                    "required_human_confirmations": [
+                        "Cross sections library path (OPENMC_CROSS_SECTIONS) "
+                        "must be set by the user.",
+                    ]
+                }
+            )
+        }
+    )
+    state = {
+        "simulation_plan": plan,
+        "validation_report": ValidationReport(is_valid=True),
+    }
+
+    questions = _pending_expert_questions(state)
+
+    assert any(
+        "cross_section" in q.lower() or "openmc_cross_sections" in q.lower()
+        for q in questions
+    )
+
+
 def test_plan_graph_reflection_includes_hard_counts_and_mismatch_context(
     tmp_path: Path,
 ) -> None:

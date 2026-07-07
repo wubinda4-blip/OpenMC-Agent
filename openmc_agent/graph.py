@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Literal, TypedDict
@@ -2596,6 +2597,38 @@ def _looks_like_truncated_json(raw: str, error: str) -> bool:
     return bool(tail) and tail[-1] not in {"}", "]", "`"}
 
 
+# Nuclear-data path is an environment config, not a modeling fact. When
+# OPENMC_CROSS_SECTIONS already points at a readable cross_sections.xml, the
+# LLM-written "must be set by the user" confirmation is stale noise and must
+# not be re-asked by ask_expert. Reading an existing environment value is not
+# the same as inventing a path, so the human-confirmation safety boundary
+# (no fabricated nuclear-data paths) still holds.
+_CROSS_SECTIONS_CONFIRMATION_MARKERS = (
+    "cross_section",
+    "cross-section",
+    "cross sections library",
+    "openmc_cross_sections",
+    "nuclear data path",
+    "nuclear-data path",
+    "nuclear data library",
+    "nuclear-data library",
+)
+
+
+def _is_cross_sections_confirmation(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _CROSS_SECTIONS_CONFIRMATION_MARKERS)
+
+
+def _cross_sections_env_available() -> bool:
+    path = os.environ.get("OPENMC_CROSS_SECTIONS")
+    return bool(path) and os.path.isfile(path)
+
+
+def _cross_sections_question_resolved_by_env(text: str) -> bool:
+    return _cross_sections_env_available() and _is_cross_sections_confirmation(text)
+
+
 def _pending_expert_questions(state: GraphState) -> list[str]:
     plan = _coerce_simulation_plan(state.get("simulation_plan"))
     if plan is None:
@@ -2609,12 +2642,19 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
             # missing-universe refs) here; those are agent-fixable, not expert
             # questions, and re-asking them can trigger regenerate_plan.
             continue
+        if _cross_sections_question_resolved_by_env(item):
+            continue
         questions.append(f"Please provide or confirm: {item}")
     for item in plan.expert_assumptions:
         questions.append(f"Please confirm or correct this modeling assumption: {item}")
 
     report = state.get("validation_report")
     if report is not None:
+        # Runtime issues (e.g. runtime.cross_sections_missing) come from a real
+        # OpenMC failure, not an LLM guess: even when OPENMC_CROSS_SECTIONS is
+        # set the run may still fail (stale path, subprocess env not inherited,
+        # hdf5 mismatch), so these must stay routed to ask_expert. Do NOT
+        # env-suppress them -- only capability-stage confirmations are suppressed.
         for issue in report.issues:
             if issue.route_hint == "ask_expert" or issue.requires_human_confirmation:
                 questions.append(f"Please provide or confirm: [{issue.code}] {issue.message}")
@@ -2630,6 +2670,8 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
                 questions.append(f"Please review this modeling warning: {warning}")
         for issue in capability.issues:
             if issue.route_hint == "ask_expert" or issue.requires_human_confirmation:
+                if _cross_sections_question_resolved_by_env(issue.message):
+                    continue
                 questions.append(f"Please provide or confirm: [{issue.code}] {issue.message}")
 
     questions = list(dict.fromkeys(q for q in questions if q.strip()))
