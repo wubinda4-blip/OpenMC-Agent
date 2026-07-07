@@ -165,7 +165,7 @@ def test_orchestrator_tool_exception_records_warning(monkeypatch) -> None:
 def test_policy_disables_rag_and_records_skipped_step() -> None:
     context = gather_retrieval_context_for_issues(
         [issue_from_catalog("runtime.geometry_overlap")],
-        policy=RetrievalPolicy(enable_rag=False),
+        policy=RetrievalPolicy(enable_rag=False, enable_graphrag=False),
     )
 
     assert context.rag_evidence == []

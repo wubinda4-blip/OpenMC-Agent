@@ -387,11 +387,13 @@ def merge_retrieved_evidence(
     graph_evidence: list[RetrievedEvidence],
     rag_evidence: list[RetrievedEvidence],
     max_items: int = 12,
+    *,
+    graphrag_evidence: list[RetrievedEvidence] | None = None,
 ) -> list[RetrievedEvidence]:
     """Merge evidence in prompt priority order without letting RAG crowd out grep."""
     merged: list[RetrievedEvidence] = []
     seen: set[tuple[str, str]] = set()
-    for group in (grep_evidence, graph_evidence, rag_evidence):
+    for group in (grep_evidence, graph_evidence, graphrag_evidence or [], rag_evidence):
         for item in group:
             key = _evidence_key(item)
             if key in seen or _similar_to_existing(item.text, merged):

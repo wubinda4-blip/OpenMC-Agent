@@ -194,6 +194,8 @@ def summarize_retrieval_context(context: RetrievalContext | dict[str, Any] | Non
             "grep_evidence_count": 0,
             "graph_node_count": 0,
             "graph_edge_count": 0,
+            "graphrag_chunk_count": 0,
+            "graphrag_evidence_count": 0,
             "rag_chunk_count": 0,
             "rag_evidence_count": 0,
             "merged_evidence_count": 0,
@@ -208,6 +210,12 @@ def summarize_retrieval_context(context: RetrievalContext | dict[str, Any] | Non
         "grep_evidence_count": len(context.grep_evidence),
         "graph_node_count": len(graph_context.nodes) if graph_context else 0,
         "graph_edge_count": len(graph_context.edges) if graph_context else 0,
+        "graphrag_chunk_count": (
+            len(context.graphrag_result.rag_result.chunks)
+            if context.graphrag_result and context.graphrag_result.rag_result
+            else 0
+        ),
+        "graphrag_evidence_count": len(context.graphrag_evidence),
         "rag_chunk_count": len(context.rag_result.chunks) if context.rag_result else 0,
         "rag_evidence_count": len(context.rag_evidence),
         "merged_evidence_count": len(context.merged_evidence),

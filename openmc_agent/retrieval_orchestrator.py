@@ -20,6 +20,13 @@ from openmc_agent.grep_search import (
     grep_result_to_evidence,
     grep_search,
 )
+from openmc_agent.graphrag_retriever import (
+    GraphRagRequest,
+    GraphRagResult,
+    format_graphrag_evidence,
+    graphrag_request_from_issues,
+    graphrag_retrieve,
+)
 from openmc_agent.knowledge_graph import (
     GraphContext,
     GraphLookupRequest,
@@ -58,11 +65,14 @@ class RetrievalPolicy(AgentBaseModel):
     enable_grep: bool = True
     enable_graph: bool = True
     enable_rag: bool = True
+    enable_graphrag: bool = True
+    prefer_graphrag_over_rag: bool = False
     run_rag_for_manual_review: bool = False
     max_issues: int = 8
     max_grep_evidence: int = 6
     max_graph_evidence: int = 4
     max_rag_evidence: int = 6
+    max_graphrag_evidence: int = 6
     max_merged_evidence: int = 12
     skip_rag_for_fact_gap: bool = True
     skip_grep_for_cross_sections_missing: bool = True
@@ -86,6 +96,10 @@ class RetrievalContext(AgentBaseModel):
     graph_request: GraphLookupRequest | None = None
     graph_context: GraphContext | None = None
     graph_evidence: list[RetrievedEvidence] = Field(default_factory=list)
+
+    graphrag_request: GraphRagRequest | None = None
+    graphrag_result: GraphRagResult | None = None
+    graphrag_evidence: list[RetrievedEvidence] = Field(default_factory=list)
 
     rag_request: RagSearchRequest | None = None
     rag_result: RagSearchResult | None = None
@@ -181,16 +195,32 @@ def gather_retrieval_context_for_issues(
     else:
         context.skipped_steps.append("graph disabled by policy")
 
-    if active_policy.enable_rag:
+    if active_policy.enable_graphrag:
+        _run_graphrag_stage(context, decisions, active_policy)
+    else:
+        context.skipped_steps.append("graphrag disabled by policy")
+
+    if (
+        active_policy.prefer_graphrag_over_rag
+        and context.graphrag_evidence
+    ):
+        context.skipped_steps.append("rag skipped: GraphRAG evidence preferred by policy")
+    elif active_policy.enable_rag:
         _run_rag_stage(context, decisions, active_policy)
     else:
-        context.skipped_steps.append("rag disabled by policy")
+        if active_policy.enable_graphrag:
+            context.skipped_steps.append(
+                "plain rag disabled by policy; GraphRAG document retrieval remains enabled"
+            )
+        else:
+            context.skipped_steps.append("rag disabled by policy")
 
     context.merged_evidence = merge_retrieved_evidence(
         context.grep_evidence,
         context.graph_evidence,
         context.rag_evidence,
         max_items=active_policy.max_merged_evidence,
+        graphrag_evidence=context.graphrag_evidence,
     )
     context.summary = summarize_retrieval_context(context)
     return context
@@ -201,6 +231,7 @@ def format_retrieval_context(context: RetrievalContext) -> str:
     sections = [
         format_grep_evidence(context.grep_evidence, limit=6),
         format_graph_context(context.graph_context or GraphContext(), limit=12),
+        format_graphrag_evidence(context.graphrag_evidence, limit=6),
         format_rag_evidence(context.rag_evidence, limit=6),
     ]
     return "".join(section for section in sections if section)
@@ -210,6 +241,11 @@ def summarize_retrieval_context(context: RetrievalContext) -> str:
     """Return compact trace statistics without dumping evidence text."""
     graph_nodes = len(context.graph_context.nodes) if context.graph_context else 0
     graph_edges = len(context.graph_context.edges) if context.graph_context else 0
+    graphrag_chunks = (
+        len(context.graphrag_result.rag_result.chunks)
+        if context.graphrag_result and context.graphrag_result.rag_result
+        else 0
+    )
     grep_matches = sum(len(result.matches) for result in context.grep_results)
     rag_chunks = len(context.rag_result.chunks) if context.rag_result else 0
     parts = [
@@ -220,6 +256,8 @@ def summarize_retrieval_context(context: RetrievalContext) -> str:
         f"graph_nodes={graph_nodes}",
         f"graph_edges={graph_edges}",
         f"graph_evidence={len(context.graph_evidence)}",
+        f"graphrag_chunks={graphrag_chunks}",
+        f"graphrag_evidence={len(context.graphrag_evidence)}",
         f"rag_chunks={rag_chunks}",
         f"rag_evidence={len(context.rag_evidence)}",
         f"merged_evidence={len(context.merged_evidence)}",
@@ -274,6 +312,40 @@ def _run_graph_stage(
     except Exception as exc:  # pragma: no cover - exercised via monkeypatch
         context.graph_context = GraphContext()
         context.warnings.append(f"graph failed: {exc}")
+
+
+def _run_graphrag_stage(
+    context: RetrievalContext,
+    decisions: list[RetrievalTriggerDecision],
+    policy: RetrievalPolicy,
+) -> None:
+    graph_context = context.graph_context or GraphContext()
+    graph_has_hints = bool(
+        graph_context.related_doc_refs
+        or graph_context.related_api_refs
+        or graph_context.related_example_refs
+        or graph_context.retrieval_hints
+    )
+    should_run = any(decision.should_run_rag for decision in decisions) or graph_has_hints
+    if policy.skip_rag_for_fact_gap and all(_is_fact_gap_issue(issue) for issue in context.issues):
+        should_run = False
+    if not should_run:
+        context.skipped_steps.append("graphrag skipped: no graph-guided document trigger")
+        return
+
+    try:
+        request = graphrag_request_from_issues(
+            context.issues,
+            grep_evidence=context.grep_evidence,
+            graph_context=context.graph_context,
+        ).model_copy(update={"top_k_chunks": policy.max_graphrag_evidence})
+        context.graphrag_request = request
+        result = graphrag_retrieve(request)
+        context.graphrag_result = result
+        context.warnings.extend(f"graphrag: {warning}" for warning in result.warnings)
+        context.graphrag_evidence = result.evidence[: policy.max_graphrag_evidence]
+    except Exception as exc:  # pragma: no cover - exercised via monkeypatch
+        context.warnings.append(f"graphrag failed: {exc}")
 
 
 def _run_rag_stage(

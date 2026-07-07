@@ -130,7 +130,7 @@ class GrepSearchResult(AgentBaseModel):
 
 
 class RetrievedEvidence(AgentBaseModel):
-    source_type: Literal["grep", "graph", "rag", "runtime", "validator"]
+    source_type: Literal["grep", "graph", "rag", "graphrag", "runtime", "validator"]
     locator: str
     text: str
     issue_code: str | None = None
