@@ -471,6 +471,9 @@ def render_openmc_core_script(
     root_block = _render_core_root(spec)
     source_block = _render_source_block(spec)
     plot_specs = _reconcile_plot_origins(spec, plot_specs or [])
+    # Auto-append a 3-D voxel plot for 3-D axial models (expert inspection pack).
+    if not any(p.kind == "voxel" for p in plot_specs):
+        plot_specs = [*plot_specs, *_auto_verification_plots(spec)]
     plots_block = _render_plots_block(plot_specs)
     energy_mode_block = _render_optional_energy_mode(settings, spec)
     temperature_block = _render_optional_temperature_interpolation(settings, spec)
@@ -1602,6 +1605,40 @@ def _ensure_core_lattice_placement(spec: ComplexModelSpec) -> ComplexModelSpec:
     if not changed:
         return spec
     return spec.model_copy(update={"lattices": new_lattices})
+
+
+def _auto_verification_plots(spec: ComplexModelSpec) -> list[PlotSpec]:
+    """Auto-append a 3-D voxel plot for 3-D axial models so an expert can
+    inspect the full structure (axial layers, spacer-grid bands, pin column) in
+    ParaView/VisIt without the planner having to request it. Reactor-agnostic.
+
+    Only added when the model has a real axial domain + a rectangular lattice.
+    The caller skips appending if the planner already requested a voxel plot.
+    """
+    from openmc_agent.geometry_bounds import compute_geometry_bounds
+
+    gb = compute_geometry_bounds(spec)
+    if gb is None or spec.core is None or not spec.core.axial_layers:
+        return []
+    if gb.geom_z_max - gb.geom_z_min <= 1.0 + 1e-6:
+        return []  # default unit slab / 2-D model -- no 3-D value
+    cx, cy = gb.lattice_center
+    z_mid = (gb.geom_z_min + gb.geom_z_max) / 2.0
+    # Keep voxel resolution modest so the binary dump stays portable.
+    nx = max(60, min(220, int(gb.lattice_width[0] / 0.4)))
+    ny = max(60, min(220, int(gb.lattice_width[1] / 0.4)))
+    nz = max(60, min(220, int((gb.geom_z_max - gb.geom_z_min) / 2.0)))
+    return [
+        PlotSpec(
+            kind="voxel",
+            basis="xy",
+            origin=(cx, cy, z_mid),
+            width_cm=(gb.lattice_width[0], gb.lattice_width[1], gb.geom_z_max - gb.geom_z_min),
+            pixels=(nx, ny, nz),
+            filename="verification_voxel.bin",
+            purpose="Auto 3-D voxel dump for expert inspection (load in ParaView/VisIt).",
+        )
+    ]
 
 
 def _reconcile_plot_origins(
@@ -2922,12 +2959,12 @@ _PLOT_OUTPUT_DIR = "plots"
 
 
 def _render_plots_block(plot_specs: list[PlotSpec]) -> str:
-    """Render one ``openmc.Plot`` per (plot, color_by) pair under ``plots/``.
+    """Render ``openmc.Plot`` entries under ``plots/``.
 
-    Each structured plot spec is expanded into two OpenMC plots — colored by
-    ``material`` and by ``cell`` — so a reviewer sees both the material layout and
-    the cell/universe structure from a single slice. Files land in the ``plots/``
-    subdirectory (created at script run time) to keep the run folder tidy.
+    2-D ``slice`` plots are expanded into two OpenMC plots -- colored by
+    ``material`` and by ``cell`` -- so a reviewer sees both the material layout
+    and the cell/universe structure. A ``voxel`` plot is a 3-D binary dump
+    (one entry, loadable in ParaView/VisIt) for full 3-D inspection.
     """
     if not plot_specs:
         return ""
@@ -2941,6 +2978,23 @@ def _render_plots_block(plot_specs: list[PlotSpec]) -> str:
     plot_names: list[str] = []
     for index, plot in enumerate(plot_specs):
         stem = Path(plot.filename).stem
+        if plot.kind == "voxel":
+            # 3-D voxel plot: type='voxel', 3-D width/pixels, single output.
+            variable_name = f"plot_{index}_voxel"
+            plot_names.append(variable_name)
+            filename = f"{_PLOT_OUTPUT_DIR}/{stem}"
+            if plot.purpose:
+                blocks.append(f"# {variable_name} (voxel, 3-D): {plot.purpose}")
+            blocks.extend([
+                f"{variable_name} = openmc.Plot()",
+                f"{variable_name}.type = 'voxel'",
+                f"{variable_name}.origin = {plot.origin!r}",
+                f"{variable_name}.width = {plot.width_cm!r}",
+                f"{variable_name}.pixels = {plot.pixels!r}",
+                f"{variable_name}.filename = {filename!r}",
+                "",
+            ])
+            continue
         for color_by in ("material", "cell"):
             variable_name = f"plot_{index}_{color_by}"
             plot_names.append(variable_name)

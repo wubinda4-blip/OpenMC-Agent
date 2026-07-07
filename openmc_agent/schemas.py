@@ -1560,9 +1560,13 @@ class SimulationSpec(AgentBaseModel):
 
 
 class PlotSpec(AgentBaseModel):
-    kind: Literal["slice"] = Field(
+    kind: Literal["slice", "voxel"] = Field(
         default="slice",
-        description="OpenMC plot kind. This phase supports 2-D slice plots.",
+        description=(
+            "OpenMC plot kind. 'slice' is a 2-D plane image; 'voxel' is a 3-D "
+            "binary voxel dump (loadable in ParaView/VisIt) for full 3-D "
+            "inspection of axial layers, spacer-grid bands and pin structure."
+        ),
     )
     basis: Literal["xy", "xz", "yz"] = Field(
         description="Plane basis for the slice plot.",
@@ -1570,14 +1574,14 @@ class PlotSpec(AgentBaseModel):
     )
     origin: tuple[float, float, float] = Field(
         default=(0.0, 0.0, 0.0),
-        description="Plot origin in centimeters.",
+        description="Plot origin in centimeters (3-D; the out-of-plane coord is the slice level for 2-D plots).",
     )
-    width_cm: tuple[float, float] = Field(
-        description="Plot width in centimeters in the selected basis.",
+    width_cm: tuple[float, ...] = Field(
+        description="Plot width in centimeters: 2 values for a slice (in-plane), 3 values for a voxel plot (x,y,z).",
     )
-    pixels: tuple[int, int] = Field(
+    pixels: tuple[int, ...] = Field(
         default=(500, 500),
-        description="Pixel dimensions for the plot image.",
+        description="Pixel/voxel resolution: 2 values for a slice, 3 values for a voxel plot.",
     )
     color_by: Literal["material", "cell"] = Field(
         default="material",

@@ -332,6 +332,20 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
 
+### 2026-07-07（专家验证工具：verification digest + 3D voxel plot）
+
+VERA3 已能渲染。为了让人类专家**快速判断渲染结果是否正确**（不靠肉眼逐像素看 2D slice），新增两层通用（堆型无关）验证产物：
+
+- **`openmc_agent/verification.py`**：`build_verification_digest(model)` 从 IR 生成结构化 digest：
+  - **不变量检查表**（pass/fail/warn，秒级扫描）：lattice universe 是否都已定义、fuel 材料是否在几何中可达、是否有 active-fuel lattice 层、source z 是否与活性燃料相交、是否有 grid material-slab 层、是否 full assembly（非 quarter）、pin counts 是否匹配 `expected_counts`。
+  - **pin counts** / **axial layers 表**（z 范围/高度/fill/含燃料）/ **overlays 表**（z/target/material/mode/renderable/渲染段数）/ **materials 名册**（密度/核素/角色/几何可达性）/ **bounds**（geometry/source/active_fuel/symmetry）。
+  - 输出 `verification_digest.json` + `verification_digest.md`（markdown 表格，人读）。
+- **3D voxel plot**：`PlotSpec.kind` 扩展为 `"slice" | "voxel"`（width/pixels 支持 2 或 3 元）；`_render_plots_block` 对 voxel 发 `type='voxel'`（3D 二进制，ParaView/VisIt 可读）。新增 `_auto_verification_plots`：对 3D axial 模型自动追加一个覆盖全 geometry bounds 的 voxel plot（专家不用手动指定就能拿到 3D 检查包）。
+- **集成**：`RectAssemblyRenderer.render` 成功渲染后自动写 `verification_digest.{json,md}`；core 路径自动追加 voxel plot。完全通用，无堆型假设。
+- 全量测试：`581 passed, 2 skipped`（新增 `tests/test_verification.py` 7 个：digest 正确性/破损 plan 标红/json+md 写出/render 集成/auto-voxel/voxel PlotSpec/2D slice 不变）。
+
+专家工作流：(1) 打开 `verification_digest.md` 扫不变量检查表（秒级判断结构对不对）；(2) 打开 voxel plot 在 ParaView 里转 3D 看 grid band / 轴向分层 / pin 贯穿；(3) 必要时看 material 名册核对核素。
+
 ### 2026-07-07（skeleton overlay 自动提升 + core.lattice_id 解析）
 
 - **根因（skeleton 降级）**：LLM 把 8 个 spacer grid overlay 写成 `geometry_mode='skeleton'`（保守的"请确认"），尽管它们已带齐 Level 1 所需数据（z 范围 + target_lattice + material + through_path）。guard 对所有 skeleton overlay 一律发 `assembly3d.axial_overlay_requires_renderer_support` → 整模型降级 skeleton（NOT EXECUTABLE）。

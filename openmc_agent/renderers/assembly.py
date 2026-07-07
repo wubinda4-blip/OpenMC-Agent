@@ -130,6 +130,14 @@ class RectAssemblyRenderer(BaseRenderer):
             todo = _write_todo(outdir, self.name, capability)
             if todo is not None:
                 files.append(todo)
+            # Verification digest: a structured pass/fail report + roster an
+            # expert can scan in seconds (complements the visual plots).
+            try:
+                from openmc_agent.verification import write_verification_digest
+                digest_files = write_verification_digest(model, outdir)
+                files.append(digest_files["markdown"])
+            except Exception:
+                pass
             return RenderResult(
                 renderer_name=self.name,
                 renderability=capability.renderability,
