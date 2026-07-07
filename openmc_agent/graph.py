@@ -819,7 +819,9 @@ def _make_validate_plan_node(max_retries: int):
                 errors=[state.get("error", "SimulationPlan is missing")],
             )
         else:
-            report = validate_simulation_plan(plan)
+            report = validate_simulation_plan(
+                plan, requirement=state.get("requirement", "")
+            )
 
         history = list(state.get("retry_history", []))
         history.append(

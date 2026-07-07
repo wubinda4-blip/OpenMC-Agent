@@ -850,6 +850,105 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         ],
         "route_hint": "auto_repair",
     },
+    # --------------------------------------------------- 3D assembly guard
+    # Generic axial-geometry guards. See openmc_agent.assembly3d_guard. These
+    # fire when a 3D / axial requirement would otherwise be silently collapsed
+    # into a 2D unit-height (z=-1..1) slab assembly that exports but is wrong.
+    "assembly3d.axial_layers_required": {
+        "severity": "error",
+        "message": (
+            "3D axial requirement cannot be represented by a 2D assembly root; "
+            "add core.axial_layers or mark the plan as a non-exportable skeleton"
+        ),
+        "schema_path": "complex_model.core.axial_layers",
+        "rule_id": "rule.assembly3d.axial_layers_required",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_layers", "z_min_cm", "z_max_cm", "3D assembly"],
+        "repair_hints": [
+            _hint(
+                "add_missing_field",
+                "Add core.axial_layers describing each axial slab "
+                "(z_min_cm/z_max_cm/fill), or mark the plan as a non-exportable "
+                "skeleton. A 2D assembly root cannot represent axial heterogeneity.",
+                target_path="complex_model.core.axial_layers",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "assembly3d.default_z_extent_for_axial_problem": {
+        "severity": "error",
+        "message": (
+            "3D axial problem cannot be represented by a default unit-height slab"
+        ),
+        "schema_path": "complex_model.core.axial_layers",
+        "rule_id": "rule.assembly3d.default_z_extent",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["assembly_z_min = -1.0", "assembly_z_max = 1.0"],
+        "repair_hints": [
+            _hint(
+                "downgrade_renderability",
+                "Provide explicit axial_layers with the requested z ranges, or "
+                "downgrade to skeleton; do not export the default z=-1..1 slab "
+                "for an axial problem.",
+                target_path="complex_model.core.axial_layers",
+            ),
+        ],
+        "route_hint": "capability_downgrade",
+    },
+    "assembly3d.spacer_grid_material_slab": {
+        "severity": "error",
+        "message": (
+            "spacer grid layer must not be modeled as a full material slab "
+            "replacing the assembly cross section"
+        ),
+        "schema_path": "complex_model.core.axial_layers",
+        "rule_id": "rule.assembly3d.spacer_grid_not_slab",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["spacer", "grid", "fill_type='material'"],
+        "repair_hints": [
+            _hint(
+                "switch_renderer",
+                "Model the grid as an overlay / derived lattice / homogenized "
+                "open-region treatment that preserves pin and tube through-paths, "
+                "not as a full material slab replacing the assembly cross section.",
+                target_path="complex_model.core.axial_layers",
+            ),
+            _hint(
+                "mark_requires_human_confirmation",
+                "If a safe grid representation is not yet supported, downgrade to "
+                "skeleton and request human confirmation of the spacer-grid "
+                "treatment.",
+            ),
+        ],
+        "route_hint": "capability_downgrade",
+    },
+    "assembly3d.pin_through_path_missing": {
+        "severity": "error",
+        "message": "grid layer may truncate pin/tube geometry",
+        "schema_path": "complex_model.core.axial_layers",
+        "rule_id": "rule.assembly3d.pin_through_path",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["loading_id", "through-path", "guide tube"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Reference a pin/tube lattice or a derived overlay lattice "
+                "(loading_id) so fuel/guide-tube/instrument-tube universes "
+                "continue through the grid z-range.",
+                target_path="complex_model.core.axial_layers",
+            ),
+            _hint(
+                "mark_requires_human_confirmation",
+                "If through-path preservation cannot be proven, downgrade to "
+                "skeleton and request human confirmation.",
+            ),
+        ],
+        "route_hint": "capability_downgrade",
+    },
     "lattice_loading.base_ref_missing": {
         "severity": "error",
         "message": "lattice loading references missing base lattice",

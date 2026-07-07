@@ -12,6 +12,7 @@ that match on ``report.errors`` text keep working.
 
 from __future__ import annotations
 
+from openmc_agent.assembly3d_guard import validate_assembly3d_plan
 from openmc_agent.error_catalog import add_issue, issue_from_catalog
 from openmc_agent.lattice_validation import lattice_pin_count_issues
 from openmc_agent.schemas import (
@@ -146,8 +147,18 @@ def _complex_material_mixed_percent_issues(
     return issues
 
 
-def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
-    """Validate a :class:`SimulationPlan`, merging any pin-cell spec issues."""
+def validate_simulation_plan(
+    plan: SimulationPlan,
+    *,
+    requirement: str = "",
+) -> ValidationReport:
+    """Validate a :class:`SimulationPlan`, merging any pin-cell spec issues.
+
+    ``requirement`` is the original user/benchmark text.  It feeds the generic
+    3D-assembly guard (:func:`openmc_agent.assembly3d_guard.validate_assembly3d_plan`)
+    so a 3D axial requirement cannot be silently collapsed into a 2D
+    unit-height slab assembly.  Existing callers that omit it are unaffected.
+    """
     issues: list[ValidationIssue] = []
 
     if plan.model_spec is not None:
@@ -171,6 +182,11 @@ def validate_simulation_plan(plan: SimulationPlan) -> ValidationReport:
     if plan.complex_model is not None:
         issues.extend(lattice_pin_count_issues(plan.complex_model.lattices))
         issues.extend(_complex_material_mixed_percent_issues(plan.complex_model))
+
+    # Generic 3D axial-geometry guard: runs at plan-validation time (with the
+    # requirement text) so axial requirements are caught before any renderer
+    # emits a misleading 2D export. See openmc_agent.assembly3d_guard.
+    issues.extend(validate_assembly3d_plan(plan, requirement=requirement))
 
     return ValidationReport.from_issues(issues)
 

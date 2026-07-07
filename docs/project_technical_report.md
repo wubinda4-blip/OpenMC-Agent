@@ -153,12 +153,15 @@ python -m openmc_agent.knowledge_ingestion \
 - TRISO
 - Skeleton fallback
 
+**3D assembly workflow guard**（`openmc_agent/assembly3d_guard.py`）：requirement 级 detector 扫描通用轴向信号（axial layers / spacer grid / explicit z 范围 / nozzle / plenum / control rod insertion / 中文"定位格架""轴向反射"等），plan 级 validator 在 plan validation 阶段就检查"3D 需求是否被压扁成 2D assembly"。四个 `assembly3d.*` issue code 覆盖：缺 axial_layers、默认 z=-1..1 伪 3D、spacer grid 被建成整层 material slab、grid layer 丢失 pin/tube through-path。触发即降级为 skeleton / human confirmation，不会产出"看似可导出但物理错误"的模型。该模块不含任何 benchmark 专用事实。
+
 明确未完成或受限：
 
 - HexAssemblyRenderer 未实现。
 - depletion / burnup 未实现。
 - pebble_bed renderer 未实现。
 - 对其他复杂 benchmark 的 modeling fidelity 仍不能自动保证。
+- `AxialOverlaySpec` 与 Level 1 spacer-grid overlay renderer 未实现：当前 spacer grid 只能作为 derived lattice（loading overlay）安全表达，或被 guard 拦下要求人工确认；尚未支持 volume-fraction calibrated 的 homogenized overlay。
 - fact gap 仍必须走 ask_expert / human confirmation。
 
 ## 5. 当前 Retrieval/GraphRAG 状态
@@ -232,7 +235,7 @@ Planner 输出：
 
 ```bash
 conda run -n openmc-env python -m pytest -q
-# 453 passed in 43.05s
+# 490 passed in 46.22s
 
 conda run -n openmc-env python -m compileall -q openmc_agent
 # passed
@@ -240,6 +243,7 @@ conda run -n openmc-env python -m compileall -q openmc_agent
 
 本轮新增或重点覆盖：
 
+- 3D assembly guard：detector（`detect_assembly_3d_features`）+ plan validator（`validate_assembly3d_plan`，经 `validate_simulation_plan(plan, requirement=...)` 接入 graph）+ renderer 复用（`assembly3d_grid_layer_issues`）+ 四个 `assembly3d.*` issue code 的六场景测试。
 - GraphRAG query planner tests。
 - GraphRAG retriever regression。
 - retrieval orchestrator integration。
@@ -266,6 +270,7 @@ conda run -n openmc-env python -m compileall -q openmc_agent
 - Benchmark runner 已有，但还没有真实 workflow case runner。
 - Trace 已有，但没有 persistent trace store 或 dashboard。
 - Renderer 能力边界仍是建模质量的主要瓶颈，而不是检索能力。
+- 3D axial assembly 的 guard 已落地（阻断 3D 需求被压扁为 2D 导出，四个 `assembly3d.*` issue code），但真正的 spacer-grid overlay / volume-fraction homogenization 尚未实现；VERA3 等三维组件仍只能作为后续验收 benchmark，不作为可导出目标。
 
 ### 7.3 安全边界
 
@@ -295,7 +300,37 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - 对 VERA/C5G7 类 benchmark，检索已经能提供上下文，但最终可信度取决于 renderer 能否表达结构。
 - 建议先做 RectAssembly/Core 的 loading map fidelity checks，而不是马上实现 HexAssemblyRenderer。
 
+**3D assembly / spacer-grid overlay（Step 1 已完成 2026-07-07）**：
+
+- Step 1（本次）：通用 3D assembly workflow guard 已落地，3D 需求被 2D assembly 吞掉时在 plan validation 阶段即拦截。
+- Step 2（下一步）：实现 `AxialOverlaySpec` 与 Level 1 spacer-grid overlay renderer，保留 pin/tube through-path。
+- Step 3：volume-fraction calibrated homogenized overlay。
+- 在 Step 2/3 完成前，VERA3 只作为验收 benchmark，不是可导出目标。
+
 ## 9. 维护记录
+
+### 2026-07-07（3D assembly workflow guard — Step 1）
+
+完成并验证：
+
+- **通用 3D assembly workflow guard**（`openmc_agent/assembly3d_guard.py`），阻止 3D axial assembly 需求被错误降维成 2D assembly 并被标记为 exportable。
+  - `Assembly3DFeatureFlags` + `detect_assembly_3d_features(requirement)`：requirement 级 detector，接受 `str | dict | 对象`，扫描通用轴向信号（3D assembly / axial layer / axial heterogeneity / spacer grid / grid strap / mixing vane / support grid / nozzle / end plug / plenum / fuel stack height / control rod insertion / explicit z 范围 / `z_min`/`z_max` / `from X cm to Y cm` / 中文"三维""定位格架""轴向反射"等），输出 `has_axial_geometry` / `has_spacer_grid` / `has_explicit_z_ranges` / `has_axial_components` / `matched_terms`。不含任何 benchmark 专用事实。
+  - `validate_assembly3d_plan(plan, requirement)` + `assembly3d_grid_layer_issues(model)`：plan 级 validator，在 plan validation 阶段（`validate_simulation_plan(plan, requirement=...)`，graph `_validate_plan` 传 `state["requirement"]`）即检查；renderer `can_render` 通过 `assembly3d_grid_layer_issues` 复用同一套 slab/through-path 判定，单一来源。
+  - 四个稳定 issue code：
+    - `assembly3d.axial_layers_required`（requirement 有 axial 信号但 plan 缺 `core.axial_layers`，`route_hint=reflect_plan`）。
+    - `assembly3d.default_z_extent_for_axial_problem`（有 explicit z 范围但 plan 仍会渲染默认 z=-1..1 unit slab，`capability_downgrade`）。
+    - `assembly3d.spacer_grid_material_slab`（grid layer fill 是单一 material，`capability_downgrade`）。
+    - `assembly3d.pin_through_path_missing`（grid layer 无法证明保留 fuel/guide/instrument tube through-path，`capability_downgrade`）。
+  - `error_catalog.py` 注册以上四个 code 的 severity / knowledge_refs / repair_hints / route_hint / grep_patterns。
+  - `renderers/assembly.py` 的 `_axial_assembly_modeling_errors` 委托给 guard。
+  - 既有 2D assembly 路径不受影响（六场景测试 + 全量 `490 passed`）。
+
+仍未解决（明确留给后续 Step）：
+
+- 尚未实现 `AxialOverlaySpec`。
+- 尚未实现 Level 1 spacer-grid overlay renderer。
+- 尚未实现 volume-fraction calibrated overlay。
+- VERA3 仍只作为后续验收 benchmark，不是本 Step 的可导出目标。
 
 ### 2026-07-07（续）
 

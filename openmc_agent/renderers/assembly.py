@@ -15,8 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from openmc_agent.assembly3d_guard import assembly3d_grid_layer_issues
 from openmc_agent.executor import render_openmc_assembly_script
 from openmc_agent.lattice_validation import lattice_pin_count_issues
+from openmc_agent.renderers.core import _core_renderability_errors
 from openmc_agent.renderers.base import BaseRenderer, RenderResult, low_cost_runnable
 from openmc_agent.reachability import (
     ActiveDependencies,
@@ -81,16 +83,19 @@ class RectAssemblyRenderer(BaseRenderer):
                 required_human_confirmations=_material_confirmations(model, deps),
             )
         renderability = "runnable" if low_cost_runnable(plan) else "exportable"
+        executable_subsystems = [
+            "materials",
+            "cells",
+            "universes",
+            "rect_lattice",
+            "assembly",
+        ]
+        if _has_axial_assembly_layers(model):
+            executable_subsystems.extend(["axial_layers", "lattice_loadings"])
         return RenderCapabilityReport(
             renderability=renderability,
             supported_renderer="assembly",
-            executable_subsystems=[
-                "materials",
-                "cells",
-                "universes",
-                "rect_lattice",
-                "assembly",
-            ],
+            executable_subsystems=executable_subsystems,
             unsupported_subsystems=[],
             reasons=["Current executor supports rectangular assembly lattice rendering."],
             warnings=warnings,
@@ -360,7 +365,29 @@ def _assembly_diagnostics(
                 "assembly boundary is not specified; export will default to vacuum"
             )
 
+    if _has_axial_assembly_layers(model):
+        errors.extend(_axial_assembly_modeling_errors(model))
+        errors.extend(_core_renderability_errors(model))
+
     return errors, warnings
+
+
+def _has_axial_assembly_layers(model: ComplexModelSpec) -> bool:
+    return model.core is not None and bool(model.core.axial_layers)
+
+
+def _axial_assembly_modeling_errors(model: ComplexModelSpec) -> list[ValidationIssue]:
+    """Generic 3D assembly modeling guards.
+
+    Thin spacer/support-grid layers are not an entire slab of grid material:
+    fuel rods and guide/instrument tubes pass through them. This delegates to
+    :func:`openmc_agent.assembly3d_guard.assembly3d_grid_layer_issues` so the
+    plan validator and the renderer share one source of truth for the
+    ``assembly3d.spacer_grid_material_slab`` / ``assembly3d.pin_through_path_missing``
+    codes.
+    """
+    assert model.core is not None
+    return assembly3d_grid_layer_issues(model)
 
 
 def _lattice_pattern_errors(
@@ -524,6 +551,10 @@ def _assembly_subsystems(model: ComplexModelSpec) -> list[str]:
     ):
         if values:
             present.append(name)
+    if model.core is not None and model.core.axial_layers:
+        present.append("axial_layers")
+    if model.lattice_loadings:
+        present.append("lattice_loadings")
     return present
 
 

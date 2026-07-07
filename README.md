@@ -53,6 +53,8 @@ receive_requirement
 | `exportable` | 可导出 XML，但不可运行 | `model.py` + XML 文件 |
 | `runnable` | 完整模型 | `model.py` + XML + 可选 smoke test |
 
+**3D assembly guard**：当需求包含轴向异质结构（axial layers、spacer grid、explicit z 范围、nozzle/plenum 等通用信号）但 plan 仍只是 2D assembly root 时，`openmc_agent/assembly3d_guard.py` 会在 plan validation 阶段（而非等到 renderer 抛错）就阻断导出，发出结构化 issue（`assembly3d.axial_layers_required` / `assembly3d.default_z_extent_for_axial_problem` / `assembly3d.spacer_grid_material_slab` / `assembly3d.pin_through_path_missing`），降级为 skeleton 或要求 human confirmation——避免产出 z=-1..1 的"形式可导出但物理错误"的伪 3D 模型。该 guard 只看通用词汇与 IR 形状，不含任何 benchmark 专用事实。
+
 ---
 
 ## 安装

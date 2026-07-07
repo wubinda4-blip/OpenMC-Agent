@@ -15,6 +15,7 @@ from openmc_agent.schemas import (
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
+    CoreBoundarySpec,
     CoreSpec,
     ExecutionCheckSpec,
     GeometrySpec,
@@ -501,6 +502,158 @@ def test_core_renderer_reports_lattice_loading_reference_errors() -> None:
     assert capability.renderability == "skeleton"
     codes = {issue.code for issue in capability.issues}
     assert "lattice_loading.base_ref_missing" in codes
+
+
+def _axial_assembly_plan(*, bad_grid_material_slab: bool = False) -> SimulationPlan:
+    materials = [
+        _complete_fuel(),
+        ComplexMaterialSpec(
+            id="moderator",
+            name="water",
+            density_unit="g/cm3",
+            density_value=0.743,
+            chemical_formula="H2O",
+        ),
+        ComplexMaterialSpec(
+            id="grid_material",
+            name="generic spacer grid alloy",
+            density_unit="g/cm3",
+            density_value=7.9,
+            composition=[NuclideSpec(name="Fe56", percent=1.0)],
+        ),
+    ]
+    cells = [
+        CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel"),
+        CellSpec(id="moderator_cell", name="moderator", fill_type="material", fill_id="moderator"),
+        CellSpec(id="grid_cell", name="spacer grid", fill_type="material", fill_id="grid_material"),
+    ]
+    universes = [
+        UniverseSpec(id="fuel_pin", name="fuel pin", cell_ids=["fuel_cell"]),
+        UniverseSpec(id="moderator_pin", name="moderator pin", cell_ids=["moderator_cell"]),
+        UniverseSpec(id="grid_overlay_pin", name="grid overlay pin", cell_ids=["grid_cell"]),
+    ]
+    lattices = [
+        LatticeSpec(
+            id="active_lattice",
+            name="active assembly lattice",
+            kind="rect",
+            pitch_cm=(1.26, 1.26),
+            universe_pattern=[["fuel_pin", "moderator_pin"], ["moderator_pin", "fuel_pin"]],
+        )
+    ]
+    loading_id = None if bad_grid_material_slab else "grid_loading"
+    lattice_loadings = [] if bad_grid_material_slab else [
+        LatticeLoadingSpec(
+            id="grid_loading",
+            base_lattice_id="active_lattice",
+            derived_lattice_id="grid_lattice",
+            overrides={"grid_overlay_pin": [(0, 0), (0, 1), (1, 0), (1, 1)]},
+        )
+    ]
+    grid_fill = (
+        {"type": "material", "id": "grid_material"}
+        if bad_grid_material_slab
+        else {"type": "lattice", "id": "grid_lattice"}
+    )
+    model = ComplexModelSpec(
+        name="generic 3D assembly",
+        kind="assembly",
+        materials=materials,
+        cells=cells,
+        universes=universes,
+        lattices=lattices,
+        lattice_loadings=lattice_loadings,
+        assemblies=[
+            AssemblySpec(
+                id="assembly",
+                name="root",
+                lattice_id="active_lattice",
+                boundary="reflective",
+            )
+        ],
+        core=CoreSpec(
+            id="axial_assembly",
+            name="axial assembly root",
+            lattice_id="active_lattice",
+            boundary="mixed",
+            boundary_conditions=CoreBoundarySpec(
+                xmin="reflective",
+                xmax="reflective",
+                ymin="reflective",
+                ymax="reflective",
+                zmin="vacuum",
+                zmax="vacuum",
+            ),
+            axial_layers=[
+                AxialLayerSpec(
+                    id="lower_active",
+                    name="lower active",
+                    z_min_cm=0.0,
+                    z_max_cm=10.0,
+                    fill={"type": "lattice", "id": "active_lattice"},
+                ),
+                AxialLayerSpec(
+                    id="spacer_grid",
+                    name="spacer grid",
+                    z_min_cm=10.0,
+                    z_max_cm=10.5,
+                    fill=grid_fill,
+                    loading_id=loading_id,
+                ),
+                AxialLayerSpec(
+                    id="upper_active",
+                    name="upper active",
+                    z_min_cm=10.5,
+                    z_max_cm=20.0,
+                    fill={"type": "lattice", "id": "active_lattice"},
+                ),
+            ],
+        ),
+        settings=RunSettingsSpec(batches=8, inactive=2, particles=80),
+    )
+    return SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
+        plot_specs=[PlotSpec(basis="xz", width_cm=(2.52, 20.0), filename="axial.png")],
+        execution_check=ExecutionCheckSpec(settings=RunSettingsSpec(batches=4, inactive=1, particles=20)),
+    )
+
+
+def test_rect_assembly_with_axial_layers_renders_3d_root(tmp_path: Path) -> None:
+    plan = _axial_assembly_plan()
+    renderer, capability = choose_renderer(plan)
+
+    assert isinstance(renderer, RectAssemblyRenderer)
+    assert capability.supported_renderer == "assembly"
+    assert capability.renderability in {"exportable", "runnable"}
+    assert "axial_layers" in capability.executable_subsystems
+    assert "lattice_loadings" in capability.executable_subsystems
+
+    result = renderer.render(plan, tmp_path)
+    script = result.script
+
+    assert "Generated OpenMC axial assembly model" in script
+    assert "assembly_z_min = 0.0" in script
+    assert "assembly_z_max = 20.0" in script
+    assert "assembly_zmin = openmc.ZPlane(z0=assembly_z_min, boundary_type='vacuum')" in script
+    assert "assembly_xmin = openmc.XPlane(x0=assembly_x_min, boundary_type='reflective')" in script
+    assert "axial_lattice_spacer_grid = openmc.RectLattice(name='grid_lattice')" in script
+    assert "root_cell_spacer_grid = openmc.Cell(name='spacer grid', fill=axial_lattice_spacer_grid" in script
+    assert "(-1.0)" not in script
+
+
+def test_axial_spacer_grid_material_slab_is_not_exportable() -> None:
+    plan = _axial_assembly_plan(bad_grid_material_slab=True)
+
+    capability = RectAssemblyRenderer().can_render(plan)
+
+    assert capability.renderability == "skeleton"
+    assert any(
+        issue.code == "assembly3d.spacer_grid_material_slab"
+        for issue in capability.issues
+    )
 
 
 # -- assembly validation checks -------------------------------------------
