@@ -92,7 +92,9 @@ table, comparison table) and never dump full traces.
 - No persistent trace store; artifacts are written to the filesystem only when
   `output_dir` is set.
 - No dashboard.
-- No GraphRAG, vector store, or OpenAI file search.
+- No vector store or OpenAI file search.
+- GraphRAG exists, but benchmark value depends on a real `case_runner` that
+  honors GraphRAG / query-planner / evidence-ranker policy switches.
 - No hallucination / fact-gap classifier beyond issue / retrieval /
   human-confirmation signals.
 
@@ -102,7 +104,7 @@ table, comparison table) and never dump full traces.
   under each ablation.
 - Persistent trace store (queryable across runs).
 - Evaluation dashboard.
-- GraphRAG comparison arm.
+- GraphRAG query-planner and evidence-ranker comparison arms.
 - Vector store and OpenAI file search comparison arms.
 - Hallucination and fact-gap prevention metrics.
 - HexAssemblyRenderer, depletion, and pebble-bed renderer workflows.

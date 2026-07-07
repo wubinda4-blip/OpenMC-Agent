@@ -36,22 +36,30 @@ pluggable without changing prompt semantics.
 
 1. Build a `GraphRagRequest` from issues, grep evidence, and optional
    `GraphContext`.
-2. Resolve issue codes, schema paths, concept ids, and graph start nodes.
-3. Expand a bounded graph subcontext with `graph_lookup(...)`.
-4. Extract short graph path explanations for prompt display.
-5. Build a graph-guided `RagSearchRequest` using related doc refs, API refs,
-   example refs, concept ids, schema paths, and retrieval hints.
-6. Run local lexical `rag_search(...)`.
-7. Convert chunks to `RetrievedEvidence(source_type="graphrag")` and attach
+2. Optionally run the GraphRAG query planner to classify intent, choose start
+   nodes, set expansion policy, rank planned paths, and build preferred
+   queries/filters.
+3. Resolve issue codes, schema paths, concept ids, and graph start nodes.
+4. Expand a bounded graph subcontext with `graph_lookup(...)`.
+5. Extract short graph path explanations for prompt display.
+6. Build a graph-guided `RagSearchRequest` using related doc refs, API refs,
+   example refs, concept ids, schema paths, retrieval hints, and query-plan
+   filters.
+7. Run local lexical `rag_search(...)`.
+8. Convert chunks to `RetrievedEvidence(source_type="graphrag")` and attach
    graph metadata.
 
 ## RetrievalPolicy Switches
 
 - `enable_graphrag`: defaults to `True`; GraphRAG runs after graph context and
   before plain RAG unless a caller disables it explicitly.
+- `enable_graphrag_query_planner`: defaults to `True`; planning is skipped only
+  when explicitly disabled or when GraphRAG itself is disabled.
 - `prefer_graphrag_over_rag`: when `True`, plain RAG is skipped if GraphRAG
   produced evidence.
 - `max_graphrag_evidence`: bounds GraphRAG prompt evidence.
+- `max_planned_graph_paths`: bounds planned path summaries kept for prompt and
+  trace.
 
 If `enable_rag=False` and `enable_graphrag=True`, GraphRAG may still run because
 its document retrieval is part of the graph-guided layer. The orchestrator
@@ -62,7 +70,8 @@ records this distinction in `skipped_steps`.
 - No vector search.
 - No OpenAI file search.
 - No Neo4j or external graph database.
-- No complex path ranking, community detection, or global graph summarization.
+- Graph path scoring is deterministic and shallow; no community detection or
+  global graph summarization.
 - No automatic ontology generation.
 - No fact confirmation for material density, composition, nuclear data paths,
   or benchmark constants.
@@ -71,9 +80,9 @@ records this distinction in `skipped_steps`.
 
 ## Future Extensions
 
-- Knowledge ingestion from curated docs and examples.
+- Runtime loading of persisted knowledge ingestion assets.
 - Vector store or hybrid lexical/vector retrieval.
 - OpenAI file search backend.
-- Graph path reranking.
+- Learned or benchmark-calibrated graph path reranking.
 - VERA and benchmark documentation ingestion.
 - Benchmark and evaluation platform for GraphRAG comparisons.

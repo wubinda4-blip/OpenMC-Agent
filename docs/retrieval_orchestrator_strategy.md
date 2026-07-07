@@ -4,38 +4,51 @@
 
 The Retrieval Orchestrator coordinates issue-triggered retrieval for repair and
 reflection prompts. It turns structured `ValidationIssue` records into a bounded
-`RetrievalContext` containing grep requests/results, graph context, RAG document
-evidence, merged evidence, warnings, skipped steps, and a compact trace summary.
+`RetrievalContext` containing grep, graph, GraphRAG, plain RAG, ranked evidence,
+warnings, skipped steps, and compact trace statistics.
 
-The orchestrator does not modify `SimulationPlan`, does not choose renderer
-capabilities, and does not turn retrieved text into confirmed nuclear facts.
+The orchestrator does not modify `SimulationPlan`, choose renderer capability,
+or turn retrieved text into confirmed nuclear facts.
+
+## Current Pipeline
+
+The default pipeline is deterministic:
+
+```text
+issues
+  -> grep
+  -> graph
+  -> GraphRAG query planner
+  -> GraphRAG retriever
+  -> plain RAG
+  -> merge evidence
+  -> evidence ranker / dedup / prompt budget
+  -> prompt sections
+```
+
+Tool ordering is not LLM-controlled.
 
 ## Relationship To Retrieval Tools
 
-The pipeline is deterministic:
-
-```text
-issues -> grep -> graph -> RAG -> merge -> prompt sections
-```
-
-The orchestrator coordinates these tools:
-
-- `grep_search` locates nearby source, test, example, and document text. It is
-  locator context, not a physical fact source.
+- `grep_search` locates direct source, test, example, and document snippets. It
+  is locator context, not a physical fact source.
 - `graph_lookup` expands stable issue codes, schema paths, concepts, and grep
   anchors into maintained relationships, repair policies, doc refs, API refs,
-  and retrieval hints.
-- `rag_search` searches local documentation chunks using graph-guided lexical
-  signals. It provides documentation evidence for API usage, syntax, and
-  explanations.
-
-Tool internals remain independent so each layer can be tested and replaced
-without changing the orchestrator contract.
+  examples, and retrieval hints.
+- `graphrag_query_planner` classifies issue intent, chooses graph start nodes,
+  selects graph expansion policy, scores graph paths, and builds preferred
+  queries/filters.
+- `graphrag_retriever` runs graph-guided document retrieval and returns
+  `RetrievedEvidence(source_type="graphrag")`.
+- `rag_search` performs plain local lexical document retrieval from graph and
+  issue hints.
+- `evidence_ranker` deduplicates, scores, truncates, and budgets all retrieved
+  evidence before prompt formatting.
 
 ## Issue-Triggered Decisions
 
 `decide_retrieval_for_issue` decides whether an issue should run grep, graph, or
-RAG.
+document retrieval.
 
 Grep runs for issues with grep patterns, repair/retrieval/manual routes, and
 runtime/export/hex lattice error codes. Cross-section fact gaps skip grep by
@@ -44,43 +57,66 @@ default to avoid prompting the LLM to invent local paths.
 Graph runs when an issue has stable anchors: code, schema path, concept id, or
 grep evidence.
 
-RAG runs for explicit retrieval issues, runtime geometry overlap, lost particle,
-unknown runtime diagnostics, hex lattice issues, or graph contexts with doc/API
-refs or retrieval hints. Fact gaps such as cross-section configuration or
-material composition skip RAG by default when they require human confirmation.
+RAG/GraphRAG run for explicit retrieval issues, runtime geometry overlap, lost
+particle, unknown runtime diagnostics, hex lattice issues, or graph contexts
+with doc/API/example refs or retrieval hints. Fact gaps such as cross-section
+configuration or material composition preserve human confirmation semantics.
 
-## Evidence Merge
+## Evidence Merge And Ranking
 
-Evidence is merged in prompt priority order:
-
-```text
-grep evidence -> graph evidence -> RAG evidence
-```
-
-This keeps direct code/test/example locators ahead of relationship metadata, and
-keeps RAG document context from crowding out more direct evidence. Duplicates are
-removed by source type, locator, and text similarity.
-
-## reflect_plan Integration
-
-`graph.py` now calls:
-
-```python
-retrieval_context = gather_retrieval_context_for_issues(report.issues)
-retrieval_prompt = format_retrieval_context(retrieval_context)
-```
-
-The formatted prompt can contain:
+Raw evidence is merged in priority order:
 
 ```text
+grep evidence -> graph evidence -> GraphRAG evidence -> plain RAG evidence
+```
+
+When `enable_evidence_ranking=True`, the merged list is passed to
+`rank_and_select_evidence(...)`. Ranked evidence is then preferred for prompts.
+Ranking preserves exact grep matches, prefers GraphRAG over duplicate plain RAG
+chunks, applies issue/schema/concept relevance, and enforces per-source and
+total prompt budgets.
+
+## Prompt Formatting
+
+When ranked evidence is available, `format_retrieval_context(...)` emits:
+
+```text
+[GraphRAG Query Plan]
+[Graph Context]
+[Ranked Evidence]
+[Evidence Safety Constraints]
+```
+
+If ranking is disabled or unavailable, it falls back to the legacy raw sections:
+
+```text
+[GraphRAG Query Plan]
 [Grep Evidence]
 [Graph Context]
+[GraphRAG Evidence]
 [RAG Evidence]
+[Evidence Safety Constraints]
 ```
 
-Empty sections are omitted. Legacy state fields (`grep_evidence`,
-`graph_context`, `rag_evidence`) are still populated from `RetrievalContext` for
-compatibility with existing traces and tests.
+Empty sections are omitted.
+
+## Policy Switches
+
+Important `RetrievalPolicy` fields:
+
+- `enable_grep`
+- `enable_graph`
+- `enable_graphrag`
+- `enable_graphrag_query_planner`
+- `prefer_graphrag_over_rag`
+- `enable_rag`
+- `enable_evidence_ranking`
+- `max_grep_evidence`
+- `max_graph_evidence`
+- `max_graphrag_evidence`
+- `max_rag_evidence`
+- `max_ranked_evidence`
+- `max_evidence_prompt_chars`
 
 ## auto-repair And ask_expert Boundaries
 
@@ -88,32 +124,28 @@ Deterministic auto-repair still runs before retrieval-backed reflection. If
 auto-repair succeeds, no LLM repair is forced.
 
 Issues routed to `ask_expert`, especially fact gaps that require human
-confirmation, are not widened into reflect-plan repair by the orchestrator. The
-graph may still preserve human-confirmation relationships, but retrieval
-evidence must not be used to invent nuclear data paths, material densities,
-nuclide compositions, or benchmark constants.
+confirmation, are not widened into reflect-plan repair by the orchestrator.
+Retrieval evidence may explain the API or documentation context, but it must not
+invent nuclear data paths, material densities, nuclide compositions, benchmark
+constants, or missing loading maps.
 
 ## Current Limits
 
-- No GraphRAG.
-- No vector store.
-- No OpenAI file search.
-- No network access.
+- Knowledge ingestion output is not yet automatically loaded into the runtime
+  orchestrator by default.
+- GraphRAG and evidence ranking are deterministic heuristics, not learned
+  rerankers.
+- No vector store or OpenAI file search.
+- No external graph database.
 - No persistent trace store.
-- No automatic schema/docs-to-graph generation.
-- No automatic document concept tagging.
-- No `SimulationPlan` mutation.
+- No `SimulationPlan` mutation inside the orchestrator.
 - No fact-gap confirmation.
 - No `HexAssemblyRenderer`, depletion/burnup, or pebble-bed renderer changes.
 
-## Future Extensions
+## Next Extensions
 
-The `RetrievalContext` shape is intended to support:
-
-- GraphRAG over maintained concepts and local documents.
-- OpenAI file search.
-- Local vector stores such as FAISS or LanceDB.
-- BM25 scoring.
-- Retrieval evaluation dashboards.
-- Persistent trace storage.
-- Automatic document concept annotation.
+- Runtime loader for ingested knowledge assets (`data/knowledge`).
+- Retrieval configuration through CLI/env vars.
+- Real workflow case runner for benchmark and ablation studies.
+- Vector / OpenAI file-search backend behind the same evidence contract.
+- Learned or benchmark-calibrated graph path and evidence weights.

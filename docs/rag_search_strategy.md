@@ -70,29 +70,39 @@ RAG evidence is local documentation context only.
 
 ## Prompt Integration
 
-`reflect_plan` gathers evidence in this order:
+Plain RAG is now one layer inside the Retrieval Orchestrator. The current
+default ordering is:
 
 1. grep evidence for direct code/test/example/document hits;
 2. graph context for maintained relationships and retrieval hints;
-3. RAG evidence for local documentation context.
+3. GraphRAG query planning and GraphRAG evidence;
+4. plain RAG evidence as a fallback or supplement;
+5. evidence ranking, deduplication, and prompt budgeting.
 
-The prompt includes a `[RAG Evidence]` section after `[Graph Context]` and before
-`[Repair Constraints]`. Repair constraints state that RAG may guide API usage
-and explanations, but must not replace confirmed physical facts or human
-confirmation.
+When ranked evidence is available, `reflect_plan` usually sees `[Ranked
+Evidence]` instead of a full raw `[RAG Evidence]` dump. If ranking is disabled
+or unavailable, the prompt can still include `[RAG Evidence]` as a raw fallback
+section.
+
+## Relationship To GraphRAG
+
+GraphRAG builds on the same local RAG primitives. It first uses graph start
+nodes, planned paths, doc/API refs, concept ids, and schema paths to build a
+more precise `RagSearchRequest`; then it converts retrieved chunks into
+`RetrievedEvidence(source_type="graphrag")`.
+
+Plain RAG remains useful when GraphRAG is disabled, when graph evidence is too
+sparse, or when a direct document lookup is sufficient.
 
 ## Future Extensions
 
-The current interfaces are intended to allow later replacement or extension
-with:
+The current interfaces can still be extended with:
 
 - OpenAI vector stores or file search;
 - BM25 ranking;
 - FAISS or LanceDB;
-- GraphRAG;
-- automatic documentation concept tagging;
+- automatic documentation concept tagging beyond deterministic ingestion rules;
 - automatic graph construction from schema and docs.
 
-This step does not implement GraphRAG, vector search, OpenAI file search,
-automatic graph generation, `HexAssemblyRenderer`, depletion, burnup, or
-pebble-bed rendering.
+This layer still does not implement vector search, OpenAI file search,
+`HexAssemblyRenderer`, depletion, burnup, or pebble-bed rendering.

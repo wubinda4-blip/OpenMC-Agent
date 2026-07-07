@@ -42,15 +42,22 @@ plan, and evidence previews are bounded by `TraceConfig.max_preview_chars`.
 
 ## RetrievalContext in Trace
 
-The retrieval orchestrator remains the owner of grep, graph, RAG, and evidence
-merge. Trace records only a structured summary of the resulting
+The retrieval orchestrator remains the owner of grep, graph, GraphRAG, plain
+RAG, evidence merge, and evidence ranking. Trace records only a structured
+summary of the resulting
 `RetrievalContext`:
 
 - issue count
 - grep request/result/evidence counts
 - graph node/edge counts
+- GraphRAG chunk/evidence counts
+- GraphRAG query plan intent, planned path count, preferred query count, and
+  fact-gap safe mode
 - RAG chunk/evidence counts
 - merged evidence count
+- ranked evidence count
+- dropped duplicate / low-score / budget counts
+- evidence score min/max/mean
 - warnings
 - skipped steps
 
@@ -102,7 +109,7 @@ trace remains the single source of truth for evaluation.
 - No dashboard.
 - Benchmark runner is offline only: ablation is a policy layer and needs a real
   `case_runner` for end-to-end experiments.
-- No GraphRAG, vector store, or OpenAI file search.
+- No vector store or OpenAI file search.
 - No hallucination classifier beyond issue/retrieval/human-confirmation signals.
 - Trace does not confirm nuclear data paths, material densities, compositions,
   or benchmark constants.
@@ -113,7 +120,7 @@ trace remains the single source of truth for evaluation.
 - Real workflow `case_runner` driving `build_graph` / `build_plan_graph` under
   each ablation.
 - Evaluation dashboard.
-- GraphRAG evaluation.
+- GraphRAG evaluation with query-planner and evidence-ranker ablations.
 - Hallucination and fact-gap prevention metrics.
 - Vector store and OpenAI file search comparisons.
 - HexAssemblyRenderer.

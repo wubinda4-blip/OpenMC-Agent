@@ -78,25 +78,32 @@ repair policies, and retrieval hints.
 Graph context is explicitly labeled as relationship metadata, not final physics
 truth.
 
-## Future RAG Integration
+## RAG And GraphRAG Integration
 
-The graph layer already exposes these fields for later retrieval:
+The graph layer exposes these fields for retrieval:
 
 - `GraphContext.related_doc_refs`
 - `GraphContext.related_api_refs`
 - `GraphContext.related_example_refs`
 - `GraphContext.retrieval_hints`
 
-A later RAG step can use these as filters before reading OpenMC docs, API pages,
-or examples.
+Plain RAG uses these as filters before reading local docs, API notes, or
+examples. GraphRAG additionally uses issue/schema/concept start nodes and the
+query planner to choose a graph expansion policy, rank short paths, and build
+preferred queries.
+
+Knowledge ingestion can add extra `doc_chunk` graph nodes and edges without
+overriding the hand-written registry. The hand-written registry remains the
+authoritative core.
 
 ## Current Limits
 
 - The registry is manually maintained Python data.
 - Expansion is bounded BFS only.
 - No external graph database is used.
-- No vector search, RAG, or GraphRAG is implemented.
-- The graph does not auto-generate nodes from schema or docs.
+- No vector search is implemented.
+- GraphRAG path planning and evidence ranking are deterministic heuristics.
+- The graph does not automatically infer a complete ontology from schema/docs.
 - The graph never modifies `SimulationPlan`.
 - Unsupported renderer capabilities, including hex lattice rendering, remain
   skeleton-only unless a renderer is implemented in a later step.

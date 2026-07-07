@@ -27,19 +27,21 @@ The search result is converted with `grep_result_to_evidence()` into
 Legacy `ValidationReport.errors`, `warnings`, and `suggestions` remain
 unchanged.
 
-## Boundary With Future Graph And RAG
+## Boundary With Graph, RAG, And Ranking
 
-Grep is deterministic source localization. Future Graph and RAG layers should
-consume the same `RetrievedEvidence` shape but keep their responsibilities
-separate:
+Grep is deterministic source localization. Graph, GraphRAG, plain RAG, and the
+evidence ranker consume the same `RetrievedEvidence` shape but keep their
+responsibilities separate:
 
 - grep match -> symbol or node resolver;
 - issue code -> concept/error node;
 - schema_path -> schema node;
-- RAG -> cited document snippets after retrieval and ranking.
+- GraphRAG/RAG -> cited document snippets after graph-guided or lexical
+  retrieval;
+- evidence ranker -> dedup, scoring, truncation, and prompt budgeting.
 
 Grep evidence should not be treated as a final answer. It is prompt context for
-repair, audit, and future graph expansion.
+repair, audit, graph expansion, and evidence ranking.
 
 ## Safety Strategy
 
@@ -98,12 +100,15 @@ Automatic grep evidence can be collected for:
 repair evidence for inventing values. If they later grep schema or docs, that
 evidence must remain locator context only.
 
-## Future Graph Integration
+## Graph Integration
 
-The intended next step is a resolver layer:
+Current graph integration uses:
 
 - parse each grep locator into a candidate file/symbol node;
 - connect `issue.code` to an error/concept node;
 - connect `schema_path` to a schema node;
 - attach `RetrievedEvidence` as auditable edge metadata;
 - let RAG add cited document nodes without replacing deterministic grep.
+
+The grep layer itself remains intentionally small and does not run graph lookup,
+RAG, GraphRAG, or repair.

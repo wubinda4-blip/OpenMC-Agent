@@ -183,6 +183,21 @@ tests/                    # 覆盖 schemas/llm/graph/renderers/executor/tools/va
 Input/                    # 示例建模需求（case1.md / case2.md）
 ```
 
+## 协作与文档维护规则
+
+仓库根目录维护两份 agent 规则文件：
+
+- `AGENTS.md`：Codex 使用。
+- `CLAUDE.md`：Claude 使用。
+
+核心约定：
+
+- 每次代码改动完成后，运行相关测试；能跑全量测试时优先运行 `conda run -n openmc-env python -m pytest -q`。
+- 测试通过且确认改动范围无误后，自动 commit 并 push 当前分支。
+- 自动提交时只 stage 本次任务相关文件，不把用户已有脏文件、临时脚本、PDF 或未确认输入资料混入提交。
+- 每次重要代码或架构变更后，同步维护 `README.md` 和 `docs/project_technical_report.md`。
+- `docs/project_technical_report.md` 是当前项目进度、架构状态、验证结果、风险边界和下一步建议的总入口。
+
 ---
 
 ## 可插拔渲染器
