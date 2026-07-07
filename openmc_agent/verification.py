@@ -39,7 +39,7 @@ from openmc_agent.source_settings import (
     source_bounds_for_plan,
 )
 
-__all__ = ["build_verification_digest", "write_verification_digest"]
+__all__ = ["build_verification_digest", "convert_voxel_to_vti", "write_verification_digest"]
 
 
 def _pin_counts(model: ComplexModelSpec) -> dict[str, int]:
@@ -310,3 +310,88 @@ def write_verification_digest(model: ComplexModelSpec, outdir: Path) -> dict[str
     json_path.write_text(json.dumps(digest, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_markdown(digest), encoding="utf-8")
     return {"json": str(json_path), "markdown": str(md_path)}
+
+
+def convert_voxel_to_vti(
+    voxel_h5_path: Path | str,
+    plots_xml_path: Path | str,
+    output_path: Path | str | None = None,
+) -> str:
+    """Convert an OpenMC voxel ``.h5`` dump to a VTK ImageData ``.vti`` file
+    that ParaView/VisIt open directly.
+
+    The raw ``.h5`` only stores the 3-D integer array (material/cell IDs)
+    without spatial metadata; ParaView cannot position it without the plot's
+    origin/width/pixels. This function reads those from ``plots.xml`` and
+    produces a self-contained ``.vti`` with correct origin + spacing.
+    """
+    import xml.etree.ElementTree as ET
+
+    import h5py
+    import numpy as np
+
+    voxel_h5_path = Path(voxel_h5_path)
+    plots_xml_path = Path(plots_xml_path)
+    if output_path is None:
+        output_path = voxel_h5_path.with_suffix(".vti")
+    else:
+        output_path = Path(output_path)
+
+    # Read voxel data. OpenMC stores the array as (nz, ny, nx) in the h5.
+    with h5py.File(voxel_h5_path, "r") as f:
+        data = np.array(f["data"], dtype=np.int32)
+    nz_h5, ny_h5, nx_h5 = data.shape
+
+    # Read the voxel plot metadata from plots.xml for the true pixel counts.
+    tree = ET.parse(plots_xml_path)
+    voxel_plot = next(
+        (p for p in tree.iter("plot") if p.get("type") == "voxel"), None
+    )
+    if voxel_plot is None:
+        raise ValueError("no voxel plot found in plots.xml")
+
+    origin_elem = voxel_plot.find("origin")
+    width_elem = voxel_plot.find("width")
+    pixels_elem = voxel_plot.find("pixels")
+    if origin_elem is None or width_elem is None:
+        raise ValueError("voxel plot missing <origin> or <width> in plots.xml")
+
+    origin = [float(v) for v in origin_elem.text.split()]
+    width = [float(v) for v in width_elem.text.split()]
+    # Prefer the pixels from plots.xml; fall back to the h5 shape.
+    if pixels_elem is not None:
+        px = [int(v) for v in pixels_elem.text.split()]
+        nx, ny, nz = px[0], px[1], px[2]
+    else:
+        nx, ny, nz = nx_h5, ny_h5, nz_h5
+
+    # Spacing per voxel.
+    spacing = (width[0] / nx, width[1] / ny, width[2] / nz)
+    # VTI origin = lower-left-back corner = plot_center - half_width.
+    corner = (
+        origin[0] - width[0] / 2.0,
+        origin[1] - width[1] / 2.0,
+        origin[2] - width[2] / 2.0,
+    )
+
+    import vtk
+    from vtk.util.numpy_support import numpy_to_vtk
+
+    image = vtk.vtkImageData()
+    # Use (nx+1, ny+1, nz+1) points so the cell count = nx*ny*nz = data size.
+    image.SetDimensions(nx + 1, ny + 1, nz + 1)
+    image.SetSpacing(spacing)
+    image.SetOrigin(corner)
+
+    # h5 data is (nz, ny, nx); VTK cell data wants (nx, ny, nz) Fortran order.
+    flat = np.ascontiguousarray(data.transpose(2, 1, 0)).ravel(order="F")
+    vtk_arr = numpy_to_vtk(flat, deep=True)
+    vtk_arr.SetName("MaterialID")
+    image.GetCellData().SetScalars(vtk_arr)
+
+    writer = vtk.vtkXMLImageDataWriter()
+    writer.SetFileName(str(output_path))
+    writer.SetInputData(image)
+    writer.Write()
+
+    return str(output_path)

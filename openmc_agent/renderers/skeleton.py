@@ -617,6 +617,12 @@ def _write_todo(
     renderer_name: str,
     capability: RenderCapabilityReport,
 ) -> str | None:
+    # Runnable / exportable models have no TODO gaps -- the TODO file is only
+    # for skeleton / non-executable models that need human review. Writing a
+    # TODO for a runnable model (just because it has a 'reasons' summary and
+    # warnings) is misleading: it says "NOT EXECUTABLE" next to "runnable".
+    if capability.renderability in {"exportable", "runnable"}:
+        return None
     if not capability.reasons and not capability.warnings:
         return None
     lines = [

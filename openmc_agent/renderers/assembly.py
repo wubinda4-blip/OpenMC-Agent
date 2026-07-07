@@ -126,6 +126,11 @@ class RectAssemblyRenderer(BaseRenderer):
                 return emit_skeleton(self.name, plan, outdir, fallback)
             model_path = outdir / "model.py"
             model_path.write_text(script, encoding="utf-8")
+            # A stale TODO.md from a previous skeleton run must not persist when
+            # the current render is executable.
+            stale_todo = outdir / "TODO.md"
+            if stale_todo.exists():
+                stale_todo.unlink()
             files = [str(model_path), _write_capability_report(outdir, capability)]
             todo = _write_todo(outdir, self.name, capability)
             if todo is not None:
@@ -136,6 +141,23 @@ class RectAssemblyRenderer(BaseRenderer):
                 from openmc_agent.verification import write_verification_digest
                 digest_files = write_verification_digest(model, outdir)
                 files.append(digest_files["markdown"])
+            except Exception:
+                pass
+            # Voxel converter script: expert runs this after `openmc -p` to get
+            # a ParaView-ready .vti from the raw voxel .h5 dump.
+            try:
+                convert_script = outdir / "convert_voxel.py"
+                convert_script.write_text(
+                    '"""Convert verification_voxel.h5 -> .vti for ParaView/VisIt.\n'
+                    'Run after: openmc -p\n"""\n'
+                    "from openmc_agent.verification import convert_voxel_to_vti\n"
+                    "from pathlib import Path\n"
+                    "d = Path(__file__).parent\n"
+                    "vti = convert_voxel_to_vti(d / 'plots/verification_voxel.h5', d / 'plots.xml')\n"
+                    "print(f'wrote {vti} -- open in ParaView')\n",
+                    encoding="utf-8",
+                )
+                files.append(str(convert_script))
             except Exception:
                 pass
             return RenderResult(
