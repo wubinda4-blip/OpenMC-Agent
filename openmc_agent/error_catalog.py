@@ -949,6 +949,212 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         ],
         "route_hint": "capability_downgrade",
     },
+    "assembly3d.spacer_grid_overlay_required": {
+        "severity": "error",
+        "message": (
+            "requirement describes spacer/support grids but the plan does not "
+            "represent them as a core.axial_overlays entry; a fuel-region layer "
+            "purpose comment is not a safe representation"
+        ),
+        "schema_path": "complex_model.core.axial_overlays",
+        "rule_id": "rule.assembly3d.spacer_grid_overlay_required",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "overlay_kind", "spacer grid", "geometry_mode"],
+        "repair_hints": [
+            _hint(
+                "add_missing_field",
+                "Add a core.axial_overlays entry with overlay_kind='spacer_grid', "
+                "z_min_cm/z_max_cm, target_lattice_id pointing at the assembly "
+                "lattice, and a geometry_mode matching what the input actually "
+                "supports (use 'skeleton' + requires_human_confirmation when the "
+                "grid z-positions or fidelity are unknown).",
+                target_path="complex_model.core.axial_overlays",
+            ),
+            _hint(
+                "mark_requires_human_confirmation",
+                "If the spacer grid z-positions, height or material are unknown, "
+                "keep the fuel region as a lattice layer and request human "
+                "confirmation instead of turning the whole fuel region into a "
+                "grid layer.",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "assembly3d.axial_overlay_invalid_range": {
+        "severity": "error",
+        "message": "axial overlay z-range is invalid or outside the assembly axial domain",
+        "schema_path": "complex_model.core.axial_overlays",
+        "rule_id": "rule.assembly3d.axial_overlay_range",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "z_min_cm", "z_max_cm", "geometry_mode"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Give the overlay a valid z_min_cm < z_max_cm that intersects the "
+                "assembly axial domain (the union of core.axial_layers z-ranges), "
+                "or set geometry_mode='skeleton' when the z-range is unknown.",
+                target_path="complex_model.core.axial_overlays",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "assembly3d.axial_overlay_missing_target": {
+        "severity": "error",
+        "message": "axial overlay with a non-skeleton geometry_mode must reference an existing target lattice",
+        "schema_path": "complex_model.core.axial_overlays.target_lattice_id",
+        "rule_id": "rule.assembly3d.axial_overlay_target",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "target_lattice_id", "geometry_mode"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Set target_lattice_id to an existing LatticeSpec id (the lattice "
+                "whose fuel/guide/instrument tubes continue through the overlay), "
+                "or downgrade geometry_mode to 'skeleton'.",
+                target_path="complex_model.core.axial_overlays.target_lattice_id",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "assembly3d.axial_overlay_requires_renderer_support": {
+        "severity": "error",
+        "message": (
+            "axial overlay is expressed in the IR but the current renderer has no "
+            "overlay-geometry support; model stays a review-only skeleton"
+        ),
+        "schema_path": "complex_model.core.axial_overlays",
+        "rule_id": "rule.assembly3d.axial_overlay_renderer_support",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "geometry_mode", "homogenized_open_region", "skeleton"],
+        "repair_hints": [
+            _hint(
+                "mark_requires_human_confirmation",
+                "The spacer-grid overlay is correctly declared in the IR, but no "
+                "renderer can turn it into geometry yet. Keep geometry_mode='skeleton' "
+                "and request human confirmation, or wait for the Level 1 overlay "
+                "renderer.",
+            ),
+        ],
+        "route_hint": "capability_downgrade",
+    },
+    "core.reflector_material_ref_missing": {
+        "severity": "error",
+        "message": "core reflector references missing material",
+        "schema_path": "complex_model.reflectors.material_id",
+        "rule_id": "rule.core.reflector_material_ref_exists",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [MATERIALS_GUIDE, LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Fix the reflector material_id typo or add the missing material.",
+                target_path="complex_model.reflectors.material_id",
+            ),
+        ],
+        "route_hint": "auto_repair",
+    },
+    "core.reflector_region_ref_missing": {
+        "severity": "error",
+        "message": "core reflector requires a valid region_id",
+        "schema_path": "complex_model.reflectors.region_id",
+        "rule_id": "rule.core.reflector_region_ref_exists",
+        "concept_id": "openmc.geometry.region_boolean_expression",
+        "knowledge_refs": [GEOMETRY_GUIDE, LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Give the radial reflector a region_id that carves the slab outside the core lattice.",
+                target_path="complex_model.reflectors.region_id",
+            ),
+        ],
+        "route_hint": "auto_repair",
+    },
+    "core.radial_reflector_unreachable": {
+        "severity": "warning",
+        "message": "radial reflector declared but has no geometric space outside the core lattice",
+        "schema_path": "complex_model.reflectors",
+        "rule_id": "rule.core.radial_reflector_reachable",
+        "concept_id": "openmc.geometry.region_boolean_expression",
+        "knowledge_refs": [GEOMETRY_GUIDE, LATTICE_GUIDE],
+        "grep_patterns": ["reflector", "core_xmax", "outer_universe", "universe_pattern"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Either extend core.lattice_id.universe_pattern with reflector universe rows/columns, "
+                "or add core boundary surfaces (core_xmax_surface etc.) so the root cell extends beyond the lattice.",
+                target_path="complex_model.core.lattice_id",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "core.lattice_outer_unreachable": {
+        "severity": "warning",
+        "message": "lattice.outer_universe_id is set but the root cell equals the lattice footprint, so outer is dead geometry",
+        "schema_path": "complex_model.lattices.outer_universe_id",
+        "rule_id": "rule.core.lattice_outer_reachable",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["outer_universe", "lower_left", "universe_pattern"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Extend the lattice universe_pattern to cover the reflector, or enlarge the root cell via core boundary surfaces.",
+                target_path="complex_model.lattices.outer_universe_id",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "core.boundary_surface_clip": {
+        "severity": "error",
+        "message": "core boundary surface would clip the active lattice",
+        "schema_path": "complex_model.surfaces",
+        "rule_id": "rule.core.boundary_surface_envelops_lattice",
+        "concept_id": "openmc.geometry.surface",
+        "knowledge_refs": [GEOMETRY_GUIDE, LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Move the core boundary surface outward so it lies at or beyond the core lattice footprint.",
+                target_path="complex_model.surfaces",
+            ),
+        ],
+        "route_hint": "auto_repair",
+    },
+    "core.boundary_surface_unused": {
+        "severity": "warning",
+        "message": "core boundary surface is not referenced by any region; renderer computed root bounds from the lattice",
+        "schema_path": "complex_model.surfaces",
+        "rule_id": "rule.core.boundary_surface_used",
+        "concept_id": "openmc.geometry.surface",
+        "knowledge_refs": [GEOMETRY_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Wire the boundary surface into a reflector region, or remove it if the lattice footprint is the intended root.",
+                target_path="complex_model.surfaces",
+            ),
+        ],
+    },
+    "core.duplicate_root_cell": {
+        "severity": "warning",
+        "message": "cell duplicates the axial root cell fill and is not reachable from any lattice; likely dead code",
+        "schema_path": "complex_model.cells",
+        "rule_id": "rule.core.no_duplicate_root_cell",
+        "concept_id": "openmc.geometry.cell_fill",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Remove the duplicate cell; the axial core root cell already fills the lattice.",
+                target_path="complex_model.cells",
+            ),
+        ],
+        "route_hint": "auto_repair",
+    },
     "lattice_loading.base_ref_missing": {
         "severity": "error",
         "message": "lattice loading references missing base lattice",

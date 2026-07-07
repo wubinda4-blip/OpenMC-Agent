@@ -740,6 +740,100 @@ class AxialLayerSpec(AgentBaseModel):
         return self
 
 
+class AxialOverlaySpec(AgentBaseModel):
+    """A localized structure overlaid on a pin/tube lattice.
+
+    Spacer grids, support plates and similar components occupy a thin z-range
+    and live in the coolant / open region of the lattice; fuel rods, cladding,
+    guide tubes and instrument tubes continue *through* them. Modeling such a
+    component as a full axial-layer ``material`` fill would truncate every
+    pin/tube through-path, so it must be expressed here as an overlay instead.
+
+    This IR is intentionally declarative: it tells the planner/validator that a
+    grid exists and how it should eventually be rendered. The current renderer
+    supports no overlay ``geometry_mode`` beyond ``skeleton`` (review-only), so a
+    non-skeleton overlay downgrades the model rather than producing fake
+    geometry.
+    """
+
+    id: str = Field(min_length=1)
+    overlay_kind: Literal["spacer_grid", "support_plate", "absorber_insert", "custom"] = Field(
+        description="Category of the overlaid structure.",
+    )
+    z_min_cm: float | None = Field(
+        default=None,
+        description=(
+            "Lower axial bound of the overlay in cm. May be omitted only when "
+            "geometry_mode='skeleton'."
+        ),
+    )
+    z_max_cm: float | None = Field(
+        default=None,
+        description=(
+            "Upper axial bound of the overlay in cm. May be omitted only when "
+            "geometry_mode='skeleton'."
+        ),
+    )
+    target_lattice_id: str | None = Field(
+        default=None,
+        description=(
+            "LatticeSpec id the overlay is applied to. Required for non-skeleton "
+            "geometry modes (the overlay must know which lattice's pins/tubes "
+            "continue through it)."
+        ),
+    )
+    material_id: str | None = Field(
+        default=None,
+        description="Overlay material id (e.g. grid alloy) when the input provides one.",
+    )
+    geometry_mode: Literal[
+        "skeleton",
+        "homogenized_open_region",
+        "annular_shell",
+        "explicit_bars",
+        "volume_fraction_calibrated",
+    ] = Field(
+        default="skeleton",
+        description=(
+            "How the overlay should be rendered. 'skeleton' acknowledges the "
+            "overlay without producing geometry (review-only / human "
+            "confirmation). The other modes describe intended fidelity but "
+            "require renderer support that is not yet implemented."
+        ),
+    )
+    through_path_preserved: bool | None = Field(
+        default=None,
+        description=(
+            "True when fuel/guide/instrument-tube universes continue through "
+            "the overlay. Required evidence for non-skeleton spacer grids."
+        ),
+    )
+    through_universe_ids: list[str] = Field(
+        default_factory=list,
+        description="Universe ids that continue through the overlay (positive evidence).",
+    )
+    blocked_universe_ids: list[str] = Field(
+        default_factory=list,
+        description="Universe ids intentionally blocked/replaced by the overlay.",
+    )
+    volume_fraction: float | None = Field(default=None, gt=0, le=1.0)
+    effective_density_g_cm3: float | None = Field(default=None, gt=0)
+    requires_human_confirmation: bool = False
+    assumptions: list[str] = Field(default_factory=list)
+    source_note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_overlay_geometry(self) -> "AxialOverlaySpec":
+        if self.geometry_mode == "skeleton":
+            return self
+        if self.z_min_cm is None or self.z_max_cm is None:
+            raise ValueError(
+                "axial overlay with geometry_mode != 'skeleton' requires both "
+                "z_min_cm and z_max_cm"
+            )
+        return self
+
+
 class LatticeLoadingSpec(AgentBaseModel):
     id: str = Field(min_length=1)
     base_lattice_id: str = Field(
@@ -774,6 +868,15 @@ class CoreSpec(AgentBaseModel):
     boundary: Literal["vacuum", "reflective", "periodic", "mixed", "unknown"] = "unknown"
     boundary_conditions: CoreBoundarySpec | None = None
     axial_layers: list[AxialLayerSpec] = Field(default_factory=list)
+    axial_overlays: list[AxialOverlaySpec] = Field(
+        default_factory=list,
+        description=(
+            "Localized structures overlaid on a pin/tube lattice (spacer grids, "
+            "support plates, ...). Overlays occupy a thin z-range inside the "
+            "coolant/open region; pin/tube universes continue through them, so "
+            "they must never be modeled as a full axial-layer material slab."
+        ),
+    )
     symmetry: str | None = None
     purpose: str = ""
 

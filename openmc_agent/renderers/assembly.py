@@ -15,7 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from openmc_agent.assembly3d_guard import assembly3d_grid_layer_issues
+from openmc_agent.assembly3d_guard import (
+    assembly3d_grid_layer_issues,
+    assembly3d_overlay_issues,
+)
 from openmc_agent.executor import render_openmc_assembly_script
 from openmc_agent.lattice_validation import lattice_pin_count_issues
 from openmc_agent.renderers.core import _core_renderability_errors
@@ -381,13 +384,15 @@ def _axial_assembly_modeling_errors(model: ComplexModelSpec) -> list[ValidationI
 
     Thin spacer/support-grid layers are not an entire slab of grid material:
     fuel rods and guide/instrument tubes pass through them. This delegates to
-    :func:`openmc_agent.assembly3d_guard.assembly3d_grid_layer_issues` so the
-    plan validator and the renderer share one source of truth for the
-    ``assembly3d.spacer_grid_material_slab`` / ``assembly3d.pin_through_path_missing``
-    codes.
+    :func:`openmc_agent.assembly3d_guard.assembly3d_grid_layer_issues` (grid-slab
+    checks) and :func:`openmc_agent.assembly3d_guard.assembly3d_overlay_issues`
+    (axial overlay checks) so the plan validator and the renderer share one
+    source of truth for the ``assembly3d.*`` codes.
     """
     assert model.core is not None
-    return assembly3d_grid_layer_issues(model)
+    issues = assembly3d_grid_layer_issues(model)
+    issues.extend(assembly3d_overlay_issues(model))
+    return issues
 
 
 def _lattice_pattern_errors(

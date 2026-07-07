@@ -300,14 +300,43 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - 对 VERA/C5G7 类 benchmark，检索已经能提供上下文，但最终可信度取决于 renderer 能否表达结构。
 - 建议先做 RectAssembly/Core 的 loading map fidelity checks，而不是马上实现 HexAssemblyRenderer。
 
-**3D assembly / spacer-grid overlay（Step 1 已完成 2026-07-07）**：
+**3D assembly / spacer-grid overlay（Step 2 已完成 2026-07-07）**：
 
-- Step 1（本次）：通用 3D assembly workflow guard 已落地，3D 需求被 2D assembly 吞掉时在 plan validation 阶段即拦截。
-- Step 2（下一步）：实现 `AxialOverlaySpec` 与 Level 1 spacer-grid overlay renderer，保留 pin/tube through-path。
-- Step 3：volume-fraction calibrated homogenized overlay。
-- 在 Step 2/3 完成前，VERA3 只作为验收 benchmark，不是可导出目标。
+- Step 1：通用 3D assembly workflow guard 已落地，3D 需求被 2D assembly 吞掉时在 plan validation 阶段即拦截。
+- Step 2（本次）：`AxialOverlaySpec` IR + `core.axial_overlays` 落地；guard 不再把"含 grid 字样的长燃料区 lattice layer"误判为 spacer grid slab；through-path check 不再误伤 lattice 填充层；新增 4 个 overlay issue code；renderer `can_render` 接入 overlay 检查；产物持久化 bug 修复。LLM 现在可以用 `geometry_mode='skeleton'` + `requires_human_confirmation` 诚实表达 VERA3 格架，而不再卡死或产出物理错误的 material slab。
+- Step 3（下一步）：实现 Level 1 `homogenized_open_region` overlay renderer，保留 pin/tube through-path。
+- Step 4：volume-fraction calibrated overlay。
+- Step 5：VERA3 end-to-end benchmark acceptance。
+- 在 Step 3 落地前，VERA3 只作为验收 benchmark，overlay 仍降级为 skeleton。
 
 ## 9. 维护记录
+
+### 2026-07-07（Step 2：AxialOverlay IR + guard 误报修复 + 产物持久化）
+
+完成并验证：
+
+- **修正 assembly3d guard 对 VERA3 spacer grid 的误报**。原 `_layer_looks_like_grid` 只要 id/name/purpose 含 "grid" 就把整层当 spacer grid slab，导致 VERA3 的 365 cm `layer_fuel_region`（lattice 填充、purpose 注释提到 embedded grids）被误判，触发 `assembly3d.pin_through_path_missing`，LLM 重试 3 轮无法修复。新判定分两层：
+  - `layer_mentions_grid(layer)`：仅文本弱信号。
+  - `layer_is_spacer_grid_slab_candidate(layer)`：保守判定——id/name 含明确 grid-slab 短语（`spacer grid`/`support grid`/`grid strap`/`grid slab`/`定位格架`…），或薄 z-band（≤5 cm）且 id/name 提到 grid/spacer；**忽略 purpose**（"fuel region with embedded grids" 不算 slab），**tall lattice 填充层永不判为 slab**。
+- **修正 through-path check**。`_grid_layer_lacks_through_path` 不再因 `fill.type=='lattice'` + `loading_id is None` 判定缺 through-path——lattice 填充本身保留 pin 穿透；`loading_id` 仅在叠加 grid 材料时需要，且必须 resolve 到已声明的 `LatticeLoadingSpec`。
+- **新增 `AxialOverlaySpec` IR**（`schemas.py`）+ `CoreSpec.axial_overlays`。声明式表达 spacer grid / support plate / absorber insert 等"叠加在 lattice 之上的薄层结构"：`overlay_kind` / `z_min_cm` / `z_max_cm` / `target_lattice_id` / `material_id` / `geometry_mode`（`skeleton`|`homogenized_open_region`|`annular_shell`|`explicit_bars`|`volume_fraction_calibrated`）/ `through_path_preserved` / `through_universe_ids` / `volume_fraction` / `effective_density_g_cm3` / `requires_human_confirmation`。schema 校验：non-skeleton 必须有 z_min/z_max；其余 domain/target/through-path 由 guard 检查。
+- **新增 4 个 issue code**（`error_catalog.py`）：
+  - `assembly3d.spacer_grid_overlay_required`（requirement 有 spacer grid 但 plan 无 overlay 也无安全 slab → `reflect_plan`）。
+  - `assembly3d.axial_overlay_invalid_range`（z 缺失/反转/与 axial domain 不相交）。
+  - `assembly3d.axial_overlay_missing_target`（non-skeleton overlay 的 `target_lattice_id` 缺失或不 resolve）。
+  - `assembly3d.axial_overlay_requires_renderer_support`（overlay 请求 renderer 尚未实现的 geometry_mode，或 skeleton overlay → 审查降级）。
+- **guard 拆分 requirement-agnostic / aware**：`assembly3d_overlay_issues(model)`（renderer `can_render` 与 validator 共享）+ `axial_overlay_issues(model, flags)`（额外含 `spacer_grid_overlay_required`）。`renderers/assembly.py` 的 `_axial_assembly_modeling_errors` 现在同时跑 slab 与 overlay 检查，保证 renderer 也对 overlay 降级。
+- **更新 `prompts.py`**：明确告诉 LLM spacer grid 必须用 `core.axial_overlays` 表达，禁止用 material slab 或 purpose 注释糊弄。
+- **修复产物持久化 bug**（`graph.py`）：`_render_plan_script` / `_render_script` 开头调用新增的 `_clean_stale_render_artifacts(output_dir)` 清理上一轮的 model.py / XML / capability_report.json / TODO.md / statepoint h5 / plots/；当 render 因 plan 无效或无 renderer 而跳过时，调用 `_write_non_executable_marker` 写出诚实的 NOT_EXECUTABLE `capability_report.json` + `TODO.md`，杜绝旧 exportable 产物冒充本轮成功结果。run record（simulation_plan.json / transcript.json / plan_artifacts/ / checkpoints.sqlite / inspect_runs.jsonl）不动。
+- 全量测试：`499 passed`（新增 9 个 assembly3d overlay/persistence 场景）。
+
+安全边界保持：renderer 仍不生成假 overlay 几何；任何 overlay（skeleton 或更高 fidelity）都降级为 review-only skeleton；VERA3 facts 未固化进生产代码。
+
+仍未完成（明确留给后续 Step）：
+
+- **Step 3**：Level 1 `homogenized_open_region` overlay renderer（保留 pin/tube through-path，在 coolant/open region 等效填充 grid 材料）。
+- **Step 4**：volume-fraction calibrated overlay。
+- **Step 5**：VERA3 end-to-end benchmark acceptance（在 Step 3 落地后才作为可导出目标）。
 
 ### 2026-07-07（case3 输入修正 + 项目自动提交偏好）
 

@@ -1567,6 +1567,7 @@ def _render_script(state: GraphState) -> GraphState:
 
     output_dir = Path(state.get("output_dir", "data/runs"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    _clean_stale_render_artifacts(output_dir)
     model_path = output_dir / "model.py"
     model_path.write_text(script, encoding="utf-8")
     _progress(state, "render_script", f"wrote {model_path}")
@@ -1587,15 +1588,23 @@ def _render_plan_script(state: GraphState) -> GraphState:
         "render_started",
         summary="rendering SimulationPlan to model.py",
     )
+    output_dir = Path(state.get("output_dir", "data/runs"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # Always start from a clean render-output set so a non-exportable run never
+    # leaves a prior run's model.py / XML / optimistic capability_report.json.
+    _clean_stale_render_artifacts(output_dir)
+
     report = state.get("validation_report")
     plan = _coerce_simulation_plan(state.get("simulation_plan"))
     if plan is None or report is None or not report.is_valid:
         _progress(state, "render_plan_script", "skipped: plan is not valid")
+        _write_non_executable_marker(output_dir, report, plan)
         return start_update
 
     renderer, capability = choose_renderer(plan)
     if renderer is None or capability.renderability == "none":
         _progress(state, "render_plan_script", "skipped: no renderer for this plan")
+        _write_non_executable_marker(output_dir, report, plan, capability)
         completed_update = _trace_event_update(
             {**state, **start_update},
             "render_completed",
@@ -1603,10 +1612,12 @@ def _render_plan_script(state: GraphState) -> GraphState:
             capability=capability,
             metadata={"success": False, "reason": "no renderer"},
         )
-        return completed_update
+        return {
+            "simulation_plan": plan,
+            "plan_artifacts": _write_final_simulation_plan(state, plan),
+            **completed_update,
+        }
 
-    output_dir = Path(state.get("output_dir", "data/runs"))
-    output_dir.mkdir(parents=True, exist_ok=True)
     result = renderer.render(plan, output_dir)
     # Rendering may defensively downgrade an apparently exportable plan to a
     # skeleton if executor/script validation fails. The render result is the
@@ -3352,6 +3363,96 @@ def _write_capability_sidecar(output_dir: Path, capability: RenderCapabilityRepo
         json.dumps(capability.model_dump(mode="json"), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+# Regenerable render outputs. Removing them at the start of a render node lets a
+# skeleton / non-exportable run overwrite a prior exportable run's model.py, XML
+# and optimistic capability_report.json, so the on-disk state always matches the
+# current run. Run records (simulation_plan.json, transcript.json,
+# plan_artifacts/, checkpoints.sqlite, inspect_runs.jsonl) are NOT in this set.
+_RENDER_ARTIFACT_NAMES: tuple[str, ...] = (
+    "model.py",
+    "smoke_model.py",
+    "materials.xml",
+    "geometry.xml",
+    "settings.xml",
+    "tallies.xml",
+    "plots.xml",
+    "capability_report.json",
+    "TODO.md",
+)
+
+
+def _clean_stale_render_artifacts(output_dir: Path) -> None:
+    """Remove regenerable render outputs left over from a prior run.
+
+    Guarantees the output directory reflects the CURRENT run: when this run is
+    non-exportable, no previous run's model.py / XML / exportable
+    capability_report.json remains to masquerade as a successful result. Run
+    records that are appended-to rather than regenerated are preserved.
+    """
+    import shutil
+
+    for name in _RENDER_ARTIFACT_NAMES:
+        path = output_dir / name
+        if path.exists() or path.is_symlink():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    # OpenMC run outputs and plot images.
+    for pattern in ("statepoint.*.h5", "summary.*.h5"):
+        for path in output_dir.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    plots_dir = output_dir / "plots"
+    if plots_dir.exists():
+        try:
+            shutil.rmtree(plots_dir)
+        except OSError:
+            pass
+
+
+def _write_non_executable_marker(
+    output_dir: Path,
+    report: "ValidationReport | None",
+    plan: "SimulationPlan | None",
+    capability: RenderCapabilityReport | None = None,
+) -> None:
+    """Write an honest NOT_EXECUTABLE capability_report.json + TODO.md.
+
+    Used when the render node is skipped (plan invalid / no renderer) so that a
+    prior exportable run's optimistic sidecars cannot mask the current run's
+    failure. ``capability`` may be supplied (e.g. renderer returned 'none');
+    otherwise a minimal non-executable report is derived from the validation
+    issues.
+    """
+    if capability is None:
+        issues = list(report.issues) if report is not None and report.issues else []
+        error_messages = [iss.message for iss in issues if iss.severity == "error"]
+        capability = RenderCapabilityReport(
+            renderability="none",
+            is_executable=False,
+            supported_renderer="none",
+            executable_subsystems=[],
+            reasons=error_messages or ["plan validation failed; render skipped"],
+            issues=issues,
+        )
+    _write_capability_sidecar(output_dir, capability)
+
+    lines = [
+        "# TODO — OpenMC model not executable",
+        "",
+        f"Renderability: {capability.renderability}",
+        "Status: NOT_EXECUTABLE",
+        "",
+        "## Blocking reasons",
+    ]
+    for reason in capability.reasons:
+        lines.append(f"- {reason}")
+    (output_dir / "TODO.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _plan_human_confirmations(plan: SimulationPlan) -> list[str]:

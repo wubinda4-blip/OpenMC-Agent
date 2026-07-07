@@ -172,6 +172,22 @@ SimulationPlan-specific rules:
   source IR entry. Do NOT re-enumerate the whole loading map per layer; keep one base
   lattice and override only the minority positions, matching the LatticeSpec.overrides
   convention.
+- Spacer grids / support grids / grid straps / mixing vanes are thin structural bands
+  overlaid on the pin lattice: fuel rods, cladding, guide tubes and instrument tubes
+  pass *through* them. NEVER model a spacer grid as an axial layer with
+  fill={"type":"material"} (that replaces the whole cross section and truncates every
+  pin/tube), and do NOT just mention grids in a fuel-region layer's purpose. Express
+  each grid as a core.axial_overlays entry with overlay_kind="spacer_grid",
+  z_min_cm/z_max_cm (the grid band), target_lattice_id pointing at the assembly
+  lattice, material_id when the input provides one, through_path_preserved=true, and a
+  geometry_mode matching what the input actually supports:
+  * "skeleton" + requires_human_confirmation=true when grid z-positions, height or
+    material are unknown -- this honestly downgrades to a review-only model;
+  * "homogenized_open_region" / "volume_fraction_calibrated" only when the input gives
+    enough information (note the current renderer cannot turn these into geometry yet,
+    so the model still downgrades).
+  Keep the active fuel region as a normal lattice-filled axial layer regardless of the
+  grids embedded inside it.
 - For any assembly/core loading map with stated counts, set expected_counts on the
   relevant lattice. If the input gives special coordinates, preserve them as overrides
   and do not replace them with a full hand-written universe_pattern unless the schema
