@@ -95,6 +95,12 @@ Coordinate, indexing, and map transcription policy:
 Repeated-geometry and lattice policy:
 - For large or repetitive geometries, use OpenMC repeated geometry: define each distinct
   pin, cell type, or sub-assembly once as a universe, then repeat it with LatticeSpec.
+- EVERY universe id referenced anywhere (lattice universe_pattern / fill_universe /
+  overrides keys / outer_universe_id, cell fill_type='universe', axial layer fill) MUST
+  be defined as a UniverseSpec entry in complex_model.universes whose cell_ids group the
+  cells that fill it. Defining cells but omitting the UniverseSpec entries leaves the
+  lattice pointing at undefined universes and blocks export -- always emit the universes
+  list, one UniverseSpec per distinct lattice position type.
 - For a rect lattice whose pin map is regular or fully specified by the input, DO NOT
   hand-enumerate universe_pattern unless the lattice is small or the schema explicitly
   needs the full array. Instead set LatticeSpec.shape=(nx, ny), fill_universe to the

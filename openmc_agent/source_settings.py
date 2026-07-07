@@ -1,10 +1,9 @@
 """OpenMC source / settings validation and active-fuel source-box binding.
 
-The VERA3 smoke-test failure ("Too few source sites satisfied the constraints")
-comes from binding the initial source to the *full* assembly axial domain
-(nozzle-to-nozzle, including moderator buffers and plena) with
-``only_fissionable=True``. The fissionable fuel only occupies the active-fuel
-z-range, so a full-domain box rejects too many source sites.
+Binding the initial source to the *full* model axial domain (nozzles, plena,
+reflectors, moderator buffers) with ``only_fissionable=True`` rejects most
+source sites because the fissionable fuel only occupies the active-fuel
+z-range (a 'too few source sites' crash).
 
 This module computes the active-fuel z-range from the plan's axial layers, binds
 the source box to it, and validates the source settings before OpenMC runs --

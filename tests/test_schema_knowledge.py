@@ -376,9 +376,12 @@ def test_unknown_catalog_code_falls_back_to_minimal_issue() -> None:
     assert issue.severity == "error"
 
 
-def test_catalog_routes_core_axial_and_loading_refs_to_auto_repair() -> None:
+def test_catalog_routes_core_axial_and_loading_refs_to_agent_repair() -> None:
+    """Reference-missing issues are agent-fixable (auto_repair when a
+    deterministic id fix exists, reflect_plan when the LLM must add a missing
+    definition). None should require human confirmation."""
+    # Deterministic id-typo fixes -> auto_repair.
     for code in (
-        "lattice.universe_ref_missing",
         "core.lattice_ref_missing",
         "axial_layer.fill_ref_missing",
         "axial_layer.loading_ref_missing",
@@ -386,8 +389,13 @@ def test_catalog_routes_core_axial_and_loading_refs_to_auto_repair() -> None:
         "lattice_loading.override_universe_ref_missing",
     ):
         issue = issue_from_catalog(code)
-        assert issue.route_hint == "auto_repair"
-        assert issue.requires_human_confirmation is False
+        assert issue.route_hint == "auto_repair", code
+        assert issue.requires_human_confirmation is False, code
+    # A lattice referencing an undefined universe needs the LLM to emit the
+    # missing UniverseSpec (cell grouping cannot be auto-invented) -> reflect_plan.
+    issue = issue_from_catalog("lattice.universe_ref_missing")
+    assert issue.route_hint == "reflect_plan"
+    assert issue.requires_human_confirmation is False
 
 
 def test_catalog_covers_all_required_validator_codes() -> None:

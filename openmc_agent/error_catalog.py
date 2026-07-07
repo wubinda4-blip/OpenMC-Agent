@@ -645,12 +645,15 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         "knowledge_refs": [LATTICE_GUIDE],
         "repair_hints": [
             _hint(
-                "edit_field",
-                "Fix the universe id typo or add the missing universe with that exact id.",
-                target_path="complex_model.lattices.universe_pattern",
+                "add_missing_field",
+                "Add a UniverseSpec entry to complex_model.universes for each referenced "
+                "id, grouping the cells that fill it (cell_ids). A lattice position can "
+                "only render a universe that is actually defined; cells alone are not "
+                "enough.",
+                target_path="complex_model.universes",
             ),
         ],
-        "route_hint": "auto_repair",
+        "route_hint": "reflect_plan",
     },
     "lattice.shape_pattern_mismatch": {
         "severity": "error",
