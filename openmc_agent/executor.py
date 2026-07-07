@@ -946,8 +946,10 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
     for reflector in spec.reflectors:
         if reflector.material_id not in material_ids:
             raise ValueError(f"core reflector {reflector.id!r} references missing material")
-        if reflector.region_id is None or reflector.region_id not in region_like_ids:
-            raise ValueError(f"core reflector {reflector.id!r} requires a valid region_id")
+        if reflector.region_id is not None and reflector.region_id not in region_like_ids:
+            raise ValueError(
+                f"core reflector {reflector.id!r} references missing region {reflector.region_id!r}"
+            )
 
 
 def _complex_enrichment_kwargs(spec: ComplexMaterialSpec) -> dict[str, str | float]:

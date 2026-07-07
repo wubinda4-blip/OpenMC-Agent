@@ -273,10 +273,10 @@ def _core_renderability_errors(model: Any) -> list[ValidationIssue]:
                 f"core reflector {reflector.id!r} references missing material {reflector.material_id!r}",
                 "complex_model.reflectors.material_id",
             ))
-        if reflector.region_id is None or reflector.region_id not in region_like_ids:
+        if reflector.region_id is not None and reflector.region_id not in region_like_ids:
             errors.append(_iss(
                 "core.reflector_region_ref_missing",
-                f"core reflector {reflector.id!r} requires a valid region_id",
+                f"core reflector {reflector.id!r} references missing region {reflector.region_id!r}",
                 "complex_model.reflectors.region_id",
             ))
     if model.core is not None and model.core.lattice_id is not None:
