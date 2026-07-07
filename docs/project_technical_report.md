@@ -309,6 +309,17 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 
 ## 9. 维护记录
 
+### 2026-07-07（case3 输入修正 + 项目自动提交偏好）
+
+完成：
+
+- **`Input/case3.md` 材料修正**：将导向管 `guide_tube` 与裂变室 `fiss_chamber` 由"实心 Zircaloy-4 圆柱（r=0.54）"改为"实心 water 圆柱（r=0.54）"。经典 C5G7 未插棒构型下导向管 / 中心测量管内部为水，仅有薄壁 Zircaloy-4 管；原建模把整根棒填成 Zircaloy-4 会显著高估 Zr 吸收并损失局部慢化，偏离 C5G7 物理图像。沿用 case3 既有的"单材料均质棒"简化（燃料棒亦不建包壳 / 气隙），故取体积占优的水作为均质填充材料。Zircaloy-4 材料定义保留但标注当前未使用，供未来引入包壳 / 管壁结构时启用。栅元半径、pin 计数与 lattice 结构不变（导向管 96、裂变室 4，活性棒位总数 1156 不变）。
+- **项目自动提交偏好显式化**：在 `AGENTS.md` 与 `CLAUDE.md` 顶部新增显式声明——本仓库默认开启自动 commit/push，覆盖全局 `~/.claude/CLAUDE.md` 中"不自动提交除非明确要求"的默认，消除项目级与全局偏好之间的歧义。
+
+验证：
+
+- 本次为文档 / 规则 / 输入规格变更，未改动 Python 代码，按仓库规则运行 `git diff --check -- <paths>` 轻量检查（未跑全量 pytest）。
+
 ### 2026-07-07（3D assembly workflow guard — Step 1）
 
 完成并验证：

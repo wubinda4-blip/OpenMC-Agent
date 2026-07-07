@@ -194,6 +194,7 @@ Input/                    # 示例建模需求（case1.md / case2.md）
 
 核心约定：
 
+- **本仓库默认开启自动 commit/push**，显式覆盖全局 `~/.claude/CLAUDE.md` 中"不自动提交除非明确要求"的默认。
 - 每次代码改动完成后，运行相关测试；能跑全量测试时优先运行 `conda run -n openmc-env python -m pytest -q`。
 - 测试通过且确认改动范围无误后，自动 commit 并 push 当前分支。
 - 自动提交时只 stage 本次任务相关文件，不把用户已有脏文件、临时脚本、PDF 或未确认输入资料混入提交。
