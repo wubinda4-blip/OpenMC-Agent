@@ -21,13 +21,27 @@ def test_decision_runtime_geometry_overlap_runs_all_layers() -> None:
     assert decision.should_run_rag is True
 
 
-def test_decision_cross_sections_skips_grep_and_rag_by_default() -> None:
+def test_decision_cross_sections_runs_retrieval_but_keeps_human_confirmation() -> None:
     decision = decide_retrieval_for_issue(issue_from_catalog("runtime.cross_sections_missing"))
+
+    assert decision.should_run_grep is True
+    assert decision.should_run_graph is True
+    assert decision.should_run_rag is True
+    assert "fact-gap documentation lookup" in decision.reason
+
+
+def test_policy_can_still_skip_cross_sections_fact_gap_retrieval() -> None:
+    decision = decide_retrieval_for_issue(
+        issue_from_catalog("runtime.cross_sections_missing"),
+        policy=RetrievalPolicy(
+            skip_grep_for_cross_sections_missing=True,
+            skip_rag_for_fact_gap=True,
+        ),
+    )
 
     assert decision.should_run_grep is False
     assert decision.should_run_graph is True
     assert decision.should_run_rag is False
-    assert "human confirmation" in decision.reason
 
 
 def test_decision_export_xml_dangling_lattice_universe_runs_grep_graph_not_rag() -> None:
@@ -137,15 +151,40 @@ def test_orchestrator_runtime_geometry_overlap_returns_rag_evidence(monkeypatch)
     assert "Geometry overlap" in context.rag_evidence[0].text
 
 
-def test_orchestrator_cross_sections_does_not_generate_rag_evidence() -> None:
+def test_orchestrator_cross_sections_runs_doc_retrieval_and_preserves_fact_gap(monkeypatch) -> None:
+    from openmc_agent.graphrag_retriever import GraphRagResult
+
+    def fake_graphrag_retrieve(request):
+        return GraphRagResult(
+            request=request,
+            evidence=[
+                RetrievedEvidence(
+                    source_type="graphrag",
+                    locator="docs/data.md:1-4",
+                    text="OPENMC_CROSS_SECTIONS must point to a user-confirmed cross_sections.xml.",
+                    metadata={
+                        "requires_human_confirmation": True,
+                        "issue_codes": ["runtime.cross_sections_missing"],
+                        "fact_gap_safe_mode": True,
+                    },
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "openmc_agent.retrieval_orchestrator.graphrag_retrieve",
+        fake_graphrag_retrieve,
+    )
     context = gather_retrieval_context_for_issues(
         [issue_from_catalog("runtime.cross_sections_missing")]
     )
 
     assert context.graph_context is not None
-    assert context.grep_evidence == []
-    assert context.rag_evidence == []
-    assert any("rag skipped" in step for step in context.skipped_steps)
+    assert context.graphrag_evidence
+    assert context.graphrag_evidence[0].metadata["requires_human_confirmation"] is True
+    assert context.graphrag_request is not None
+    assert context.graphrag_request.query_plan is not None
+    assert context.graphrag_request.query_plan.expansion_policy.fact_gap_safe_mode is True
 
 
 def test_orchestrator_tool_exception_records_warning(monkeypatch) -> None:

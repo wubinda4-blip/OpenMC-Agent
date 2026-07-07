@@ -105,6 +105,8 @@ issues
   -> reflect_plan prompt
 ```
 
+默认策略倾向于“先检索、再判断”：manual review 和 fact gap 也会触发文档/GraphRAG 检索，用来解释 API、配置方式和项目上下文；但 human confirmation 标记仍然保留，不能由 evidence 自动补齐材料密度、composition、核数据库路径、benchmark 常数或真实 loading map。
+
 ### 4.3 Knowledge Ingestion
 
 已完成：
@@ -331,6 +333,7 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - GraphRAG Query Planner + Graph Path Reranking。
 - docs 文件夹整理：删除早期 Phase 0 盘点/草案/单问题计划，新增 `docs/README.md`，并更新 retrieval/RAG/graph/trace/benchmark 文档到当前 GraphRAG + ranking 状态。
 - 新增 repo-local agent 维护规则：`AGENTS.md`（Codex）和 `CLAUDE.md`（Claude），要求代码改动测试通过后自动 commit/push，并同步维护 `README.md` 与本技术报告。
+- 调整默认检索策略：默认开启 grep/graph/RAG/GraphRAG/query planner/evidence ranking；manual review 和 fact gap 默认也做文档检索，但仍保留 human confirmation。
 - 全量测试通过：`453 passed in 43.05s`。
 
 新增核心文档：

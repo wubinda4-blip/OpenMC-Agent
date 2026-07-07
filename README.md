@@ -198,6 +198,16 @@ Input/                    # 示例建模需求（case1.md / case2.md）
 - 每次重要代码或架构变更后，同步维护 `README.md` 和 `docs/project_technical_report.md`。
 - `docs/project_technical_report.md` 是当前项目进度、架构状态、验证结果、风险边界和下一步建议的总入口。
 
+## 默认检索策略
+
+当前默认开启检索工具链：
+
+```text
+grep -> graph -> GraphRAG query planner -> GraphRAG -> plain RAG -> evidence ranking
+```
+
+默认策略会尽量用本地代码、测试、文档、知识图谱和 GraphRAG evidence 帮助 `reflect_plan` 修复结构问题，减少不必要的人工参与。对 cross section 路径、材料密度、composition、benchmark 常数、真实 loading map 等 fact gap，系统也会检索文档解释和配置上下文，但仍保留 human confirmation，不会自动编造缺失事实。
+
 ---
 
 ## 可插拔渲染器

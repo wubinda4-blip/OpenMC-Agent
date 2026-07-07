@@ -51,16 +51,18 @@ Tool ordering is not LLM-controlled.
 document retrieval.
 
 Grep runs for issues with grep patterns, repair/retrieval/manual routes, and
-runtime/export/hex lattice error codes. Cross-section fact gaps skip grep by
-default to avoid prompting the LLM to invent local paths.
+runtime/export/hex lattice error codes. Cross-section fact gaps also run grep by
+default when they have safe patterns such as `OPENMC_CROSS_SECTIONS` or
+`cross_sections.xml`, but the result is locator/documentation context only.
 
 Graph runs when an issue has stable anchors: code, schema path, concept id, or
 grep evidence.
 
-RAG/GraphRAG run for explicit retrieval issues, runtime geometry overlap, lost
-particle, unknown runtime diagnostics, hex lattice issues, or graph contexts
-with doc/API/example refs or retrieval hints. Fact gaps such as cross-section
-configuration or material composition preserve human confirmation semantics.
+RAG/GraphRAG run for explicit retrieval issues, manual-review issues, runtime
+geometry overlap, lost particle, unknown runtime diagnostics, hex lattice
+issues, graph contexts with doc/API/example refs or retrieval hints, and fact
+gap documentation lookups. Fact gaps such as cross-section configuration or
+material composition preserve human confirmation semantics.
 
 ## Evidence Merge And Ranking
 
@@ -111,6 +113,9 @@ Important `RetrievalPolicy` fields:
 - `prefer_graphrag_over_rag`
 - `enable_rag`
 - `enable_evidence_ranking`
+- `run_rag_for_manual_review`
+- `skip_rag_for_fact_gap`
+- `skip_grep_for_cross_sections_missing`
 - `max_grep_evidence`
 - `max_graph_evidence`
 - `max_graphrag_evidence`
@@ -133,6 +138,9 @@ constants, or missing loading maps.
 
 - Knowledge ingestion output is not yet automatically loaded into the runtime
   orchestrator by default.
+- Fact-gap retrieval is documentation-only. It reduces unnecessary questions
+  about API/configuration mechanics, but still cannot confirm missing physical
+  facts.
 - GraphRAG and evidence ranking are deterministic heuristics, not learned
   rerankers.
 - No vector store or OpenAI file search.

@@ -75,7 +75,7 @@ class RetrievalPolicy(AgentBaseModel):
     enable_graphrag: bool = True
     enable_graphrag_query_planner: bool = True
     prefer_graphrag_over_rag: bool = False
-    run_rag_for_manual_review: bool = False
+    run_rag_for_manual_review: bool = True
     max_issues: int = 8
     max_grep_evidence: int = 6
     max_graph_evidence: int = 4
@@ -86,8 +86,8 @@ class RetrievalPolicy(AgentBaseModel):
     enable_evidence_ranking: bool = True
     max_ranked_evidence: int = 12
     max_evidence_prompt_chars: int = 6000
-    skip_rag_for_fact_gap: bool = True
-    skip_grep_for_cross_sections_missing: bool = True
+    skip_rag_for_fact_gap: bool = False
+    skip_grep_for_cross_sections_missing: bool = False
 
 
 class RetrievalTriggerDecision(AgentBaseModel):
@@ -133,6 +133,7 @@ def decide_retrieval_for_issue(
 ) -> RetrievalTriggerDecision:
     """Decide which retrieval layers an issue should trigger."""
     active_policy = policy or RetrievalPolicy()
+    is_fact_gap = _is_fact_gap_issue(issue)
     should_run_grep = bool(
         issue.grep_patterns
         or issue.route_hint in _GREP_ROUTE_HINTS
@@ -155,8 +156,9 @@ def decide_retrieval_for_issue(
         )
         or issue.code.startswith(("lattice.hex.", "runtime.geometry_overlap", "runtime.lost_particle"))
         or (issue.code.startswith("runtime.") and "unknown" in issue.code)
+        or (is_fact_gap and not active_policy.skip_rag_for_fact_gap)
     )
-    if active_policy.skip_rag_for_fact_gap and _is_fact_gap_issue(issue):
+    if active_policy.skip_rag_for_fact_gap and is_fact_gap:
         should_run_rag = False
 
     reasons: list[str] = []
@@ -167,8 +169,8 @@ def decide_retrieval_for_issue(
     if should_run_graph:
         reasons.append("graph: issue has code/schema/concept anchors")
     if should_run_rag:
-        reasons.append("rag: issue requests retrieval or is geometry/hex/runtime diagnostic")
-    elif active_policy.skip_rag_for_fact_gap and _is_fact_gap_issue(issue):
+        reasons.append("rag: issue requests retrieval, is geometry/hex/runtime diagnostic, or is a fact-gap documentation lookup")
+    elif active_policy.skip_rag_for_fact_gap and is_fact_gap:
         reasons.append("rag skipped for fact gap requiring human confirmation")
     if not reasons:
         reasons.append("no retrieval trigger matched")
