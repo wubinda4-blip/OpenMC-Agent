@@ -37,9 +37,11 @@ from openmc_agent.schemas import (
     LatticeSpec,
     NuclideSpec,
     PlotSpec,
+    RegionSpec,
     RenderCapabilityReport,
     RunSettingsSpec,
     SimulationPlan,
+    SurfaceSpec,
     UniverseSpec,
 )
 
@@ -405,15 +407,15 @@ def _vera3_pin_universes(variant: str, *, pure_water_guide: bool = False) -> tup
     def _pin(uid: str, uname: str, solid_cell_id: str, solid_mat: str) -> None:
         coolant_id = f"{solid_cell_id}_coolant"
         cells.append(CellSpec(id=solid_cell_id, name=f"{uname} solid",
-                              fill_type="material", fill_id=solid_mat))
+                              fill_type="material", fill_id=solid_mat, region_id="solid_region"))
         cells.append(CellSpec(id=coolant_id, name=f"{uname} coolant",
-                              fill_type="material", fill_id="water"))
+                              fill_type="material", fill_id="water", region_id="coolant_region"))
         universes.append(UniverseSpec(id=uid, name=uname, cell_ids=[solid_cell_id, coolant_id]))
 
     _pin("fuel_pin", "fuel pin", "fuel_pellet", "fuel")
     if pure_water_guide:
         cells.append(CellSpec(id="guide_water", name="guide water",
-                              fill_type="material", fill_id="water"))
+                              fill_type="material", fill_id="water", region_id="coolant_region"))
         universes.append(UniverseSpec(id="guide_tube", name="guide tube", cell_ids=["guide_water"]))
     else:
         _pin("guide_tube", "guide tube", "guide_tube_wall", "clad")
@@ -526,6 +528,17 @@ def build_vera3_like_plan(
     model = ComplexModelSpec(
         name=f"VERA3-{variant}", kind="assembly", materials=materials,
         cells=cells, universes=universes, lattices=lattices,
+        surfaces=[
+            SurfaceSpec(id="solid_r", kind="zcylinder",
+                        parameters={"x0": 0.0, "y0": 0.0, "r": 0.4}),
+            SurfaceSpec(id="pin_box", kind="rectangular_prism",
+                        parameters={"xmin": -0.63, "xmax": 0.63, "ymin": -0.63, "ymax": 0.63}),
+        ],
+        regions=[
+            RegionSpec(id="solid_region", expression="-solid_r", surface_ids=["solid_r"]),
+            RegionSpec(id="coolant_region", expression="+solid_r & pin_box",
+                       surface_ids=["solid_r", "pin_box"]),
+        ],
         core=CoreSpec(
             id="vera3_core", name="VERA3 core", lattice_id="assembly_lattice",
             boundary="mixed",

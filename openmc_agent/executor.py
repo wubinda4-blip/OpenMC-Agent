@@ -2988,6 +2988,7 @@ def _render_plots_block(plot_specs: list[PlotSpec]) -> str:
             blocks.extend([
                 f"{variable_name} = openmc.Plot()",
                 f"{variable_name}.type = 'voxel'",
+                f"{variable_name}.color_by = 'material'",
                 f"{variable_name}.origin = {plot.origin!r}",
                 f"{variable_name}.width = {plot.width_cm!r}",
                 f"{variable_name}.pixels = {plot.pixels!r}",
