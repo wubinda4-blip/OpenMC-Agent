@@ -236,10 +236,20 @@ def test_derived_overlay_universe_preserves_protected_cells() -> None:
     fuel_plan = next(p for p in plans if p.base_universe_id == "fuel_pin")
     assert fuel_plan.derived_universe_id == "fuel_pin__overlay_grid1"
     assert fuel_plan.open_cell_id == "coolant_cell"  # only the open cell swaps
-    # Rendered: fuel + clad cells are reused; a single new overlay coolant cell appears.
+    # Rendered: fuel + clad cells are CLONED into the overlay universe (not
+    # reused by reference -- OpenMC would otherwise yank them out of the base
+    # universe). A single new overlay coolant cell also appears.
     script = RectAssemblyRenderer().render(plan, Path("/tmp/_ov_protected")).script
-    assert "cells['fuel_cell'], cells['clad_cell'], overlay_cell_coolant_cell__grid1" in script
+    assert "overlay_cell_fuel_cell__grid1" in script
+    assert "overlay_cell_clad_cell__grid1" in script
+    assert "overlay_cell_coolant_cell__grid1" in script
     assert "fill=materials_by_id['grid_inconel']" in script
+    # The overlay universe must NOT reference the base solid cell by id.
+    overlay_u_line = next(
+        ln for ln in script.splitlines()
+        if "overlay_universe_fuel_pin" in ln and "openmc.Universe" in ln
+    )
+    assert "cells['fuel_cell']" not in overlay_u_line
 
 
 def test_guide_tube_with_two_open_cells_is_conserved() -> None:
@@ -355,3 +365,76 @@ def test_explicit_bars_mode_still_requires_renderer_support() -> None:
     codes = {i.code for i in assembly3d_overlay_issues(plan.complex_model)}
     assert "assembly3d.axial_overlay_requires_renderer_support" in codes
     assert overlay_is_structurally_renderable(overlay, plan.complex_model) is False
+
+
+# -- overlay universes must not steal base solid cells (source-rejection fix) --
+
+
+def test_overlay_universe_does_not_reuse_base_solid_cells() -> None:
+    """Regression: overlay universes must clone the fuel/clad solid cells.
+
+    OpenMC assigns a Cell to exactly one Universe, so referencing
+    ``cells['fuel_pellet']`` in an overlay universe yanks the fuel out of the
+    base fuel_pin universe -- the base lattice fuel positions become
+    coolant-only and OpenMC rejects every source site. The overlay universe must
+    emit its own cloned cells.
+    """
+    plan = _overlay_plan(overlays=[_homogenized_overlay()])
+    script = RectAssemblyRenderer().render(plan, Path("/tmp/_ov_clone")).script
+    # The base fuel_pin universe still references its solid cell.
+    base_line = next(ln for ln in script.splitlines()
+                     if "universe_fuel_pin = openmc.Universe" in ln)
+    assert "cells['fuel_cell']" in base_line
+    # Every overlay fuel universe uses cloned cell vars, NOT the base solid cell.
+    overlay_lines = [ln for ln in script.splitlines()
+                     if "overlay_universe_fuel_pin" in ln and "openmc.Universe" in ln]
+    assert overlay_lines, "expected at least one overlay fuel universe"
+    for ln in overlay_lines:
+        assert "cells['fuel_cell']" not in ln, ln[:140]
+        assert "overlay_cell_fuel_cell_" in ln  # a fresh clone
+
+
+def test_base_fuel_universe_retains_fuel_after_overlay_render(tmp_path) -> None:
+    """End-to-end (openmc-gated): after export, the BASE fuel lattice universe
+    still contains a fuel-material cell. This is the direct guard against the
+    source-rejection regression."""
+    openmc = pytest.importorskip("openmc")  # noqa: F841
+    import runpy
+
+    plan = _overlay_plan(overlays=[_homogenized_overlay()])
+    out = tmp_path / "ov"
+    RectAssemblyRenderer().render(plan, out)
+    # Execute the rendered model.py (cwd=out) so export_to_xml writes there.
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, "model.py"], cwd=str(out), check=True,
+                   capture_output=True)
+    import re
+    import collections
+
+    geo = (out / "geometry.xml").read_text(encoding="utf-8")
+    mats_xml = (out / "materials.xml").read_text(encoding="utf-8")
+    mats = dict(re.findall(r'<material id="(\d+)" name="([^"]*)"', mats_xml))
+    fuel_mat_id = next(mid for mid, name in mats.items() if "fuel" in name.lower() or "UO2" in name)
+
+    def _attr(tag: str, key: str) -> str | None:
+        m = re.search(rf'{key}="([^"]*)"', tag)
+        return m.group(1) if m else None
+
+    cell_tags = re.findall(r"<cell [^>]*/>", geo)
+    by_uni: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
+    for tag in cell_tags:
+        name = _attr(tag, "name") or ""
+        mat = _attr(tag, "material")
+        uni = _attr(tag, "universe")
+        if mat is None or uni is None:
+            continue
+        by_uni[uni].append((name, mat))
+    # Find the base fuel universe (has a non-overlay 'fuel' solid cell).
+    fuel_unis = [u for u, cs in by_uni.items()
+                 if any("fuel" in n.lower() and "overlay" not in n.lower() for n, _ in cs)]
+    assert fuel_unis, f"no base fuel universe found; universes={dict(by_uni)}"
+    base = by_uni[fuel_unis[0]]
+    assert any(mat == fuel_mat_id for _, mat in base), (
+        f"base fuel universe {fuel_unis[0]} lost its fuel cell to an overlay: {base}")

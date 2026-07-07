@@ -332,6 +332,23 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
 
+### 2026-07-07（Step 3 overlay cell 复用 bug 修复 —— VERA3 source rejection 真正根因）
+
+完成并验证：
+
+- **根因定位（source rejection 的真正原因）**：`executor.py` `_emit_overlay_derived_geometry` 在构造 overlay universe 时按引用复用 base 的 solid cell（`cells=[cells['fuel_cell'], cells['clad_cell'], ..., overlay_cell_mod]`）。OpenMC 中一个 Cell 只能归属一个 Universe —— `Universe(cells=[...])` 会改写 cell 的 `.universe`。overlay universe 在 base 之后构造，把 `fuel_cell`/`clad_cell`/`gap_cell` **从 base `fuel_pin_univ` 抢走**。导出的 `geometry.xml` 实锤：base 燃料位（universe 1）只剩 `Pin moderator`（水），燃料 pellet 跑到 overlay universe 6。于是 base（非 overlay）燃料段——占活性区绝大部分——的燃料位全是水，`only_fissionable=True` 把绝大多数源点拒掉 → `Too few source sites`。与 source bounds / 材料 / plot / 确认问题全无关；Step 5/6 的 source/plot 修复都是对的，但都被这个 bug 掩盖。
+- **修复（`openmc_agent/executor.py`）**：`_emit_overlay_derived_geometry` 对每个 derived overlay universe，把保留的 solid cell（fuel/clad/gap/tube wall）**克隆成新 `openmc.Cell`**（同 fill material + 同 region + 新 id，temperature 也带过去），overlay universe 引用这些克隆；base universe 保留原 cell。修复后 `geometry.xml`：universe 1 = `[fuel pellet(fuel), coolant(water)]`（有燃料），overlay universe 6 = `[overlay fuel clone(fuel), overlay coolant(grid)]`。
+- **回归测试（`tests/test_axial_overlay.py`）**：
+  - `test_overlay_universe_does_not_reuse_base_solid_cells`：静态——overlay universe 行不含 `cells['fuel_cell']`，含 `overlay_cell_fuel_cell_*` 克隆；base universe 行仍含 `cells['fuel_cell']`。
+  - `test_base_fuel_universe_retains_fuel_after_overlay_render`（openmc-gated）：render → 跑 model.py 导出 → 解析 geometry.xml + materials.xml，断言 base fuel universe 含燃料 material cell。
+  - 更新 `test_derived_overlay_universe_preserves_protected_cells`：原断言编码了 bug 行为（`cells['fuel_cell'], cells['clad_cell'], overlay_cell`），改为断言克隆模式。
+- **全 17×17 验证**：deterministic VERA3 plan render + export，base universe 1 含燃料，overlay universe 6/10/14/... 含燃料克隆。
+- 全量测试：`567 passed, 2 skipped`。
+
+为什么之前没抓到：Step 3 测试只检查"脚本含 overlay lattice + 能 compile"，没检查"base universe 是否仍含燃料"——bug 只在 OpenMC 实跑（cell→universe 归属）时暴露。新 openmc-gated 回归测试锁死这一点。
+
+当前状态：VERA3 base 燃料段恢复燃料（~30% 裂变份额）→ source rejection 应解除。真实 VERA3 smoke 是否完全通过仍取决于截面库可用性 + 合金 composition fidelity（Step 7）。
+
 ### 2026-07-07（Step 6：Full-assembly geometry/source/plot bounds 一致性）
 
 完成并验证：

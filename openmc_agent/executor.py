@@ -2397,6 +2397,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
     lines: list[str] = []
     overlay_lattice_vars: dict[str, str] = {}
     universes_by_id = {u.id: u for u in spec.universes}
+    cells_by_id = {c.id: c for c in spec.cells}
 
     for overlay in spec.core.axial_overlays:
         if not overlay_is_structurally_renderable(overlay, spec):
@@ -2414,7 +2415,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
                 if base_universe is None:
                     derived_id_by_base[plan.base_universe_id] = plan.base_universe_id
                     continue
-                open_cell = next((c for c in spec.cells if c.id == plan.open_cell_id), None)
+                open_cell = cells_by_id.get(plan.open_cell_id)
                 region_expr = (
                     f"regions[{open_cell.region_id!r}]"
                     if open_cell is not None and open_cell.region_id is not None
@@ -2427,13 +2428,36 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
                     f"fill=materials_by_id[{overlay.material_id!r}], "
                     f"region={region_expr})"
                 )
-                # Reuse every base cell except the swapped open cell.
-                kept_cells = [
-                    f"cells[{cid!r}]"
-                    for cid in base_universe.cell_ids
-                    if cid != plan.open_cell_id
-                ]
-                cell_refs = ", ".join(kept_cells + [overlay_cell_var])
+                # Clone every kept solid cell (fuel/clad/gap/tube) as a fresh
+                # openmc.Cell. In OpenMC a Cell belongs to exactly ONE Universe:
+                # reusing cells[<id>] by reference would reassign the solid out
+                # of the base universe, leaving base-lattice fuel positions as
+                # coolant-only -- a fissionable-volume loss that triggers
+                # 'too few source sites'. Each overlay universe owns its own cells.
+                clone_vars: list[str] = []
+                for cid in base_universe.cell_ids:
+                    if cid == plan.open_cell_id:
+                        continue
+                    base_cell = cells_by_id.get(cid)
+                    if base_cell is None:
+                        clone_vars.append(f"cells[{cid!r}]")
+                        continue
+                    clone_var = _safe_name("overlay_cell", f"{cid}__{overlay.id}")
+                    clone_fill = _cell_fill_expression(base_cell)
+                    clone_region = (
+                        f"regions[{base_cell.region_id!r}]"
+                        if base_cell.region_id is not None
+                        else "None"
+                    )
+                    lines.append(
+                        f"{clone_var} = openmc.Cell("
+                        f"name={('overlay ' + cid + ' ' + overlay.id)!r}, "
+                        f"fill={clone_fill}, region={clone_region})"
+                    )
+                    if base_cell.temperature_k is not None:
+                        lines.append(f"{clone_var}.temperature = {base_cell.temperature_k!r}")
+                    clone_vars.append(clone_var)
+                cell_refs = ", ".join(clone_vars + [overlay_cell_var])
                 overlay_universe_var = _safe_name(
                     "overlay_universe", f"{plan.base_universe_id}__{overlay.id}"
                 )
