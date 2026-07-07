@@ -628,23 +628,26 @@ def assembly3d_overlay_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
 
         # 3. Renderer support. ``homogenized_open_region`` is now a supported
         #    Level 1 mode when it is structurally renderable (rect target lattice
-        #    + grid material resolve + through_path_preserved). Skeleton overlays
-        #    and the higher-fidelity modes still downgrade to a review-only
-        #    skeleton -- no fake geometry.
+        #    + grid material resolve + through_path_preserved). A ``skeleton``
+        #    overlay that already carries full Level-1 data (target + material +
+        #    z-range) is auto-promoted by the renderer, so it does not block; a
+        #    skeleton overlay missing that data still downgrades. The higher-
+        #    fidelity modes still downgrade -- no fake geometry.
         if overlay.geometry_mode == "skeleton":
-            issues.append(
-                _issue(
-                    "assembly3d.axial_overlay_requires_renderer_support",
-                    (
-                        f"spacer/overlay {overlay.id!r} is declared as "
-                        "geometry_mode='skeleton' (review-only): the IR captures "
-                        "the grid but no renderer turns it into geometry yet, so "
-                        "the model stays a non-exportable skeleton pending human "
-                        "confirmation."
-                    ),
-                    schema_path=base,
+            if not overlay_is_structurally_renderable(overlay, model):
+                issues.append(
+                    _issue(
+                        "assembly3d.axial_overlay_requires_renderer_support",
+                        (
+                            f"spacer/overlay {overlay.id!r} is declared as "
+                            "geometry_mode='skeleton' (review-only) and lacks the "
+                            "target lattice / material / z-range needed for Level 1 "
+                            "rendering, so the model stays a non-exportable skeleton "
+                            "pending human confirmation."
+                        ),
+                        schema_path=base,
+                    )
                 )
-            )
         elif overlay.geometry_mode == "homogenized_open_region":
             if not overlay_is_structurally_renderable(overlay, model):
                 issues.append(

@@ -1420,6 +1420,28 @@ def _render_core_universe_wrappers(spec: ComplexModelSpec) -> str:
     return "\n".join(lines) if lines else "# No core universe wrappers were required."
 
 
+def _resolve_core_lattice_from_assembly(spec: ComplexModelSpec) -> ComplexModelSpec:
+    """Resolve ``core.lattice_id`` from a referenced assembly when it is unset.
+
+    LLM plans sometimes point the core at an assembly (``assembly_ids``) rather
+    than a lattice directly, leaving ``core.lattice_id`` None. The core renderer
+    needs ``lattice_id``; derive it from the first referenced assembly whose
+    lattice exists in the spec.
+    """
+    core = spec.core
+    if core is None or core.lattice_id is not None or not core.assembly_ids:
+        return spec
+    lattice_ids = {lat.id for lat in spec.lattices}
+    assemblies_by_id = {asm.id: asm for asm in spec.assemblies}
+    for asm_id in core.assembly_ids:
+        asm = assemblies_by_id.get(asm_id)
+        if asm is not None and asm.lattice_id in lattice_ids:
+            return spec.model_copy(update={
+                "core": core.model_copy(update={"lattice_id": asm.lattice_id})
+            })
+    return spec
+
+
 def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSpec:
     """Return a core rendering copy with lattice-referenced universes exportable.
 
@@ -1430,7 +1452,10 @@ def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSp
     safely clone pin-level cell definitions for the remaining shared-cell case.
     """
     normalized = spec.model_copy(deep=True)
-    if normalized.core is None or normalized.core.lattice_id is None:
+    if normalized.core is None:
+        return normalized
+    normalized = _resolve_core_lattice_from_assembly(normalized)
+    if normalized.core.lattice_id is None:
         return normalized
     normalized = _materialize_missing_core_universe_cells(normalized)
 

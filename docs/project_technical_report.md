@@ -332,6 +332,17 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
 
+### 2026-07-07（skeleton overlay 自动提升 + core.lattice_id 解析）
+
+- **根因（skeleton 降级）**：LLM 把 8 个 spacer grid overlay 写成 `geometry_mode='skeleton'`（保守的"请确认"），尽管它们已带齐 Level 1 所需数据（z 范围 + target_lattice + material + through_path）。guard 对所有 skeleton overlay 一律发 `assembly3d.axial_overlay_requires_renderer_support` → 整模型降级 skeleton（NOT EXECUTABLE）。
+- **修复（skeleton 提升）**：`axial_overlay.py` 新增 `overlay_is_promotable_to_level1`（grid-like kind + 有效 z + 可解析 rect target + 可解析 material）；`overlay_is_structurally_renderable` 对 `homogenized_open_region`（需 through_path）和**可提升的 skeleton** 都返回 True。`assembly3d_guard.py` skeleton 分支改为：可提升时不发 `requires_renderer_support`（renderer 自动按 Level 1 渲染），缺数据时仍降级。renderer 的 `_emit_overlay_derived_geometry` / `compute_axial_segments` 已用 `overlay_is_structurally_renderable`，所以可提升的 skeleton 会正常产生 overlay 段。
+- **修复（core.lattice_id 解析）**：`executor.py` 新增 `_resolve_core_lattice_from_assembly`——当 `core.lattice_id` 为 None 但 `core.assembly_ids` 引用了一个有合法 lattice 的 assembly 时，从该 assembly 解析 lattice_id（LLM 常把 core 指向 assembly 而非 lattice）。在 `_normalize_core_spec_for_rendering` 的早退检查之前调用。
+- **验证**：真实 VERA3 overlay（skeleton + 全数据）→ guard 无 blocking issue、可渲染；可提升 skeleton `renderable=True`，缺 material 的 skeleton `renderable=False` 仍降级。
+- **回归测试**：`test_skeleton_overlay_with_full_data_is_promoted_not_blocked`、`test_skeleton_overlay_missing_material_still_downgrades`（test_axial_overlay）；`test_dangling_lattice_outer_does_not_block_render` 改为自包含合成 plan（不再依赖易变的 VERA3 disk 文件）。
+- 全量测试：`574 passed, 2 skipped`。
+
+**已知边界**：最新一次 LLM plan 出现 `universes: []`（LLM 完全省略 universe 定义）——这是 planner 级缺陷（CellSpec 不携带 universe 归属，无法从 IR 自动恢复），需 prompt 层保证 LLM 必须给出 `universes` 列表；不属于 renderer 能 silent 修复的范围。
+
 ### 2026-07-07（dangling lattice outer_universe_id 修复 —— skeleton 降级）
 
 - **根因**：LLM 给 `assembly_lattice` 设了 `outer_universe_id='borated_water_univ'` 但没定义该 universe。`renderers/core.py` 的 `lattice.outer_universe_ref_missing`（error）触发，整模型降级 skeleton（NOT EXECUTABLE），不导出 XML。配套 warning `core.lattice_outer_unreachable` 已指出该 outer 是 dead geometry（root cell == lattice footprint）。

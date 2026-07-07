@@ -201,20 +201,43 @@ def overlay_material(overlay: AxialOverlaySpec, model: ComplexModelSpec) -> Comp
     return None
 
 
-def overlay_is_structurally_renderable(overlay: AxialOverlaySpec, model: ComplexModelSpec) -> bool:
-    """True when a ``homogenized_open_region`` overlay meets all structural
-    preconditions for Level 1 rendering (mode, resolvable rect target lattice,
-    resolvable material, through-path preserved). Does NOT check the deep
-    open-region derivability -- see :func:`overlay_derivation_plan`.
+def overlay_is_promotable_to_level1(overlay: AxialOverlaySpec, model: ComplexModelSpec) -> bool:
+    """A skeleton overlay that already carries enough data for Level 1 rendering.
+
+    Planners sometimes write ``geometry_mode='skeleton'`` (a conservative
+    "please confirm") even when they have supplied the target lattice, grid
+    material and z-range. Such an overlay can be auto-promoted to
+    ``homogenized_open_region`` instead of forcing a review-only skeleton.
+    Returns True when the overlay has a grid-like kind, a valid z-range, a
+    resolvable rectangular target lattice, and a resolvable material.
     """
-    if overlay.geometry_mode != "homogenized_open_region":
+    if overlay.overlay_kind not in {"spacer_grid", "support_plate"}:
         return False
-    if overlay.through_path_preserved is not True:
+    if overlay.z_min_cm is None or overlay.z_max_cm is None:
+        return False
+    if overlay.z_min_cm >= overlay.z_max_cm:
         return False
     target = overlay_target_lattice(overlay, model)
     if target is None or target.kind != "rect":
         return False
     return overlay_material(overlay, model) is not None
+
+
+def overlay_is_structurally_renderable(overlay: AxialOverlaySpec, model: ComplexModelSpec) -> bool:
+    """True when an overlay meets all structural preconditions for Level 1
+    rendering (resolvable rect target lattice + resolvable material).
+
+    A ``homogenized_open_region`` overlay additionally needs
+    ``through_path_preserved=True``. A ``skeleton`` overlay that is
+    :func:`overlay_is_promotable_to_level1` is treated as renderable: the
+    renderer auto-promotes it (through-path defaults to preserved). Does NOT
+    check the deep open-region derivability -- see :func:`overlay_derivation_plan`.
+    """
+    if overlay.geometry_mode == "homogenized_open_region":
+        return overlay_is_promotable_to_level1(overlay, model) and overlay.through_path_preserved is True
+    if overlay.geometry_mode == "skeleton":
+        return overlay_is_promotable_to_level1(overlay, model)
+    return False
 
 
 def _layer_effective_lattice_id(layer: AxialLayerSpec) -> str | None:
@@ -410,6 +433,7 @@ __all__ = [
     "detect_overlay_z_overlaps",
     "derive_overlay_universe_plan",
     "lattice_by_id",
+    "overlay_is_promotable_to_level1",
     "overlay_is_structurally_renderable",
     "overlay_material",
     "overlay_target_lattice",

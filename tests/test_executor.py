@@ -727,23 +727,44 @@ def test_dangling_lattice_outer_universe_id_is_dropped() -> None:
 
 
 def test_dangling_lattice_outer_does_not_block_render() -> None:
-    """A plan with a dangling lattice outer_universe_id must render (not skeleton)."""
-    from openmc_agent.schemas import LatticeSpec
-
-    # Reuse the full deterministic VERA3-like plan and inject a dangling outer.
-    lattice = ComplexModelSpec.model_validate(
-        json.load(open("data/runs/VERA3/simulation_plan.json"))["complex_model"]
-    ) if Path("data/runs/VERA3/simulation_plan.json").exists() else None
-    if lattice is None:
-        pytest.skip("VERA3 simulation_plan.json not available")
-    injected = lattice.model_copy(update={
-        "lattices": [
-            lat.model_copy(update={"outer_universe_id": "borated_water_univ"})
-            for lat in lattice.lattices
-        ]
-    })
+    """A lattice whose outer_universe_id references an undefined universe must
+    render (the dangling outer is dropped, a default outer is re-added) rather
+    than blocking export with lattice.outer_universe_ref_missing."""
+    fuel = ComplexMaterialSpec(
+        id="fuel", name="UO2 fuel", density_unit="g/cm3", density_value=10.0,
+        composition=[NuclideSpec(name="U235", percent=1.0)],
+    )
+    water = ComplexMaterialSpec(
+        id="water", name="coolant water", density_unit="g/cm3", density_value=1.0,
+        chemical_formula="H2O",
+    )
+    cells = [
+        CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel"),
+        CellSpec(id="coolant_cell", name="coolant", fill_type="material", fill_id="water"),
+    ]
+    universes = [
+        UniverseSpec(id="fuel_pin", name="fuel pin", cell_ids=["fuel_cell", "coolant_cell"]),
+    ]
+    lattice = LatticeSpec(
+        id="assembly_lattice", name="assembly", kind="rect", pitch_cm=(1.26, 1.26),
+        universe_pattern=[["fuel_pin", "fuel_pin"], ["fuel_pin", "fuel_pin"]],
+        outer_universe_id="borated_water_univ",  # intentionally undefined -> dangling
+    )
+    spec = ComplexModelSpec(
+        name="dangling-outer", kind="assembly", materials=[fuel, water],
+        cells=cells, universes=universes, lattices=[lattice],
+        core=CoreSpec(
+            id="core", name="core", lattice_id=None,  # unset -> resolved from the assembly
+            assembly_ids=["assembly_3A"], boundary="reflective",
+            axial_layers=[AxialLayerSpec(
+                id="fuel", name="fuel", z_min_cm=0.0, z_max_cm=10.0,
+                fill={"type": "lattice", "id": "assembly_lattice"})],
+        ),
+        assemblies=[AssemblySpec(id="assembly_3A", name="assembly", lattice_id="assembly_lattice",
+                                  boundary="reflective")],
+    )
     # Must not raise lattice.outer_universe_ref_missing.
-    script = render_openmc_assembly_script(injected)
+    script = render_openmc_assembly_script(spec)
     assert "universes['borated_water_univ']" not in script
     assert "__outer_water_universe" in script  # default outer re-added
     compile(script, "model.py", "exec")

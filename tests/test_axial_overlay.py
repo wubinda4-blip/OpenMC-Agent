@@ -367,7 +367,41 @@ def test_explicit_bars_mode_still_requires_renderer_support() -> None:
     assert overlay_is_structurally_renderable(overlay, plan.complex_model) is False
 
 
-# -- overlay universes must not steal base solid cells (source-rejection fix) --
+# -- skeleton overlays with full data auto-promote to Level 1 ----------------
+
+
+def test_skeleton_overlay_with_full_data_is_promoted_not_blocked() -> None:
+    """A geometry_mode='skeleton' overlay that carries full Level-1 data
+    (z-range + resolvable rect target + grid material) is auto-promoted by the
+    renderer, so it must NOT fire axial_overlay_requires_renderer_support.
+    The LLM often chooses 'skeleton' conservatively even when it has supplied
+    everything Level 1 needs."""
+    skeleton = AxialOverlaySpec(
+        id="grid_s", overlay_kind="spacer_grid", z_min_cm=20.0, z_max_cm=21.0,
+        target_lattice_id="assembly_lattice", material_id="grid_inconel",
+        geometry_mode="skeleton", through_path_preserved=True,
+        requires_human_confirmation=True,
+    )
+    plan = _overlay_plan(overlays=[skeleton])
+    codes = {i.code for i in assembly3d_overlay_issues(plan.complex_model)}
+    assert "assembly3d.axial_overlay_requires_renderer_support" not in codes
+    assert overlay_is_structurally_renderable(skeleton, plan.complex_model) is True
+    # And it renders (not a skeleton model).
+    capability = RectAssemblyRenderer().can_render(plan)
+    assert capability.renderability in {"exportable", "runnable"}
+
+
+def test_skeleton_overlay_missing_material_still_downgrades() -> None:
+    """A skeleton overlay that LACKS Level-1 data (no material) still downgrades."""
+    skeleton = AxialOverlaySpec(
+        id="grid_s", overlay_kind="spacer_grid", z_min_cm=20.0, z_max_cm=21.0,
+        target_lattice_id="assembly_lattice", material_id=None,
+        geometry_mode="skeleton",
+    )
+    plan = _overlay_plan(overlays=[skeleton])
+    codes = {i.code for i in assembly3d_overlay_issues(plan.complex_model)}
+    assert "assembly3d.axial_overlay_requires_renderer_support" in codes
+    assert overlay_is_structurally_renderable(skeleton, plan.complex_model) is False
 
 
 def test_overlay_universe_does_not_reuse_base_solid_cells() -> None:
