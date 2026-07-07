@@ -587,3 +587,56 @@ Level 1 近似边界（明确）：
 1. Knowledge Asset Runtime Loader + Retrieval Config。
 2. 真实 workflow evaluation runner。
 3. Renderer fidelity / loading map validation 增强。
+
+### 2026-07-08
+
+完成并验证：
+
+#### Incremental Plan Builder Phase 0–1
+
+**背景问题：** VERA3 3B 等复杂 3D assembly 场景在 monolithic plan generation 下持续失败。根因链：LLM 一次性输出约 25K 字符 JSON → JSON 语法错误 → `repair_plan_format` 尝试修复 → 修复过程中 `core.axial_layers` / `core.axial_overlays` 丢失 → `assembly3d_guard` 正确拦截 → reflect 多轮仍重复生成破损大 JSON → 最终 skeleton。系统的安全行为是正确的，但架构上不能继续依赖 LLM 一次性输出完整 `SimulationPlan`。
+
+**Phase 0 — 模式判断（`openmc_agent/plan_builder/mode.py`）：**
+
+- 新增 `should_use_incremental_planning(requirement, feature_flags, retry_history, plan_context)` 函数，返回 `PlanningModeDecision`（mode, reasons, triggers, confidence, feature_summary）。
+- 触发 incremental mode 的条件：
+  - `feature.3d_axial_geometry` — 复用 `detect_assembly_3d_features()` 的轴向信号检测；
+  - `feature.spacer_grid` — 定位格架 / grid strap / mixing vane；
+  - `feature.special_pin_map` — Pyrex / thimble plug / guide tube / instrument tube / burnable poison / 多 universe 类型；
+  - `feature.multiple_variants` — benchmark variant 信号（VERA3, C5G7, 3A/3B）；
+  - `feature.large_lattice` — 20×20 或更大 lattice（阈值 20 避免标准 17×17 PWR 误触发）；
+  - `history.large_json_parse_error` — retry history 中出现 JSON 语法错误或 raw_output > 12K chars；
+  - `history.repair_lost_axial_layers` — retry history 中 repair 后 axial_layers 丢失；
+  - `history.repeated_axial_contract_violation` — 多轮 `assembly3d.axial_layers_required`；
+  - `override.force_incremental` / `force_monolithic_planning` — 显式覆盖。
+- 简单 2D assembly（无 axial、无 spacer、无 special pin、无 large lattice）保持 monolithic，confidence=1.0。
+
+**Phase 1 — PlanBuildState（`openmc_agent/plan_builder/state.py`）：**
+
+- 新增 `PlanBuildState` 模型：state_id, requirement_text, benchmark_id, selected_variant, extracted_facts, confirmed_facts, component_tasks, patches, patch_status, assembled_plan, validation_issues, build_log, metadata。
+- 新增 `BuildEvent`, `PlanComponentTask`, `PlanPatchEnvelope` 子模型。
+- Helper methods：`add_event`, `add_task`, `add_patch`, `mark_patch_status`, `get_valid_patches`, `to_summary`。
+- `initialize_plan_build_state(requirement, decision, ...)` 初始化状态，记录 `planning_mode_selected` / `build_state_initialized` / `component_tasks_initialized` 事件。
+- `create_initial_component_tasks(feature_summary)` 根据 feature 生成浅层 task skeleton（facts → materials → universes → pin_map → axial_layers → axial_overlays → settings，带依赖链）。
+
+**Workflow 集成（`openmc_agent/graph.py`）：**
+
+- `GraphState` 新增 `planning_mode_decision` 和 `plan_build_state` 字段。
+- `_receive_requirement` 节点调用 `should_use_incremental_planning()`，将决策写入 state。
+- 当 mode=incremental 时，初始化 `PlanBuildState` 并记录 `incremental_recommended_but_not_executed` 事件（fallback_reason=`incremental_executor_not_implemented`），然后安全 fallback 到 monolithic 路径。
+- 简单 case 完全不受影响。
+
+**测试覆盖（23 tests）：**
+
+- `tests/test_plan_builder_mode.py`：13 个 test case 覆盖简单 2D→monolithic、3D axial→incremental、spacer grid→incremental、VERA3 special pin map→incremental、large JSON parse error history、repair-lost-axial-layers、force override（双向）、large lattice、feature summary、empty requirement、JSON serializable、repeated axial contract。
+- `tests/test_plan_builder_state.py`：10 个 test case 覆盖 JSON 序列化、patch lifecycle（add→mark valid→get valid→mark invalid）、component tasks（3D spacer grid full set / empty for simple / skip pin_map without special pins）、transcript summary 含 mode decision、add_event timestamp、add_task replace、fallback event 记录、multiple patches lifecycle。
+- 全量测试：`604 passed, 2 skipped in 53.25s`。无回归。
+
+**后续 Phase 路线（未实现）：**
+
+1. Patch schemas（每种 patch_type 的 JSON schema 定义）。
+2. Patch validators（per-patch 校验逻辑）。
+3. Deterministic assembler（把 valid patches 合并成完整 SimulationPlan）。
+4. LLM patch generator（per-task 小粒度 LLM 调用，替代 monolithic 25K JSON 输出）。
+5. Local retry router（per-task 重试，而非整体 reflect）。
+6. Full workflow replacement（incremental executor 接管 generate_plan 节点）。

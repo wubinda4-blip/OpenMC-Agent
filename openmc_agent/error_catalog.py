@@ -636,9 +636,28 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         ],
     },
     # ----------------------------------------------- repeated-geometry refs
+    "lattice.universe_missing_coolant": {
+        "severity": "warning",
+        "message": "a lattice universe has no coolant/moderator cell (only solid materials); the region outside the rod is undefined",
+        "schema_path": "complex_model.universes",
+        "rule_id": "rule.lattice.universe_has_coolant",
+        "concept_id": "openmc.geometry.universe",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["universe", "cell_ids", "fill_id", "coolant", "moderator", "water"],
+        "repair_hints": [
+            _hint(
+                "add_missing_field",
+                "Add a coolant/moderator cell (fill_type='material', fill_id=<water or "
+                "coolant material>) to this universe so the region between the rod outer "
+                "surface and the lattice pitch boundary is defined. Without it, OpenMC "
+                "will lose particles in the undefined region.",
+                target_path="complex_model.universes",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
     "lattice.universe_ref_missing": {
         "severity": "error",
-        "message": "lattice universe_pattern references missing universes",
         "schema_path": "complex_model.lattices.universe_pattern",
         "rule_id": "rule.lattice.universe_ref_exists",
         "concept_id": "openmc.geometry.rect_lattice",

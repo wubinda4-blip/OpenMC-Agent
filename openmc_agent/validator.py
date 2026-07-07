@@ -147,6 +147,52 @@ def _complex_material_mixed_percent_issues(
     return issues
 
 
+def _lattice_universe_missing_coolant_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
+    """Flag lattice universes whose material-filled cells are ALL solids (no
+    coolant/moderator). Without a coolant cell the region outside the rod is
+    undefined and OpenMC will lose particles. This catches LLM plans that omit
+    the moderator cell when juggling many pin types (e.g. a multi-variant
+    assembly with Pyrex rods / plugs). Generic: applies to any reactor model.
+    """
+    from openmc_agent.axial_overlay import classify_material_role
+
+    issues: list[ValidationIssue] = []
+    cells_by_id = {c.id: c for c in model.cells}
+    materials_by_id = {m.id: m for m in model.materials}
+    universes_by_id = {u.id: u for u in model.universes}
+    lattice_universe_ids: set[str] = set()
+    for lat in model.lattices:
+        for row in lat.universe_pattern:
+            lattice_universe_ids.update(row)
+    for uid in sorted(lattice_universe_ids):
+        universe = universes_by_id.get(uid)
+        if universe is None:
+            continue  # dangling ref handled elsewhere
+        has_open = False
+        for cid in universe.cell_ids:
+            cell = cells_by_id.get(cid)
+            if cell is None or cell.fill_type != "material" or not cell.fill_id:
+                continue
+            material = materials_by_id.get(cell.fill_id)
+            if material is not None and classify_material_role(material) == "open":
+                has_open = True
+                break
+        if not has_open:
+            issues.append(
+                issue_from_catalog(
+                    "lattice.universe_missing_coolant",
+                    message=(
+                        f"universe {uid!r} has no coolant/moderator cell (all its "
+                        "material-filled cells are solids). The region between the "
+                        "rod and the lattice pitch boundary is undefined. Add a "
+                        "coolant/moderator cell to this universe."
+                    ),
+                    schema_path=f"complex_model.universes.{uid}",
+                )
+            )
+    return issues
+
+
 def validate_simulation_plan(
     plan: SimulationPlan,
     *,
@@ -182,6 +228,7 @@ def validate_simulation_plan(
     if plan.complex_model is not None:
         issues.extend(lattice_pin_count_issues(plan.complex_model.lattices))
         issues.extend(_complex_material_mixed_percent_issues(plan.complex_model))
+        issues.extend(_lattice_universe_missing_coolant_issues(plan.complex_model))
 
     # Generic 3D axial-geometry guard: runs at plan-validation time (with the
     # requirement text) so axial requirements are caught before any renderer

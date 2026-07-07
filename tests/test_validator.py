@@ -1,7 +1,10 @@
 from openmc_agent.executor import render_openmc_script
 from openmc_agent.schemas import (
+    AxialLayerSpec,
+    CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
+    CoreSpec,
     GeometrySpec,
     LatticeSpec,
     MaterialSpec,
@@ -12,6 +15,7 @@ from openmc_agent.schemas import (
     SettingsSpec,
     SimulationPlan,
     SimulationSpec,
+    UniverseSpec,
 )
 from openmc_agent.lattice_validation import (
     canonical_pin_map_rows,

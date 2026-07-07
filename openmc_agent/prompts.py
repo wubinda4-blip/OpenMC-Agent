@@ -101,6 +101,13 @@ Repeated-geometry and lattice policy:
   cells that fill it. Defining cells but omitting the UniverseSpec entries leaves the
   lattice pointing at undefined universes and blocks export -- always emit the universes
   list, one UniverseSpec per distinct lattice position type.
+- Every pin or tube universe MUST include a coolant/moderator cell that fills the region
+  between the outermost solid surface (cladding, tube wall, or plug) and the lattice
+  pitch boundary. Without this cell the region outside the solid rod is undefined and
+  OpenMC will lose particles. A universe with only solid cells (e.g. fuel+gap+clad with
+  no moderator, or a multi-layer Pyrex rod with no surrounding water, or a bare plug) is
+  incomplete -- always add the coolant/moderator cell, even when the input does not
+  explicitly mention it (it is implied by the lattice pitch geometry).
 - For a rect lattice whose pin map is regular or fully specified by the input, DO NOT
   hand-enumerate universe_pattern unless the lattice is small or the schema explicitly
   needs the full array. Instead set LatticeSpec.shape=(nx, ny), fill_universe to the

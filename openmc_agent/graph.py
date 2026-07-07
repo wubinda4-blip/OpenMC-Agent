@@ -29,6 +29,10 @@ from openmc_agent.llm import (
     repair_structured_output,
 )
 from openmc_agent.openmc_api import retrieve_openmc_context
+from openmc_agent.plan_builder import (
+    should_use_incremental_planning,
+    initialize_plan_build_state,
+)
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
 from openmc_agent.retrieval import (
@@ -141,6 +145,8 @@ class GraphState(TypedDict, total=False):
     rag_evidence: list[dict[str, Any]]
     patch_failure_count: int
     trace: dict[str, Any]
+    planning_mode_decision: dict[str, Any]
+    plan_build_state: dict[str, Any]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -359,10 +365,40 @@ def _receive_requirement(state: GraphState) -> GraphState:
         _progress(state, "receive_requirement", "failed: requirement is empty")
         return {"error": "requirement is required"}
     _progress(state, "receive_requirement", f"received {len(requirement)} characters")
-    return {
+
+    # Phase 0: decide planning mode (monolithic vs incremental).
+    decision = should_use_incremental_planning(
+        requirement,
+        retry_history=state.get("retry_history"),
+    )
+    updates: GraphState = {
         "requirement": requirement,
         "hard_count_constraints": _extract_hard_count_constraints(requirement),
+        "planning_mode_decision": decision.model_dump(mode="json"),
     }
+    _progress(
+        state,
+        "receive_requirement",
+        f"planning mode={decision.mode} triggers={decision.triggers}",
+    )
+    if decision.mode == "incremental":
+        # Phase 1: initialize PlanBuildState for observability.  Phase 0 does
+        # NOT execute incremental planning — it records the state and falls
+        # back to monolithic so existing behavior is unchanged.
+        build_state = initialize_plan_build_state(
+            requirement=requirement,
+            decision=decision,
+        )
+        build_state.add_event(
+            event_type="planning.incremental_recommended_but_not_executed",
+            message=(
+                "incremental planning recommended but executor is not yet "
+                "implemented; falling back to monolithic"
+            ),
+            data={"fallback_reason": "incremental_executor_not_implemented"},
+        )
+        updates["plan_build_state"] = build_state.model_dump(mode="json")
+    return updates
 
 
 def _make_generate_spec_node(generate_spec: GenerateSpecFn):
