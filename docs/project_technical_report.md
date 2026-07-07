@@ -332,6 +332,14 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
 
+### 2026-07-07（dangling lattice outer_universe_id 修复 —— skeleton 降级）
+
+- **根因**：LLM 给 `assembly_lattice` 设了 `outer_universe_id='borated_water_univ'` 但没定义该 universe。`renderers/core.py` 的 `lattice.outer_universe_ref_missing`（error）触发，整模型降级 skeleton（NOT EXECUTABLE），不导出 XML。配套 warning `core.lattice_outer_unreachable` 已指出该 outer 是 dead geometry（root cell == lattice footprint）。
+- **修复（`executor.py`）**：新增 `_drop_dangling_lattice_outer`，在 `_normalize_core_spec_for_rendering` 里 `_ensure_core_lattice_outer_universes` 之前调用——把引用了未定义 universe 的 `outer_universe_id` 置 None。安全：outer 是 dead 时无损失；outer 实际需要时后续 `_ensure_core_lattice_outer_universes` 会自动补一个默认水 outer（`__outer_water_universe`）。`core.lattice_outer_unreachable` warning 仍提示用户。
+- **验证**：真实 VERA3 `simulation_plan.json` 的 complex_model（`outer='borated_water_univ'` dangling）经 `render_openmc_assembly_script` 成功渲染（151 KB 脚本，`__outer_water_universe` 补入，无 dangling 引用，compile 通过）。
+- **回归测试（`tests/test_executor.py`）**：`test_dangling_lattice_outer_universe_id_is_dropped`（直调 helper）；`test_dangling_lattice_outer_does_not_block_render`（真实 VERA3 plan 注入 dangling outer → 渲染不报错、无 dangling、默认 outer 补入）。
+- 全量测试：`572 passed, 2 skipped`。
+
 ### 2026-07-07（rectangular_prism `pitch` kwarg 修复 —— export_xml TypeError）
 
 - **根因**：LLM 把 pin-cell 盒写成 `rectangular_prism` surface 且参数用 `pitch=[1.26, 1.26]`。`executor.py` `_rectangular_prism_kwargs` 只归一化 `width`/`height` 和 `xmin/xmax/ymin/ymax` 区间（hexagonal_prism 路径有 `pitch→edge_length`，rectangular 没有），`pitch` 原样传给 `openmc.model.RectangularPrism(pitch=...)` → `TypeError: unexpected keyword argument 'pitch'`（OpenMC 的 RectangularPrism 只接受 `width`/`height`）。导致 `export_xml` 在构造 pin_box region 时崩溃，XML 一个都导不出。

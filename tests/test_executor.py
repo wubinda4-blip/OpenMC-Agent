@@ -1,4 +1,5 @@
 import openmc
+import json
 import pytest
 import shutil
 import subprocess
@@ -7,6 +8,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from openmc_agent.executor import (
+    _drop_dangling_lattice_outer,
     _region_expression_to_python,
     _surface_constructor,
     build_openmc_complex_material,
@@ -699,6 +701,52 @@ def test_rectangular_prism_pitch_is_translated_to_width_height(
     assert f"width={expected_width}" in constructor
     assert f"height={expected_height}" in constructor
     assert "pitch=" not in constructor
+
+
+def test_dangling_lattice_outer_universe_id_is_dropped() -> None:
+    """LLM plans sometimes name an outer universe (e.g. 'borated_water_univ')
+    without defining it, which blocks export with lattice.outer_universe_ref_missing.
+    The dangling reference must be dropped (it is dead geometry, or a default
+    outer is re-added afterwards)."""
+    from openmc_agent.schemas import LatticeSpec, UniverseSpec
+
+    lattice = LatticeSpec(
+        id="assembly_lattice", name="assembly", kind="rect", pitch_cm=(1.26, 1.26),
+        universe_pattern=[["fuel_pin"]], outer_universe_id="borated_water_univ",
+    )
+    spec = ComplexModelSpec(
+        name="t", kind="assembly", materials=[], cells=[], lattices=[lattice],
+        universes=[UniverseSpec(id="fuel_pin", name="fuel", cell_ids=[])],
+        # outer 'borated_water_univ' is intentionally NOT defined.
+    )
+    assert lattice.outer_universe_id == "borated_water_univ"
+
+    fixed = _drop_dangling_lattice_outer(spec)
+
+    assert fixed.lattices[0].outer_universe_id is None
+
+
+def test_dangling_lattice_outer_does_not_block_render() -> None:
+    """A plan with a dangling lattice outer_universe_id must render (not skeleton)."""
+    from openmc_agent.schemas import LatticeSpec
+
+    # Reuse the full deterministic VERA3-like plan and inject a dangling outer.
+    lattice = ComplexModelSpec.model_validate(
+        json.load(open("data/runs/VERA3/simulation_plan.json"))["complex_model"]
+    ) if Path("data/runs/VERA3/simulation_plan.json").exists() else None
+    if lattice is None:
+        pytest.skip("VERA3 simulation_plan.json not available")
+    injected = lattice.model_copy(update={
+        "lattices": [
+            lat.model_copy(update={"outer_universe_id": "borated_water_univ"})
+            for lat in lattice.lattices
+        ]
+    })
+    # Must not raise lattice.outer_universe_ref_missing.
+    script = render_openmc_assembly_script(injected)
+    assert "universes['borated_water_univ']" not in script
+    assert "__outer_water_universe" in script  # default outer re-added
+    compile(script, "model.py", "exec")
 
 
 @pytest.mark.parametrize(

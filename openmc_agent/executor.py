@@ -1465,8 +1465,38 @@ def _normalize_core_spec_for_rendering(spec: ComplexModelSpec) -> ComplexModelSp
         }
     )
     normalized = _clone_shared_core_universe_cells(normalized, reachable)
+    normalized = _drop_dangling_lattice_outer(normalized)
     normalized = _ensure_core_lattice_outer_universes(normalized)
     return _ensure_core_lattice_placement(normalized)
+
+
+def _drop_dangling_lattice_outer(spec: ComplexModelSpec) -> ComplexModelSpec:
+    """Drop lattice ``outer_universe_id`` values that reference a missing universe.
+
+    LLM plans sometimes name a descriptive outer universe (e.g.
+    ``borated_water_univ``) without defining it, which would block export with
+    ``lattice.outer_universe_ref_missing``. Dropping the dangling reference is
+    safe: when the outer is dead geometry (root cell == lattice footprint)
+    nothing is lost; when an outer is actually needed,
+    :func:`_ensure_core_lattice_outer_universes` re-adds a default moderator
+    outer afterwards. The existing ``core.lattice_outer_unreachable`` warning
+    still informs the user that the outer was dead/implicit.
+    """
+    universe_ids = {u.id for u in spec.universes}
+    changed = False
+    lattices: list[LatticeSpec] = []
+    for lattice in spec.lattices:
+        if (
+            lattice.outer_universe_id is not None
+            and lattice.outer_universe_id not in universe_ids
+        ):
+            lattices.append(lattice.model_copy(update={"outer_universe_id": None}))
+            changed = True
+        else:
+            lattices.append(lattice)
+    if not changed:
+        return spec
+    return spec.model_copy(update={"lattices": lattices})
 
 
 def _ensure_core_lattice_outer_universes(spec: ComplexModelSpec) -> ComplexModelSpec:
