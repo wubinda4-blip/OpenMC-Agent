@@ -1076,8 +1076,21 @@ def _render_surface_definitions(surface_specs: list[SurfaceSpec]) -> str:
     return "\n".join(lines) if lines else "# No explicit surfaces were provided."
 
 
+# Planners often emit the intuitive axis intercept ('x'/'y'/'z'), but OpenMC's
+# XPlane/YPlane/ZPlane constructors require the *0 names (x0/y0/z0). Map the
+# alias to its canonical OpenMC name so the rendered constructor stays valid.
+_AXIS_INTERCEPT_ALIASES: dict[str, dict[str, str]] = {
+    "xplane": {"x": "x0"},
+    "yplane": {"y": "y0"},
+    "zplane": {"z": "z0"},
+}
+
+
 def _surface_constructor(surface: SurfaceSpec) -> str:
     params = dict(surface.parameters)
+    for alias, canonical in _AXIS_INTERCEPT_ALIASES.get(surface.kind, {}).items():
+        if alias in params and canonical not in params:
+            params[canonical] = params.pop(alias)
     if surface.boundary_type is not None:
         params["boundary_type"] = surface.boundary_type
     if surface.kind == "rectangular_prism":

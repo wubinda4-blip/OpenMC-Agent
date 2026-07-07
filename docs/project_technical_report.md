@@ -312,6 +312,15 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 
 ## 9. 维护记录
 
+### 2026-07-07（Step 4 续：surface 轴截距别名归一化）
+
+完成并验证：
+
+- **修复 axis-aligned plane 渲染参数别名**。根因：planner 产出的 IR 中 `xplane`/`yplane`/`zplane` 的 `parameters` 常用直觉命名 `x`/`y`/`z`，而 OpenMC 的 `XPlane`/`YPlane`/`ZPlane` 构造签名要求 `x0`/`y0`/`z0`；`SurfaceSpec.parameters` 是无校验的自由 dict，`executor._surface_constructor` 又原样透传 key，导致 `model.py` 出现 `openmc.ZPlane(z=-55.0)`，导出 XML 时抛 `TypeError: unexpected keyword argument 'z'`（VERA3 run 首个 `ZPlane` 即触发）。
+- **修复点**：`openmc_agent/executor.py` 新增 `_AXIS_INTERCEPT_ALIASES`（`x→x0`、`y→y0`、`z→z0`），`_surface_constructor` 在拼接 kwargs 前对 plane kind 做归一化；canonical 已存在时不覆盖（幂等、不冲突）。rectangular/hexagonal prism 与 cylinder/sphere 路径不受影响。
+- **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
+- 全量测试通过：`533 passed, 2 skipped`。
+
 ### 2026-07-07（Step 4：VERA3 end-to-end benchmark acceptance foundation）
 
 完成并验证：

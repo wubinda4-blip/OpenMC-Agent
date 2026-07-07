@@ -675,6 +675,43 @@ def test_rectangular_prism_width_pair_is_normalized_for_openmc_api() -> None:
     assert "width=[" not in constructor
 
 
+@pytest.mark.parametrize(
+    "kind,alias,canonical",
+    [
+        ("xplane", "x", "x0"),
+        ("yplane", "y", "y0"),
+        ("zplane", "z", "z0"),
+    ],
+)
+def test_axis_plane_intercept_aliases_are_normalized_to_openmc_names(
+    kind: str, alias: str, canonical: str
+) -> None:
+    # Planners often emit the intuitive 'x'/'y'/'z' intercept, but OpenMC's
+    # XPlane/YPlane/ZPlane constructors require the *0 names (x0/y0/z0).
+    surface = SurfaceSpec(
+        id=f"{kind}_bound",
+        kind=kind,
+        parameters={alias: -55.0},
+        boundary_type="vacuum",
+    )
+
+    constructor = _surface_constructor(surface)
+
+    assert f"{canonical}=-55.0" in constructor
+    assert f"{alias}=" not in constructor
+    assert "boundary_type='vacuum'" in constructor
+
+
+def test_axis_plane_canonical_intercept_not_double_mapped() -> None:
+    # A spec that already uses z0 must not be mutated or duplicated.
+    surface = SurfaceSpec(id="z_top", kind="zplane", parameters={"z0": 100.0})
+
+    constructor = _surface_constructor(surface)
+
+    assert "z0=100.0" in constructor
+    assert "z=" not in constructor
+
+
 def test_region_expression_adds_positive_halfspace_for_bare_primitive_surfaces() -> None:
     expression = _region_expression_to_python(
         "fuel_r -clad_inner_r",
