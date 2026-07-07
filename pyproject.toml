@@ -25,4 +25,7 @@ include = ["openmc_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "tests"]
+markers = [
+    "integration: end-to-end tests needing a live LLM / OpenMC (skipped on CI)",
+]

@@ -1,0 +1,97 @@
+{
+  "_doc_source": "Input/VERA3_problem.md (CASL-U-2012-0131-004, VERA Problem 3)",
+  "_note": "VERA3 benchmark reference. Test-only: NO production code may read this. All numbers are transcribed from the input document; null means the document did not state it.",
+  "problem_id": "VERA3",
+  "geometry_type": "3d_rectangular_assembly",
+  "coordinate_convention": {
+    "indexing": "1-based",
+    "row_col_order": "(row, col)",
+    "row_1_is": "top",
+    "center_instrument_tube_1based": [9, 9],
+    "to_0_indexed": "[row-1, col-1]",
+    "center_0_indexed": [8, 8]
+  },
+  "assembly_metadata": {
+    "pin_pitch_cm": 1.26,
+    "assembly_pitch_cm": 21.50,
+    "assembly_inter_half_gap_cm": 0.04,
+    "lattice_size": [17, 17],
+    "total_positions": 289,
+    "axial_domain_cm": [-55.0, 463.937],
+    "active_fuel_region_cm": [11.951, 377.711],
+    "active_fuel_height_cm": 365.76,
+    "radial_boundary": "reflective",
+    "axial_boundary": "vacuum"
+  },
+  "axial_layers": [
+    {"id": "lower_moderator_buffer", "z_min_cm": -55.0,   "z_max_cm": -5.0,    "height_cm": 50.0,   "material": "borated_water"},
+    {"id": "lower_core_plate",       "z_min_cm": -5.0,    "z_max_cm": 0.0,     "height_cm": 5.0,    "material": "ss304_coolant_50_50"},
+    {"id": "lower_nozzle",           "z_min_cm": 0.0,     "z_max_cm": 6.053,   "height_cm": 6.053,  "material": "ss304_coolant_nozzle"},
+    {"id": "lower_shoulder_gap",     "z_min_cm": 6.053,   "z_max_cm": 10.281,  "height_cm": 4.228,  "material": "borated_water"},
+    {"id": "lower_end_plug",         "z_min_cm": 10.281,  "z_max_cm": 11.951,  "height_cm": 1.67,   "material": "zircaloy4"},
+    {"id": "active_fuel",            "z_min_cm": 11.951,  "z_max_cm": 377.711, "height_cm": 365.76, "material": "uo2_fuel_lattice"},
+    {"id": "upper_end_plug",         "z_min_cm": 377.711, "z_max_cm": 379.381, "height_cm": 1.67,   "material": "zircaloy4"},
+    {"id": "upper_plenum",           "z_min_cm": 379.381, "z_max_cm": 395.381, "height_cm": 16.0,   "material": "helium"},
+    {"id": "upper_shoulder_gap",     "z_min_cm": 395.381, "z_max_cm": 397.51,  "height_cm": 2.129,  "material": "borated_water"},
+    {"id": "upper_nozzle",           "z_min_cm": 397.51,  "z_max_cm": 406.337, "height_cm": 8.827,  "material": "ss304_coolant_nozzle"},
+    {"id": "upper_core_plate",       "z_min_cm": 406.337, "z_max_cm": 413.937, "height_cm": 7.6,    "material": "ss304_coolant_50_50"},
+    {"id": "upper_moderator_buffer", "z_min_cm": 413.937, "z_max_cm": 463.937, "height_cm": 50.0,   "material": "borated_water"}
+  ],
+  "spacer_grids": {
+    "count": 8,
+    "z_range_formula": "end_grid: center +/- 1.933 (half of 3.866); middle_grid: center +/- 1.905 (half of 3.810)",
+    "homogenization_rule": "each grid mass spread over 289 cells; grid material in outer equivalent volume box; sleeve ignored",
+    "grids": [
+      {"index": 0, "center_z_cm": 13.884, "height_cm": 3.866, "material": "inconel718",  "kind": "end",    "z_min_cm": 11.951, "z_max_cm": 15.817},
+      {"index": 1, "center_z_cm": 75.2,   "height_cm": 3.810, "material": "zircaloy4",   "kind": "middle", "z_min_cm": 73.295, "z_max_cm": 77.105},
+      {"index": 2, "center_z_cm": 127.4,  "height_cm": 3.810, "material": "zircaloy4",   "kind": "middle", "z_min_cm": 125.495,"z_max_cm": 129.305},
+      {"index": 3, "center_z_cm": 179.6,  "height_cm": 3.810, "material": "zircaloy4",   "kind": "middle", "z_min_cm": 177.695,"z_max_cm": 181.505},
+      {"index": 4, "center_z_cm": 231.8,  "height_cm": 3.810, "material": "zircaloy4",   "kind": "middle", "z_min_cm": 229.895,"z_max_cm": 233.705},
+      {"index": 5, "center_z_cm": 284.0,  "height_cm": 3.810, "material": "zircaloy4",   "kind": "middle", "z_min_cm": 282.095,"z_max_cm": 285.905},
+      {"index": 6, "center_z_cm": 336.2,  "height_cm": 3.810, "material": "zircaloy4",   "kind": "middle", "z_min_cm": 334.295,"z_max_cm": 338.105},
+      {"index": 7, "center_z_cm": 388.2,  "height_cm": 3.866, "material": "inconel718",  "kind": "end",    "z_min_cm": 386.267,"z_max_cm": 390.133}
+    ]
+  },
+  "pin_maps": {
+    "3A": {
+      "counts": {"F": 264, "G": 24, "I": 1},
+      "guide_tube_positions_1based": [
+        [3,6],[3,9],[3,12],[4,4],[4,14],[6,3],[6,6],[6,9],[6,12],[6,15],
+        [9,3],[9,6],[9,12],[9,15],[12,3],[12,6],[12,9],[12,12],[12,15],
+        [14,4],[14,14],[15,6],[15,9],[15,12]
+      ],
+      "instrument_tube_position_1based": [9,9],
+      "pyrex_positions_1based": [],
+      "plug_positions_1based": []
+    },
+    "3B": {
+      "counts": {"F": 264, "P": 16, "T": 8, "I": 1},
+      "guide_tube_positions_1based": [
+        [3,6],[3,9],[3,12],[4,4],[4,14],[6,3],[6,6],[6,9],[6,12],[6,15],
+        [9,3],[9,6],[9,12],[9,15],[12,3],[12,6],[12,9],[12,12],[12,15],
+        [14,4],[14,14],[15,6],[15,9],[15,12]
+      ],
+      "instrument_tube_position_1based": [9,9],
+      "pyrex_positions_1based": [
+        [3,6],[4,4],[6,3],[3,12],[4,14],[6,15],[12,3],[14,4],[15,6],
+        [12,15],[14,14],[15,12],[9,6],[9,12],[6,9],[12,9]
+      ],
+      "plug_positions_1based": [
+        [3,9],[6,6],[6,12],[9,3],[9,15],[12,6],[12,12],[15,9]
+      ]
+    }
+  },
+  "materials_expected": {
+    "fuel": {"name_hint": "UO2", "density_g_cc": 10.257, "enrichment_3A_pct": 3.1, "enrichment_3B_pct": 2.619},
+    "clad": {"name_hint": "Zircaloy-4", "density_g_cc": 6.56},
+    "coolant": {"name_hint": "borated water", "density_g_cc": 0.743},
+    "grid_inconel": {"name_hint": "Inconel-718", "density_g_cc": 8.19},
+    "grid_zircaloy": {"name_hint": "Zircaloy-4", "density_g_cc": 6.56},
+    "ss304": {"name_hint": "SS304", "density_g_cc": 8.00},
+    "helium": {"name_hint": "helium"},
+    "pyrex": {"name_hint": "Pyrex / borosilicate glass", "density_g_cc": 2.25, "variant": "3B only"}
+  },
+  "expected_overlay_geometry_mode": "homogenized_open_region",
+  "expected_overlay_target_lattice_id": "assembly_lattice",
+  "tolerance_cm": 1.0e-3
+}

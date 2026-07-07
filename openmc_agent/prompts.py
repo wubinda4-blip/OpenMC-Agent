@@ -211,6 +211,21 @@ SimulationPlan-specific rules:
     data (note: not yet rendered, still downgrades).
   Keep the active fuel region as a normal lattice-filled axial layer regardless of the
   grids embedded inside it.
+- When the input defines multiple assembly variants for the same problem (e.g. a
+  baseline case plus a case with burnable absorber rods / plugs in a subset of guide
+  tube positions), build ONE lattice per variant and state in assumptions which variant
+  the plan renders. Do NOT merge special rods from different variants into a single pin
+  map, and do NOT silently drop a variant. If the requested variant is ambiguous, require
+  human confirmation rather than guessing.
+- Preserve the input document's coordinate convention verbatim in assumptions /
+  source_note (e.g. "1-based (row, col), row 1 = top, center instrument tube at (9,9)"),
+  and normalize internally to the 0-indexed universe_pattern with row 0 = document row 1.
+  Do NOT invent symmetric guide-tube / instrument-tube coordinates the input did not
+  state; transcribe the documented positions and verify the per-type pin counts.
+- Missing spacer-grid data: if grid z-positions, height or material are not given, use
+  geometry_mode="skeleton" + requires_human_confirmation=true on the overlay (or omit
+  the overlay and mark the plan non-exportable). Never fabricate grid locations, and
+  never fall back to a material slab to "represent" a grid.
 - For any assembly/core loading map with stated counts, set expected_counts on the
   relevant lattice. If the input gives special coordinates, preserve them as overrides
   and do not replace them with a full hand-written universe_pattern unless the schema

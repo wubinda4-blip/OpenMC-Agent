@@ -300,16 +300,46 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - 对 VERA/C5G7 类 benchmark，检索已经能提供上下文，但最终可信度取决于 renderer 能否表达结构。
 - 建议先做 RectAssembly/Core 的 loading map fidelity checks，而不是马上实现 HexAssemblyRenderer。
 
-**3D assembly / spacer-grid overlay（Step 3 已完成 2026-07-07）**：
+**3D assembly / spacer-grid overlay（Step 4 已完成 2026-07-07）**：
 
-- Step 1：通用 3D assembly workflow guard 已落地。
+- Step 1：通用 3D assembly workflow guard。
 - Step 2：`AxialOverlaySpec` IR + guard 误报修复 + 产物持久化。
-- Step 3（本次）：Level 1 `homogenized_open_region` overlay renderer 落地。spacer grid 现在可被近似渲染（每根 pin 的 coolant/open cell 换成 grid 材料，fuel/clad/tube 贯穿），不再降级 skeleton；轴向域按 overlay 边界自动切分；导向管保守复用；新增 3 个 overlay issue code。VERA3 类模型现在可达 exportable。
-- Step 4（下一步）：volume-fraction calibrated overlay。
-- Step 5：VERA3 end-to-end benchmark acceptance。
+- Step 3：Level 1 `homogenized_open_region` overlay renderer。
+- Step 4（本次）：VERA3 benchmark acceptance foundation——reference fixture（全数值来自输入文档）+ `vera3.*` benchmark issue taxonomy + `validate_vera3_plan_structure` + 确定性 plan 构造器 + 三层 E2E 测试（确定性/replay/integration）。VERA3 facts 全部隔离在 tests/fixtures + tests/helpers，不进生产代码。
+- Step 5（下一步）：真实 VERA3 end-to-end pass（LLM 抽取 → 验收 → 渲染 → 导出）。
+- Step 6：volume-fraction calibrated overlay。
 - explicit spacer grid / mixing vane 几何仍未实现。
 
 ## 9. 维护记录
+
+### 2026-07-07（Step 4：VERA3 end-to-end benchmark acceptance foundation）
+
+完成并验证：
+
+- **VERA3 reference fixture**（`tests/fixtures/vera3_reference.json`，测试专用，生产代码不读取）：全部数值逐字转录自 `Input/VERA3_problem.md`——assembly metadata（pin pitch 1.26、assembly pitch 21.50、17×17、axial domain [-55.0, 463.937]、活性燃料 [11.951, 377.711]）、12 个轴向层（含 z 范围/高度/材料）、8 个 spacer grid（中心 z、高度、Inconel/Zircaloy 材料、z_min/z_max）、3A/3B pin map（计数 + 24 导向管 / 1 仪表管 / 16 Pyrex / 8 套管塞 坐标，1-based doc 约定）、期望材料清单、overlay geometry_mode。coordinate_convention 显式声明（1-based、row 1=top、center (9,9)→0-indexed (8,8)），杜绝坐标系歧义导致的假绿。
+- **benchmark acceptance helper**（`tests/helpers/vera3_acceptance.py`，新增 `tests/helpers/` 包，pyproject `pythonpath` 加 `tests`）：
+  - `BenchmarkIssue` dataclass + `vera3.*` issue taxonomy（与通用 `assembly3d.*` 分离）。
+  - `load_vera3_reference` / `to_0_indexed` 坐标转换。
+  - `validate_vera3_plan_structure(plan, reference, variant)`：验证 3D assembly 结构（非默认 z、domain 覆盖、活性燃料高度）、spacer grid 为 overlay（计数/mode/target/through-path、无 material slab、无 purpose-only 注释）、pin map（17×17、计数、导向管/仪表管/Pyrex/套管塞坐标）、材料引用解析、renderer 兼容性（无 blocking `assembly3d.*`）。
+  - `build_vera3_like_plan(reference, variant, ...)`：纯 reference 驱动的确定性 VERA3-like plan 构造器（无 LLM），支持 drop_overlays / grid_count / use_material_slab_grid / mutate_pin / wrong_pyrex / default_z 等 mutation flag 构造 intentionally-broken plan。
+- **三层 E2E 测试设计**（`tests/test_vera3_acceptance.py`，15 个测试）：
+  - A. 确定性 fixture 测试（reference 加载、坐标转换、3A/3B 通过验收、6 类失败模式：missing overlay / wrong grid count / material slab / pin count / pyrex coordinate / default z、3A/3B Level 1 渲染、benchmark report 序列化、stale artifact 不掩盖失败）。
+  - B. planner-output replay（gated：`tests/fixtures/vera3_plan_candidate.json` 不存在则 skip，存在则 xfail 直到 Step 5）。
+  - C. full-workflow integration（`@pytest.mark.integration`，skip on CI）。
+- **prompts.py 通用 guidance 强化**（无 VERA3 硬编码）：多工况变体（一变体一 lattice、不合并）、坐标约定（doc 坐标写入 assumptions、内部 0-indexed 归一、不臆造对称坐标）、missing grid data（skeleton overlay + human confirmation，禁止 material slab fallback）。
+- 全量测试：`529 passed, 2 skipped`（新增 15 个 VERA3 验收测试；2 skip 为 replay/integration gated）。
+
+当前能力边界（明确）：
+
+- 确定性 VERA3-like plan（3A/3B）能通过 benchmark 验收并渲染为 exportable Level 1 overlay 模型（7 个燃料区 grid 渲染为 overlay 段；第 8 个 grid 在氦气气腔内，IR 声明但不产生 lattice overlay 段——简化模型的已知 gap）。
+- 真实 LLM VERA3 workflow 仍可能 xfail（依赖 planner fact extraction 质量），replay 测试 gated 直到有 candidate fixture。
+- 仍无 volume-fraction calibration、无 explicit spacer grid / mixing vane 几何。
+
+仍未完成：
+
+- **Step 5**：真实 VERA3 end-to-end pass（LLM 从 `Input/VERA3_problem.md` 抽取 → 通过 `validate_vera3_plan_structure` → 渲染 → 导出）。
+- **Step 6**：volume-fraction calibrated overlay。
+- explicit spacer grid bars / mixing vane 几何仍未实现。
 
 ### 2026-07-07（Step 3：Level 1 homogenized_open_region overlay renderer）
 
