@@ -1599,10 +1599,46 @@ def _reconcile_plot_origins(
         "OpenMC cell regions are open intervals, so a slice exactly on a "
         "reflective/vacuum boundary surface samples no cell"
     )
+    # Full-assembly centering: OpenMC slice ``origin`` is the CENTER of the
+    # plotted region. When the geometry occupies [x_min, x_max] x [y_min, y_max]
+    # (e.g. VERA3's lower-left-at-origin convention), an LLM-supplied origin at
+    # the corner (0,0) would sample only one quadrant. Recenter the in-plane
+    # axes to the assembly center and ensure the width covers the full
+    # footprint so the plot shows the whole assembly, not a quarter.
+    center_x = x_min + (x_max - x_min) / 2.0
+    center_y = y_min + (y_max - y_min) / 2.0
+    full_wx = x_max - x_min
+    full_wy = y_max - y_min
+
+    def _cover_full_in_plane(
+        origin: list[float], width: tuple[float, ...], basis: str
+    ) -> list[str]:
+        adj: list[str] = []
+        if basis == "xy":
+            if abs(origin[0] - center_x) > 1e-6:
+                adj.append(f"origin x {origin[0]:.6g} -> {center_x:.6g}")
+                origin[0] = center_x
+            if abs(origin[1] - center_y) > 1e-6:
+                adj.append(f"origin y {origin[1]:.6g} -> {center_y:.6g}")
+                origin[1] = center_y
+        elif basis == "xz":
+            if abs(origin[0] - center_x) > 1e-6:
+                adj.append(f"origin x {origin[0]:.6g} -> {center_x:.6g}")
+                origin[0] = center_x
+        elif basis == "yz":
+            if abs(origin[1] - center_y) > 1e-6:
+                adj.append(f"origin y {origin[1]:.6g} -> {center_y:.6g}")
+                origin[1] = center_y
+        return adj
+
     reconciled: list[PlotSpec] = []
     for plot in plot_specs:
         origin = list(plot.origin)
         adjustments: list[str] = []
+        # 1) Recenter the in-plane axes to the assembly center (fixes the
+        #    quarter-plot bug for geometries positioned off-origin).
+        adjustments.extend(_cover_full_in_plane(origin, plot.width_cm, plot.basis))
+        # 2) Nudge a slice coordinate that still lands exactly on a boundary.
         if plot.basis == "xz":
             moved_y, moved = _nudge_to_interior(origin[1], y_min, y_max, y_centers)
             if moved:

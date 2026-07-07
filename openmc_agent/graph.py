@@ -1766,9 +1766,21 @@ def _make_execute_tools_node(
             # Pre-flight source/settings check: do not waste a smoke run (and
             # risk a segfault cascade) when the source box provably misses the
             # active fuel region or the fuel is non-fissionable.
-            from openmc_agent.source_settings import validate_source_settings
+            from openmc_agent.source_settings import (
+                source_bounds_for_plan,
+                validate_source_settings,
+            )
+            from openmc_agent.geometry_bounds import validate_bounds_consistency
 
             source_issues = validate_source_settings(plan)
+            if plan.complex_model is not None:
+                src = source_bounds_for_plan(plan.complex_model)
+                if src is not None:
+                    src_tuple = (src.x_min, src.x_max, src.y_min, src.y_max, src.z_min, src.z_max)
+                    source_issues.extend(validate_bounds_consistency(
+                        plan.complex_model, source_bounds=src_tuple,
+                        plot_bounds=_plot_bounds_metadata(plan),
+                    ))
             blocking_source = [i for i in source_issues if i.severity == "error"]
             if blocking_source:
                 _progress(
@@ -3486,6 +3498,21 @@ def _clean_stale_render_artifacts(output_dir: Path) -> None:
             shutil.rmtree(plots_dir)
         except OSError:
             pass
+
+
+def _plot_bounds_metadata(plan: SimulationPlan) -> list[dict]:
+    """Project plan.plot_specs into the dict shape the bounds validator expects."""
+    out: list[dict] = []
+    for i, p in enumerate(plan.plot_specs):
+        origin = p.origin or (0.0, 0.0, 0.0)
+        width = p.width_cm or (0.0, 0.0)
+        out.append({
+            "id": f"plot_{i}",
+            "basis": getattr(p, "basis", "xy"),
+            "origin": {"x": float(origin[0]), "y": float(origin[1] if len(origin) > 1 else 0.0)},
+            "width": {"x": float(width[0]), "y": float(width[1] if len(width) > 1 else width[0])},
+        })
+    return out
 
 
 def _write_non_executable_marker(

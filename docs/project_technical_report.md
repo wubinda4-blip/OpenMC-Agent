@@ -299,16 +299,17 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - 对 VERA/C5G7 类 benchmark，检索已经能提供上下文，但最终可信度取决于 renderer 能否表达结构。
 - 建议先做 RectAssembly/Core 的 loading map fidelity checks，而不是马上实现 HexAssemblyRenderer。
 
-**3D assembly / spacer-grid overlay（Step 5 已完成 2026-07-07）**：
+**3D assembly / spacer-grid overlay（Step 6 已完成 2026-07-07）**：
 
 - Step 1：通用 3D assembly workflow guard。
 - Step 2：`AxialOverlaySpec` IR + guard 误报修复 + 产物持久化。
 - Step 3：Level 1 `homogenized_open_region` overlay renderer。
-- Step 4：VERA3 benchmark acceptance foundation（reference + validator + 确定性测试）。
-- Step 5（本次）：OpenMC source/settings 修复——source z 绑定活性燃料区（修复 `Too few source sites` 崩溃）、source/settings pre-flight validator、source-rejection runtime parser（首要 issue 不被 segfault 覆盖）、合金/导向管壁验证。
-- Step 6（下一步）：材料/合金 composition fidelity。
-- Step 7：volume-fraction calibrated overlay。
-- Step 8：full VERA3 keff benchmark acceptance。
+- Step 4：VERA3 benchmark acceptance foundation。
+- Step 5：OpenMC source/settings 修复（source z 绑定活性燃料 + runtime parser）。
+- Step 6（本次）：Full-assembly geometry/source/plot bounds 一致性——修复 quarter-plot bug（plot origin 重定心到 assembly center）、bounds consistency validator、source xy 绑定 full footprint、geometry metadata、benchmark validator 加 full-assembly/plot/source 检查。
+- Step 7（下一步）：材料/合金 composition fidelity。
+- Step 8：volume-fraction calibrated overlay。
+- Step 9：full VERA3 keff benchmark acceptance。
 
 ## 9. 维护记录
 
@@ -330,6 +331,23 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **修复点**：`openmc_agent/executor.py` 新增 `_AXIS_INTERCEPT_ALIASES`（`x→x0`、`y→y0`、`z→z0`），`_surface_constructor` 在拼接 kwargs 前对 plane kind 做归一化；canonical 已存在时不覆盖（幂等、不冲突）。rectangular/hexagonal prism 与 cylinder/sphere 路径不受影响。
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
+
+### 2026-07-07（Step 6：Full-assembly geometry/source/plot bounds 一致性）
+
+完成并验证：
+
+- **复盘根因**：`data/runs/VERA3/plots.xml` 的 xy plot `origin=(0.0,0.0,200.0)` + `width=(21.5,21.5)`。OpenMC slice origin 是绘图区**中心**，而几何位于 `[0,21.42]×[0,21.42]`（lower_left 在原点），所以 origin=(0,0) 的 plot 实际采样 `[-10.75,10.75]×[-10.75,10.75]`，只与几何相交一个象限 → **画出来是四分之一**。geometry/source bounds 本身一致（source xy=0..21.42、z=11.951..377.711，与几何/活性燃料匹配）；不是 quarter 几何，是 plot origin bug。
+- **新增 `openmc_agent/geometry_bounds.py`**：`compute_geometry_bounds(model)`（lattice footprint / geometry / active-fuel z）/ `infer_symmetry_policy`（full/quarter）/ `build_geometry_metadata`（diagnostics dict）/ `validate_bounds_consistency`（source xy 超出几何 / source xy 过小 / plot 不覆盖 assembly）。
+- **plot 修复（`executor.py` `_reconcile_plot_origins`）**：对所有 basis 把 in-plane origin 重定心到 assembly center（`center_x = x_min + (x_max-x_min)/2`），再叠加原有 boundary-nudge。VERA3 的 xy plot origin 现在是 `(10.71, 10.71)`，覆盖完整 17×17。修复 quarter-plot bug，不改 spacer-grid 物理。
+- **source xy 修复（`source_settings.py` `assembly_xy_bounds`）**：改用 `compute_geometry_bounds`，正确处理 lower_left 在原点的 lattice（之前 lower_left=None 时返回 None）。
+- **新增 7 个 issue codes**：`geometry.quarter_symmetry_unexpected` / `runtime.source_geometry_bounds_mismatch` / `runtime.source_quarter_full_mismatch` / `runtime.source_xy_outside_geometry` / `runtime.source_xy_too_small_for_full_assembly` / `runtime.plot_bounds_do_not_cover_assembly`(warning) / `runtime.plot_quarter_full_mismatch`(warning)。
+- **workflow 集成（`graph.py` `_execute_tools`）**：smoke pre-flight 现在同时跑 source 验证 + bounds consistency（含 plot），blocking issue 时跳过 smoke；新增 `_plot_bounds_metadata` 把 plan.plot_specs 投影成 validator 需要的 dict。
+- **benchmark validator 增强（`tests/helpers/vera3_acceptance.py`）**：新增 `vera3.quarter_geometry_unexpected` / `vera3.plot_quarter_assembly` / `vera3.source_bounds_mismatch` / `vera3.source_not_active_fuel`。
+- 全量测试：`565 passed, 2 skipped`（新增 `tests/test_geometry_bounds.py` 13 个）。
+
+当前边界：plot 现覆盖完整 assembly；source/geometry/plot bounds 一致；real VERA3 smoke 是否通过仍取决于截面库/材料 fidelity（source rejection 若仍发生，runtime_report 会附 bounds diagnostics：source_z_matches_active_fuel / source_xy_inside_geometry / source_xy_matches_full_assembly / geometry_is_full_assembly / fuel_material_fissionable）。
+
+仍未完成：Step 7 材料/合金 composition fidelity / Step 8 volume-fraction calibrated overlay / Step 9 full VERA3 keff acceptance。
 
 ### 2026-07-07（Step 5：OpenMC source/settings 修复 + VERA3 runtime smoke 稳定化）
 

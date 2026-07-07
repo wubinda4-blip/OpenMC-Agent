@@ -105,8 +105,19 @@ def _lattice_footprint(model: ComplexModelSpec) -> tuple[float, float, float, fl
 
 
 def assembly_xy_bounds(model: ComplexModelSpec) -> tuple[float, float, float, float] | None:
-    """x/y bounds for the source box: the lattice footprint when available."""
-    return _lattice_footprint(model)
+    """x/y bounds for the source box: the full lattice/assembly footprint.
+
+    Uses the shared geometry-bounds computation so a lattice whose lower_left
+    sits at the origin (the VERA3 non-negative convention) still resolves to its
+    full footprint rather than being treated as missing.
+    """
+    from openmc_agent.geometry_bounds import compute_geometry_bounds
+
+    bounds = compute_geometry_bounds(model)
+    if bounds is None:
+        return None
+    return (bounds.lattice_x_min, bounds.lattice_y_min,
+            bounds.lattice_x_max, bounds.lattice_y_max)
 
 
 def _cell_fuel_material_ids(model: ComplexModelSpec) -> set[str]:

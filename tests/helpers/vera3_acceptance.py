@@ -326,6 +326,39 @@ def validate_vera3_plan_structure(
                                      f"blocking generic issue: {i.code} -- {i.message}",
                                      path=i.schema_path))
 
+    # 6. full-assembly / source / plot bounds consistency (Step 6).
+    from openmc_agent.geometry_bounds import (
+        compute_geometry_bounds,
+        infer_symmetry_policy,
+        validate_bounds_consistency,
+    )
+    from openmc_agent.source_settings import source_bounds_for_plan
+
+    gb = compute_geometry_bounds(model)
+    policy = infer_symmetry_policy(model, gb)
+    if policy.mode == "quarter":
+        issues.append(BenchmarkIssue("vera3.quarter_geometry_unexpected", "error",
+                                     "VERA3 reference uses a full 17x17 pin map; quarter "
+                                     "symmetry is unexpected"))
+    src = source_bounds_for_plan(model)
+    if src is not None and gb is not None:
+        src_tuple = (src.x_min, src.x_max, src.y_min, src.y_max, src.z_min, src.z_max)
+        bounds_issues = validate_bounds_consistency(model, source_bounds=src_tuple)
+        for bi in bounds_issues:
+            if "source_xy_outside" in bi.code or "source_xy_too_small" in bi.code:
+                issues.append(BenchmarkIssue("vera3.source_bounds_mismatch", "error",
+                                             bi.message, path=bi.schema_path))
+            elif "plot_bounds" in bi.code:
+                issues.append(BenchmarkIssue("vera3.plot_quarter_assembly", "warning",
+                                             bi.message, path=bi.schema_path))
+        # source z must overlap active fuel.
+        if gb.active_fuel_z is not None:
+            af0, af1 = gb.active_fuel_z
+            if not (src.z_min < af1 - 1e-6 and src.z_max > af0 + 1e-6):
+                issues.append(BenchmarkIssue("vera3.source_not_active_fuel", "error",
+                                             f"source z [{src.z_min},{src.z_max}] does not "
+                                             f"overlap active fuel [{af0},{af1}]"))
+
     return issues
 
 
