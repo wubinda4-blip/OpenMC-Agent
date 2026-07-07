@@ -2142,3 +2142,433 @@ def test_plot_origin_interior_is_not_modified() -> None:
 
     assert "plot_0_cell.origin = (10.71, 21.42, 50.0)" in script
     assert "renderer nudged" not in script
+
+
+def test_render_core_with_radial_reflector_in_lattice_pattern_exports_xml(
+    tmp_path: Path,
+) -> None:
+    """Strategy 1: reflector drawn as extra water rows/columns of universe_pattern."""
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="quarter core radial reflector in lattice pattern",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    composition=[
+                        NuclideSpec(name="H1", percent=2.0),
+                        NuclideSpec(name="O16", percent=1.0),
+                    ],
+                    sab=["c_H_in_H2O"],
+                ),
+            ],
+            cells=[
+                CellSpec(id="pin_cell", name="fuel pin", fill_type="material", fill_id="fuel"),
+                CellSpec(
+                    id="assembly_cell",
+                    name="assembly lattice cell",
+                    fill_type="lattice",
+                    fill_id="assembly_lattice",
+                ),
+                CellSpec(id="water_cell", name="water wrapper", fill_type="material", fill_id="water"),
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="assembly", name="assembly", cell_ids=["assembly_cell"]),
+                UniverseSpec(id="water_univ", name="water universe", cell_ids=["water_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="1x1 assembly",
+                    kind="rect",
+                    pitch_cm=(21.42, 21.42),
+                    lower_left_cm=(-10.71, -10.71),
+                    universe_pattern=[["pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice",
+                    name="3x3 core with radial reflector",
+                    kind="rect",
+                    pitch_cm=(21.42, 21.42),
+                    lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[
+                        ["assembly", "assembly", "water_univ"],
+                        ["assembly", "assembly", "water_univ"],
+                        ["water_univ", "water_univ", "water_univ"],
+                    ],
+                    outer_universe_id="water_univ",
+                ),
+            ],
+            core=CoreSpec(
+                id="core",
+                name="3D root core",
+                lattice_id="core_lattice",
+                boundary="mixed",
+                boundary_conditions=CoreBoundarySpec(
+                    xmin="reflective",
+                    xmax="vacuum",
+                    ymin="reflective",
+                    ymax="vacuum",
+                    zmin="reflective",
+                    zmax="vacuum",
+                ),
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel",
+                        name="fuel active height",
+                        z_min_cm=0.0,
+                        z_max_cm=10.0,
+                        fill={"type": "lattice", "id": "core_lattice"},
+                    ),
+                    AxialLayerSpec(
+                        id="top_water",
+                        name="top water reflector",
+                        z_min_cm=10.0,
+                        z_max_cm=12.0,
+                        fill={"type": "material", "id": "water"},
+                    ),
+                ],
+            ),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="core",
+            executable_subsystems=["rect_lattice", "core", "axial_layers"],
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(64.26, 64.26), filename="core_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    # 3x3 pattern => root cell bounds follow the extended lattice (3 * 21.42).
+    assert "assembly_x_max = 64.26" in script
+    assert "assembly_y_max = 64.26" in script
+    assert "lattice_core_lattice.outer = universes['water_univ']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (tmp_path / "geometry.xml").exists()
+
+
+def test_render_core_outer_reflector_reachable_via_boundary_surfaces(
+    tmp_path: Path,
+) -> None:
+    """Strategy 2: 2x2 active lattice + outer water + IR core boundary surfaces
+    extend the root cell beyond the lattice so the outer universe is reachable."""
+    plan = SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=ComplexModelSpec(
+            name="quarter core outer reflector via boundary surfaces",
+            kind="core",
+            materials=[
+                ComplexMaterialSpec(
+                    id="fuel",
+                    name="fuel",
+                    density_unit="g/cm3",
+                    density_value=10.0,
+                    chemical_formula="UO2",
+                    enrichment_percent=3.3,
+                ),
+                ComplexMaterialSpec(
+                    id="water",
+                    name="water",
+                    density_unit="g/cm3",
+                    density_value=0.997,
+                    composition=[
+                        NuclideSpec(name="H1", percent=2.0),
+                        NuclideSpec(name="O16", percent=1.0),
+                    ],
+                    sab=["c_H_in_H2O"],
+                ),
+            ],
+            surfaces=[
+                SurfaceSpec(id="xmin_core", kind="xplane", parameters={"x0": 0.0}),
+                SurfaceSpec(id="xmax_core", kind="xplane", parameters={"x0": 64.26}),
+                SurfaceSpec(id="ymin_core", kind="yplane", parameters={"y0": 0.0}),
+                SurfaceSpec(id="ymax_core", kind="yplane", parameters={"y0": 64.26}),
+            ],
+            cells=[
+                CellSpec(id="pin_cell", name="fuel pin", fill_type="material", fill_id="fuel"),
+                CellSpec(
+                    id="assembly_cell",
+                    name="assembly lattice cell",
+                    fill_type="lattice",
+                    fill_id="assembly_lattice",
+                ),
+                CellSpec(id="water_cell", name="water wrapper", fill_type="material", fill_id="water"),
+            ],
+            universes=[
+                UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+                UniverseSpec(id="assembly", name="assembly", cell_ids=["assembly_cell"]),
+                UniverseSpec(id="water_univ", name="water universe", cell_ids=["water_cell"]),
+            ],
+            lattices=[
+                LatticeSpec(
+                    id="assembly_lattice",
+                    name="1x1 assembly",
+                    kind="rect",
+                    pitch_cm=(21.42, 21.42),
+                    lower_left_cm=(-10.71, -10.71),
+                    universe_pattern=[["pin"]],
+                ),
+                LatticeSpec(
+                    id="core_lattice",
+                    name="2x2 active core with outer reflector",
+                    kind="rect",
+                    pitch_cm=(21.42, 21.42),
+                    lower_left_cm=(0.0, 0.0),
+                    universe_pattern=[["assembly", "assembly"], ["assembly", "assembly"]],
+                    outer_universe_id="water_univ",
+                ),
+            ],
+            core=CoreSpec(
+                id="core",
+                name="3D root core",
+                lattice_id="core_lattice",
+                boundary="mixed",
+                boundary_conditions=CoreBoundarySpec(
+                    xmin="reflective",
+                    xmax="vacuum",
+                    ymin="reflective",
+                    ymax="vacuum",
+                    zmin="reflective",
+                    zmax="vacuum",
+                ),
+                axial_layers=[
+                    AxialLayerSpec(
+                        id="fuel",
+                        name="fuel active height",
+                        z_min_cm=0.0,
+                        z_max_cm=10.0,
+                        fill={"type": "lattice", "id": "core_lattice"},
+                    ),
+                    AxialLayerSpec(
+                        id="top_water",
+                        name="top water reflector",
+                        z_min_cm=10.0,
+                        z_max_cm=12.0,
+                        fill={"type": "material", "id": "water"},
+                    ),
+                ],
+            ),
+            settings=RunSettingsSpec(batches=4, inactive=1, particles=20),
+        ),
+        capability_report=RenderCapabilityReport(
+            is_executable=True,
+            supported_renderer="core",
+            executable_subsystems=["rect_lattice", "core", "axial_layers"],
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(64.26, 64.26), filename="core_xy.png")],
+    )
+
+    script = render_openmc_plan_script(plan)
+
+    # Root cell bounds come from the IR core boundary surfaces (64.26), not the
+    # 2x2 lattice footprint (42.84), so lattice.outer becomes reachable.
+    assert "assembly_x_max = 64.26" in script
+    assert "assembly_y_max = 64.26" in script
+    assert "lattice_core_lattice.outer = universes['water_univ']" in script
+
+    model_path = tmp_path / "model.py"
+    model_path.write_text(script, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, model_path.name],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (tmp_path / "geometry.xml").exists()
+
+
+def test_core_capability_flags_lattice_outer_unreachable() -> None:
+    """2x2 active lattice + outer water + NO core boundary surfaces => the outer
+    universe is dead geometry and capability must report it."""
+    from openmc_agent.renderers.core import _core_renderability_errors
+
+    model = ComplexModelSpec(
+        name="core with dead outer",
+        kind="core",
+        materials=[
+            ComplexMaterialSpec(
+                id="fuel",
+                name="fuel",
+                density_unit="g/cm3",
+                density_value=10.0,
+                chemical_formula="UO2",
+                enrichment_percent=3.0,
+            ),
+            ComplexMaterialSpec(
+                id="water",
+                name="water",
+                density_unit="g/cm3",
+                density_value=0.997,
+                composition=[
+                    NuclideSpec(name="H1", percent=2.0),
+                    NuclideSpec(name="O16", percent=1.0),
+                ],
+            ),
+        ],
+        cells=[
+            CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="fuel"),
+            CellSpec(
+                id="assembly_cell",
+                name="assembly",
+                fill_type="lattice",
+                fill_id="assembly_lattice",
+            ),
+            CellSpec(id="water_cell", name="water", fill_type="material", fill_id="water"),
+        ],
+        universes=[
+            UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+            UniverseSpec(id="assembly", name="assembly", cell_ids=["assembly_cell"]),
+            UniverseSpec(id="water_univ", name="water", cell_ids=["water_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="assembly",
+                kind="rect",
+                pitch_cm=(21.42, 21.42),
+                lower_left_cm=(-10.71, -10.71),
+                universe_pattern=[["pin"]],
+            ),
+            LatticeSpec(
+                id="core_lattice",
+                name="core",
+                kind="rect",
+                pitch_cm=(21.42, 21.42),
+                lower_left_cm=(0.0, 0.0),
+                universe_pattern=[["assembly", "assembly"], ["assembly", "assembly"]],
+                outer_universe_id="water_univ",
+            ),
+        ],
+        core=CoreSpec(
+            id="core",
+            name="core",
+            lattice_id="core_lattice",
+            boundary="mixed",
+            boundary_conditions=CoreBoundarySpec(
+                xmin="reflective",
+                xmax="vacuum",
+                ymin="reflective",
+                ymax="vacuum",
+                zmin="reflective",
+                zmax="vacuum",
+            ),
+            axial_layers=[
+                AxialLayerSpec(
+                    id="fuel",
+                    name="fuel",
+                    z_min_cm=0.0,
+                    z_max_cm=10.0,
+                    fill={"type": "lattice", "id": "core_lattice"},
+                )
+            ],
+        ),
+    )
+
+    errors = _core_renderability_errors(model)
+    codes = [issue.code for issue in errors]
+    assert "core.lattice_outer_unreachable" in codes
+
+
+def test_core_effective_root_bounds_raises_on_boundary_clip() -> None:
+    """An IR core boundary surface placed inside the lattice footprint clips the
+    active core and must raise rather than silently crop the model."""
+    from openmc_agent.executor import _core_effective_root_bounds
+
+    model = ComplexModelSpec(
+        name="core with clipping boundary",
+        kind="core",
+        materials=[
+            ComplexMaterialSpec(
+                id="fuel",
+                name="fuel",
+                density_unit="g/cm3",
+                density_value=10.0,
+                chemical_formula="UO2",
+                enrichment_percent=3.0,
+            )
+        ],
+        surfaces=[
+            SurfaceSpec(id="xmax_core", kind="xplane", parameters={"x0": 10.0}),
+        ],
+        cells=[
+            CellSpec(id="pin_cell", name="pin", fill_type="material", fill_id="fuel"),
+            CellSpec(
+                id="assembly_cell",
+                name="assembly",
+                fill_type="lattice",
+                fill_id="assembly_lattice",
+            ),
+        ],
+        universes=[
+            UniverseSpec(id="pin", name="pin", cell_ids=["pin_cell"]),
+            UniverseSpec(id="assembly", name="assembly", cell_ids=["assembly_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="assembly",
+                kind="rect",
+                pitch_cm=(21.42, 21.42),
+                lower_left_cm=(-10.71, -10.71),
+                universe_pattern=[["pin"]],
+            ),
+            LatticeSpec(
+                id="core_lattice",
+                name="core",
+                kind="rect",
+                pitch_cm=(21.42, 21.42),
+                lower_left_cm=(0.0, 0.0),
+                universe_pattern=[["assembly", "assembly"], ["assembly", "assembly"]],
+            ),
+        ],
+        core=CoreSpec(
+            id="core",
+            name="core",
+            lattice_id="core_lattice",
+            boundary="mixed",
+            axial_layers=[
+                AxialLayerSpec(
+                    id="fuel",
+                    name="fuel",
+                    z_min_cm=0.0,
+                    z_max_cm=10.0,
+                    fill={"type": "lattice", "id": "core_lattice"},
+                )
+            ],
+        ),
+    )
+    lattice = next(lat for lat in model.lattices if lat.id == "core_lattice")
+    with pytest.raises(ValueError, match="boundary_surface_clip"):
+        _core_effective_root_bounds(model, lattice)
+

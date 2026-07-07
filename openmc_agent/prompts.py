@@ -164,6 +164,26 @@ SimulationPlan-specific rules:
 - For 3D rectangular core plans, use CoreSpec.boundary_conditions to specify
   xmin/xmax/ymin/ymax/zmin/zmax boundary types and CoreSpec.axial_layers to
   split fuel-height lattice regions from top/bottom reflector or coolant regions.
+- Radial reflector / outer water region around a core lattice MUST be carried in
+  the IR, never left in prose only. Two accepted representations:
+  * Preferred: draw the reflector as extra rows/columns of the reflector
+    universe inside CoreSpec.lattice_id.universe_pattern (e.g. a 2x2 active core
+    plus one right column and one bottom row of the water universe gives a 3x3
+    pattern). Place active assemblies against the reflective (symmetry) faces
+    and the reflector universe against the vacuum (leakage) faces. Set
+    LatticeSpec.outer_universe_id to the same reflector universe to backstop any
+    leftover space. This is the OpenMC-idiomatic form: particles stream from
+    fuel into reflector cells naturally and the root cell bounds follow the
+    extended pattern automatically.
+  * Fallback (reflector thickness NOT an integer multiple of the core pitch):
+    add a ReflectorSpec(location="radial") with material_id and a RegionSpec
+    region_id that carves the reflector slab, plus xplane/yplane surfaces named
+    core_xmin_surface / core_xmax_surface / core_ymin_surface / core_ymax_surface
+    at the outer envelope. The renderer uses those surfaces as the root cell
+    bounds so the reflector cell has geometric space outside the lattice.
+  A 2x2 (or NxN) active lattice with NO reflector representation in the IR —
+  only lattice.outer left dangling outside an equal-sized root cell — is a
+  structural defect, not an acceptable default.
 - For axial per-layer loading (e.g. a fuel region that inserts control rods, burnable
   poisons, instrumentation, or different assemblies in some axial slices but not others),
   give the axial layer as fill={"type":"lattice","id":"<actual lattice id>"}. For a

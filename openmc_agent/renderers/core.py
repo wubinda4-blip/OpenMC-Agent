@@ -266,6 +266,47 @@ def _core_renderability_errors(model: Any) -> list[ValidationIssue]:
                                 f"lattice loading {loading.id!r} override position {(row, col)} for universe {universe_id!r} is out of bounds",
                                 override_schema,
                             ))
+    for reflector in model.reflectors:
+        if reflector.material_id not in material_ids:
+            errors.append(_iss(
+                "core.reflector_material_ref_missing",
+                f"core reflector {reflector.id!r} references missing material {reflector.material_id!r}",
+                "complex_model.reflectors.material_id",
+            ))
+        if reflector.region_id is None or reflector.region_id not in region_like_ids:
+            errors.append(_iss(
+                "core.reflector_region_ref_missing",
+                f"core reflector {reflector.id!r} requires a valid region_id",
+                "complex_model.reflectors.region_id",
+            ))
+    if model.core is not None and model.core.lattice_id is not None:
+        core_lattice = next((lat for lat in model.lattices if lat.id == model.core.lattice_id), None)
+        if core_lattice is not None and core_lattice.universe_pattern:
+            has_ir_boundary = any(
+                "core" in (surface.id or "").lower()
+                and any(tag in (surface.id or "").lower() for tag in ("xmin", "xmax", "ymin", "ymax"))
+                for surface in model.surfaces
+            )
+            pattern_universes = {
+                uid for row in core_lattice.universe_pattern for uid in row
+            }
+            radial_reflectors = [r for r in model.reflectors if r.location == "radial"]
+            if (
+                not has_ir_boundary
+                and core_lattice.outer_universe_id
+                and core_lattice.outer_universe_id not in pattern_universes
+            ):
+                errors.append(_iss(
+                    "core.lattice_outer_unreachable",
+                    "lattice.outer_universe_id is set but the root cell equals the active lattice footprint; outer is dead geometry",
+                    f"complex_model.lattices.{core_lattice.id}.outer_universe_id",
+                ))
+            if not has_ir_boundary and radial_reflectors:
+                errors.append(_iss(
+                    "core.radial_reflector_unreachable",
+                    "radial reflector declared but no core boundary surfaces extend the root cell beyond the lattice",
+                    "complex_model.reflectors",
+                ))
     return errors
 
 

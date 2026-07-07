@@ -943,6 +943,11 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
                 if universe_id not in universe_ids:
                     raise ValueError(f"lattice loading {loading.id!r} override references missing universe {universe_id!r}")
                 _check_loading_positions_in_bounds(loading.id, base_lattice, universe_id, positions)
+    for reflector in spec.reflectors:
+        if reflector.material_id not in material_ids:
+            raise ValueError(f"core reflector {reflector.id!r} references missing material")
+        if reflector.region_id is None or reflector.region_id not in region_like_ids:
+            raise ValueError(f"core reflector {reflector.id!r} requires a valid region_id")
 
 
 def _complex_enrichment_kwargs(spec: ComplexMaterialSpec) -> dict[str, str | float]:
@@ -2206,15 +2211,92 @@ def _check_loading_positions_in_bounds(
             )
 
 
+def _core_boundary_surface_coords(spec: ComplexModelSpec) -> dict[str, float]:
+    """Map axis -> coordinate for surfaces that name themselves as core boundaries.
+
+    Recognizes surface ids like ``core_xmin_surface`` / ``core_xmax_surface`` /
+    ``core_ymin_surface`` / ``core_ymax_surface`` (xplane/yplane). These are how
+    the IR gives the root cell an outer envelope larger than the active lattice
+    footprint (the radial-reflector representation for non-pitch-aligned thickness).
+    """
+    coords: dict[str, float] = {}
+    for surface in spec.surfaces:
+        sid = (surface.id or "").lower()
+        if "core" not in sid:
+            continue
+        axis_tag = None
+        for tag in ("xmin", "xmax", "ymin", "ymax"):
+            if tag in sid:
+                axis_tag = tag
+                break
+        if axis_tag is None:
+            continue
+        param = surface.parameters or {}
+        if surface.kind == "xplane" and "x0" in param and axis_tag in {"xmin", "xmax"}:
+            coords[axis_tag] = float(param["x0"])
+        elif surface.kind == "yplane" and "y0" in param and axis_tag in {"ymin", "ymax"}:
+            coords[axis_tag] = float(param["y0"])
+    return coords
+
+
+def _core_effective_root_bounds(
+    spec: ComplexModelSpec, lattice: LatticeSpec
+) -> tuple[float, float, float, float, bool]:
+    """Root cell xy bounds for the axial core.
+
+    Falls back to the lattice footprint (``lower_left + cols/rows * pitch``) when
+    the IR does not name core boundary surfaces, so reflector-less plans keep
+    their existing behaviour. When boundary surfaces are present each axis takes
+    the outer of (IR surface, lattice footprint) so the root cell never clips the
+    active lattice; a boundary surface placed *inside* the lattice footprint is a
+    hard ``core.boundary_surface_clip`` error rather than a silent crop. Returns
+    ``(xmin, ymin, xmax, ymax, has_ir_boundary)``.
+    """
+    pitch_x, pitch_y = _rect_lattice_pitch(lattice)
+    pattern = lattice.universe_pattern or []
+    rows = len(pattern)
+    cols = len(pattern[0]) if pattern else 0
+    lower_left_x, lower_left_y = lattice.lower_left_cm or _infer_rect_lattice_lower_left(lattice)
+    lat_xmin, lat_ymin = lower_left_x, lower_left_y
+    lat_xmax = lower_left_x + cols * pitch_x
+    lat_ymax = lower_left_y + rows * pitch_y
+    ir = _core_boundary_surface_coords(spec)
+    if not ir:
+        return lat_xmin, lat_ymin, lat_xmax, lat_ymax, False
+    eff_xmin, eff_ymin, eff_xmax, eff_ymax = lat_xmin, lat_ymin, lat_xmax, lat_ymax
+    if "xmin" in ir:
+        if ir["xmin"] > lat_xmin + 1e-6:
+            raise ValueError(
+                "core.boundary_surface_clip: core xmin surface clips the active lattice"
+            )
+        eff_xmin = ir["xmin"]
+    if "ymin" in ir:
+        if ir["ymin"] > lat_ymin + 1e-6:
+            raise ValueError(
+                "core.boundary_surface_clip: core ymin surface clips the active lattice"
+            )
+        eff_ymin = ir["ymin"]
+    if "xmax" in ir:
+        if ir["xmax"] < lat_xmax - 1e-6:
+            raise ValueError(
+                "core.boundary_surface_clip: core xmax surface clips the active lattice"
+            )
+        eff_xmax = ir["xmax"]
+    if "ymax" in ir:
+        if ir["ymax"] < lat_ymax - 1e-6:
+            raise ValueError(
+                "core.boundary_surface_clip: core ymax surface clips the active lattice"
+            )
+        eff_ymax = ir["ymax"]
+    return eff_xmin, eff_ymin, eff_xmax, eff_ymax, True
+
+
 def _render_axial_core_root(spec: ComplexModelSpec) -> str:
     assert spec.core is not None
     lattice = _lattice_by_id(spec, spec.core.lattice_id)
-    pitch_x, pitch_y = _rect_lattice_pitch(lattice)
-    rows = len(lattice.universe_pattern)
-    cols = len(lattice.universe_pattern[0])
-    lower_left_x, lower_left_y = lattice.lower_left_cm or _infer_rect_lattice_lower_left(lattice)
-    upper_right_x = lower_left_x + cols * pitch_x
-    upper_right_y = lower_left_y + rows * pitch_y
+    lower_left_x, lower_left_y, upper_right_x, upper_right_y, _ = _core_effective_root_bounds(
+        spec, lattice
+    )
     z_min = min(layer.z_min_cm for layer in spec.core.axial_layers)
     z_max = max(layer.z_max_cm for layer in spec.core.axial_layers)
     boundaries = spec.core.boundary_conditions
@@ -2303,6 +2385,11 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
             f"region={region_name})"
         )
         root_cell_refs.append(cell_name)
+
+    extra_cells_block, extra_cell_refs = _render_root_extra_cells(spec)
+    if extra_cells_block:
+        lines.append(extra_cells_block)
+    root_cell_refs.extend(extra_cell_refs)
 
     root_cells = ", ".join(root_cell_refs)
     lines.append(f"root_cell = {root_cell_refs[0]}")
