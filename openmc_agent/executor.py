@@ -1608,12 +1608,13 @@ def _ensure_core_lattice_placement(spec: ComplexModelSpec) -> ComplexModelSpec:
 
 
 def _auto_verification_plots(spec: ComplexModelSpec) -> list[PlotSpec]:
-    """Auto-append a 3-D voxel plot for 3-D axial models so an expert can
-    inspect the full structure (axial layers, spacer-grid bands, pin column) in
-    ParaView/VisIt without the planner having to request it. Reactor-agnostic.
+    """Auto-append verification plots for 3-D axial models so an expert can
+    inspect the full structure without the planner having to request each plot.
+    Reactor-agnostic.
 
-    Only added when the model has a real axial domain + a rectangular lattice.
-    The caller skips appending if the planner already requested a voxel plot.
+    Generates (when the model has a real axial domain + rectangular lattice):
+    * an xz axial cross-section (shows axial layering + spacer-grid bands),
+    * a 3-D voxel dump (ParaView/VisIt).
     """
     from openmc_agent.geometry_bounds import compute_geometry_bounds
 
@@ -1624,21 +1625,37 @@ def _auto_verification_plots(spec: ComplexModelSpec) -> list[PlotSpec]:
         return []  # default unit slab / 2-D model -- no 3-D value
     cx, cy = gb.lattice_center
     z_mid = (gb.geom_z_min + gb.geom_z_max) / 2.0
-    # Keep voxel resolution modest so the binary dump stays portable.
+    axial_height = gb.geom_z_max - gb.geom_z_min
+    plots: list[PlotSpec] = [
+        # xz axial cross-section: radial (x) x axial (z).
+        PlotSpec(
+            kind="slice",
+            basis="xz",
+            origin=(cx, cy, z_mid),
+            width_cm=(gb.lattice_width[0], axial_height),
+            pixels=_reconcile_pixel_aspect(
+                (gb.lattice_width[0], axial_height), (500, 500)
+            ),
+            filename="verification_xz.png",
+            purpose="Auto xz cross-section: axial layering + spacer-grid bands.",
+        ),
+    ]
+    # Voxel (3-D) for ParaView.
     nx = max(60, min(220, int(gb.lattice_width[0] / 0.4)))
     ny = max(60, min(220, int(gb.lattice_width[1] / 0.4)))
-    nz = max(60, min(220, int((gb.geom_z_max - gb.geom_z_min) / 2.0)))
-    return [
+    nz = max(60, min(220, int(axial_height / 2.0)))
+    plots.append(
         PlotSpec(
             kind="voxel",
             basis="xy",
             origin=(cx, cy, z_mid),
-            width_cm=(gb.lattice_width[0], gb.lattice_width[1], gb.geom_z_max - gb.geom_z_min),
+            width_cm=(gb.lattice_width[0], gb.lattice_width[1], axial_height),
             pixels=(nx, ny, nz),
             filename="verification_voxel.bin",
             purpose="Auto 3-D voxel dump for expert inspection (load in ParaView/VisIt).",
         )
-    ]
+    )
+    return plots
 
 
 def _reconcile_plot_origins(
@@ -1742,6 +1759,7 @@ def _reconcile_plot_origins(
     for plot in plot_specs:
         origin = list(plot.origin)
         adjustments: list[str] = []
+        update: dict[str, Any] = {}
         # 1) Recenter the in-plane axes to the assembly center (fixes the
         #    quarter-plot bug for geometries positioned off-origin).
         adjustments.extend(_cover_full_in_plane(origin, plot.width_cm, plot.basis))
@@ -1756,19 +1774,70 @@ def _reconcile_plot_origins(
             if moved:
                 adjustments.append(f"origin x {origin[0]:.6g} -> {moved_x:.6g}")
                 origin[0] = moved_x
+        elif plot.basis == "xy":
+            # xy slices sample at z; if z=0 or z lands on an axial layer
+            # boundary, the slice hits no cell and the PNG is blank. Move z
+            # to the active-fuel mid-plane so the cross-section shows pins.
+            af = next(
+                (L for L in spec.core.axial_layers if L.fill.type == "lattice"), None
+            )
+            if af is not None:
+                fuel_z_mid = (af.z_min_cm + af.z_max_cm) / 2.0
+                # Check if current z is on (or very near) any layer boundary.
+                on_boundary = any(
+                    abs(origin[2] - L.z_min_cm) < tol
+                    or abs(origin[2] - L.z_max_cm) < tol
+                    for L in spec.core.axial_layers
+                ) or abs(origin[2]) < tol  # z=0 default is almost always a boundary
+                if on_boundary:
+                    adjustments.append(
+                        f"origin z {origin[2]:.6g} -> {fuel_z_mid:.6g} (active fuel mid-plane)"
+                    )
+                    origin[2] = fuel_z_mid
+        # 3) Fix pixel aspect ratio for xz/yz slices where axial >> radial.
+        #    Square pixels (500x500) on a (21 cm x 520 cm) xz slice produce a
+        #    distorted square image; scale pixels to match the physical width
+        #    ratio so the image shows the true slender assembly shape. Applied
+        #    silently (renderer optimization, not an LLM-error correction).
+        if plot.kind == "slice" and len(plot.width_cm) >= 2 and len(plot.pixels) >= 2:
+            new_pixels = _reconcile_pixel_aspect(plot.width_cm, plot.pixels)
+            if tuple(new_pixels) != tuple(plot.pixels):
+                update["pixels"] = tuple(new_pixels)
         if not adjustments:
             reconciled.append(plot)
             continue
+        update["origin"] = tuple(origin)
         note = (
             "renderer nudged "
             + "; ".join(adjustments)
             + f" to the core-center assembly ({boundary_note})"
         )
         purpose = (plot.purpose + " | " if plot.purpose else "") + note
-        reconciled.append(
-            plot.model_copy(update={"origin": tuple(origin), "purpose": purpose})
-        )
+        update["purpose"] = purpose
+        reconciled.append(plot.model_copy(update=update))
     return reconciled
+
+
+def _reconcile_pixel_aspect(
+    width_cm: tuple[float, ...], pixels: tuple[int, ...]
+) -> tuple[int, ...]:
+    """Scale pixel counts to match the physical width aspect ratio.
+
+    A slice plot with ``width=(21, 520)`` cm rendered at ``pixels=(500, 500)``
+    looks square instead of showing a tall, slender assembly. This scales the
+    pixel counts proportionally to the physical widths while preserving the
+    total pixel area (so image file size stays reasonable).
+    """
+    if len(width_cm) < 2 or len(pixels) < 2:
+        return tuple(pixels)
+    w1, w2 = abs(float(width_cm[0])), abs(float(width_cm[1]))
+    if w1 < 1e-9 or w2 < 1e-9:
+        return tuple(pixels)
+    target_area = float(pixels[0]) * float(pixels[1])
+    ratio = w1 / w2
+    p2 = max(30, int(round((target_area / ratio) ** 0.5)))
+    p1 = max(30, int(round(p2 * ratio)))
+    return (p1, p2)
 
 
 def _core_default_outer_universe(
