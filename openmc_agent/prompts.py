@@ -141,6 +141,9 @@ Validation mindset:
 - Do not treat successful XML export or smoke-test settings as proof that the structural
   model matches the user's intended loading map. Structural map fidelity is a separate
   requirement.
+- When a stated count, coordinate, or loading map is violated, fix the offending map or
+  coordinates. Never mask the error by renaming materials, dropping pins, altering the
+  loading layout, or changing boundary conditions; surface the mismatch instead.
 """.strip()
 
 
