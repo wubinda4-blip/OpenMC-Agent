@@ -287,9 +287,10 @@ def derive_overlay_universe_plan(
     overlay's target lattice.
 
     Returns ``(plans, unresolved_universe_ids)``. When ``unresolved`` is non-empty
-    the renderer cannot safely place the grid material for those universes; the
-    caller emits ``assembly3d.axial_overlay_open_region_unresolved`` and
-    downgrades instead of producing unsafe geometry.
+    the renderer cannot safely place the grid material for those universes.
+    Universes with 0 open cells are conservatively reused (no grid material,
+    through-paths preserved) rather than blocking -- the same safe degradation
+    as the 2+-open-cells case.
     """
     target = overlay_target_lattice(overlay, model)
     plans: list[DerivedUniversePlan] = []
@@ -343,16 +344,21 @@ def derive_overlay_universe_plan(
                     )
                 )
             else:
+                # No recognizable open/coolant cell. Conservatively reuse the
+                # base universe (no grid material added at these positions)
+                # instead of blocking the entire model. This is the same safe
+                # degradation as the 2+-open-cells case: through-paths are
+                # preserved, grid material simply doesn't appear here. The
+                # verification digest can note which universes were skipped.
                 plans.append(
                     DerivedUniversePlan(
                         base_universe_id=universe_id,
                         derived_universe_id=None,
                         open_cell_id=None,
-                        reuse_base=False,
-                        unresolved=True,
+                        reuse_base=True,
+                        unresolved=False,
                     )
                 )
-                unresolved.append(universe_id)
     return plans, unresolved
 
 

@@ -288,7 +288,11 @@ def test_overlapping_overlays_with_different_material_downgrade() -> None:
 # -- 9. missing open region unresolved -------------------------------------
 
 
-def test_overlay_open_region_unresolved_when_no_open_cell() -> None:
+def test_overlay_no_open_cell_conservatively_reuses_not_blocks() -> None:
+    """A universe whose only cell is a protected solid (no open region) is
+    conservatively reused by the overlay (no grid material added, through-path
+    preserved) instead of blocking the entire model with open_region_unresolved.
+    This is the same safe degradation as the 2+-open-cells case."""
     # Build a universe whose only cell is a fuel solid (no open region).
     cells = [CellSpec(id="solid_fuel_cell", name="fuel", fill_type="material", fill_id="fuel")]
     universes = [UniverseSpec(id="solid_pin", name="solid", cell_ids=["solid_fuel_cell"])]
@@ -308,7 +312,10 @@ def test_overlay_open_region_unresolved_when_no_open_cell() -> None:
         settings=RunSettingsSpec(batches=4, inactive=1, particles=10),
     )
     codes = {i.code for i in assembly3d_overlay_issues(model)}
-    assert "assembly3d.axial_overlay_open_region_unresolved" in codes
+    # No blocking open_region_unresolved -- the universe is conservatively reused.
+    assert "assembly3d.axial_overlay_open_region_unresolved" not in codes
+    # The model still renders (not skeleton) -- the overlay segment exists but
+    # uses the base universe unchanged (no grid material at solid-only positions).
     plan = SimulationPlan(
         schema_version="simulation_plan.v2", complex_model=model,
         capability_report=RenderCapabilityReport(is_executable=False, supported_renderer="none"),
@@ -316,7 +323,7 @@ def test_overlay_open_region_unresolved_when_no_open_cell() -> None:
         execution_check=ExecutionCheckSpec(settings=RunSettingsSpec(batches=4, inactive=1, particles=10)),
     )
     capability = RectAssemblyRenderer().can_render(plan)
-    assert capability.renderability == "skeleton"
+    assert capability.renderability in {"exportable", "runnable"}
 
 
 # -- 10. VERA3-like smoke test (no VERA3 facts in production code) ---------
