@@ -90,23 +90,32 @@ class GraphLookupRequest(AgentBaseModel):
     max_nodes: int = 50
 
 
-def graph_lookup(request: GraphLookupRequest) -> GraphContext:
+def graph_lookup(
+    request: GraphLookupRequest,
+    *,
+    extra_nodes: list[GraphNode] | None = None,
+    extra_edges: list[GraphEdge] | None = None,
+) -> GraphContext:
     """Expand issue/schema/concept/evidence anchors with bounded BFS."""
     from openmc_agent.knowledge_graph_registry import GRAPH_EDGES, GRAPH_NODES
 
     max_depth = max(0, min(request.max_depth, 4))
     max_nodes = max(1, min(request.max_nodes, 200))
-    alias_index = _build_alias_index(GRAPH_NODES)
-    adjacency = _build_adjacency(GRAPH_EDGES)
+    nodes_by_id = dict(GRAPH_NODES)
+    for node in extra_nodes or []:
+        nodes_by_id.setdefault(node.id, node)
+    edges = [*GRAPH_EDGES, *(extra_edges or [])]
+    alias_index = _build_alias_index(nodes_by_id)
+    adjacency = _build_adjacency(edges)
 
     starts: list[str] = []
     warnings: list[str] = []
     for code in request.issue_codes:
-        starts.extend(_resolve_issue_code(code, GRAPH_NODES))
+        starts.extend(_resolve_issue_code(code, nodes_by_id))
     for schema_path in request.schema_paths:
-        starts.extend(_resolve_schema_path(schema_path, GRAPH_NODES, alias_index))
+        starts.extend(_resolve_schema_path(schema_path, nodes_by_id, alias_index))
     for concept_id in request.concept_ids:
-        starts.extend(_resolve_concept_id(concept_id, GRAPH_NODES))
+        starts.extend(_resolve_concept_id(concept_id, nodes_by_id))
     for pattern in request.grep_patterns:
         starts.extend(_resolve_alias(pattern, alias_index))
     for locator in request.evidence_locators:
@@ -118,7 +127,7 @@ def graph_lookup(request: GraphLookupRequest) -> GraphContext:
 
     visited: set[str] = set()
     selected_edges: list[GraphEdge] = []
-    queue: deque[tuple[str, int]] = deque((node_id, 0) for node_id in starts if node_id in GRAPH_NODES)
+    queue: deque[tuple[str, int]] = deque((node_id, 0) for node_id in starts if node_id in nodes_by_id)
     while queue and len(visited) < max_nodes:
         node_id, depth = queue.popleft()
         if node_id in visited:
@@ -132,14 +141,14 @@ def graph_lookup(request: GraphLookupRequest) -> GraphContext:
             if neighbor not in visited and len(visited) + len(queue) < max_nodes:
                 queue.append((neighbor, depth + 1))
 
-    nodes = [GRAPH_NODES[node_id] for node_id in starts if node_id in visited]
+    nodes = [nodes_by_id[node_id] for node_id in starts if node_id in visited]
     nodes.extend(
-        GRAPH_NODES[node_id]
+        nodes_by_id[node_id]
         for node_id in visited
-        if node_id not in starts and node_id in GRAPH_NODES
+        if node_id not in starts and node_id in nodes_by_id
     )
     return _context_from_graph(
-        start_nodes=[node_id for node_id in starts if node_id in GRAPH_NODES],
+        start_nodes=[node_id for node_id in starts if node_id in nodes_by_id],
         nodes=nodes[:max_nodes],
         edges=selected_edges,
         warnings=warnings,
@@ -325,6 +334,11 @@ def _context_from_graph(
             error_codes.append(code)
         if node.type == "doc_ref":
             doc_refs.append(node.metadata.get("ref_id") or node.id.removeprefix("doc."))
+            doc_refs.extend(_list_metadata(node, "doc_refs"))
+            api_refs.extend(_list_metadata(node, "api_refs"))
+            concept_ids.extend(_list_metadata(node, "concept_ids"))
+            schema_paths.extend(_list_metadata(node, "schema_paths"))
+            error_codes.extend(_list_metadata(node, "issue_codes"))
         if node.type == "openmc_api":
             api_refs.append(node.metadata.get("api_ref") or node.id.removeprefix("api."))
         if node.type == "example_ref":

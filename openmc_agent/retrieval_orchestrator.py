@@ -11,6 +11,12 @@ from typing import Any
 
 from pydantic import Field
 
+from openmc_agent.evidence_ranker import (
+    EvidenceRankerPolicy,
+    EvidenceRankingResult,
+    format_ranked_evidence_block,
+    rank_and_select_evidence,
+)
 from openmc_agent.grep_search import (
     GrepSearchRequest,
     GrepSearchResult,
@@ -24,6 +30,7 @@ from openmc_agent.graphrag_retriever import (
     GraphRagRequest,
     GraphRagResult,
     format_graphrag_evidence,
+    format_graphrag_query_plan_section,
     graphrag_request_from_issues,
     graphrag_retrieve,
 )
@@ -66,6 +73,7 @@ class RetrievalPolicy(AgentBaseModel):
     enable_graph: bool = True
     enable_rag: bool = True
     enable_graphrag: bool = True
+    enable_graphrag_query_planner: bool = True
     prefer_graphrag_over_rag: bool = False
     run_rag_for_manual_review: bool = False
     max_issues: int = 8
@@ -73,7 +81,11 @@ class RetrievalPolicy(AgentBaseModel):
     max_graph_evidence: int = 4
     max_rag_evidence: int = 6
     max_graphrag_evidence: int = 6
+    max_planned_graph_paths: int = 8
     max_merged_evidence: int = 12
+    enable_evidence_ranking: bool = True
+    max_ranked_evidence: int = 12
+    max_evidence_prompt_chars: int = 6000
     skip_rag_for_fact_gap: bool = True
     skip_grep_for_cross_sections_missing: bool = True
 
@@ -106,6 +118,8 @@ class RetrievalContext(AgentBaseModel):
     rag_evidence: list[RetrievedEvidence] = Field(default_factory=list)
 
     merged_evidence: list[RetrievedEvidence] = Field(default_factory=list)
+    evidence_ranking_result: EvidenceRankingResult | None = None
+    ranked_evidence: list[RetrievedEvidence] = Field(default_factory=list)
 
     warnings: list[str] = Field(default_factory=list)
     skipped_steps: list[str] = Field(default_factory=list)
@@ -222,19 +236,35 @@ def gather_retrieval_context_for_issues(
         max_items=active_policy.max_merged_evidence,
         graphrag_evidence=context.graphrag_evidence,
     )
+    if active_policy.enable_evidence_ranking:
+        _run_evidence_ranking(context, active_policy)
+    else:
+        context.skipped_steps.append("evidence ranking disabled by policy")
     context.summary = summarize_retrieval_context(context)
     return context
 
 
 def format_retrieval_context(context: RetrievalContext) -> str:
     """Render bounded retrieval prompt sections."""
+    if context.evidence_ranking_result and context.ranked_evidence:
+        sections = [
+            format_graphrag_query_plan_section(context.graphrag_request),
+            format_graph_context(context.graph_context or GraphContext(), limit=8),
+            format_ranked_evidence_block(context.evidence_ranking_result),
+        ]
+        return "".join(section for section in sections if section) + _format_evidence_safety_constraint()
+
     sections = [
+        format_graphrag_query_plan_section(context.graphrag_request),
         format_grep_evidence(context.grep_evidence, limit=6),
         format_graph_context(context.graph_context or GraphContext(), limit=12),
         format_graphrag_evidence(context.graphrag_evidence, limit=6),
         format_rag_evidence(context.rag_evidence, limit=6),
     ]
-    return "".join(section for section in sections if section)
+    rendered = "".join(section for section in sections if section)
+    if rendered:
+        rendered += _format_evidence_safety_constraint()
+    return rendered
 
 
 def summarize_retrieval_context(context: RetrievalContext) -> str:
@@ -258,15 +288,93 @@ def summarize_retrieval_context(context: RetrievalContext) -> str:
         f"graph_evidence={len(context.graph_evidence)}",
         f"graphrag_chunks={graphrag_chunks}",
         f"graphrag_evidence={len(context.graphrag_evidence)}",
+        f"graphrag_intent={_graphrag_intent_type(context)}",
+        f"planned_graph_paths={_planned_graph_path_count(context)}",
+        f"preferred_queries={_preferred_query_count(context)}",
         f"rag_chunks={rag_chunks}",
         f"rag_evidence={len(context.rag_evidence)}",
         f"merged_evidence={len(context.merged_evidence)}",
+        f"ranked_evidence={len(context.ranked_evidence)}",
     ]
+    if context.evidence_ranking_result:
+        summary = context.evidence_ranking_result.summary
+        parts.append(f"dropped_duplicates={summary.get('dropped_duplicate_count', 0)}")
+        parts.append(f"dropped_budget={summary.get('dropped_budget_count', 0)}")
     if context.warnings:
         parts.append(f"warnings={len(context.warnings)}")
     if context.skipped_steps:
         parts.append(f"skipped={len(context.skipped_steps)}")
     return ", ".join(parts)
+
+
+def _graphrag_intent_type(context: RetrievalContext) -> str | None:
+    request = context.graphrag_request
+    if request and request.query_plan:
+        return request.query_plan.intent.intent_type
+    result = context.graphrag_result
+    if result and result.request.query_plan:
+        return result.request.query_plan.intent.intent_type
+    return None
+
+
+def _planned_graph_path_count(context: RetrievalContext) -> int:
+    request = context.graphrag_request
+    if request and request.query_plan:
+        return len(request.query_plan.planned_paths)
+    result = context.graphrag_result
+    if result and result.request.query_plan:
+        return len(result.request.query_plan.planned_paths)
+    return 0
+
+
+def _preferred_query_count(context: RetrievalContext) -> int:
+    request = context.graphrag_request
+    if request and request.query_plan:
+        return len(request.query_plan.preferred_queries)
+    result = context.graphrag_result
+    if result and result.request.query_plan:
+        return len(result.request.query_plan.preferred_queries)
+    return 0
+
+
+def _run_evidence_ranking(context: RetrievalContext, policy: RetrievalPolicy) -> None:
+    if not context.merged_evidence:
+        return
+    try:
+        ranker_policy = EvidenceRankerPolicy(
+            max_total_evidence=policy.max_ranked_evidence,
+            max_grep_evidence=policy.max_grep_evidence,
+            max_graph_evidence=policy.max_graph_evidence,
+            max_graphrag_evidence=policy.max_graphrag_evidence,
+            max_rag_evidence=policy.max_rag_evidence,
+            max_total_chars=policy.max_evidence_prompt_chars,
+            prefer_graphrag_over_plain_rag=policy.prefer_graphrag_over_rag,
+        )
+        result = rank_and_select_evidence(
+            context.merged_evidence,
+            issue_codes=[issue.code for issue in context.issues],
+            schema_paths=[issue.schema_path for issue in context.issues if issue.schema_path],
+            concept_ids=[issue.concept_id for issue in context.issues if issue.concept_id],
+            policy=ranker_policy,
+        )
+        context.evidence_ranking_result = result
+        context.ranked_evidence = result.selected
+        context.warnings.extend(f"ranking: {warning}" for warning in result.warnings)
+        if result.warnings and not result.selected:
+            context.ranked_evidence = context.merged_evidence
+    except Exception as exc:  # pragma: no cover - defensive integration path
+        context.warnings.append(f"evidence ranking failed: {exc}")
+        context.ranked_evidence = context.merged_evidence
+
+
+def _format_evidence_safety_constraint() -> str:
+    return (
+        "\n[Evidence Safety Constraints]\n"
+        "- Use retrieval evidence as context for code locations, API usage, and documentation interpretation.\n"
+        "- Do not use evidence to invent material density, composition, nuclear-data paths, "
+        "benchmark constants, or missing loading maps.\n"
+        "- If the input marks a fact as missing or requiring expert confirmation, preserve human confirmation.\n"
+    )
 
 
 def _run_grep_stage(
@@ -338,10 +446,26 @@ def _run_graphrag_stage(
             context.issues,
             grep_evidence=context.grep_evidence,
             graph_context=context.graph_context,
+            use_query_planner=policy.enable_graphrag_query_planner,
         ).model_copy(update={"top_k_chunks": policy.max_graphrag_evidence})
+        if request.query_plan is not None and policy.max_planned_graph_paths >= 0:
+            request = request.model_copy(
+                update={
+                    "query_plan": request.query_plan.model_copy(
+                        update={
+                            "planned_paths": request.query_plan.planned_paths[
+                                : policy.max_planned_graph_paths
+                            ]
+                        }
+                    )
+                }
+            )
+        elif not policy.enable_graphrag_query_planner:
+            context.skipped_steps.append("graphrag query planner disabled by policy")
         context.graphrag_request = request
         result = graphrag_retrieve(request)
         context.graphrag_result = result
+        context.graphrag_request = result.request
         context.warnings.extend(f"graphrag: {warning}" for warning in result.warnings)
         context.graphrag_evidence = result.evidence[: policy.max_graphrag_evidence]
     except Exception as exc:  # pragma: no cover - exercised via monkeypatch

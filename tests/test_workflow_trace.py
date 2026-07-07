@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from openmc_agent.error_catalog import issue_from_catalog
+from openmc_agent.evidence_ranker import rank_and_select_evidence
 from openmc_agent.evaluation import (
     EvaluationCase,
     EvaluationResult,
@@ -196,6 +197,9 @@ def test_summary_helpers_extract_structured_counts() -> None:
             RetrievedEvidence(source_type="grep", locator="tests/x.py:1", text="overlap")
         ],
     )
+    ranking = rank_and_select_evidence(retrieval.merged_evidence)
+    retrieval.evidence_ranking_result = ranking
+    retrieval.ranked_evidence = ranking.selected
     capability = RenderCapabilityReport(
         renderability="skeleton",
         supported_renderer="assembly",
@@ -214,6 +218,9 @@ def test_summary_helpers_extract_structured_counts() -> None:
     assert retrieval_summary["grep_evidence_count"] == 1
     assert retrieval_summary["rag_evidence_count"] == 1
     assert retrieval_summary["merged_evidence_count"] == 1
+    assert retrieval_summary["ranked_evidence_count"] == 1
+    assert retrieval_summary["dropped_duplicate_count"] == 0
+    assert retrieval_summary["evidence_score_max"] is not None
     assert capability_summary["renderability"] == "skeleton"
     assert capability_summary["supported_renderer"] == "assembly"
 

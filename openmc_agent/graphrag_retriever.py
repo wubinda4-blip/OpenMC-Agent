@@ -14,10 +14,18 @@ from typing import Literal
 from pydantic import Field
 
 from openmc_agent.grep_search import RetrievedEvidence
+from openmc_agent.graphrag_query_planner import (
+    GraphRagQueryPlan,
+    build_queries_from_plan,
+    format_graphrag_query_plan,
+    plan_graph_paths,
+    plan_graphrag_query,
+)
 from openmc_agent.knowledge_graph import (
     GraphContext,
     GraphEdge,
     GraphLookupRequest,
+    GraphNode,
     graph_lookup,
 )
 from openmc_agent.rag_search import (
@@ -53,6 +61,7 @@ class GraphRagRequest(AgentBaseModel):
     include_examples: bool = True
     include_api_docs: bool = True
     include_project_docs: bool = True
+    query_plan: GraphRagQueryPlan | None = None
 
 
 class GraphRagPath(AgentBaseModel):
@@ -94,6 +103,8 @@ def graphrag_request_from_issues(
     issues: list[ValidationIssue],
     grep_evidence: list[RetrievedEvidence] | None = None,
     graph_context: GraphContext | None = None,
+    *,
+    use_query_planner: bool = True,
 ) -> GraphRagRequest:
     """Build a bounded GraphRAG request from issues and prior retrieval output."""
     issue_codes: list[str] = []
@@ -151,6 +162,23 @@ def graphrag_request_from_issues(
     elif graph_context is not None:
         trigger = "retrieval_context"
 
+    query_plan: GraphRagQueryPlan | None = None
+    if use_query_planner:
+        try:
+            query_plan = plan_graphrag_query(issues, graph_context=graph_context)
+            start_nodes.extend(query_plan.start_nodes)
+        except Exception:
+            query_plan = None
+
+    expansion_update: dict[str, object] = {}
+    if query_plan is not None:
+        expansion_update = {
+            "max_graph_depth": query_plan.expansion_policy.max_depth,
+            "max_graph_nodes": query_plan.expansion_policy.max_nodes,
+            "include_examples": query_plan.expansion_policy.include_examples,
+            "include_api_docs": query_plan.expansion_policy.include_api_docs,
+        }
+
     return GraphRagRequest(
         trigger=trigger,
         issue_codes=_dedupe(issue_codes),
@@ -158,22 +186,45 @@ def graphrag_request_from_issues(
         concept_ids=_dedupe(concept_ids),
         grep_patterns=_dedupe(_filter_patterns(grep_patterns)),
         graph_start_nodes=_dedupe(start_nodes)[:48],
+        query_plan=query_plan,
+        **expansion_update,
     )
 
 
-def expand_graphrag_subgraph(request: GraphRagRequest) -> GraphContext:
+def expand_graphrag_subgraph(
+    request: GraphRagRequest,
+    *,
+    extra_nodes: list[GraphNode] | None = None,
+    extra_edges: list[GraphEdge] | None = None,
+) -> GraphContext:
     """Expand graph anchors with the existing graph_lookup bounded BFS."""
     try:
+        plan = request.query_plan
+        start_nodes = plan.start_nodes if plan and plan.start_nodes else request.graph_start_nodes
+        max_depth = (
+            plan.expansion_policy.max_depth
+            if plan is not None
+            else request.max_graph_depth
+        )
+        max_nodes = (
+            plan.expansion_policy.max_nodes
+            if plan is not None
+            else request.max_graph_nodes
+        )
         lookup_request = GraphLookupRequest(
             issue_codes=_dedupe(request.issue_codes),
             schema_paths=_dedupe(request.schema_paths),
             concept_ids=_dedupe(request.concept_ids),
-            grep_patterns=_dedupe([*request.grep_patterns, *request.graph_start_nodes]),
-            max_depth=max(0, min(request.max_graph_depth, 4)),
-            max_nodes=max(1, min(request.max_graph_nodes, 200)),
+            grep_patterns=_dedupe([*request.grep_patterns, *start_nodes]),
+            max_depth=max(0, min(max_depth, 4)),
+            max_nodes=max(1, min(max_nodes, 200)),
         )
-        context = graph_lookup(lookup_request)
-        missing = _missing_explicit_start_nodes(request.graph_start_nodes, context)
+        context = graph_lookup(
+            lookup_request,
+            extra_nodes=extra_nodes,
+            extra_edges=extra_edges,
+        )
+        missing = _missing_explicit_start_nodes(start_nodes, context)
         if missing:
             context = context.model_copy(
                 update={
@@ -196,10 +247,22 @@ def rag_request_from_graphrag_context(
     concept_ids = _dedupe([*graph_context.related_concept_ids, *request.concept_ids])
     schema_paths = _dedupe([*graph_context.related_schema_paths, *request.schema_paths])
     queries: list[str] = []
+    required_filters: dict[str, list[str]] = {}
+    avoided_queries: list[str] = []
+    if request.query_plan is not None:
+        queries.extend(request.query_plan.preferred_queries)
+        required_filters = request.query_plan.required_filters
+        avoided_queries = request.query_plan.avoided_queries
     queries.extend(graph_context.retrieval_hints)
     queries.extend(_safe_grep_queries(request))
     queries.extend(_concept_tail_queries(concept_ids))
     queries.extend(_issue_code_queries(request.issue_codes))
+    ingested_paths = _ingested_chunk_paths(graph_context)
+    concept_ids = _dedupe([*concept_ids, *required_filters.get("concept_ids", [])])
+    schema_paths = _dedupe([*schema_paths, *required_filters.get("schema_paths", [])])
+    doc_refs = _dedupe([*graph_context.related_doc_refs, *required_filters.get("doc_refs", [])])
+    api_refs = _dedupe([*graph_context.related_api_refs, *required_filters.get("api_refs", [])])
+    queries = _remove_avoided_queries(queries, avoided_queries)
 
     source_types: list[str] = []
     if not (request.include_project_docs and request.include_api_docs and request.include_examples):
@@ -209,27 +272,64 @@ def rag_request_from_graphrag_context(
             source_types.extend(["openmc_doc", "openmc_api_doc"])
         if request.include_examples:
             source_types.extend(["project_example", "openmc_example"])
+        source_types.append("unknown")
 
     return RagSearchRequest(
         trigger=_rag_trigger_for_graphrag(request),
         issue_codes=_dedupe(request.issue_codes),
         schema_paths=schema_paths,
         concept_ids=concept_ids,
-        doc_refs=_dedupe(graph_context.related_doc_refs),
-        api_refs=_dedupe(graph_context.related_api_refs),
+        doc_refs=doc_refs,
+        api_refs=api_refs,
         example_refs=_dedupe(graph_context.related_example_refs),
         queries=_dedupe(_filter_queries(queries))[:_MAX_QUERY_COUNT],
-        search_roots=request.search_roots,
+        search_roots=request.search_roots or ingested_paths,
         source_types=_dedupe(source_types),
         top_k=request.top_k_chunks,
     )
 
 
-def graphrag_retrieve(request: GraphRagRequest) -> GraphRagResult:
+def graphrag_retrieve(
+    request: GraphRagRequest,
+    *,
+    extra_nodes: list[GraphNode] | None = None,
+    extra_edges: list[GraphEdge] | None = None,
+) -> GraphRagResult:
     """Run graph expansion followed by graph-guided local RAG retrieval."""
     warnings: list[str] = []
-    graph_context = expand_graphrag_subgraph(request)
+    graph_context = expand_graphrag_subgraph(
+        request,
+        extra_nodes=extra_nodes,
+        extra_edges=extra_edges,
+    )
     warnings.extend(graph_context.warnings)
+    if request.query_plan is not None:
+        try:
+            planned_paths = plan_graph_paths(
+                graph_context,
+                request.query_plan.intent,
+                request.query_plan.expansion_policy,
+                max_paths=8,
+            )
+            preferred_queries, filters, avoided = build_queries_from_plan(
+                request.query_plan.intent,
+                planned_paths,
+                graph_context,
+            )
+            request = request.model_copy(
+                update={
+                    "query_plan": request.query_plan.model_copy(
+                        update={
+                            "planned_paths": planned_paths,
+                            "preferred_queries": preferred_queries,
+                            "required_filters": filters,
+                            "avoided_queries": avoided,
+                        }
+                    )
+                }
+            )
+        except Exception as exc:
+            warnings.append(f"GraphRAG query plan path update failed: {exc}")
     graph_paths = extract_graphrag_paths(graph_context)
 
     rag_request: RagSearchRequest | None = None
@@ -346,6 +446,22 @@ def graphrag_result_to_evidence(result: GraphRagResult) -> list[RetrievedEvidenc
                 "related_doc_refs": graph_context.related_doc_refs,
                 "related_api_refs": graph_context.related_api_refs,
                 "issue_codes": result.request.issue_codes,
+                "query_plan_intent": (
+                    result.request.query_plan.intent.intent_type
+                    if result.request.query_plan
+                    else None
+                ),
+                "planned_graph_paths": (
+                    [path.model_dump(mode="json") for path in result.request.query_plan.planned_paths]
+                    if result.request.query_plan
+                    else []
+                ),
+                "fact_gap_safe_mode": (
+                    result.request.query_plan.expansion_policy.fact_gap_safe_mode
+                    if result.request.query_plan
+                    else False
+                ),
+                **_ingested_metadata_for_evidence(item, graph_context),
                 "requires_human_confirmation": (
                     metadata.get("requires_human_confirmation")
                     or _is_fact_gap_request(result.request)
@@ -363,6 +479,11 @@ def graphrag_result_to_evidence(result: GraphRagResult) -> list[RetrievedEvidenc
             )
         )
     return _dedupe_evidence(converted)
+
+
+def format_graphrag_query_plan_section(request: GraphRagRequest | None) -> str:
+    """Render a compact GraphRAG query plan section for prompts."""
+    return format_graphrag_query_plan(request.query_plan if request else None)
 
 
 def format_graphrag_evidence(evidence: list[RetrievedEvidence], *, limit: int = 6) -> str:
@@ -426,6 +547,44 @@ def _missing_explicit_start_nodes(start_nodes: list[str], context: GraphContext)
     return missing
 
 
+def _ingested_chunk_paths(graph_context: GraphContext) -> list[str]:
+    paths: list[str] = []
+    for node in graph_context.nodes:
+        if node.metadata.get("node_subtype") != "doc_chunk":
+            continue
+        path = node.metadata.get("path")
+        if isinstance(path, str) and path:
+            paths.append(path)
+    return _dedupe(paths)[:12]
+
+
+def _ingested_metadata_for_evidence(
+    evidence: RetrievedEvidence,
+    graph_context: GraphContext,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    locator_path = evidence.locator.split(":", 1)[0].split(" (", 1)[0]
+    matching_nodes = [
+        node
+        for node in graph_context.nodes
+        if node.metadata.get("node_subtype") == "doc_chunk"
+        and node.metadata.get("path") == locator_path
+    ]
+    if not matching_nodes:
+        matching_nodes = [
+            node
+            for node in graph_context.nodes
+            if node.metadata.get("node_subtype") == "doc_chunk"
+        ]
+    if matching_nodes:
+        node = matching_nodes[0]
+        metadata["knowledge_source"] = node.metadata.get("knowledge_source")
+        metadata["doc_chunk_id"] = node.metadata.get("chunk_id")
+        metadata["annotation_method"] = node.metadata.get("annotation_method")
+        metadata["ingested_graph_node_id"] = node.id
+    return metadata
+
+
 def _safe_grep_queries(request: GraphRagRequest) -> list[str]:
     if _is_fact_gap_request(request):
         return [
@@ -434,6 +593,24 @@ def _safe_grep_queries(request: GraphRagRequest) -> list[str]:
             if "cross_sections" not in pattern.lower() and "/" not in pattern
         ][:3]
     return request.grep_patterns[:6]
+
+
+def _remove_avoided_queries(queries: list[str], avoided_queries: list[str]) -> list[str]:
+    if not avoided_queries:
+        return queries
+    avoided_tokens = [
+        token
+        for query in avoided_queries
+        for token in re.split(r"[^A-Za-z0-9_]+", query.casefold())
+        if len(token) >= 5
+    ]
+    filtered: list[str] = []
+    for query in queries:
+        lowered = query.casefold()
+        if any(token in lowered for token in avoided_tokens):
+            continue
+        filtered.append(query)
+    return filtered
 
 
 def _concept_tail_queries(concept_ids: list[str]) -> list[str]:

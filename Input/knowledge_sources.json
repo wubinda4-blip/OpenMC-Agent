@@ -1,0 +1,40 @@
+{
+  "sources": [
+    {
+      "source_id": "project_docs",
+      "source_type": "project_docs",
+      "root_path": "docs",
+      "include_globs": ["**/*.md"]
+    },
+    {
+      "source_id": "project_examples",
+      "source_type": "project_examples",
+      "root_path": "examples",
+      "include_globs": ["**/*.py", "**/*.md"]
+    },
+    {
+      "source_id": "input_cases",
+      "source_type": "input_cases",
+      "root_path": "Input",
+      "include_globs": ["**/*.md"]
+    },
+    {
+      "source_id": "readme",
+      "source_type": "readme",
+      "root_path": ".",
+      "include_globs": ["README.md"]
+    },
+    {
+      "source_id": "openmc_docs",
+      "source_type": "openmc_docs",
+      "root_path": "openmc_docs",
+      "include_globs": ["**/*.rst", "**/*.md"]
+    },
+    {
+      "source_id": "openmc_examples",
+      "source_type": "openmc_examples",
+      "root_path": "openmc_examples",
+      "include_globs": ["**/*.py", "**/*.md"]
+    }
+  ]
+}

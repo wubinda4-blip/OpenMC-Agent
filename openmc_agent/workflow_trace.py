@@ -196,13 +196,35 @@ def summarize_retrieval_context(context: RetrievalContext | dict[str, Any] | Non
             "graph_edge_count": 0,
             "graphrag_chunk_count": 0,
             "graphrag_evidence_count": 0,
+            "graphrag_intent_type": None,
+            "graphrag_query_plan_enabled": False,
+            "planned_graph_path_count": 0,
+            "preferred_query_count": 0,
+            "fact_gap_safe_mode": False,
             "rag_chunk_count": 0,
             "rag_evidence_count": 0,
             "merged_evidence_count": 0,
+            "ranked_evidence_count": 0,
+            "dropped_duplicate_count": 0,
+            "dropped_low_score_count": 0,
+            "dropped_budget_count": 0,
+            "evidence_score_min": None,
+            "evidence_score_max": None,
+            "evidence_score_mean": None,
             "warnings": [],
             "skipped_steps": [],
         }
     graph_context = context.graph_context
+    ranking_summary = (
+        context.evidence_ranking_result.summary
+        if context.evidence_ranking_result
+        else {}
+    )
+    query_plan = None
+    if context.graphrag_request and context.graphrag_request.query_plan:
+        query_plan = context.graphrag_request.query_plan
+    elif context.graphrag_result and context.graphrag_result.request.query_plan:
+        query_plan = context.graphrag_result.request.query_plan
     return {
         "issue_count": len(context.issues),
         "grep_request_count": len(context.grep_requests),
@@ -216,9 +238,31 @@ def summarize_retrieval_context(context: RetrievalContext | dict[str, Any] | Non
             else 0
         ),
         "graphrag_evidence_count": len(context.graphrag_evidence),
+        "graphrag_intent_type": (
+            query_plan.intent.intent_type if query_plan is not None else None
+        ),
+        "graphrag_query_plan_enabled": query_plan is not None,
+        "planned_graph_path_count": (
+            len(query_plan.planned_paths) if query_plan is not None else 0
+        ),
+        "preferred_query_count": (
+            len(query_plan.preferred_queries) if query_plan is not None else 0
+        ),
+        "fact_gap_safe_mode": (
+            query_plan.expansion_policy.fact_gap_safe_mode
+            if query_plan is not None
+            else False
+        ),
         "rag_chunk_count": len(context.rag_result.chunks) if context.rag_result else 0,
         "rag_evidence_count": len(context.rag_evidence),
         "merged_evidence_count": len(context.merged_evidence),
+        "ranked_evidence_count": len(context.ranked_evidence),
+        "dropped_duplicate_count": ranking_summary.get("dropped_duplicate_count", 0),
+        "dropped_low_score_count": ranking_summary.get("dropped_low_score_count", 0),
+        "dropped_budget_count": ranking_summary.get("dropped_budget_count", 0),
+        "evidence_score_min": ranking_summary.get("evidence_score_min"),
+        "evidence_score_max": ranking_summary.get("evidence_score_max"),
+        "evidence_score_mean": ranking_summary.get("evidence_score_mean"),
         "warnings": list(context.warnings),
         "skipped_steps": list(context.skipped_steps),
     }
