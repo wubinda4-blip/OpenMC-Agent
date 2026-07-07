@@ -1041,6 +1041,66 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         ],
         "route_hint": "capability_downgrade",
     },
+    "assembly3d.axial_overlay_open_region_unresolved": {
+        "severity": "error",
+        "message": (
+            "axial overlay cannot identify an open/coolant region to place the "
+            "homogenized grid material without risking a protected solid"
+        ),
+        "schema_path": "complex_model.core.axial_overlays",
+        "rule_id": "rule.assembly3d.axial_overlay_open_region",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "open_region", "coolant", "geometry_mode"],
+        "repair_hints": [
+            _hint(
+                "mark_requires_human_confirmation",
+                "The target universe has no recognizable open/coolant cell. "
+                "Downgrade the overlay geometry_mode to 'skeleton' or mark the "
+                "plan requires_human_confirmation; do not replace a protected "
+                "solid (fuel/clad/tube) with grid material.",
+            ),
+        ],
+        "route_hint": "capability_downgrade",
+    },
+    "assembly3d.axial_overlay_overlap_unsupported": {
+        "severity": "error",
+        "message": "concurrent overlapping axial overlays are not supported by the Level 1 renderer",
+        "schema_path": "complex_model.core.axial_overlays",
+        "rule_id": "rule.assembly3d.axial_overlay_overlap",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "z_min_cm", "z_max_cm"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Disambiguate the overlapping overlays' z-ranges so they do not "
+                "intersect, or merge them into one overlay with a single "
+                "material/geometry_mode.",
+                target_path="complex_model.core.axial_overlays",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
+    "assembly3d.axial_overlay_target_layer_mismatch": {
+        "severity": "error",
+        "message": "axial overlay targets a lattice that no axial layer fills, so it has nowhere to apply",
+        "schema_path": "complex_model.core.axial_overlays.target_lattice_id",
+        "rule_id": "rule.assembly3d.axial_overlay_target_layer",
+        "concept_id": "openmc.geometry.axial_layers",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "grep_patterns": ["axial_overlays", "target_lattice_id", "axial_layers"],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Point target_lattice_id at the lattice used as the fill of the "
+                "axial layer the overlay should apply to, or set the layer's "
+                "fill to that lattice.",
+                target_path="complex_model.core.axial_overlays.target_lattice_id",
+            ),
+        ],
+        "route_hint": "reflect_plan",
+    },
     "core.reflector_material_ref_missing": {
         "severity": "error",
         "message": "core reflector references missing material",

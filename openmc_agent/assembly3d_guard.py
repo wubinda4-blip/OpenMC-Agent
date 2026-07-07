@@ -33,6 +33,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from openmc_agent.axial_overlay import (
+    SUPPORTED_GEOMETRY_MODES as _RENDERER_SUPPORTED_OVERLAY_MODES,
+)
+from openmc_agent.axial_overlay import (
+    detect_overlay_z_overlaps,
+    derive_overlay_universe_plan,
+    overlay_is_structurally_renderable,
+    overlay_targets_any_layer,
+)
 from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.schemas import AxialLayerSpec, ComplexModelSpec, SimulationPlan, ValidationIssue
 
@@ -468,10 +477,10 @@ def assembly3d_grid_layer_issues(model: ComplexModelSpec) -> list[ValidationIssu
 # Axial overlay validation (spacer grids expressed as overlays, not slabs)
 # ---------------------------------------------------------------------------
 
-# Overlay geometry modes the current renderer can actually turn into geometry.
-# Empty today: every non-skeleton overlay downgrades instead of producing fake
-# geometry. Future Level 1+ renderers add modes here.
-_RENDERER_SUPPORTED_OVERLAY_MODES: frozenset[str] = frozenset()
+# Overlay geometry modes the current renderer can actually turn into geometry
+# are imported from openmc_agent.axial_overlay (single source of truth). Today
+# only 'homogenized_open_region' is supported; explicit bars / annular shells /
+# volume-fraction modes still downgrade.
 
 
 def _plan_has_spacer_grid_overlay(model: ComplexModelSpec) -> bool:
@@ -617,10 +626,11 @@ def assembly3d_overlay_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
                 )
             )
 
-        # 3. Renderer support. The current renderer implements no overlay
-        #    geometry mode. A skeleton overlay is the planner's own declaration
-        #    that no geometry is expected; document it as a review-only downgrade
-        #    rather than a geometric error.
+        # 3. Renderer support. ``homogenized_open_region`` is now a supported
+        #    Level 1 mode when it is structurally renderable (rect target lattice
+        #    + grid material resolve + through_path_preserved). Skeleton overlays
+        #    and the higher-fidelity modes still downgrade to a review-only
+        #    skeleton -- no fake geometry.
         if overlay.geometry_mode == "skeleton":
             issues.append(
                 _issue(
@@ -635,6 +645,22 @@ def assembly3d_overlay_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
                     schema_path=base,
                 )
             )
+        elif overlay.geometry_mode == "homogenized_open_region":
+            if not overlay_is_structurally_renderable(overlay, model):
+                issues.append(
+                    _issue(
+                        "assembly3d.axial_overlay_requires_renderer_support",
+                        (
+                            f"axial overlay {overlay.id!r} requests "
+                            "geometry_mode='homogenized_open_region' but is not "
+                            "structurally renderable (needs a rectangular target "
+                            "lattice, a resolvable material_id, and "
+                            "through_path_preserved=true). Downgrade to 'skeleton' "
+                            "or supply the missing fields."
+                        ),
+                        schema_path=base,
+                    )
+                )
         elif overlay.geometry_mode not in _RENDERER_SUPPORTED_OVERLAY_MODES:
             issues.append(
                 _issue(
@@ -643,8 +669,8 @@ def assembly3d_overlay_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
                         f"axial overlay {overlay.id!r} requests geometry_mode="
                         f"{overlay.geometry_mode!r}, which the current renderer "
                         "cannot produce. Downgrade geometry_mode to 'skeleton' or "
-                        "wait for the Level 1+ overlay renderer; do not emit a "
-                        "material slab to fake it."
+                        "'homogenized_open_region'; do not emit a material slab "
+                        "to fake it."
                     ),
                     schema_path=base,
                 )
@@ -667,6 +693,67 @@ def assembly3d_overlay_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
                         "be confirmed."
                     ),
                     schema_path=f"{base}.through_path_preserved",
+                )
+            )
+
+        # 5. Target-layer mismatch: overlay target lattice is not the fill
+        #    lattice of any axial layer, so there is nowhere to apply it.
+        if (
+            overlay.geometry_mode != "skeleton"
+            and overlay.target_lattice_id is not None
+            and overlay.target_lattice_id in lattice_ids
+            and not overlay_targets_any_layer(overlay, model)
+        ):
+            issues.append(
+                _issue(
+                    "assembly3d.axial_overlay_target_layer_mismatch",
+                    (
+                        f"axial overlay {overlay.id!r} targets lattice "
+                        f"{overlay.target_lattice_id!r}, but no core.axial_layers "
+                        "entry uses that lattice as its fill; the overlay has "
+                        "nowhere to apply."
+                    ),
+                    schema_path=f"{base}.target_lattice_id",
+                )
+            )
+
+        # 6. Deep open-region derivability for homogenized_open_region overlays.
+        #    If a target universe has no recognizable open/coolant cell, the
+        #    renderer cannot safely place the grid material.
+        if overlay_is_structurally_renderable(overlay, model):
+            _plans, unresolved = derive_overlay_universe_plan(overlay, model)
+            if unresolved:
+                issues.append(
+                    _issue(
+                        "assembly3d.axial_overlay_open_region_unresolved",
+                        (
+                            f"axial overlay {overlay.id!r} cannot identify an "
+                            "open/coolant region for universe(s) "
+                            f"{unresolved!r}; the Level 1 overlay has nowhere to "
+                            "place the homogenized grid material without risking "
+                            "a protected solid. Downgrade to skeleton or "
+                            "requires_human_confirmation."
+                        ),
+                        schema_path=base,
+                    )
+                )
+
+    # 7. Concurrent overlapping overlays with differing intent are not supported
+    #    by the Level 1 renderer.
+    overlap_pairs = detect_overlay_z_overlaps(list(model.core.axial_overlays))
+    for a, b in overlap_pairs:
+        same = a.geometry_mode == b.geometry_mode and a.material_id == b.material_id
+        if not same:
+            issues.append(
+                _issue(
+                    "assembly3d.axial_overlay_overlap_unsupported",
+                    (
+                        f"axial overlays {a.id!r} and {b.id!r} overlap in z with "
+                        "different material/geometry_mode; the Level 1 renderer "
+                        "cannot merge them safely. Disambiguate the z-ranges or "
+                        "downgrade to skeleton."
+                    ),
+                    schema_path="complex_model.core.axial_overlays",
                 )
             )
 

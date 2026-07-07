@@ -201,11 +201,14 @@ SimulationPlan-specific rules:
   z_min_cm/z_max_cm (the grid band), target_lattice_id pointing at the assembly
   lattice, material_id when the input provides one, through_path_preserved=true, and a
   geometry_mode matching what the input actually supports:
-  * "skeleton" + requires_human_confirmation=true when grid z-positions, height or
-    material are unknown -- this honestly downgrades to a review-only model;
-  * "homogenized_open_region" / "volume_fraction_calibrated" only when the input gives
-    enough information (note the current renderer cannot turn these into geometry yet,
-    so the model still downgrades).
+  * "homogenized_open_region" + through_path_preserved=true when the grid
+    material and z-positions are known -- the renderer swaps only the
+    coolant/open cell of each pin universe for the grid material while keeping
+    fuel/clad/guide/instrument-tube solids in place (Level 1 approximation);
+  * "skeleton" + requires_human_confirmation=true when grid z-positions, height
+    or material are unknown -- this honestly downgrades to a review-only model;
+  * "volume_fraction_calibrated" only when the input gives volume/mass-fraction
+    data (note: not yet rendered, still downgrades).
   Keep the active fuel region as a normal lattice-filled axial layer regardless of the
   grids embedded inside it.
 - For any assembly/core loading map with stated counts, set expected_counts on the

@@ -95,6 +95,8 @@ class RectAssemblyRenderer(BaseRenderer):
         ]
         if _has_axial_assembly_layers(model):
             executable_subsystems.extend(["axial_layers", "lattice_loadings"])
+        if _has_renderable_overlay(model):
+            executable_subsystems.append("axial_overlays")
         return RenderCapabilityReport(
             renderability=renderability,
             supported_renderer="assembly",
@@ -372,7 +374,29 @@ def _assembly_diagnostics(
         errors.extend(_axial_assembly_modeling_errors(model))
         errors.extend(_core_renderability_errors(model))
 
+    # Level 1 overlay fidelity note: when a homogenized_open_region overlay is
+    # structurally renderable (no blocking issue above), record the approximation
+    # so the capability report states the fidelity honestly.
+    if not errors and _has_renderable_overlay(model):
+        warnings.append(
+            "Spacer/support grids rendered as Level 1 homogenized open-region "
+            "overlays: pin/tube through-paths preserved; grid straps and mixing "
+            "vanes not explicitly modeled; volume fraction not calibrated."
+        )
+
     return errors, warnings
+
+
+def _has_renderable_overlay(model: ComplexModelSpec) -> bool:
+    """True when at least one overlay will be turned into Level 1 geometry."""
+    from openmc_agent.axial_overlay import overlay_is_structurally_renderable
+
+    if model.core is None:
+        return False
+    return any(
+        overlay_is_structurally_renderable(overlay, model)
+        for overlay in model.core.axial_overlays
+    )
 
 
 def _has_axial_assembly_layers(model: ComplexModelSpec) -> bool:

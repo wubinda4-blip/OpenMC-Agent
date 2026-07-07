@@ -2293,6 +2293,107 @@ def _core_effective_root_bounds(
     return eff_xmin, eff_ymin, eff_xmax, eff_ymax, True
 
 
+def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[str, str]]:
+    """Emit Level 1 ``homogenized_open_region`` overlay-derived cells, universes
+    and lattices.
+
+    For each structurally renderable overlay, every target-lattice universe with
+    a single open/coolant cell gets a derived universe whose open cell fill is
+    swapped for the grid material (fuel/clad/tube solids are reused untouched).
+    Universes with ambiguous open regions are reused as-is to preserve through-
+    paths. Returns ``(script_block, {overlay_id: derived_lattice_variable})``.
+    """
+    from openmc_agent.axial_overlay import (
+        compute_axial_segments,
+        derive_overlay_universe_plan,
+        overlay_is_structurally_renderable,
+    )
+
+    if spec.core is None:
+        return "", {}
+
+    lines: list[str] = []
+    overlay_lattice_vars: dict[str, str] = {}
+    universes_by_id = {u.id: u for u in spec.universes}
+
+    for overlay in spec.core.axial_overlays:
+        if not overlay_is_structurally_renderable(overlay, spec):
+            continue
+        target = _lattice_by_id(spec, overlay.target_lattice_id)
+        if target is None:
+            continue
+        plans, _unresolved = derive_overlay_universe_plan(overlay, spec)
+
+        # Map base universe id -> id to fill the derived lattice with.
+        derived_id_by_base: dict[str, str] = {}
+        for plan in plans:
+            if plan.derived_universe_id is not None and plan.open_cell_id is not None:
+                base_universe = universes_by_id.get(plan.base_universe_id)
+                if base_universe is None:
+                    derived_id_by_base[plan.base_universe_id] = plan.base_universe_id
+                    continue
+                open_cell = next((c for c in spec.cells if c.id == plan.open_cell_id), None)
+                region_expr = (
+                    f"regions[{open_cell.region_id!r}]"
+                    if open_cell is not None and open_cell.region_id is not None
+                    else "None"
+                )
+                overlay_cell_var = _safe_name("overlay_cell", f"{plan.open_cell_id}__{overlay.id}")
+                lines.append(
+                    f"{overlay_cell_var} = openmc.Cell("
+                    f"name={('overlay ' + plan.open_cell_id + ' ' + overlay.id)!r}, "
+                    f"fill=materials_by_id[{overlay.material_id!r}], "
+                    f"region={region_expr})"
+                )
+                # Reuse every base cell except the swapped open cell.
+                kept_cells = [
+                    f"cells[{cid!r}]"
+                    for cid in base_universe.cell_ids
+                    if cid != plan.open_cell_id
+                ]
+                cell_refs = ", ".join(kept_cells + [overlay_cell_var])
+                overlay_universe_var = _safe_name(
+                    "overlay_universe", f"{plan.base_universe_id}__{overlay.id}"
+                )
+                lines.append(
+                    f"{overlay_universe_var} = openmc.Universe("
+                    f"name={plan.derived_universe_id!r}, cells=[{cell_refs}])"
+                )
+                lines.append(
+                    f"universes[{plan.derived_universe_id!r}] = {overlay_universe_var}"
+                )
+                derived_id_by_base[plan.base_universe_id] = plan.derived_universe_id
+            else:
+                # Reuse the base universe (ambiguous open region or unknown).
+                derived_id_by_base[plan.base_universe_id] = plan.base_universe_id
+
+        # Build the derived overlay lattice pattern.
+        derived_pattern = [
+            [derived_id_by_base.get(uid, uid) for uid in row]
+            for row in target.universe_pattern
+        ]
+        derived_lattice_var = _safe_name("overlay_lattice", overlay.id)
+        derived_lattice_id = f"{target.id}__overlay_{overlay.id}"
+        base_lower_left = target.lower_left_cm or _infer_rect_lattice_lower_left(target)
+        lines.append(f"{derived_lattice_var} = openmc.RectLattice(name={derived_lattice_id!r})")
+        lines.append(f"{derived_lattice_var}.pitch = {_rect_lattice_pitch(target)!r}")
+        lines.append(f"{derived_lattice_var}.lower_left = {base_lower_left!r}")
+        lines.append(
+            f"{derived_lattice_var}.universes = {_render_universe_pattern(derived_pattern)}"
+        )
+        if target.outer_universe_id is not None:
+            lines.append(
+                f"{derived_lattice_var}.outer = universes[{target.outer_universe_id!r}]"
+            )
+        lines.append(f"lattices[{derived_lattice_id!r}] = {derived_lattice_var}")
+        overlay_lattice_vars[overlay.id] = derived_lattice_var
+
+    # Sanity: only emit when at least one overlay actually applied somewhere.
+    if overlay_lattice_vars and not compute_axial_segments(spec):
+        return "", {}
+    return "\n".join(lines), overlay_lattice_vars
+
+
 def _render_axial_core_root(spec: ComplexModelSpec) -> str:
     assert spec.core is not None
     lattice = _lattice_by_id(spec, spec.core.lattice_id)
@@ -2337,49 +2438,82 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
         ),
     ]
 
+    # Level 1 overlay-derived cells/universes/lattices (if any). Done before the
+    # z-planes so the segment loop can reference the derived overlay lattices.
+    overlay_block, overlay_lattice_vars = _emit_overlay_derived_geometry(spec)
+    if overlay_block:
+        lines.append(overlay_block)
+
+    from openmc_agent.axial_overlay import compute_axial_segments
+
+    segments = compute_axial_segments(spec)
+
+    # Internal z-planes: every layer boundary plus every overlay boundary that
+    # actually falls inside the axial domain (so segments can reference them).
     internal_planes: dict[float, str] = {}
+    z_boundary_values: set[float] = set()
     for layer in spec.core.axial_layers:
-        for z_value in (layer.z_min_cm, layer.z_max_cm):
-            if z_value in {z_min, z_max} or z_value in internal_planes:
-                continue
-            plane_name = _safe_name("assembly_z", str(z_value).replace(".", "_"))
-            internal_planes[z_value] = plane_name
-            lines.append(f"{plane_name} = openmc.ZPlane(z0={z_value!r})")
+        z_boundary_values.add(layer.z_min_cm)
+        z_boundary_values.add(layer.z_max_cm)
+    for seg in segments:
+        z_boundary_values.add(seg.z_min)
+        z_boundary_values.add(seg.z_max)
+    for z_value in sorted(z_boundary_values):
+        if abs(z_value - z_min) < 1e-9 or abs(z_value - z_max) < 1e-9:
+            continue
+        if any(abs(z_value - existing) < 1e-9 for existing in internal_planes):
+            continue
+        plane_name = _safe_name("assembly_z", str(z_value).replace(".", "_").replace("-", "neg"))
+        internal_planes[z_value] = plane_name
+        lines.append(f"{plane_name} = openmc.ZPlane(z0={z_value!r})")
+
+    def _plane_for_z(z_value: float) -> str:
+        if abs(z_value - z_min) < 1e-9:
+            return "assembly_zmin"
+        if abs(z_value - z_max) < 1e-9:
+            return "assembly_zmax"
+        for existing, name in internal_planes.items():
+            if abs(z_value - existing) < 1e-9:
+                return name
+        # Fall back to an exact key match (legacy behaviour).
+        return internal_planes[z_value]
+
+    # Cache loading-derived lattices per layer so split segments reuse one var.
+    loading_lattice_var_by_layer: dict[str, str] = {}
+
+    # Count segments per layer so an un-split layer keeps its legacy cell name
+    # (root_cell_<layer.id>) and only overlay-split layers gain a _segN suffix.
+    segment_count_by_layer: dict[str, int] = {}
+    for seg in segments:
+        segment_count_by_layer[seg.layer.id] = segment_count_by_layer.get(seg.layer.id, 0) + 1
+    local_index_by_layer: dict[str, int] = {}
 
     root_cell_refs: list[str] = []
-    for layer in spec.core.axial_layers:
-        cell_name = _safe_name("root_cell", layer.id)
-        lower_plane = "assembly_zmin" if layer.z_min_cm == z_min else internal_planes[layer.z_min_cm]
-        upper_plane = "assembly_zmax" if layer.z_max_cm == z_max else internal_planes[layer.z_max_cm]
-        region_name = _safe_name("root_region", layer.id)
+    for index, seg in enumerate(segments):
+        layer = seg.layer
+        local_index_by_layer[layer.id] = local_index_by_layer.get(layer.id, 0) + 1
+        if segment_count_by_layer[layer.id] > 1:
+            suffix = f"{layer.id}_seg{local_index_by_layer[layer.id] - 1}"
+        else:
+            suffix = layer.id
+        cell_name = _safe_name("root_cell", suffix)
+        lower_plane = _plane_for_z(seg.z_min)
+        upper_plane = _plane_for_z(seg.z_max)
+        region_name = _safe_name("root_region", suffix)
         lines.append(
             f"{region_name} = +assembly_xmin & -assembly_xmax & "
             f"+assembly_ymin & -assembly_ymax & +{lower_plane} & -{upper_plane}"
         )
-        fill_expr = _axial_layer_fill_expression(layer)
-        if layer.loading_id is not None:
-            loading = _loading_by_id(spec, layer.loading_id)
-            base_lattice = _lattice_by_id(spec, loading.base_lattice_id)
-            derived_pattern = _apply_lattice_loading_overrides(
-                base_lattice.universe_pattern, loading.overrides
-            )
-            derived_var = _safe_name("axial_lattice", layer.id)
-            derived_id = _loading_derived_lattice_id(loading)
-            base_lower_left = (
-                base_lattice.lower_left_cm or _infer_rect_lattice_lower_left(base_lattice)
-            )
-            lines.append(f"{derived_var} = openmc.RectLattice(name={derived_id!r})")
-            lines.append(f"{derived_var}.pitch = {_rect_lattice_pitch(base_lattice)!r}")
-            lines.append(f"{derived_var}.lower_left = {base_lower_left!r}")
-            lines.append(
-                f"{derived_var}.universes = {_render_universe_pattern(derived_pattern)}"
-            )
-            if base_lattice.outer_universe_id is not None:
-                lines.append(
-                    f"{derived_var}.outer = universes[{base_lattice.outer_universe_id!r}]"
-                )
-            lines.append(f"lattices[{derived_id!r}] = {derived_var}")
-            fill_expr = derived_var
+        if seg.overlay is not None and seg.overlay.id in overlay_lattice_vars:
+            fill_expr = overlay_lattice_vars[seg.overlay.id]
+        else:
+            fill_expr = _axial_layer_fill_expression(layer)
+            if layer.loading_id is not None:
+                if layer.id not in loading_lattice_var_by_layer:
+                    loading_lattice_var_by_layer[layer.id] = _emit_loading_derived_lattice(
+                        spec, layer, lines
+                    )
+                fill_expr = loading_lattice_var_by_layer[layer.id]
         lines.append(
             f"{cell_name} = openmc.Cell("
             f"name={layer.name!r}, "
@@ -2397,6 +2531,33 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
     lines.append(f"root_cell = {root_cell_refs[0]}")
     lines.append(f"root_universe = openmc.Universe(cells=[{root_cells}])")
     return "\n".join(lines)
+
+
+def _emit_loading_derived_lattice(
+    spec: ComplexModelSpec, layer: object, lines: list[str]
+) -> str:
+    """Emit (once) the loading-derived lattice for an axial layer and return its
+    variable name. Pulled out so overlay-split segments reuse a single var."""
+    loading = _loading_by_id(spec, getattr(layer, "loading_id"))
+    base_lattice = _lattice_by_id(spec, loading.base_lattice_id)
+    derived_pattern = _apply_lattice_loading_overrides(
+        base_lattice.universe_pattern, loading.overrides
+    )
+    derived_var = _safe_name("axial_lattice", getattr(layer, "id"))
+    derived_id = _loading_derived_lattice_id(loading)
+    base_lower_left = (
+        base_lattice.lower_left_cm or _infer_rect_lattice_lower_left(base_lattice)
+    )
+    lines.append(f"{derived_var} = openmc.RectLattice(name={derived_id!r})")
+    lines.append(f"{derived_var}.pitch = {_rect_lattice_pitch(base_lattice)!r}")
+    lines.append(f"{derived_var}.lower_left = {base_lower_left!r}")
+    lines.append(f"{derived_var}.universes = {_render_universe_pattern(derived_pattern)}")
+    if base_lattice.outer_universe_id is not None:
+        lines.append(
+            f"{derived_var}.outer = universes[{base_lattice.outer_universe_id!r}]"
+        )
+    lines.append(f"lattices[{derived_id!r}] = {derived_var}")
+    return derived_var
 
 
 def _axis_boundary(boundaries: object, axis: str, fallback: str) -> str:

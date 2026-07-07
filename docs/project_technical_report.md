@@ -300,16 +300,50 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - 对 VERA/C5G7 类 benchmark，检索已经能提供上下文，但最终可信度取决于 renderer 能否表达结构。
 - 建议先做 RectAssembly/Core 的 loading map fidelity checks，而不是马上实现 HexAssemblyRenderer。
 
-**3D assembly / spacer-grid overlay（Step 2 已完成 2026-07-07）**：
+**3D assembly / spacer-grid overlay（Step 3 已完成 2026-07-07）**：
 
-- Step 1：通用 3D assembly workflow guard 已落地，3D 需求被 2D assembly 吞掉时在 plan validation 阶段即拦截。
-- Step 2（本次）：`AxialOverlaySpec` IR + `core.axial_overlays` 落地；guard 不再把"含 grid 字样的长燃料区 lattice layer"误判为 spacer grid slab；through-path check 不再误伤 lattice 填充层；新增 4 个 overlay issue code；renderer `can_render` 接入 overlay 检查；产物持久化 bug 修复。LLM 现在可以用 `geometry_mode='skeleton'` + `requires_human_confirmation` 诚实表达 VERA3 格架，而不再卡死或产出物理错误的 material slab。
-- Step 3（下一步）：实现 Level 1 `homogenized_open_region` overlay renderer，保留 pin/tube through-path。
-- Step 4：volume-fraction calibrated overlay。
+- Step 1：通用 3D assembly workflow guard 已落地。
+- Step 2：`AxialOverlaySpec` IR + guard 误报修复 + 产物持久化。
+- Step 3（本次）：Level 1 `homogenized_open_region` overlay renderer 落地。spacer grid 现在可被近似渲染（每根 pin 的 coolant/open cell 换成 grid 材料，fuel/clad/tube 贯穿），不再降级 skeleton；轴向域按 overlay 边界自动切分；导向管保守复用；新增 3 个 overlay issue code。VERA3 类模型现在可达 exportable。
+- Step 4（下一步）：volume-fraction calibrated overlay。
 - Step 5：VERA3 end-to-end benchmark acceptance。
-- 在 Step 3 落地前，VERA3 只作为验收 benchmark，overlay 仍降级为 skeleton。
+- explicit spacer grid / mixing vane 几何仍未实现。
 
 ## 9. 维护记录
+
+### 2026-07-07（Step 3：Level 1 homogenized_open_region overlay renderer）
+
+完成并验证：
+
+- **新增 `openmc_agent/axial_overlay.py`**：纯逻辑模块（无 OpenMC 依赖），提供 overlay 渲染的全部决策：
+  - `classify_material_role(material)`：按 id/name/formula 把材料分为 `open`（water/coolant/moderator，可被替换为 grid 材料）vs `protected`（fuel/clad/zircaloy/gap/absorber/tube/grid alloy，永不替换）。
+  - `universe_open_cell_ids(...)`：识别 universe 的 open-region cell。
+  - `derive_overlay_universe_plan(...)`：对 target lattice 的每个 universe 决定——单 open cell → 派生 overlay universe；多 open cell（如导向管内水+外水）→ **保守复用 base universe**（保 through-path，不加 grid 材料）；零 open cell → unresolved。
+  - `compute_axial_segments(...)`：把 `core.axial_layers` 边界与 renderable overlay 边界合并，输出带 `(z_min, z_max, layer, covering_overlay)` 的有序分段。
+  - `overlay_is_structurally_renderable(...)`：homogenized_open_region + rect target lattice 解析 + material 解析 + through_path_preserved=True。
+- **executor.py 实现 Level 1 渲染**：
+  - `_emit_overlay_derived_geometry(spec)`：为每个 structurally renderable overlay 派生 overlay cell（open cell 的 region 复用，fill 换成 grid 材料）+ overlay universe（复用其余 protected cells）+ derived overlay lattice（pattern 中每个 universe 映射到派生或复用的 universe）。
+  - `_render_axial_core_root` 改为基于 `compute_axial_segments` 渲染：overlay 覆盖的段 fill = derived overlay lattice，其余段保持原 layer fill（loading_id 仍按层缓存派生一次）。未切分的层保留旧 `root_cell_<layer.id>` 命名，被切分的层用 `root_cell_<layer.id>_segN`。
+- **pin/tube through-path 保证**：派生 universe 复用 fuel/clad/tube wall 的原 cell，仅替换 open/coolant cell 的 fill；多 open cell 的 universe（导向管）原样复用——任何情况都不截断燃料棒/导向管/测量管。
+- **guard 更新（`assembly3d_overlay_issues`）**：homogenized_open_region 在结构上可渲染时**不再**触发 `axial_overlay_requires_renderer_support`；新增三个 issue code：
+  - `assembly3d.axial_overlay_open_region_unresolved`（target universe 无可识别 open cell）。
+  - `assembly3d.axial_overlay_overlap_unsupported`（不同 material/mode 的 overlay z 区间重叠）。
+  - `assembly3d.axial_overlay_target_layer_mismatch`（overlay target lattice 不被任何 axial layer 填充）。
+- **capability 行为**：可渲染 overlay 时 `executable_subsystems` 含 `axial_overlays`，warnings 标注 "Level 1 homogenized open-region overlay: pin/tube through-path preserved; grid straps/mixing vanes not modeled; volume fraction not calibrated"。无法安全派生时降级 skeleton，绝不生成假 XML。
+- **prompts.py**：planner guidance 把 `homogenized_open_region` 列为 grid 材料+位置已知时的首选 Level 1 模式。
+- 全量测试：`514 passed`（新增 `tests/test_axial_overlay.py` 11 个场景：可渲染性、单/多 overlay 切分、非 target 层不受影响、pin map/protected cell/guide tube through-path 保持、overlap 降级、open region unresolved 降级、VERA3-like 多 grid smoke、explicit_bars 仍降级）。
+
+Level 1 近似边界（明确）：
+
+- 不建模真实格条 / 混流翼 / 套筒；grid 材料以均质形式占据每根 pin 的 coolant/open region。
+- 不做体积分数标定；导向管（多 open cell）位置保守不加 grid 材料。
+- benchmark 验收仍需 VERA3 E2E 测试（依赖更细的 pin-cell 几何与 grid z 位置输入）。
+
+仍未完成：
+
+- **Step 4**：volume-fraction calibrated overlay（需要 grid 体积/质量信息）。
+- **Step 5**：VERA3 end-to-end benchmark acceptance。
+- explicit spacer grid bars / mixing vane 几何仍未实现。
 
 ### 2026-07-07（Step 2：AxialOverlay IR + guard 误报修复 + 产物持久化）
 
