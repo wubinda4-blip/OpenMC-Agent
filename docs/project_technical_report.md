@@ -259,9 +259,8 @@ conda run -n openmc-env python -m compileall -q openmc_agent
 
 - `Input/VERA1_problem.md` 到 `Input/VERA5_problem.md`
 - `Input/CASL-U-2012-0131-004.pdf`
-- `_verify_cli.py`
 
-这些看起来像用户维护的输入资料或临时验证脚本。提交工程代码时应避免误提交，除非明确要把它们纳入 benchmark/input corpus。
+这些看起来像用户维护的输入资料。提交工程代码时应避免误提交，除非明确要把它们纳入 benchmark/input corpus。
 
 ### 7.2 技术风险
 
