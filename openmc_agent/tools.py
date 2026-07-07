@@ -178,6 +178,26 @@ def parse_openmc_output(stdout: str, stderr: str) -> ValidationReport:
             else "runtime.cross_sections_missing"
         )
         issues.append(_runtime_issue(code, combined))
+    if _has_source_rejection_failure(lowered):
+        # Source initialization failure is the PRIMARY root cause; later
+        # 'double free' / 'segmentation fault' / MPI abort lines are downstream
+        # crash noise and must not override it.
+        rejection_line = ""
+        for needle in ("too few source sites", "minimum source rejection", "source rejection fraction"):
+            rejection_line = _first_matching_line(combined, needle)
+            if rejection_line:
+                break
+        issues.append(
+            _runtime_issue(
+                "runtime.openmc_source_rejection_failure",
+                combined,
+                message=(
+                    "OpenMC rejected too many initial source sites. The source box "
+                    "likely does not overlap the fissionable active-fuel region. "
+                    f"Detail: {rejection_line.strip()}"
+                ),
+            )
+        )
     if "could not be located in any cell" in lowered or "undefined" in lowered:
         issues.append(
             _runtime_issue(
@@ -369,6 +389,21 @@ def _has_material_missing_nuclide_data(lowered_text: str) -> bool:
         r"could not find .{0,80}\.h5",
     )
     return any(re.search(pattern, lowered_text) for pattern in patterns)
+
+
+def _has_source_rejection_failure(lowered_text: str) -> bool:
+    """Detect OpenMC initial-source rejection ('too few source sites').
+
+    This is the primary root cause; downstream 'double free' / 'segmentation
+    fault' / 'MPI abort' lines after a source rejection are crash noise.
+    """
+    patterns = (
+        r"too few source sites satisfied",
+        r"minimum source rejection fraction",
+        r"source[_ ]rejection[_ ]fraction",
+    )
+    return any(re.search(pattern, lowered_text) for pattern in patterns)
+
 
 
 def _has_geometry_load_error(lowered_text: str) -> bool:

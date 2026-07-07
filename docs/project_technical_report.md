@@ -299,15 +299,16 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - 对 VERA/C5G7 类 benchmark，检索已经能提供上下文，但最终可信度取决于 renderer 能否表达结构。
 - 建议先做 RectAssembly/Core 的 loading map fidelity checks，而不是马上实现 HexAssemblyRenderer。
 
-**3D assembly / spacer-grid overlay（Step 4 已完成 2026-07-07）**：
+**3D assembly / spacer-grid overlay（Step 5 已完成 2026-07-07）**：
 
 - Step 1：通用 3D assembly workflow guard。
 - Step 2：`AxialOverlaySpec` IR + guard 误报修复 + 产物持久化。
 - Step 3：Level 1 `homogenized_open_region` overlay renderer。
-- Step 4（本次）：VERA3 benchmark acceptance foundation——reference fixture（全数值来自输入文档）+ `vera3.*` benchmark issue taxonomy + `validate_vera3_plan_structure` + 确定性 plan 构造器 + 三层 E2E 测试（确定性/replay/integration）。VERA3 facts 全部隔离在 tests/fixtures + tests/helpers，不进生产代码。
-- Step 5（下一步）：真实 VERA3 end-to-end pass（LLM 抽取 → 验收 → 渲染 → 导出）。
-- Step 6：volume-fraction calibrated overlay。
-- explicit spacer grid / mixing vane 几何仍未实现。
+- Step 4：VERA3 benchmark acceptance foundation（reference + validator + 确定性测试）。
+- Step 5（本次）：OpenMC source/settings 修复——source z 绑定活性燃料区（修复 `Too few source sites` 崩溃）、source/settings pre-flight validator、source-rejection runtime parser（首要 issue 不被 segfault 覆盖）、合金/导向管壁验证。
+- Step 6（下一步）：材料/合金 composition fidelity。
+- Step 7：volume-fraction calibrated overlay。
+- Step 8：full VERA3 keff benchmark acceptance。
 
 ## 9. 维护记录
 
@@ -319,6 +320,24 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 - **修复点**：`openmc_agent/executor.py` 新增 `_AXIS_INTERCEPT_ALIASES`（`x→x0`、`y→y0`、`z→z0`），`_surface_constructor` 在拼接 kwargs 前对 plane kind 做归一化；canonical 已存在时不覆盖（幂等、不冲突）。rectangular/hexagonal prism 与 cylinder/sphere 路径不受影响。
 - **测试**：`tests/test_executor.py` 新增 parametrize 用例覆盖三种 plane 的 alias 归一化 + canonical 不被重复映射；端到端用真实 openmc 执行渲染产物确认不再抛 `TypeError`。
 - 全量测试通过：`533 passed, 2 skipped`。
+
+### 2026-07-07（Step 5：OpenMC source/settings 修复 + VERA3 runtime smoke 稳定化）
+
+完成并验证：
+
+- **根因确认**：`data/runs/VERA3/model.py` 的 `settings.source` 用整个 axial 域 `assembly_z_min=-55.0 .. assembly_z_max=463.937` + `only_fissionable=True`。燃料只在活性区 11.951–377.711，全域 box 导致大量源点落在非燃料区被拒 → `Too few source sites satisfied the constraints`，后续 `double free`/`Segmentation fault`/`MPI abort` 是源初始化失败后的连锁崩溃（非首要根因）。燃料本身可裂变（U235 3.1%/U238 96.9%），活性区 lattice 位置正确。
+- **新增 `openmc_agent/source_settings.py`**：`active_fuel_z_bounds` / `source_bounds_for_plan`（z 绑定活性燃料，xy 绑定 lattice footprint）/ `validate_source_settings`（6 个 pre-flight runtime.* 检查）/ `alloy_pure_element_issues`。
+- **executor.py source 修复**：`_render_source_block` 把 core 路径 source 的 z 从 `assembly_z_min..assembly_z_max` 改为 `source_z_min..source_z_max`（= 活性燃料 z），保留 `only_fissionable=True`。
+- **runtime parser 增强**（`tools.py`）：识别 `Too few source sites` → `runtime.openmc_source_rejection_failure` 作为**首要 issue**，segfault/double-free 不再覆盖。
+- **workflow 集成**（`graph.py`）：smoke test 前 pre-flight `validate_source_settings`，blocking source issue 时跳过 smoke 并写结构化 report。
+- **新增 10 个 issue codes**：`runtime.source_default_z_extent` / `source_not_in_active_fuel_region` / `source_covers_nonfuel_axial_regions` / `source_missing_fissionable_constraint` / `fuel_material_not_fissionable` / `active_fuel_region_missing` / `active_fuel_geometry_missing` / `source_rejection_fraction_lowered` / `openmc_source_rejection_failure` / `materials.alloy_reduced_to_pure_element`。
+- **guide tube 壁验证**：`vera3.guide_tube_wall_missing`（导向管无 Zircaloy 壁则告警）。
+- 不盲降 threshold、不移除 fissionable 约束、不改 spacer-grid renderer。
+- 全量测试：`549 passed, 2 skipped`（新增 `tests/test_source_settings.py` 16 个 + guide-tube 测试）。
+
+当前边界：确定性 VERA3-like plan 的 source 现绑定活性燃料区、pre-flight 无 blocking；真实 VERA3 smoke 是否通过仍取决于 OpenMC/截面库可用性。spacer-grid 仍 Level 1，合金 composition 仍可能需确认。
+
+仍未完成：Step 6 合金 composition fidelity / Step 7 volume-fraction calibrated overlay / Step 8 full VERA3 keff acceptance。
 
 ### 2026-07-07（Step 4：VERA3 end-to-end benchmark acceptance foundation）
 

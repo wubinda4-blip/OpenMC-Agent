@@ -299,6 +299,25 @@ def validate_vera3_plan_structure(
             issues.append(BenchmarkIssue("vera3.material_missing", "error",
                                          "3B requires a Pyrex material", expected="pyrex"))
 
+    # 4b. guide tubes must keep a Zircaloy/clad wall, not be pure-water cells.
+    materials_by_id = {m.id: m for m in model.materials}
+    for u in model.universes:
+        if "guide" not in (u.id + u.name).lower():
+            continue
+        u_cells = [c for c in model.cells if c.id in u.cell_ids]
+        has_wall = any(
+            c.fill_type == "material"
+            and c.fill_id in materials_by_id
+            and classify_material_role(materials_by_id[c.fill_id]) == "protected"
+            and c.fill_id != "fuel"
+            for c in u_cells
+        )
+        if not has_wall:
+            issues.append(BenchmarkIssue("vera3.guide_tube_wall_missing", "warning",
+                                         f"guide tube universe {u.id!r} has no Zircaloy/clad "
+                                         "wall cell (only coolant); the tube wall must be preserved",
+                                         path=f"complex_model.universes.{u.id}"))
+
     # 5. renderer compatibility -- no blocking generic assembly3d.* errors
     generic = validate_assembly3d_plan(plan, requirement="VERA 3D HZP assembly with spacer grids")
     blocking = [i for i in generic if i.severity == "error" and i.code.startswith("assembly3d.")]
@@ -338,12 +357,14 @@ def _vera3_materials(variant: str) -> list[ComplexMaterialSpec]:
     return mats
 
 
-def _vera3_pin_universes(variant: str) -> tuple[list[CellSpec], list[UniverseSpec]]:
+def _vera3_pin_universes(variant: str, *, pure_water_guide: bool = False) -> tuple[list[CellSpec], list[UniverseSpec]]:
     """Each pin universe = a solid cell + a single open coolant cell.
 
-    Every universe therefore has exactly one open cell, so a homogenized
+    Each universe therefore has exactly one open cell, so a homogenized
     overlay can derive an overlay universe (coolant -> grid material) at every
     lattice position while the solid (fuel/clad/pyrex/plug) is preserved.
+    Set ``pure_water_guide=True`` to build a (broken) guide tube with no
+    Zircaloy wall -- only coolant -- for the guide-tube-wall acceptance test.
     """
     cells: list[CellSpec] = []
     universes: list[UniverseSpec] = []
@@ -357,7 +378,12 @@ def _vera3_pin_universes(variant: str) -> tuple[list[CellSpec], list[UniverseSpe
         universes.append(UniverseSpec(id=uid, name=uname, cell_ids=[solid_cell_id, coolant_id]))
 
     _pin("fuel_pin", "fuel pin", "fuel_pellet", "fuel")
-    _pin("guide_tube", "guide tube", "guide_tube_wall", "clad")
+    if pure_water_guide:
+        cells.append(CellSpec(id="guide_water", name="guide water",
+                              fill_type="material", fill_id="water"))
+        universes.append(UniverseSpec(id="guide_tube", name="guide tube", cell_ids=["guide_water"]))
+    else:
+        _pin("guide_tube", "guide tube", "guide_tube_wall", "clad")
     _pin("instrument_tube", "instrument tube", "inst_tube_wall", "clad")
     if variant == "3B":
         _pin("pyrex_pin", "pyrex burnable absorber rod", "pyrex_solid", "pyrex")
@@ -397,16 +423,17 @@ def build_vera3_like_plan(
     mutate_pin: tuple[int, int] | None = None,
     wrong_pyrex: tuple[int, int] | None = None,
     default_z: bool = False,
+    pure_water_guide: bool = False,
 ) -> SimulationPlan:
     """Build a deterministic VERA3-like SimulationPlan from the reference.
 
     Mutation flags let the acceptance tests construct intentionally-broken
     plans (missing overlays, wrong grid count, material slab, wrong pin
-    placement, default z). No LLM is involved.
+    placement, default z, pure-water guide tube). No LLM is involved.
     """
     meta = reference["assembly_metadata"]
     materials = _vera3_materials(variant)
-    cells, universes = _vera3_pin_universes(variant)
+    cells, universes = _vera3_pin_universes(variant, pure_water_guide=pure_water_guide)
 
     pattern = _vera3_lattice_pattern(reference, variant)
     if mutate_pin is not None:

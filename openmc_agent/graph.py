@@ -1762,6 +1762,37 @@ def _make_execute_tools_node(
             and renderability == "runnable"
             and plan.execution_check.enabled
         ):
+            # Pre-flight source/settings check: do not waste a smoke run (and
+            # risk a segfault cascade) when the source box provably misses the
+            # active fuel region or the fuel is non-fissionable.
+            from openmc_agent.source_settings import validate_source_settings
+
+            source_issues = validate_source_settings(plan)
+            blocking_source = [i for i in source_issues if i.severity == "error"]
+            if blocking_source:
+                _progress(
+                    state,
+                    "execute_tools",
+                    f"skipping run_smoke_test: {len(blocking_source)} blocking source issue(s)",
+                )
+                source_report = ValidationReport.from_issues(source_issues, is_valid=False)
+                trace_update = _trace_event_update(
+                    {**state, **trace_update},
+                    "smoke_test_completed",
+                    summary="run_smoke_test skipped: source/settings pre-flight failed",
+                    report=source_report,
+                    metadata={
+                        "success": False,
+                        "skipped": True,
+                        "source_issue_codes": [i.code for i in blocking_source],
+                    },
+                )
+                return {
+                    "validation_report": source_report,
+                    "tool_results": [result.model_dump() for result in results],
+                    **trace_update,
+                }
+
             settings = plan.execution_check.settings
             _progress(
                 state,

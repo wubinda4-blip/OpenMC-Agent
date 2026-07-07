@@ -469,6 +469,7 @@ def render_openmc_core_script(
     core_universe_wrappers = "# Core universes were normalized before rendering."
     assert spec.core is not None
     root_block = _render_core_root(spec)
+    source_block = _render_source_block(spec)
     plot_specs = _reconcile_plot_origins(spec, plot_specs or [])
     plots_block = _render_plots_block(plot_specs)
     energy_mode_block = _render_optional_energy_mode(settings, spec)
@@ -518,13 +519,7 @@ settings.batches = {settings.batches}
 settings.inactive = {settings.inactive}
 settings.particles = {settings.particles}
 {_render_optional_seed(settings)}
-settings.source = openmc.IndependentSource(
-    space=openmc.stats.Box(
-        (assembly_x_min, assembly_y_min, assembly_z_min),
-        (assembly_x_max, assembly_y_max, assembly_z_max),
-        only_fissionable=True,
-    )
-)
+{source_block}
 
 flux_tally = openmc.Tally(name="core cell flux")
 flux_tally.filters = [openmc.CellFilter([root_cell])]
@@ -2304,6 +2299,44 @@ def _core_effective_root_bounds(
             )
         eff_ymax = ir["ymax"]
     return eff_xmin, eff_ymin, eff_xmax, eff_ymax, True
+
+
+def _render_source_block(spec: ComplexModelSpec) -> str:
+    """Emit the OpenMC initial-source block, binding z to the active-fuel region.
+
+    The full axial domain (nozzles, plena, moderator buffers) contains little
+    fissionable material, so a full-domain source box with
+    ``only_fissionable=True`` triggers 'too few source sites'. When a
+    lattice-filled axial layer exists, the source z-range is bound to it. x/y
+    keep the lattice/assembly footprint (assembly_x_min etc. defined above).
+    """
+    from openmc_agent.source_settings import active_fuel_z_bounds
+
+    af = active_fuel_z_bounds(spec)
+    if af is not None:
+        z_lo, z_hi = af
+        lines = [
+            "# Initial source bound to the active-fuel z-region (not the full axial",
+            "# domain): avoids 'too few source sites' rejection with only_fissionable.",
+            f"source_z_min = {z_lo!r}",
+            f"source_z_max = {z_hi!r}",
+        ]
+    else:
+        lines = [
+            "# No lattice-filled active-fuel layer found; source spans the full axial domain.",
+            "source_z_min = assembly_z_min",
+            "source_z_max = assembly_z_max",
+        ]
+    lines.extend([
+        "settings.source = openmc.IndependentSource(",
+        "    space=openmc.stats.Box(",
+        "        (assembly_x_min, assembly_y_min, source_z_min),",
+        "        (assembly_x_max, assembly_y_max, source_z_max),",
+        "        only_fissionable=True,",
+        "    )",
+        ")",
+    ])
+    return "\n".join(lines)
 
 
 def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[str, str]]:
