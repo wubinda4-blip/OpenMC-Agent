@@ -1262,13 +1262,6 @@ class ComplexModelSpec(AgentBaseModel):
             "OpenMC may use OPENMC_MG_CROSS_SECTIONS."
         ),
     )
-    standard_mgxs_library: Literal["c5g7"] | None = Field(
-        default=None,
-        description=(
-            "Built-in benchmark MGXS library to export before running. Use 'c5g7' "
-            "for OECD/NEA C5G7 seven-group macroscopic data."
-        ),
-    )
     assumptions: list[str] = Field(default_factory=list)
     requires_human_confirmation: list[str] = Field(default_factory=list)
 

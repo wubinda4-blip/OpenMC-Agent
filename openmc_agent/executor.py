@@ -231,6 +231,14 @@ def render_openmc_assembly_script(
     settings_override: RunSettingsSpec | None = None,
     plot_specs: list[PlotSpec] | None = None,
 ) -> str:
+    if _is_axial_assembly_spec(spec):
+        axial_spec = spec.model_copy(update={"kind": "core"}, deep=True)
+        return render_openmc_core_script(
+            axial_spec,
+            settings_override=settings_override,
+            plot_specs=plot_specs,
+        ).replace("Generated OpenMC core model", "Generated OpenMC axial assembly model", 1)
+
     deps = collect_active_dependencies_from_model(spec)
     _validate_renderable_assembly(spec, deps)
     settings = settings_override or spec.settings
@@ -246,7 +254,6 @@ def render_openmc_assembly_script(
         _render_complex_material_definition(material)
         for material in renderable_materials
     )
-    benchmark_imports = _render_benchmark_imports(spec)
     mgxs_setup = _render_mgxs_setup(spec)
     cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     surfaces_block = _render_surface_definitions(spec.surfaces)
@@ -263,7 +270,6 @@ def render_openmc_assembly_script(
     return f'''"""Generated OpenMC assembly model for {spec.name}."""
 
 import openmc
-{benchmark_imports}
 
 
 materials_by_id = {{}}
@@ -327,6 +333,10 @@ model.export_to_xml()
 '''
 
 
+def _is_axial_assembly_spec(spec: ComplexModelSpec) -> bool:
+    return spec.kind == "assembly" and spec.core is not None and bool(spec.core.axial_layers)
+
+
 def render_openmc_triso_script(
     spec: ComplexModelSpec,
     *,
@@ -339,7 +349,6 @@ def render_openmc_triso_script(
         _render_complex_material_definition(material)
         for material in spec.materials
     )
-    benchmark_imports = _render_benchmark_imports(spec)
     mgxs_setup = _render_mgxs_setup(spec)
     cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     triso = spec.trisos[0]
@@ -358,7 +367,6 @@ def render_openmc_triso_script(
     return f'''"""Generated OpenMC TRISO/pebble model for {spec.name}."""
 
 import openmc
-{benchmark_imports}
 
 
 materials_by_id = {{}}
@@ -450,7 +458,6 @@ def render_openmc_core_script(
         _render_complex_material_definition(material)
         for material in spec.materials
     )
-    benchmark_imports = _render_benchmark_imports(spec)
     mgxs_setup = _render_mgxs_setup(spec)
     cross_sections_assignment = _render_materials_cross_sections_assignment(spec)
     surfaces_block = _render_surface_definitions(spec.surfaces)
@@ -470,7 +477,6 @@ def render_openmc_core_script(
     return f'''"""Generated OpenMC core model for {spec.name}."""
 
 import openmc
-{benchmark_imports}
 
 
 materials_by_id = {{}}
@@ -2440,7 +2446,7 @@ def _render_optional_seed(settings: RunSettingsSpec) -> str:
 def _model_uses_mgxs(spec: ComplexModelSpec | None = None) -> bool:
     if spec is None:
         return False
-    return bool(spec.standard_mgxs_library or spec.mg_cross_sections_file)
+    return bool(spec.mg_cross_sections_file)
 
 
 def _render_optional_energy_mode(
@@ -2474,23 +2480,7 @@ def _render_optional_temperature_interpolation(
     return "settings.temperature['method'] = 'interpolation'"
 
 
-def _render_benchmark_imports(spec: ComplexModelSpec) -> str:
-    if spec.standard_mgxs_library == "c5g7":
-        return "\nfrom openmc_agent.benchmarks.c5g7 import export_mgxs_hdf5\n"
-    return ""
-
-
-def _mgxs_filename(spec: ComplexModelSpec) -> str:
-    return spec.mg_cross_sections_file or "mgxs.h5"
-
-
 def _render_mgxs_setup(spec: ComplexModelSpec) -> str:
-    if spec.standard_mgxs_library == "c5g7":
-        filename = _mgxs_filename(spec)
-        return (
-            f"mg_cross_sections_file = {filename!r}\n"
-            "export_mgxs_hdf5(mg_cross_sections_file)\n"
-        )
     if spec.mg_cross_sections_file:
         return f"mg_cross_sections_file = {spec.mg_cross_sections_file!r}\n"
     return ""
