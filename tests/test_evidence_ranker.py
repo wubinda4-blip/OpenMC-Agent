@@ -265,7 +265,7 @@ def test_orchestrator_populates_ranked_evidence_when_enabled(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         "openmc_agent.retrieval_orchestrator.graphrag_retrieve",
-        lambda request: GraphRagResult(
+        lambda request, **_kwargs: GraphRagResult(
             request=request,
             evidence=[
                 evidence(

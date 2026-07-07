@@ -37,6 +37,7 @@ from openmc_agent.retrieval import (
 )
 from openmc_agent.retrieval_orchestrator import (
     RetrievalContext,
+    RetrievalPolicy,
     format_retrieval_context,
     gather_retrieval_context_for_issues,
     retrieval_context_from_raw,
@@ -207,6 +208,8 @@ def build_plan_graph(
     max_retries: int = 3,
     checkpoint_path: str | Path | None = None,
     checkpointer: Any | None = None,
+    retrieval_policy: RetrievalPolicy | None = None,
+    knowledge_graph_path: str | Path | None = None,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -216,6 +219,15 @@ def build_plan_graph(
     if retrieval_roots_resolver is None:
         retrieval_roots_resolver = _make_default_retrieval_roots_resolver(
             enable_openmc_source_root=enable_openmc_source_root
+        )
+
+    effective_retrieval_policy = retrieval_policy or RetrievalPolicy()
+    if (
+        knowledge_graph_path is not None
+        and effective_retrieval_policy.knowledge_graph_path is None
+    ):
+        effective_retrieval_policy = effective_retrieval_policy.model_copy(
+            update={"knowledge_graph_path": str(knowledge_graph_path)}
         )
 
     graph = StateGraph(GraphState)
@@ -259,6 +271,7 @@ def build_plan_graph(
             retrieval_tool_dispatch=retrieval_tool_dispatch,
             retrieval_tool_specs=retrieval_tool_specs,
             investigation_max_iterations=investigation_max_iterations,
+            retrieval_policy=effective_retrieval_policy,
         ),
     )
     graph.add_node("save_record", _save_plan_record)
@@ -879,6 +892,7 @@ def _make_validate_plan_node(max_retries: int):
         return {
             "validation_report": report,
             "retry_history": history,
+            "simulation_plan": plan,
             "simulation_spec": plan.model_spec if plan is not None else None,
             "plan_artifacts": artifact_paths,
             "error": "",
@@ -1807,6 +1821,7 @@ def _make_reflect_plan_node(
     retrieval_tool_dispatch: dict[str, Callable[..., ToolResult]] | None = None,
     retrieval_tool_specs: list[ToolSpec] | None = None,
     investigation_max_iterations: int = 4,
+    retrieval_policy: RetrievalPolicy | None = None,
 ):
     def _reflect_plan(state: GraphState) -> GraphState:
         plan = _coerce_simulation_plan(state.get("simulation_plan"))
@@ -1935,7 +1950,8 @@ def _make_reflect_plan_node(
             metadata={"policy": "default", "issue_count": len(report.issues)},
         )
         trace_state = {**trace_state, **retrieval_started_update}
-        retrieval_context = _retrieval_context_for_report(report)
+        retrieval_context = _retrieval_context_for_report(report, policy=retrieval_policy)
+        kg_summary = retrieval_context.knowledge_graph_summary or {}
         retrieval_completed_update = _trace_event_update(
             trace_state,
             "retrieval_completed",
@@ -1943,7 +1959,16 @@ def _make_reflect_plan_node(
             report=report,
             retrieval_context=retrieval_context,
             plan=plan,
-            metadata={"warnings": retrieval_context.warnings},
+            metadata={
+                "warnings": retrieval_context.warnings,
+                "knowledge_graph_attempted": bool(kg_summary.get("attempted", False)),
+                "knowledge_graph_loaded": bool(kg_summary.get("loaded", False)),
+                "knowledge_graph_node_count": int(kg_summary.get("node_count", 0) or 0),
+                "knowledge_graph_edge_count": int(kg_summary.get("edge_count", 0) or 0),
+                "knowledge_graph_warning_count": len(
+                    retrieval_context.knowledge_graph_warnings
+                ),
+            },
         )
         trace_state = {**trace_state, **retrieval_completed_update}
         state_with_evidence: GraphState = {
@@ -2311,10 +2336,13 @@ def _structured_issue_context(issues: list[ValidationIssue]) -> str:
     )
 
 
-def _retrieval_context_for_report(report: ValidationReport | None) -> RetrievalContext:
+def _retrieval_context_for_report(
+    report: ValidationReport | None,
+    policy: RetrievalPolicy | None = None,
+) -> RetrievalContext:
     if report is None or not report.issues:
         return RetrievalContext()
-    return gather_retrieval_context_for_issues(report.issues)
+    return gather_retrieval_context_for_issues(report.issues, policy=policy)
 
 
 def _retrieval_state_updates(context: RetrievalContext) -> dict[str, Any]:

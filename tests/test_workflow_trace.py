@@ -239,7 +239,7 @@ def test_reflect_plan_records_retrieval_events(monkeypatch) -> None:
     report = ValidationReport.from_issues([issue])
     plan = _simple_plan()
 
-    def fake_gather(_issues):
+    def fake_gather(_issues, **_kwargs):
         return RetrievalContext(
             issues=[issue],
             graph_context=GraphContext(

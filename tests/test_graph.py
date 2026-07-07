@@ -2400,7 +2400,7 @@ def test_plan_graph_reflect_applies_investigation_patch(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(
         "openmc_agent.graph.gather_retrieval_context_for_issues",
-        lambda issues: RetrievalContext(
+        lambda issues, **_kwargs: RetrievalContext(
             issues=issues,
             grep_evidence=[
                 RetrievedEvidence(

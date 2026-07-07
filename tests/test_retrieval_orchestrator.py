@@ -154,7 +154,7 @@ def test_orchestrator_runtime_geometry_overlap_returns_rag_evidence(monkeypatch)
 def test_orchestrator_cross_sections_runs_doc_retrieval_and_preserves_fact_gap(monkeypatch) -> None:
     from openmc_agent.graphrag_retriever import GraphRagResult
 
-    def fake_graphrag_retrieve(request):
+    def fake_graphrag_retrieve(request, **_kwargs):
         return GraphRagResult(
             request=request,
             evidence=[

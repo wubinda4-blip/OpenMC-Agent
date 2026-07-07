@@ -116,6 +116,7 @@ Important `RetrievalPolicy` fields:
 - `run_rag_for_manual_review`
 - `skip_rag_for_fact_gap`
 - `skip_grep_for_cross_sections_missing`
+- `enable_knowledge_graph_loading` / `knowledge_graph_path` / `max_knowledge_nodes` / `max_knowledge_edges` / `allow_missing_knowledge_path` (see [Knowledge Runtime Loader Strategy](knowledge_runtime_strategy.md))
 - `max_grep_evidence`
 - `max_graph_evidence`
 - `max_graphrag_evidence`

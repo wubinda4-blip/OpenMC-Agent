@@ -67,6 +67,7 @@ def inspect_requirement(
     enable_investigation: bool = True,
     investigation_max_iterations: int = 4,
     enable_openmc_source_root: bool = False,
+    knowledge_graph_path: str | None = None,
     verbose: bool = False,
 ) -> InspectResult:
     set_llm_progress(verbose)
@@ -93,6 +94,7 @@ def inspect_requirement(
             enable_investigation=enable_investigation,
             investigation_max_iterations=investigation_max_iterations,
             enable_openmc_source_root=enable_openmc_source_root,
+            knowledge_graph_path=knowledge_graph_path,
             verbose=verbose,
         )
 
@@ -282,6 +284,7 @@ def _inspect_plan_requirement(
     enable_investigation: bool,
     investigation_max_iterations: int,
     enable_openmc_source_root: bool,
+    knowledge_graph_path: str | None,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -308,6 +311,7 @@ def _inspect_plan_requirement(
         investigation_max_iterations=investigation_max_iterations,
         enable_openmc_source_root=enable_openmc_source_root,
         checkpoint_path=(output_path / "checkpoints.sqlite") if interactive_feedback else None,
+        knowledge_graph_path=knowledge_graph_path,
     )
     if verbose:
         print("[agent] Invoking LLM. This can take 30-120 seconds on remote models...", file=sys.stderr)
@@ -851,6 +855,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also let retrieval grep the installed OpenMC library source (default: off).",
     )
+    parser.add_argument(
+        "--knowledge-dir",
+        dest="knowledge_dir",
+        default=None,
+        help="Directory of persisted knowledge assets (knowledge_graph_nodes.json, "
+        "knowledge_summary.json) produced by the ingestion CLI. Also settable via "
+        "the OPENMC_AGENT_KNOWLEDGE_DIR environment variable.",
+    )
     args = parser.parse_args(argv)
 
     expert_feedback = list(args.expert_feedback)
@@ -886,6 +898,7 @@ def main(argv: list[str] | None = None) -> int:
             enable_investigation=args.investigate,
             investigation_max_iterations=args.investigate_iterations,
             enable_openmc_source_root=args.investigate_openmc_source,
+            knowledge_graph_path=args.knowledge_dir,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -904,6 +917,7 @@ def main(argv: list[str] | None = None) -> int:
             enable_investigation=args.investigate,
             investigation_max_iterations=args.investigate_iterations,
             enable_openmc_source_root=args.investigate_openmc_source,
+            knowledge_graph_path=args.knowledge_dir,
         )
     else:
         parser.error("Provide a requirement or --md-file")

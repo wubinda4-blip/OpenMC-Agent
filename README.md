@@ -208,6 +208,8 @@ grep -> graph -> GraphRAG query planner -> GraphRAG -> plain RAG -> evidence ran
 
 默认策略会尽量用本地代码、测试、文档、知识图谱和 GraphRAG evidence 帮助 `reflect_plan` 修复结构问题，减少不必要的人工参与。对 cross section 路径、材料密度、composition、benchmark 常数、真实 loading map 等 fact gap，系统也会检索文档解释和配置上下文，但仍保留 human confirmation，不会自动编造缺失事实。
 
+Knowledge Asset Runtime Loader：若设置 `OPENMC_AGENT_KNOWLEDGE_DIR`（或 inspect CLI 传 `--knowledge-dir`，或 `RetrievalPolicy.knowledge_graph_path`），orchestrator 会在 GraphRAG stage 自动加载 `data/knowledge` 中的持久化 graph nodes/edges 作为 `extra_nodes/extra_edges`；目录缺失或损坏只产生 warning，不影响 workflow。详见 `docs/knowledge_runtime_strategy.md`。
+
 ---
 
 ## 可插拔渲染器

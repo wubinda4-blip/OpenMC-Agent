@@ -9,7 +9,7 @@ external services, infer physical facts, or modify simulation plans.
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -62,6 +62,7 @@ class GraphRagRequest(AgentBaseModel):
     include_api_docs: bool = True
     include_project_docs: bool = True
     query_plan: GraphRagQueryPlan | None = None
+    runtime_knowledge: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphRagPath(AgentBaseModel):
@@ -469,6 +470,7 @@ def graphrag_result_to_evidence(result: GraphRagResult) -> list[RetrievedEvidenc
                 ),
             }
         )
+        _annotate_runtime_knowledge(metadata, result.request.runtime_knowledge)
         converted.append(
             item.model_copy(
                 update={
@@ -583,6 +585,20 @@ def _ingested_metadata_for_evidence(
         metadata["annotation_method"] = node.metadata.get("annotation_method")
         metadata["ingested_graph_node_id"] = node.id
     return metadata
+
+
+def _annotate_runtime_knowledge(
+    metadata: dict[str, Any], runtime_knowledge: dict[str, Any] | None
+) -> None:
+    """Stamp runtime-loaded provenance onto GraphRAG evidence without overwriting."""
+    runtime_knowledge = runtime_knowledge or {}
+    metadata.setdefault(
+        "knowledge_runtime_loaded",
+        bool(runtime_knowledge.get("knowledge_runtime_loaded", False)),
+    )
+    path = runtime_knowledge.get("knowledge_graph_path")
+    if path:
+        metadata.setdefault("knowledge_graph_path", path)
 
 
 def _safe_grep_queries(request: GraphRagRequest) -> list[str]:

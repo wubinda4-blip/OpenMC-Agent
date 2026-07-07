@@ -186,7 +186,7 @@ def test_format_graphrag_evidence_section() -> None:
 
 
 def test_orchestrator_default_graphrag_enabled(monkeypatch) -> None:
-    def fake_graphrag_retrieve(request):
+    def fake_graphrag_retrieve(request, **_kwargs):
         return GraphRagResult(
             request=request,
             evidence=[
@@ -221,7 +221,7 @@ def test_orchestrator_can_disable_graphrag_by_policy() -> None:
 
 
 def test_orchestrator_runs_graphrag_when_enabled(monkeypatch) -> None:
-    def fake_graphrag_retrieve(request):
+    def fake_graphrag_retrieve(request, **_kwargs):
         evidence = RetrievedEvidence(
             source_type="graphrag",
             locator="docs/geometry.md:1-4",
@@ -256,7 +256,7 @@ def test_orchestrator_runs_graphrag_when_enabled(monkeypatch) -> None:
 
 
 def test_orchestrator_prefer_graphrag_skips_plain_rag(monkeypatch) -> None:
-    def fake_graphrag_retrieve(request):
+    def fake_graphrag_retrieve(request, **_kwargs):
         return GraphRagResult(
             request=request,
             evidence=[

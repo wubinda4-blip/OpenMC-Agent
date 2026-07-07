@@ -36,11 +36,18 @@ from openmc_agent.graphrag_retriever import (
 )
 from openmc_agent.knowledge_graph import (
     GraphContext,
+    GraphEdge,
     GraphLookupRequest,
+    GraphNode,
     format_graph_context,
     graph_context_to_evidence,
     graph_lookup,
     graph_request_from_issues,
+)
+from openmc_agent.knowledge_runtime import (
+    KnowledgeGraphStore,
+    knowledge_graph_load_config_from_policy,
+    load_knowledge_graph_store,
 )
 from openmc_agent.rag_search import (
     RagSearchRequest,
@@ -88,6 +95,11 @@ class RetrievalPolicy(AgentBaseModel):
     max_evidence_prompt_chars: int = 6000
     skip_rag_for_fact_gap: bool = False
     skip_grep_for_cross_sections_missing: bool = False
+    enable_knowledge_graph_loading: bool = True
+    knowledge_graph_path: str | None = None
+    max_knowledge_nodes: int = 5000
+    max_knowledge_edges: int = 20000
+    allow_missing_knowledge_path: bool = True
 
 
 class RetrievalTriggerDecision(AgentBaseModel):
@@ -120,6 +132,9 @@ class RetrievalContext(AgentBaseModel):
     merged_evidence: list[RetrievedEvidence] = Field(default_factory=list)
     evidence_ranking_result: EvidenceRankingResult | None = None
     ranked_evidence: list[RetrievedEvidence] = Field(default_factory=list)
+
+    knowledge_graph_summary: dict[str, Any] = Field(default_factory=dict)
+    knowledge_graph_warnings: list[str] = Field(default_factory=list)
 
     warnings: list[str] = Field(default_factory=list)
     skipped_steps: list[str] = Field(default_factory=list)
@@ -211,8 +226,23 @@ def gather_retrieval_context_for_issues(
     else:
         context.skipped_steps.append("graph disabled by policy")
 
+    # Load persisted knowledge assets once per retrieval context so the GraphRAG
+    # stage (and only the GraphRAG stage) can fold them into the graph expansion
+    # via extra_nodes/extra_edges. Loading is skipped when GraphRAG is disabled.
+    knowledge_store = KnowledgeGraphStore()
+    if active_policy.enable_graphrag and active_policy.enable_knowledge_graph_loading:
+        knowledge_store = _load_knowledge_store(active_policy)
+        context.knowledge_graph_summary = knowledge_store.summary
+        context.knowledge_graph_warnings = list(knowledge_store.warnings)
+        if knowledge_store.warnings:
+            context.warnings.extend(
+                f"knowledge: {warning}" for warning in knowledge_store.warnings
+            )
+
     if active_policy.enable_graphrag:
-        _run_graphrag_stage(context, decisions, active_policy)
+        _run_graphrag_stage(
+            context, decisions, active_policy, knowledge_store=knowledge_store
+        )
     else:
         context.skipped_steps.append("graphrag disabled by policy")
 
@@ -298,6 +328,11 @@ def summarize_retrieval_context(context: RetrievalContext) -> str:
         f"merged_evidence={len(context.merged_evidence)}",
         f"ranked_evidence={len(context.ranked_evidence)}",
     ]
+    kg_summary = context.knowledge_graph_summary or {}
+    if kg_summary.get("attempted"):
+        parts.append(f"knowledge_loaded={kg_summary.get('loaded', False)}")
+        parts.append(f"knowledge_nodes={kg_summary.get('node_count', 0)}")
+        parts.append(f"knowledge_edges={kg_summary.get('edge_count', 0)}")
     if context.evidence_ranking_result:
         summary = context.evidence_ranking_result.summary
         parts.append(f"dropped_duplicates={summary.get('dropped_duplicate_count', 0)}")
@@ -428,6 +463,8 @@ def _run_graphrag_stage(
     context: RetrievalContext,
     decisions: list[RetrievalTriggerDecision],
     policy: RetrievalPolicy,
+    *,
+    knowledge_store: KnowledgeGraphStore | None = None,
 ) -> None:
     graph_context = context.graph_context or GraphContext()
     graph_has_hints = bool(
@@ -449,7 +486,12 @@ def _run_graphrag_stage(
             grep_evidence=context.grep_evidence,
             graph_context=context.graph_context,
             use_query_planner=policy.enable_graphrag_query_planner,
-        ).model_copy(update={"top_k_chunks": policy.max_graphrag_evidence})
+        ).model_copy(
+            update={
+                "top_k_chunks": policy.max_graphrag_evidence,
+                "runtime_knowledge": _runtime_knowledge_metadata(knowledge_store),
+            }
+        )
         if request.query_plan is not None and policy.max_planned_graph_paths >= 0:
             request = request.model_copy(
                 update={
@@ -465,13 +507,52 @@ def _run_graphrag_stage(
         elif not policy.enable_graphrag_query_planner:
             context.skipped_steps.append("graphrag query planner disabled by policy")
         context.graphrag_request = request
-        result = graphrag_retrieve(request)
+        result = graphrag_retrieve(
+            request,
+            extra_nodes=_extra_nodes(knowledge_store),
+            extra_edges=_extra_edges(knowledge_store),
+        )
         context.graphrag_result = result
         context.graphrag_request = result.request
         context.warnings.extend(f"graphrag: {warning}" for warning in result.warnings)
         context.graphrag_evidence = result.evidence[: policy.max_graphrag_evidence]
     except Exception as exc:  # pragma: no cover - exercised via monkeypatch
         context.warnings.append(f"graphrag failed: {exc}")
+
+
+def _load_knowledge_store(policy: RetrievalPolicy) -> KnowledgeGraphStore:
+    """Load the persisted knowledge graph once; never raise into the workflow."""
+    try:
+        return load_knowledge_graph_store(
+            knowledge_graph_load_config_from_policy(policy)
+        )
+    except Exception as exc:  # pragma: no cover - defensive: loader already swallows errors
+        store = KnowledgeGraphStore()
+        store.warnings.append(f"knowledge graph store load failed: {exc}")
+        return store
+
+
+def _runtime_knowledge_metadata(
+    store: KnowledgeGraphStore | None,
+) -> dict[str, Any]:
+    if store is None or not store.loaded:
+        return {}
+    return {
+        "knowledge_runtime_loaded": True,
+        "knowledge_graph_path": store.path,
+    }
+
+
+def _extra_nodes(store: KnowledgeGraphStore | None) -> list[GraphNode] | None:
+    if store is None or not store.loaded or not store.nodes:
+        return None
+    return store.nodes
+
+
+def _extra_edges(store: KnowledgeGraphStore | None) -> list[GraphEdge] | None:
+    if store is None or not store.loaded or not store.edges:
+        return None
+    return store.edges
 
 
 def _run_rag_stage(

@@ -211,10 +211,17 @@ def summarize_retrieval_context(context: RetrievalContext | dict[str, Any] | Non
             "evidence_score_min": None,
             "evidence_score_max": None,
             "evidence_score_mean": None,
+            "knowledge_graph_attempted": False,
+            "knowledge_graph_loaded": False,
+            "knowledge_graph_node_count": 0,
+            "knowledge_graph_edge_count": 0,
+            "knowledge_graph_source_ids": [],
+            "knowledge_graph_warning_count": 0,
             "warnings": [],
             "skipped_steps": [],
         }
     graph_context = context.graph_context
+    knowledge_summary = context.knowledge_graph_summary or {}
     ranking_summary = (
         context.evidence_ranking_result.summary
         if context.evidence_ranking_result
@@ -263,6 +270,12 @@ def summarize_retrieval_context(context: RetrievalContext | dict[str, Any] | Non
         "evidence_score_min": ranking_summary.get("evidence_score_min"),
         "evidence_score_max": ranking_summary.get("evidence_score_max"),
         "evidence_score_mean": ranking_summary.get("evidence_score_mean"),
+        "knowledge_graph_attempted": bool(knowledge_summary.get("attempted", False)),
+        "knowledge_graph_loaded": bool(knowledge_summary.get("loaded", False)),
+        "knowledge_graph_node_count": int(knowledge_summary.get("node_count", 0) or 0),
+        "knowledge_graph_edge_count": int(knowledge_summary.get("edge_count", 0) or 0),
+        "knowledge_graph_source_ids": list(knowledge_summary.get("source_ids", [])),
+        "knowledge_graph_warning_count": len(context.knowledge_graph_warnings),
         "warnings": list(context.warnings),
         "skipped_steps": list(context.skipped_steps),
     }
