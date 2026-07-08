@@ -212,6 +212,27 @@ class TestVERA3BAssembly:
             "guide_tube": 0,
         }
 
+    def test_bad_facts_guide_count_does_not_pollute_lattice_expected_counts(
+        self,
+        vera3_3b_patches: list,
+    ) -> None:
+        facts = next(p for p in vera3_3b_patches if p.patch_type == "facts")
+        facts.expected_guide_tube_count = 24
+
+        result = assemble_simulation_plan_from_patches(vera3_3b_patches)
+        assert result.ok is True
+        lattice = result.plan.complex_model.lattices[0]
+        assert lattice.expected_counts == {
+            "fuel_pin": 264,
+            "guide_tube": 0,
+            "instrument_tube": 1,
+            "pyrex_rod": 16,
+            "thimble_plug": 8,
+        }
+        assert "assembly.expected_counts_reconciled" in [
+            issue.code for issue in result.issues
+        ]
+
     def test_passes_assembly3d_guard(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         plan = result.plan

@@ -391,19 +391,14 @@ def _assemble_lattice(
     }
     actual_pin_counts = compute_pin_role_counts(universe_pattern, universe_kind_by_id)
 
-    expected_counts: dict[str, int] | None = None
-    if facts and facts.expected_pin_count:
-        expected_counts = {
-            "fuel_pin": facts.expected_pin_count,
-        }
-        if facts.expected_guide_tube_count is not None:
-            expected_counts["guide_tube"] = facts.expected_guide_tube_count
-        if facts.expected_instrument_tube_count is not None:
-            expected_counts["instrument_tube"] = facts.expected_instrument_tube_count
-        if facts.expected_pyrex_count is not None:
-            expected_counts["pyrex_rod"] = facts.expected_pyrex_count
-        if facts.expected_thimble_plug_count is not None:
-            expected_counts["thimble_plug"] = facts.expected_thimble_plug_count
+    expected_counts = _expected_counts_from_facts(facts)
+    if expected_counts:
+        expected_counts = _reconcile_expected_counts_with_actual(
+            expected_counts,
+            actual_pin_counts,
+            total_cells=nx * ny,
+            issues=issues,
+        )
 
     try:
         lattice = LatticeSpec(
@@ -427,6 +422,75 @@ def _assemble_lattice(
         return None, issues, actual_pin_counts
 
     return lattice, issues, actual_pin_counts
+
+
+def _expected_counts_from_facts(facts: FactsPatch | None) -> dict[str, int] | None:
+    if facts is None or facts.expected_pin_count is None:
+        return None
+    expected_counts = {"fuel_pin": facts.expected_pin_count}
+    if facts.expected_guide_tube_count is not None:
+        expected_counts["guide_tube"] = facts.expected_guide_tube_count
+    if facts.expected_instrument_tube_count is not None:
+        expected_counts["instrument_tube"] = facts.expected_instrument_tube_count
+    if facts.expected_pyrex_count is not None:
+        expected_counts["pyrex_rod"] = facts.expected_pyrex_count
+    if facts.expected_thimble_plug_count is not None:
+        expected_counts["thimble_plug"] = facts.expected_thimble_plug_count
+    return expected_counts
+
+
+def _reconcile_expected_counts_with_actual(
+    expected_counts: dict[str, int],
+    actual_pin_counts: dict[str, int],
+    *,
+    total_cells: int,
+    issues: list[PlanAssemblyIssue],
+) -> dict[str, int]:
+    actual_total = sum(actual_pin_counts.values())
+    mismatches = {
+        role: {"expected": expected, "actual": actual_pin_counts.get(role, 0)}
+        for role, expected in expected_counts.items()
+        if actual_pin_counts.get(role, 0) != expected
+    }
+    expected_sum = sum(expected_counts.values())
+    if mismatches and actual_total == total_cells:
+        canonical = {
+            role: actual_pin_counts.get(role, 0)
+            for role in (
+                "fuel_pin",
+                "guide_tube",
+                "instrument_tube",
+                "pyrex_rod",
+                "thimble_plug",
+            )
+            if role in actual_pin_counts
+        }
+        issues.append(PlanAssemblyIssue(
+            code="assembly.expected_counts_reconciled",
+            severity="warning",
+            message=(
+                "facts expected_counts disagreed with deterministic pin_map; "
+                "using actual expanded pin counts for final lattice"
+            ),
+            path="lattice.expected_counts",
+            expected=expected_counts,
+            actual=actual_pin_counts,
+        ))
+        return canonical
+    if expected_sum != total_cells and actual_total == total_cells:
+        issues.append(PlanAssemblyIssue(
+            code="assembly.expected_counts_reconciled",
+            severity="warning",
+            message=(
+                f"facts expected_counts sum {expected_sum} != lattice size "
+                f"{total_cells}; using actual expanded pin counts"
+            ),
+            path="lattice.expected_counts",
+            expected=expected_counts,
+            actual=actual_pin_counts,
+        ))
+        return dict(actual_pin_counts)
+    return expected_counts
 
 
 def _assemble_axial_layers(
