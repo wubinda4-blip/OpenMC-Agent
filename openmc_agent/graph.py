@@ -33,6 +33,7 @@ from openmc_agent.plan_builder import (
     should_use_incremental_planning,
     initialize_plan_build_state,
 )
+from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
 from openmc_agent.retrieval import (
@@ -147,6 +148,9 @@ class GraphState(TypedDict, total=False):
     trace: dict[str, Any]
     planning_mode_decision: dict[str, Any]
     plan_build_state: dict[str, Any]
+    incremental_execution_result: dict[str, Any]
+    use_incremental_executor: bool
+    allow_monolithic_fallback_for_incremental_failure: bool
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -217,6 +221,9 @@ def build_plan_graph(
     checkpointer: Any | None = None,
     retrieval_policy: RetrievalPolicy | None = None,
     knowledge_graph_path: str | Path | None = None,
+    patch_llm_client: Callable[[str], str] | None = None,
+    use_incremental_executor: bool = True,
+    allow_monolithic_fallback_for_incremental_failure: bool = False,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -250,6 +257,9 @@ def build_plan_graph(
             retrieval_tool_dispatch=retrieval_tool_dispatch,
             retrieval_tool_specs=retrieval_tool_specs,
             investigation_max_iterations=investigation_max_iterations,
+            patch_llm_client=patch_llm_client,
+            use_incremental_executor=use_incremental_executor,
+            allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback_for_incremental_failure,
         ),
     )
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
@@ -592,6 +602,176 @@ def _investigation_state_updates(outcome: RetrievalOutcome | None) -> dict[str, 
     }
 
 
+PatchLlmClient = Callable[[str], str]
+
+
+def _run_incremental_plan_generation(
+    state: GraphState,
+    *,
+    patch_llm_client: PatchLlmClient,
+    allow_fallback: bool = False,
+) -> GraphState:
+    """Run the incremental patch executor and inject the assembled plan.
+
+    This replaces the monolithic LLM full-plan call when mode=incremental.
+    On success, the assembled SimulationPlan is stored in ``simulation_plan``
+    and the existing validation/capability/renderer pipeline takes over.
+    On failure, a structured error with patch-level diagnostics is returned.
+    """
+    from openmc_agent.plan_builder.executor import run_incremental_planning
+    from openmc_agent.plan_builder.state import (
+        PlanBuildState as _PlanBuildState,
+        initialize_plan_build_state as _init_state,
+    )
+    from openmc_agent.plan_builder.mode import (
+        PlanningModeDecision as _PlanningModeDecision,
+    )
+
+    requirement = state.get("requirement", "")
+    _progress(state, "generate_plan", "incremental mode: running patch executor")
+
+    # Reconstruct or initialize PlanBuildState from graph state.
+    pmd_dict = state.get("planning_mode_decision") or {}
+    build_state_dict = state.get("plan_build_state")
+
+    if build_state_dict:
+        try:
+            build_state = _PlanBuildState.model_validate(build_state_dict)
+        except Exception:
+            decision = _PlanningModeDecision.model_validate(pmd_dict) if pmd_dict else None
+            build_state = _init_state(requirement, decision) if decision else _PlanBuildState(
+                state_id="pbs_incremental", requirement_text=requirement,
+            )
+    else:
+        decision = _PlanningModeDecision.model_validate(pmd_dict) if pmd_dict else None
+        build_state = _init_state(requirement, decision) if decision else _PlanBuildState(
+            state_id="pbs_incremental", requirement_text=requirement,
+        )
+
+    exec_result = run_incremental_planning(
+        requirement=requirement,
+        state=build_state,
+        llm_client=patch_llm_client,
+        max_patch_attempts=2,
+        strict=True,
+    )
+
+    # Serialize build state back into graph state regardless of outcome.
+    state_updates: dict[str, Any] = {
+        "plan_build_state": exec_result.state.model_dump(mode="json"),
+        "incremental_execution_result": {
+            "ok": exec_result.ok,
+            "summary": exec_result.summary,
+            "issues": [i.model_dump(mode="json") for i in exec_result.issues],
+        },
+    }
+
+    if exec_result.ok and exec_result.assembled_plan:
+        # Parse assembled plan dict into SimulationPlan model.
+        try:
+            plan = SimulationPlan.model_validate(exec_result.assembled_plan)
+        except Exception as exc:
+            _progress(state, "generate_plan", f"assembled plan schema invalid: {exc}")
+            state_updates.update({
+                "simulation_plan": None,
+                "error": f"incremental.assembled_plan_schema_invalid: {exc}",
+                **_trace_event_update(
+                    state,
+                    "plan_generated",
+                    summary="incremental assembled plan failed schema validation",
+                    metadata={
+                        "success": False,
+                        "reason": "assembled_plan_schema_invalid",
+                        "planning_mode": "incremental",
+                    },
+                ),
+            })
+            return state_updates
+
+        _progress(
+            state,
+            "generate_plan",
+            f"incremental plan assembled: {len(plan.complex_model.materials)} materials, "
+            f"{len(plan.complex_model.universes)} universes",
+        )
+        artifact_paths = _write_final_simulation_plan(state, plan)
+        state_updates.update({
+            "simulation_plan": plan,
+            "simulation_spec": plan.model_spec,
+            "plan_artifacts": artifact_paths,
+            "needs_regeneration": False,
+            "error": "",
+            **_trace_event_update(
+                state,
+                "plan_generated",
+                summary=(
+                    f"incremental plan assembled "
+                    f"({len(build_state.get_valid_patches())} valid patches)"
+                ),
+                plan=plan,
+                metadata={
+                    "success": True,
+                    "planning_mode": "incremental",
+                    "patch_order": [t.patch_type for t in build_state.component_tasks],
+                    "valid_patch_count": len(build_state.get_valid_patches()),
+                    "assembly_ok": True,
+                },
+            ),
+        })
+        return state_updates
+
+    # Incremental execution failed.
+    error_codes = [i.code for i in exec_result.issues if i.severity == "error"]
+    _progress(
+        state,
+        "generate_plan",
+        f"incremental execution failed: {error_codes}",
+    )
+
+    if allow_fallback:
+        _progress(
+            state,
+            "generate_plan",
+            "monolithic fallback enabled; falling back to full-plan generation",
+        )
+        state_updates.update({
+            **_trace_event_update(
+                state,
+                "plan_generated",
+                summary="incremental failed; monolithic fallback enabled",
+                metadata={
+                    "success": False,
+                    "planning_mode": "incremental",
+                    "fallback": "monolithic",
+                    "error_codes": error_codes,
+                },
+            ),
+        })
+        # Return empty so the caller falls through to monolithic.
+        return {**state_updates, "_fallback_to_monolithic": True}
+
+    state_updates.update({
+        "simulation_plan": None,
+        "error": f"incremental.execution_failed: {'; '.join(error_codes[:3])}",
+        **_trace_event_update(
+            state,
+            "plan_generated",
+            summary=f"incremental execution failed: {error_codes[:3]}",
+            metadata={
+                "success": False,
+                "planning_mode": "incremental",
+                "failed_patch_type": exec_result.summary.get("failed_patch_type"),
+                "valid_patch_types": [
+                    e.patch_type for e in build_state.patches.values()
+                    if e.status == "valid"
+                ],
+                "error_codes": error_codes,
+            },
+        ),
+    })
+    return state_updates
+
+
 def _make_generate_plan_node(
     generate_plan: GeneratePlanFn,
     *,
@@ -600,10 +780,42 @@ def _make_generate_plan_node(
     retrieval_tool_dispatch: dict[str, Callable[..., ToolResult]] | None = None,
     retrieval_tool_specs: list[ToolSpec] | None = None,
     investigation_max_iterations: int = 4,
+    patch_llm_client: Callable[[str], str] | None = None,
+    use_incremental_executor: bool = True,
+    allow_monolithic_fallback_for_incremental_failure: bool = False,
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):
             return {}
+
+        # Phase 6: route to incremental executor when mode=incremental.
+        pmd = state.get("planning_mode_decision") or {}
+        if (
+            pmd.get("mode") == "incremental"
+            and use_incremental_executor
+            and patch_llm_client is not None
+        ):
+            inc_result = _run_incremental_plan_generation(
+                state,
+                patch_llm_client=patch_llm_client,
+                allow_fallback=allow_monolithic_fallback_for_incremental_failure,
+            )
+            # If fallback was requested, strip marker and continue to monolithic.
+            if inc_result.pop("_fallback_to_monolithic", False):
+                _progress(state, "generate_plan", "continuing to monolithic path")
+            else:
+                return inc_result
+
+        # If incremental mode was recommended but no client is available,
+        # silently fall through to monolithic.  The fallback flag only
+        # controls behaviour when the executor actually runs and *fails*.
+        if pmd.get("mode") == "incremental" and use_incremental_executor:
+            _progress(
+                state,
+                "generate_plan",
+                "incremental mode recommended but no patch_llm_client; "
+                "using monolithic planner",
+            )
 
         model = state.get("model", "openai:gpt-4o")
         _progress(state, "generate_plan", f"calling LLM model={model}")

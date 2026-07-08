@@ -867,3 +867,58 @@ Level 1 近似边界（明确）：
 4. Material/alloy fidelity（真实 composition library）
 5. Volume-fraction calibrated spacer grid geometry
 6. keff benchmark acceptance
+
+#### Incremental Plan Builder Phase 6: Graph workflow integration
+
+**核心成果：** 当 `should_use_incremental_planning(...)` 返回 `mode="incremental"` 且 `patch_llm_client` 可用时，graph 自动路由到 incremental patch executor，不再调用 monolithic full-plan LLM。Simple 2D case 仍走原 monolithic planner。VERA3 3B 通过 fake LLM 端到端完成从 patches 到 assembled SimulationPlan 的完整 graph workflow。
+
+**Graph integration point（`graph.py`）：**
+- `_make_generate_plan_node` 新增 `patch_llm_client`, `use_incremental_executor`, `allow_monolithic_fallback_for_incremental_failure` 参数。
+- `_generate_plan` 在调用 monolithic planner 之前检查 `planning_mode_decision.mode`：
+  - `mode="incremental"` + `patch_llm_client` 可用 → 调用 `_run_incremental_plan_generation`
+  - `mode="incremental"` + 无 `patch_llm_client` → 静默 fallback 到 monolithic（不报错）
+  - `mode="monolithic"` → 原 monolithic planner
+- `_run_incremental_plan_generation` 初始化/重建 PlanBuildState → `run_incremental_planning` → 成功则 parse assembled plan dict 成 SimulationPlan model → 注入 graph state → 后续 validate_plan / assess_capability / renderer 流程不变。
+
+**Config flags：**
+- `use_incremental_executor: bool = True` — 是否在 incremental mode 时使用 executor
+- `allow_monolithic_fallback_for_incremental_failure: bool = False` — executor 失败后是否 fallback 到 monolithic
+- `patch_llm_client: Callable[[str], str] | None = None` — patch LLM callable
+
+**Incremental failure behavior：**
+- executor 失败 → structured error with patch-level diagnostics
+- 不触发 full-plan reflect/repair loop
+- 保留 valid patches 在 PlanBuildState
+- 默认不 fallback 到 monolithic（除非显式设置 flag）
+
+**Reflection / repair interaction：**
+- incremental path 不调用 `repair_plan_format` / `reflect_plan` for patch-level failures
+- assembled plan schema invalid → structured issue `incremental.assembled_plan_schema_invalid`
+- existing monolithic repair/reflect 路径不受影响
+
+**Transcript fields：**
+- `planning_mode_decision.mode`
+- `incremental_execution_result.{ok, summary, issues}`
+- `plan_build_state.{patches, assembled_plan, build_log}`
+- trace event `plan_generated` metadata includes `planning_mode="incremental"`, `patch_order`, `valid_patch_count`
+
+**测试覆盖（9 new tests）：**
+- `tests/test_graph_incremental_integration.py`：9 tests（simple 2D monolithic, VERA3 3B incremental, validation, failure no fallback, fallback flag, JSON failure local retry, valid patches preserved, end-to-end, transcript summary）
+- 全量测试：`758 passed, 2 skipped in 63.18s`。无回归。
+
+**VERA3 3B fake graph run summary：**
+- planning mode: incremental
+- patch order: facts → materials → universes → pin_map → axial_layers → axial_overlays → settings(deterministic)
+- pin_map: 24 special coords (16 Pyrex + 8 plug), < 2000 bytes
+- assembled lattice: 17×17 = 289 positions
+- Pyrex: 16, thimble plugs: 8, instrument tube: 1, fuel: 264
+- axial layers: 12, overlays: 8
+- assembly3d guard: 0 blocking errors
+- transcript: `planning_mode="incremental"`, `success=True`
+
+**remaining work：**
+1. Real LLM stability evaluation（真实 LLM 替代 fake LLM 的端到端测试）
+2. Runtime OpenMC smoke test（source rejection 修复、plot bounds 修复）
+3. Material/alloy fidelity（真实 composition library）
+4. Volume-fraction calibrated spacer grid geometry
+5. keff benchmark acceptance
