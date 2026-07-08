@@ -763,3 +763,51 @@ Level 1 近似边界（明确）：
 4. Renderer/runtime issues（source rejection 修复、plot bounds 修复）
 5. Material/alloy fidelity（Zircaloy-4 / SS-304 / Inconel-718 真实 composition）
 6. Volume-fraction calibrated spacer grid geometry
+
+#### Incremental Plan Builder Phase 4: LLM patch generator
+
+**核心成果：** 每次 LLM 只生成一个 patch（几百到几千字节），不再输出 25K monolithic JSON。JSON parse 失败或 validation 失败只重试当前 patch，不触碰已 valid patches。
+
+**Prompt builders（`openmc_agent/plan_builder/patch_prompts.py`）：**
+- `build_patch_prompt(patch_type, requirement, context)` → per-patch-type prompt
+- 每个 prompt 包含全局规则："Do NOT output a full SimulationPlan"、"Do NOT output the full 17x17 lattice"
+- PinMapPatch prompt 强调只输出特殊坐标，不输出 289 格
+- MaterialsPatch prompt 禁止 confirmed 纯元素合金
+- AxialLayersPatch prompt 禁止 default z=-1..1
+- AxialOverlaysPatch prompt 强调 overlay 而非 material slab
+- `build_retry_prompt(...)` 将 validation errors 反馈给 LLM 以局部修复
+
+**Patch generator（`openmc_agent/plan_builder/patch_generator.py`）：**
+- `generate_patch(patch_type, requirement, context, llm_client, max_attempts)` → `PatchGenerationResult`
+- 流程：build prompt → call llm_client → parse JSON → parse_patch_content → validate_patch → ok/retry
+- JSON parse 支持 markdown fences、preamble text、trailing commas
+- Retry 只修改当前 patch，不删除已 valid patches
+- `FakePatchLLM` 类用于测试（scripted responses，no real LLM）
+
+**State integration（`state.py`）：**
+- `generate_and_add_patch_to_state(state, patch_type, requirement, context, llm_client)` 
+- 成功：add valid envelope + `planning.patch_generated` event
+- 失败：`planning.patch_generation_failed` event + 保留已 valid patches
+- 3 个新 event codes：`planning.patch_generation_started/generated/patch_generation_failed`
+
+**Issue / event codes：**
+`patch_generation.json_parse_error`, `patch_generation.schema_error`, `patch_generation.max_attempts_exceeded`, `patch_generation.llm_error`, `patch_generation.no_llm_client`, `planning.patch_generation_started`, `planning.patch_generated`, `planning.patch_generation_failed`
+
+**测试覆盖（36 new tests）：**
+- `tests/test_patch_prompts.py`：21 tests（per-type prompt content + context inclusion + retry prompt）
+- `tests/test_patch_generator.py`：15 tests（generation success/retry/max-attempts/state-integration/VERA3-3B/JSON-parse）
+- 全量测试：`726 passed, 2 skipped in 53.30s`。无回归。
+
+**VERA3 3B fake LLM patch generation summary：**
+- pin_map：只输出 16 pyrex + 8 plug + 1 instrument tube 坐标（< 2000 bytes），验证 ok
+- axial_overlays：8 个 spacer grid overlays，全部 homogenized_open_region，验证 ok
+- facts + pin_map + axial_layers + axial_overlays（4 个 generated patches）+ fixture materials/universes/settings → assembler 成功组装，assembly3d_guard 通过
+
+**当前仍未完成：**
+1. Full local retry router（per-task 自动重试 + cross-patch 依赖管理）
+2. Incremental workflow executor（incremental executor 接管 generate_plan 节点）
+3. Graph replacement（full workflow replacement）
+4. Real LLM integration / evaluation（真实 LLM 稳定性评估）
+5. Runtime smoke test（source rejection 修复、plot bounds 修复）
+6. Material/alloy fidelity（真实 composition library）
+7. Volume-fraction calibrated spacer grid geometry

@@ -41,6 +41,9 @@ EVENT_PATCH_INVALID: str = "planning.patch_invalid"
 EVENT_ASSEMBLY_STARTED: str = "planning.assembly_started"
 EVENT_ASSEMBLY_COMPLETED: str = "planning.assembly_completed"
 EVENT_ASSEMBLY_FAILED: str = "planning.assembly_failed"
+EVENT_PATCH_GENERATION_STARTED: str = "planning.patch_generation_started"
+EVENT_PATCH_GENERATED: str = "planning.patch_generated"
+EVENT_PATCH_GENERATION_FAILED: str = "planning.patch_generation_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +544,97 @@ def assemble_state_if_ready(
     return state
 
 
+def generate_and_add_patch_to_state(
+    state: PlanBuildState,
+    patch_type: str,
+    requirement: str,
+    context: Any | None = None,
+    llm_client: Any | None = None,
+    max_attempts: int = 2,
+) -> PlanBuildState:
+    """Generate a patch via LLM and add it to the build state.
+
+    Calls :func:`~openmc_agent.plan_builder.patch_generator.generate_patch`,
+    then integrates the result into ``state``.
+
+    On success:
+    * Adds the valid patch envelope to state.
+    * Records ``planning.patch_generation_started`` and
+      ``planning.patch_generated`` events.
+
+    On failure:
+    * Records an invalid envelope if raw output exists.
+    * Records ``planning.patch_generation_failed`` event.
+    * **Does NOT touch already-valid patches.**
+
+    Parameters
+    ----------
+    state
+        The build state (mutated in place).
+    patch_type
+        The patch type to generate.
+    requirement
+        The requirement text for the prompt.
+    context
+        Optional :class:`PatchGenerationContext`.
+    llm_client
+        A callable ``(prompt: str) -> str``.
+    max_attempts
+        Maximum LLM call attempts.
+
+    Returns
+    -------
+    PlanBuildState
+        The updated state (same object, for chaining).
+    """
+    from .patch_generator import generate_patch
+
+    state.add_event(
+        event_type=EVENT_PATCH_GENERATION_STARTED,
+        message=f"generating {patch_type} patch via LLM",
+        data={"patch_type": patch_type, "max_attempts": max_attempts},
+    )
+
+    result = generate_patch(
+        patch_type=patch_type,
+        requirement=requirement,
+        state=state,
+        context=context,
+        llm_client=llm_client,
+        max_attempts=max_attempts,
+    )
+
+    if result.ok and result.envelope is not None:
+        state.add_patch(result.envelope)
+        state.add_event(
+            event_type=EVENT_PATCH_GENERATED,
+            message=f"{patch_type} patch generated and validated",
+            data={
+                "patch_id": result.envelope.patch_id,
+                "patch_type": patch_type,
+                "attempts": len(result.attempts),
+            },
+        )
+    else:
+        # Record failure — preserve existing valid patches.
+        error_codes = [
+            i.get("code", "unknown")
+            for i in result.issues
+            if i.get("severity") == "error"
+        ]
+        state.add_event(
+            event_type=EVENT_PATCH_GENERATION_FAILED,
+            message=f"{patch_type} patch generation failed: {error_codes}",
+            data={
+                "patch_type": patch_type,
+                "error_codes": error_codes,
+                "attempts": len(result.attempts),
+            },
+        )
+
+    return state
+
+
 __all__ = [
     "BuildEvent",
     "PlanBuildState",
@@ -548,6 +642,7 @@ __all__ = [
     "PlanPatchEnvelope",
     "add_validated_patch_to_state",
     "assemble_state_if_ready",
+    "generate_and_add_patch_to_state",
     "initialize_plan_build_state",
     "create_initial_component_tasks",
     "EVENT_PLANNING_MODE_SELECTED",
@@ -562,4 +657,7 @@ __all__ = [
     "EVENT_ASSEMBLY_STARTED",
     "EVENT_ASSEMBLY_COMPLETED",
     "EVENT_ASSEMBLY_FAILED",
+    "EVENT_PATCH_GENERATION_STARTED",
+    "EVENT_PATCH_GENERATED",
+    "EVENT_PATCH_GENERATION_FAILED",
 ]

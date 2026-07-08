@@ -25,6 +25,15 @@ from .assembler import (
     assemble_simulation_plan_from_patches,
     expand_pin_map,
 )
+from .patch_generator import (
+    FakePatchLLM,
+    PatchGenerationAttempt,
+    PatchGenerationContext,
+    PatchGenerationResult,
+    generate_patch,
+    parse_llm_patch_json,
+)
+from .patch_prompts import build_patch_prompt, build_retry_prompt
 from .mode import (
     PlanningModeDecision,
     should_use_incremental_planning,
@@ -57,6 +66,7 @@ from .state import (
     add_validated_patch_to_state,
     assemble_state_if_ready,
     create_initial_component_tasks,
+    generate_and_add_patch_to_state,
     initialize_plan_build_state,
 )
 from .validators import (
@@ -108,4 +118,14 @@ __all__ = [
     "assemble_simulation_plan_from_patches",
     "assemble_state_if_ready",
     "expand_pin_map",
+    # Phase 4 -- LLM patch generator
+    "FakePatchLLM",
+    "PatchGenerationAttempt",
+    "PatchGenerationContext",
+    "PatchGenerationResult",
+    "build_patch_prompt",
+    "build_retry_prompt",
+    "generate_and_add_patch_to_state",
+    "generate_patch",
+    "parse_llm_patch_json",
 ]
