@@ -1,8 +1,31 @@
 # OpenMC-Agent TODO Roadmap
 
-维护日期：2026-07-08
+维护日期：2026-07-09
 
 本文档用于整理项目主线、待完成方向和优先级。它不是单次运行生成的 skeleton `TODO.md`，而是仓库级 roadmap。
+
+## 重大里程碑（2026-07-09）
+
+VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
+
+| 指标 | 3A | 3B |
+|---|---|---|
+| Patch 全部 LLM 生成 | ✓ (6 patches) | ✓ (6 patches + deterministic settings) |
+| 17×17 lattice 展开 | ✓ (264 fuel + 24 GT + 1 IT) | ✓ (264 fuel + 16 Pyrex + 8 plug + 1 IT) |
+| 轴向 12 层 | ✓ | ✓ |
+| 8 个 spacer grid overlays | ✓ | ✓ |
+| ZCylinder 几何自动构建 | ✓ (6 surfaces, 9 regions) | ✓ (10 surfaces, 15 regions) |
+| 边界条件 (radial=reflective, axial=vacuum) | ✓ | ✓ |
+| OpenMC smoke test | ✓ passed | ✓ passed |
+| keff | ~1.149 (偏高，合金近似) | **0.979** ± 0.004 |
+| Leakage | 0% | 低 |
+
+关键架构突破：
+- 不再依赖 monolithic 25K JSON（incremental patch 生成避免了截断问题）
+- 不再依赖 reference fixture（LLM 直接生成所有 patch，coord_overlap 确定性修复）
+- assembler 自动从 CellLayerPatch 构建 ZCylinder surfaces + regions
+- 边界条件从实际几何推导（不 hardcode）
+- 元素符号（He/Zr/Fe/Ni）自动路由到 add_element
 
 优先级约定：
 
@@ -34,19 +57,23 @@
 - 每个主线改动能报告指标变化。
 - 失败 case 能定位到 patch type / issue code / renderer / retrieval stage。
 
-## 2. P0 主线：Incremental 分层输出稳定化
+## 2. P0 主线：Incremental 分层输出稳定化（已达成主要目标）
 
 目标：复杂模型默认走 input-driven 分层 patch 生成，而不是依赖 monolithic 大 JSON 或 benchmark-specific fixture。
 
 当前状态：
 
 - `plan_builder/` 已实现 `facts -> materials -> universes -> pin_map -> axial_layers -> axial_overlays -> settings` 分层生成、校验、重试、组装。
+- **VERA3 3A 和 3B 均通过真实 LLM (deepseek) incremental pipeline 端到端成功运行**，不使用 reference fixture。
+- coord_overlap 确定性修复（同坐标保留高优先级组）。
+- assembler 自动从 CellLayerPatch 构建 ZCylinder surfaces + regions。
+- 边界条件从实际几何推导（不 hardcode）。
 - reference patch 支持显式策略与 deterministic benchmark id matching；reference 只能作为 gold/reference 回归，不能代替通用建模能力。
 - 3D assembly、spacer grid、special pin map 已有 guard、assembler 与 fixture 回归。
 
 下一步：
 
-1. 用真实 LLM 跑多模型 incremental ablation：DeepSeek / GLM / OpenAI 兼容模型，记录每层失败类型。
+1. 扩展真实 LLM 测试到其他模型（GLM / OpenAI 兼容模型），记录每层失败类型。
 2. 加强 patch prompt 的最小输出契约：禁止 full plan、禁止 full lattice、要求只输出当前 patch schema。
 3. 扩展 patch few-shot：从现有 IR 反推 pin-cell、2D assembly、quarter-core、unsupported skeleton case 的 patch exemplar。
 4. 增强 resume / artifact 诊断：失败 run 清晰展示最后有效 patch、失败 patch、LLM raw、validation issue、推荐下一步。
@@ -54,8 +81,8 @@
 
 完成标准：
 
-- VERA3 3B 类复杂 3D assembly 在不使用 reference-only 的情况下能稳定产出可审查 plan。
-- 每层 patch 的失败可局部重试，不触发 monolithic reflect。
+- ✅ VERA3 3B 类复杂 3D assembly 在不使用 reference-only 的情况下能稳定产出可审查 plan。
+- ✅ 每层 patch 的失败可局部重试，不触发 monolithic reflect。
 - policy 行为有单测和 graph integration 测试覆盖。
 
 ## 3. P0 主线：事实缺口与安全边界守护
@@ -208,17 +235,24 @@
 
 - 自动生成代码必须先进入 review/test，不直接进入生产渲染路径。
 
-## 10. 建议推进顺序
+## 10. 建议推进顺序（更新于 2026-07-09）
 
-近期建议按以下顺序推进：
+VERA3 3A/3B 端到端成功后，重心从"能不能跑通"转向"跑得准不准"：
 
-1. **P0-1 真实评估闭环**：先让项目有统一尺子。
-2. **P0-2 Incremental 稳定化**：用评估集压真实 LLM 分层输出。
-3. **P0-3 Fact-gap 安全边界**：防止检索和 few-shot 带来错误“自动填事实”。
-4. **P1-4 Retrieval ablation**：用指标决定 RAG/GraphRAG 哪些部分值得保留或调权。
-5. **P1-5 Renderer fidelity**：材料库、volume-fraction overlay、HexAssembly 按收益推进。
-6. **P1-6 Benchmark acceptance**：把 VERA3 3B 从结构验收推进到 workflow/keff sanity。
-7. **P2 工程化与文档收敛**：在主线稳定后整理 CLI、artifact、CI、文档入口。
+1. ~~**P0-1 真实评估闭环**~~ → **已完成**：incremental pipeline 端到端跑通，3A/3B 均成功。
+2. ~~**P0-2 Incremental 稳定化**~~ → **已达成主要目标**：真实 LLM 分层输出稳定，不依赖 reference fixture。
+3. **P0-NEW keff 精度提升**（最高优先级）：
+   - 3B keff=0.979（接近临界），3A keff≈1.149（偏高 ~15%）。
+   - 主要偏差来源：合金近似（纯 Zr/Fe/Ni 去除了吸收截面）。
+   - 下一步：引入真实合金 composition library（Zircaloy-4 Sn/Fe/Cr, SS-304 Cr/Ni, Inconel-718 Cr/Fe/Nb/Mo）。
+4. **P0-3 Fact-gap 安全边界**：防止检索和 few-shot 带来错误"自动填事实"。
+5. **P1-5 Renderer fidelity**：
+   - 边界条件验证（已加入 TODO）
+   - Volume-fraction calibrated overlay
+   - HexAssembly renderer
+6. **P1-6 Benchmark acceptance**：把 VERA3 3B 从结构验收推进到 keff 对标。
+7. **P1-1 真实评估闭环（正式版）**：统一 case runner + 指标体系。
+8. **P2 工程化与文档收敛**。
 
 ## 11. 当前不建议做的事
 
