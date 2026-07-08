@@ -48,6 +48,23 @@ def main() -> int:
         help="Allow monolithic fallback if incremental fails (default: False)",
     )
     parser.add_argument(
+        "--reference-patch-policy", default="off",
+        choices=["off", "prefer_reference_for_structural", "fallback_after_llm_failure", "reference_only_for_structural"],
+        help="When to use benchmark reference patches for structural patches",
+    )
+    parser.add_argument(
+        "--reference-path", default=None,
+        help="Explicit path to benchmark reference file",
+    )
+    parser.add_argument(
+        "--resume-from", default=None,
+        help="Resume from saved incremental directory (e.g. data/runs/VERA3/3B/incremental)",
+    )
+    parser.add_argument(
+        "--start-at-patch", default=None,
+        help="Start execution at this patch type (for resume)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print planned patch order without calling LLM",
     )
@@ -72,12 +89,25 @@ def main() -> int:
     print(f"Planning mode: {decision.mode}")
     print(f"Triggers: {decision.triggers}")
 
-    state = initialize_plan_build_state(
-        requirement=requirement,
-        decision=decision,
-        benchmark_id=args.benchmark,
-        selected_variant=args.variant,
-    )
+    # Resume from saved state if requested.
+    if args.resume_from:
+        from openmc_agent.plan_builder.state import load_plan_build_state
+        resume_dir = Path(args.resume_from)
+        state_path = resume_dir / "plan_build_state.json"
+        if state_path.is_file():
+            print(f"Resuming from {state_path}")
+            state = load_plan_build_state(state_path)
+        else:
+            print(f"Warning: {state_path} not found, starting fresh")
+            state = initialize_plan_build_state(
+                requirement=requirement, decision=decision,
+                benchmark_id=args.benchmark, selected_variant=args.variant,
+            )
+    else:
+        state = initialize_plan_build_state(
+            requirement=requirement, decision=decision,
+            benchmark_id=args.benchmark, selected_variant=args.variant,
+        )
 
     order = default_patch_task_order(state)
     print(f"Patch order: {order}")
@@ -99,43 +129,68 @@ def main() -> int:
     print(f"\nCreating patch LLM client for model={args.model}...")
     llm_client = make_patch_llm_client(model_name=args.model, output_mode=args.patch_output_mode)
 
+    if args.reference_patch_policy != "off":
+        print(f"Reference patch policy: {args.reference_patch_policy}")
+
     output_dir = args.out or f"data/evals/incremental/{args.benchmark}_{args.variant}"
 
     print(f"Running incremental evaluation (output: {output_dir})...")
-    report, build_state = run_incremental_evaluation(
+
+    # Use executor directly for reference patch policy support.
+    from openmc_agent.plan_builder.executor import run_incremental_planning
+
+    exec_result = run_incremental_planning(
         requirement=requirement,
-        benchmark_id=args.benchmark,
-        selected_variant=args.variant,
+        state=state,
         llm_client=llm_client,
-        model=args.model,
         max_patch_attempts=args.max_patch_attempts,
-        output_dir=output_dir,
+        reference_patch_policy=args.reference_patch_policy,
+        reference_path=args.reference_path,
     )
+
+    # Write output.
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    if exec_result.assembled_plan:
+        (out_path / "assembled_plan.json").write_text(
+            json.dumps(exec_result.assembled_plan, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    (out_path / "plan_build_state.json").write_text(
+        json.dumps(exec_result.state.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    report_ok = exec_result.ok
+    report_summary = exec_result.summary
 
     # Print summary.
     print(f"\n{'='*60}")
-    print(f"Evaluation result: ok={report.ok}")
-    print(f"Planning mode: {report.planning_mode}")
-    print(f"No monolithic plan requested: {report.no_monolithic_plan_requested}")
-    print(f"\nPatch metrics:")
-    for pt, metric in report.patch_metrics.items():
-        status = "valid" if metric.validation_ok else "INVALID"
-        print(f"  {pt}: {status} (attempts={metric.attempts}, raw_chars={metric.raw_chars})")
-        if metric.issue_codes:
-            print(f"    issues: {metric.issue_codes}")
-    print(f"\nAssembly: ok={report.assembly.ok}")
-    if report.assembly.ok:
-        print(f"  lattice: {report.assembly.lattice_size}")
-        print(f"  axial_layers: {report.assembly.axial_layer_count}")
-        print(f"  overlays: {report.assembly.overlay_count}")
-        print(f"  pyrex: {report.assembly.pyrex_count}")
-        print(f"  plugs: {report.assembly.thimble_plug_count}")
-    print(f"\nGuard: blocking={report.guard.blocking_issue_count}")
-    if report.error:
-        print(f"Error: {report.error}")
+    print(f"Evaluation result: ok={report_ok}")
+    print(f"Reference policy: {args.reference_patch_policy}")
+    if not report_ok:
+        failed = report_summary.get("failed_patch_type", "unknown")
+        valid_types = report_summary.get("valid_patch_types", [])
+        issue_codes = report_summary.get("issue_codes", [])
+        print(f"Failed patch: {failed}")
+        print(f"Valid patches: {', '.join(valid_types) if valid_types else '(none)'}")
+        print(f"Issue codes: {issue_codes}")
+        print(f"Monolithic fallback: {report_summary.get('monolithic_fallback_attempted', False)}")
+        if report_summary.get("reference_patches_used"):
+            print(f"Reference patches used: {report_summary['reference_patches_used']}")
+    else:
+        valid_types = sorted({
+            e.patch_type for e in exec_result.state.patches.values()
+            if e.status == "valid"
+        })
+        print(f"Valid patches: {', '.join(valid_types)}")
+        ref_used = report_summary.get("reference_patches_used", [])
+        if ref_used:
+            print(f"Reference patches used: {ref_used}")
+    print(f"Output: {output_dir}")
     print(f"{'='*60}")
 
-    return 0 if report.ok else 1
+    return 0 if report_ok else 1
 
 
 if __name__ == "__main__":

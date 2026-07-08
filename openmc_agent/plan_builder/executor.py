@@ -9,6 +9,7 @@ touching the graph workflow or OpenMC.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
@@ -29,6 +30,12 @@ from .patches import (
 from .patch_generator import (
     PatchGenerationContext,
     generate_patch,
+)
+from .validators import validate_patch
+from .reference_patches import (
+    REFERENCE_PATCH_TYPES,
+    build_reference_patch,
+    load_benchmark_reference,
 )
 from .state import (
     EVENT_ASSEMBLY_COMPLETED,
@@ -54,6 +61,13 @@ EVENT_PATCH_SKIPPED_ALREADY_VALID: str = "planning.patch_skipped_already_valid"
 EVENT_PATCH_DEPENDENCY_CONTEXT_BUILT: str = "planning.patch_dependency_context_built"
 EVENT_PATCH_RETRY_ROUTED: str = "planning.patch_retry_routed"
 EVENT_DETERMINISTIC_SETTINGS_CREATED: str = "planning.deterministic_settings_patch_created"
+EVENT_INCREMENTAL_RESUME_STARTED: str = "planning.incremental_resume_started"
+EVENT_INCREMENTAL_RESUME_COMPLETED: str = "planning.incremental_resume_completed"
+EVENT_PATCH_SKIPPED_FROM_RESUME: str = "planning.patch_skipped_from_resume_state"
+EVENT_REFERENCE_PATCH_LOADED: str = "reference_patch.loaded"
+EVENT_REFERENCE_PATCH_GENERATED: str = "reference_patch.generated"
+EVENT_REFERENCE_PATCH_FALLBACK: str = "reference_patch.fallback_after_llm_failure"
+EVENT_REFERENCE_PATCH_VALIDATION_FAILED: str = "reference_patch.validation_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -416,22 +430,74 @@ def run_incremental_planning(
     max_patch_attempts: int = 2,
     strict: bool = True,
     task_order: list[str] | None = None,
+    reference_patch_policy: str = "off",
+    reference_path: str | Path | None = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
-    Generates patches one at a time in dependency order, retries failures
-    locally, and finally assembles a complete SimulationPlan.
+    Parameters
+    ----------
+    reference_patch_policy
+        Controls when reference patches are used for structural patches:
+        ``"off"`` (LLM only), ``"reference_only_for_structural"``
+        (structural patches from reference, LLM for facts/materials/universes),
+        ``"fallback_after_llm_failure"`` (try LLM, then reference),
+        ``"prefer_reference_for_structural"`` (same as reference_only).
+    reference_path
+        Explicit path to reference file.  If None, tries benchmark lookup.
     """
     issues: list[IncrementalExecutionIssue] = []
+    reference_data: dict[str, Any] | None = None
+    reference_patches_used: list[str] = []
+
+    # Load reference if policy is active.
+    if reference_patch_policy != "off":
+        reference_data = load_benchmark_reference(
+            benchmark_id=state.benchmark_id,
+            variant=state.selected_variant,
+            reference_path=reference_path,
+        )
+        if reference_data is not None:
+            state.add_event(
+                event_type=EVENT_REFERENCE_PATCH_LOADED,
+                message=f"benchmark reference loaded for {state.benchmark_id}/{state.selected_variant}",
+                data={"policy": reference_patch_policy},
+            )
 
     state.add_event(
         event_type=EVENT_INCREMENTAL_EXECUTION_STARTED,
         message="incremental planning execution started",
-        data={"max_patch_attempts": max_patch_attempts},
+        data={
+            "max_patch_attempts": max_patch_attempts,
+            "reference_patch_policy": reference_patch_policy,
+            "reference_available": reference_data is not None,
+        },
     )
 
     order = task_order or default_patch_task_order(state)
     required = required_patch_types_for_state(state)
+
+    def _build_failure_summary(pt: str, error_codes: list[str], attempt_count: int) -> dict[str, Any]:
+        valid_types = sorted({
+            e.patch_type for e in state.patches.values() if e.status == "valid"
+        })
+        invalid_types = sorted({
+            e.patch_type for e in state.patches.values()
+            if e.status != "valid"
+        })
+        if pt not in invalid_types:
+            invalid_types = sorted(set(invalid_types) | {pt})
+        return {
+            "failed_patch_type": pt,
+            "failed_stage": "patch_generation",
+            "attempt_count": attempt_count,
+            "issue_codes": error_codes,
+            "valid_patch_types": valid_types,
+            "invalid_patch_types": invalid_types,
+            "next_recommended_action": "resume_from_failed_patch",
+            "monolithic_fallback_attempted": False,
+            "reference_patches_used": reference_patches_used,
+        }
 
     for patch_type in order:
         # Skip if already valid.
@@ -454,6 +520,46 @@ def run_incremental_planning(
                 data={"source_strategy": settings_patch.source_strategy},
             )
             continue
+
+        # Reference-only for structural patches.
+        is_structural = patch_type in REFERENCE_PATCH_TYPES
+        use_reference_first = (
+            is_structural
+            and reference_data is not None
+            and reference_patch_policy in (
+                "reference_only_for_structural",
+                "prefer_reference_for_structural",
+            )
+        )
+
+        if use_reference_first:
+            ref_patch = build_reference_patch(
+                patch_type=patch_type,
+                reference=reference_data,
+                variant=state.selected_variant,
+            )
+            if ref_patch is not None:
+                val_result = validate_patch(ref_patch)
+                if val_result.ok:
+                    content = ref_patch.model_dump(mode="json")
+                    _add_envelope(state, patch_type, content, source="fixture")
+                    reference_patches_used.append(patch_type)
+                    state.add_event(
+                        event_type=EVENT_REFERENCE_PATCH_GENERATED,
+                        message=f"{patch_type} patch from reference (valid)",
+                        data={"patch_type": patch_type},
+                    )
+                    continue
+                else:
+                    state.add_event(
+                        event_type=EVENT_REFERENCE_PATCH_VALIDATION_FAILED,
+                        message=f"{patch_type} reference patch failed validation",
+                        data={
+                            "patch_type": patch_type,
+                            "issue_codes": [i.code for i in val_result.issues if i.severity == "error"],
+                        },
+                    )
+            # Reference not available or failed → fall through to LLM.
 
         # Build context from valid patches.
         ctx = build_generation_context_from_state(state, patch_type)
@@ -479,11 +585,37 @@ def run_incremental_planning(
                 },
             )
         else:
-            # Route retry.
+            # Try reference fallback if policy allows.
             error_codes = [
                 i.get("code", "") for i in result.issues
                 if i.get("severity") == "error"
             ]
+
+            if (
+                is_structural
+                and reference_data is not None
+                and reference_patch_policy == "fallback_after_llm_failure"
+            ):
+                ref_patch = build_reference_patch(
+                    patch_type=patch_type,
+                    reference=reference_data,
+                    variant=state.selected_variant,
+                )
+                if ref_patch is not None:
+                    val_result = validate_patch(ref_patch)
+                    if val_result.ok:
+                        content = ref_patch.model_dump(mode="json")
+                        _add_envelope(state, patch_type, content, source="fixture")
+                        reference_patches_used.append(patch_type)
+                        state.add_event(
+                            event_type=EVENT_REFERENCE_PATCH_FALLBACK,
+                            message=f"{patch_type} reference fallback after LLM failure",
+                            data={"patch_type": patch_type, "llm_error_codes": error_codes},
+                        )
+                        continue
+
+            # All retries exhausted.
+            attempt_count = len(result.attempts)
             decision = route_retry(
                 failed_patch_type=patch_type,
                 issues=result.issues,
@@ -500,48 +632,23 @@ def run_incremental_planning(
                 },
             )
 
-            if decision.action == "fail":
-                issues.append(IncrementalExecutionIssue(
-                    code="incremental.patch_generation_failed",
-                    severity="error",
-                    message=f"{patch_type} generation failed: {error_codes}",
-                    patch_type=patch_type,
-                ))
-                state.add_event(
-                    event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
-                    message=f"execution stopped: {patch_type} generation failed",
-                    data={"failed_patch_type": patch_type, "error_codes": error_codes},
-                )
-                return IncrementalExecutionResult(
-                    ok=False,
-                    state=state,
-                    issues=issues,
-                    summary={
-                        "failed_patch_type": patch_type,
-                        "valid_patch_count": len(state.get_valid_patches()),
-                    },
-                )
-            else:
-                issues.append(IncrementalExecutionIssue(
-                    code="incremental.patch_generation_failed",
-                    severity="error",
-                    message=f"{patch_type} generation failed after retries: {error_codes}",
-                    patch_type=patch_type,
-                ))
-                state.add_event(
-                    event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
-                    message=f"execution stopped: {patch_type} generation exhausted retries",
-                    data={"failed_patch_type": patch_type},
-                )
-                return IncrementalExecutionResult(
-                    ok=False,
-                    state=state,
-                    issues=issues,
-                    summary={
-                        "failed_patch_type": patch_type,
-                        "valid_patch_count": len(state.get_valid_patches()),
-                    },
-                )
+            issues.append(IncrementalExecutionIssue(
+                code="incremental.patch_generation_failed",
+                severity="error",
+                message=f"{patch_type} generation failed: {error_codes}",
+                patch_type=patch_type,
+            ))
+            state.add_event(
+                event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
+                message=f"execution stopped: {patch_type} generation failed",
+                data={"failed_patch_type": patch_type, "error_codes": error_codes},
+            )
+            return IncrementalExecutionResult(
+                ok=False,
+                state=state,
+                issues=issues,
+                summary=_build_failure_summary(patch_type, error_codes, attempt_count),
+            )
 
     # Check required patches.
     missing = [pt for pt in required if not _has_valid_patch(state, pt)]
@@ -618,8 +725,15 @@ __all__ = [
     "EVENT_INCREMENTAL_EXECUTION_STARTED",
     "EVENT_INCREMENTAL_EXECUTION_COMPLETED",
     "EVENT_INCREMENTAL_EXECUTION_FAILED",
+    "EVENT_INCREMENTAL_RESUME_STARTED",
+    "EVENT_INCREMENTAL_RESUME_COMPLETED",
     "EVENT_PATCH_SKIPPED_ALREADY_VALID",
+    "EVENT_PATCH_SKIPPED_FROM_RESUME",
     "EVENT_PATCH_DEPENDENCY_CONTEXT_BUILT",
     "EVENT_PATCH_RETRY_ROUTED",
     "EVENT_DETERMINISTIC_SETTINGS_CREATED",
+    "EVENT_REFERENCE_PATCH_LOADED",
+    "EVENT_REFERENCE_PATCH_GENERATED",
+    "EVENT_REFERENCE_PATCH_FALLBACK",
+    "EVENT_REFERENCE_PATCH_VALIDATION_FAILED",
 ]

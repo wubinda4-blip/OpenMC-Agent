@@ -16,6 +16,7 @@ Design constraints
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
@@ -649,6 +650,33 @@ def generate_and_add_patch_to_state(
     return state
 
 
+# ---------------------------------------------------------------------------
+# Resume helpers (Phase 7D)
+# ---------------------------------------------------------------------------
+
+
+def save_plan_build_state(state: PlanBuildState, path: str | Path) -> None:
+    """Save a PlanBuildState to a JSON file."""
+    import json
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps(state.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_plan_build_state(path: str | Path) -> PlanBuildState:
+    """Load a PlanBuildState from a JSON file.
+
+    Raises FileNotFoundError if the file does not exist.
+    """
+    import json
+    p = Path(path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    return PlanBuildState.model_validate(data)
+
+
 __all__ = [
     "BuildEvent",
     "PlanBuildState",
@@ -657,6 +685,8 @@ __all__ = [
     "add_validated_patch_to_state",
     "assemble_state_if_ready",
     "generate_and_add_patch_to_state",
+    "save_plan_build_state",
+    "load_plan_build_state",
     "initialize_plan_build_state",
     "create_initial_component_tasks",
     "EVENT_PLANNING_MODE_SELECTED",

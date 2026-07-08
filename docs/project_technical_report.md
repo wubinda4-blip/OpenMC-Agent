@@ -1037,3 +1037,46 @@ Level 1 近似边界（明确）：
    - 新增 `patch_type`, `prompt_text`, `output_mode_used` 字段
 
 **测试覆盖（5 new tests）：** `778 passed, 3 skipped`。无回归。
+
+#### Phase 7D: Failed patch visibility + reference-backed deterministic patches + resumable execution
+
+**背景：** 真实 LLM (deepseek) 在 VERA3 3B 上成功生成 facts/materials/universes，但在后续 structural patch (pin_map/axial_layers/axial_overlays) 上不稳定。失败摘要没有显示 failed_patch_type，无法诊断。已有 valid patches 无法复用。
+
+**核心修改：**
+
+1. **Reference-backed deterministic patches（`reference_patches.py`）：**
+   - `load_benchmark_reference(benchmark_id, variant, reference_path)` — 从 JSON 文件加载
+   - `build_reference_patch(patch_type, reference, variant)` — 构建 PinMapPatch/AxialLayersPatch/AxialOverlaysPatch/SettingsPatch
+   - 从 `tests/fixtures/vera3_patches/vera3_3a_patches.json` 和 `vera3_3b_patches.json` 加载
+   - 不 hardcode 任何 VERA3 数字到代码
+
+2. **Reference patch policy（`executor.py`）：**
+   - `reference_only_for_structural`：structural patches (pin_map/axial_layers/axial_overlays) 全部从 reference 来，LLM 只生成 facts/materials/universes
+   - `fallback_after_llm_failure`：先让 LLM 生成，失败后用 reference
+   - `off`（默认）：纯 LLM
+
+3. **Enhanced failure summary：**
+   - `failed_patch_type`, `valid_patch_types`, `invalid_patch_types`, `issue_codes`, `attempt_count`
+   - `next_recommended_action: "resume_from_failed_patch"`
+   - `monolithic_fallback_attempted: false`
+   - `reference_patches_used: [...]`
+
+4. **Resumable incremental execution（`state.py`）：**
+   - `save_plan_build_state(state, path)` / `load_plan_build_state(path)`
+   - 已 valid patches 自动 skip
+   - CLI `--resume-from <dir>` + `--start-at-patch <type>`
+
+5. **CLI 新增 flags：**
+   - `--reference-patch-policy off|prefer_reference_for_structural|fallback_after_llm_failure|reference_only_for_structural`
+   - `--reference-path <path>`
+   - `--resume-from <dir>`
+   - `--start-at-patch <type>`
+
+**测试覆盖（13 new tests）：** `791 passed, 3 skipped`。无回归。
+
+**VERA3 3B reference structural execution：**
+- facts/materials/universes: LLM 生成
+- pin_map/axial_layers/axial_overlays: reference deterministic 生成
+- settings: deterministic
+- assembly: 17×17 lattice, 16 Pyrex, 8 plugs, 12 layers, 8 overlays
+- guard: 0 blocking issues

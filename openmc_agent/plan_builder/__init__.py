@@ -77,6 +77,11 @@ from .patches import (
     parse_patch_content,
     parse_patch_envelope,
 )
+from .reference_patches import (
+    REFERENCE_PATCH_TYPES,
+    build_reference_patch,
+    load_benchmark_reference,
+)
 from .state import (
     BuildEvent,
     PlanBuildState,
@@ -87,6 +92,8 @@ from .state import (
     create_initial_component_tasks,
     generate_and_add_patch_to_state,
     initialize_plan_build_state,
+    load_plan_build_state,
+    save_plan_build_state,
 )
 from .validators import (
     PatchValidationContext,
@@ -165,4 +172,10 @@ __all__ = [
     "PatchMetric",
     "make_patch_llm_client",
     "run_incremental_evaluation",
+    # Phase 7D -- reference patches + resume
+    "REFERENCE_PATCH_TYPES",
+    "build_reference_patch",
+    "load_benchmark_reference",
+    "load_plan_build_state",
+    "save_plan_build_state",
 ]
