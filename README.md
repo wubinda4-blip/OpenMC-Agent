@@ -29,7 +29,7 @@
 ```
 receive_requirement
    → retrieve_openmc_docs      # 本地内省 OpenMC API，取相关符号/签名
-   → select_few_shots           # 按关键词挑 few-shot 建模范式
+   → select_few_shots           # 按结构特征+关键词挑 few-shot（抽象范式 + gold case）
    → generate_plan              # LLM 产出 SimulationPlan（带 normalization 容错）
    → validate_plan              # Pydantic 校验
    → repair_plan_format ─坏 JSON/坏 schema 重试──▶ validate_plan
@@ -178,7 +178,8 @@ openmc_agent/
 ├── executor.py           # 早期直接渲染脚本（pin-cell + 复杂模型直写）
 ├── tools.py              # OpenMC 子进程工具：export_xml / 绘图 / smoke test
 ├── openmc_api.py         # 本地 OpenMC API 内省与文档检索
-├── few_shots.py          # few-shot 建模示例选取
+├── few_shots.py          # few-shot 选取（抽象范式 + gold case，堆型无关）
+├── few_shot_cases.py     # gold case loader（slim IR / patch / 结构特征）
 ├── records.py            # JSONL 运行记录
 └── inspect.py            # CLI 与可编程入口
 tests/                    # 覆盖 schemas/llm/graph/renderers/executor/tools/validator 等

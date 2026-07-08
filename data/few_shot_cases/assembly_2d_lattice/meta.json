@@ -1,0 +1,19 @@
+{
+  "case_id": "assembly_2d_lattice",
+  "structural_features": [
+    "assembly",
+    "2d",
+    "17x17"
+  ],
+  "trigger_terms": [
+    "assembly",
+    "组件",
+    "lattice",
+    "栅阵",
+    "17x17",
+    "2d",
+    "二维",
+    "infinite lattice"
+  ],
+  "source_note": "Curated from a verified 2D infinite fuel-assembly lattice; illustrative reference only."
+}

@@ -10,7 +10,10 @@ plans instead of small patches.
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from openmc_agent.few_shot_cases import load_patch_few_shots
 
 from .patches import (
     get_patch_allowed_top_level_keys,
@@ -185,6 +188,46 @@ Minimal example:
 }
 
 
+# Total/per-patch character budgets for the few-shot reference block in a patch
+# prompt. Each incremental layer is generated independently, so this budget
+# applies per layer (not accumulated across the 7-patch pipeline).
+FEW_SHOT_PATCH_BUDGET: int = 2400
+_FEWSHOT_PER_PATCH_MAX: int = 1200
+
+
+def _few_shot_block(patch_type: str, context: Any | None) -> str:
+    """Render a reference-patch block from gold few-shot cases, if any.
+
+    Returns ``""`` when there is no context, no case ids, or no patch of the
+    requested type is available — leaving the prompt unchanged for backward
+    compatibility.
+    """
+    case_ids = list(getattr(context, "few_shot_case_ids", []) or []) if context else []
+    if not case_ids:
+        return ""
+    patches = load_patch_few_shots(patch_type, case_ids, limit=2)
+    if not patches:
+        return ""
+    header = (
+        f"Reference {patch_type} patch(es) from similar successful cases "
+        f"— illustrative, not authoritative (adapt structure & values, do NOT "
+        f"copy verbatim):"
+    )
+    lines = [header]
+    remaining = FEW_SHOT_PATCH_BUDGET - len(header)
+    for patch in patches:
+        blob = json.dumps(patch, ensure_ascii=False)
+        if len(blob) > _FEWSHOT_PER_PATCH_MAX:
+            blob = blob[: _FEWSHOT_PER_PATCH_MAX] + "...(truncated)"
+        if len(blob) + 1 > remaining:
+            break
+        lines.append(blob)
+        remaining -= len(blob) + 1
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n\n"
+
+
 def build_patch_prompt(
     patch_type: str,
     requirement: str,
@@ -197,6 +240,7 @@ def build_patch_prompt(
 
     contract = _OUTPUT_CONTRACT.format(patch_type=patch_type)
     context_block = _context_block(context)
+    few_shot_block = _few_shot_block(patch_type, context)
 
     # Phase 7C: add allowed/forbidden keys.
     allowed = sorted(get_patch_allowed_top_level_keys(patch_type))
@@ -212,6 +256,7 @@ def build_patch_prompt(
         f"{contract}\n\n"
         f"{keys_block}"
         f"{patch_rules}\n\n"
+        f"{few_shot_block}"
         f"{context_block}"
         f"Requirement:\n{requirement}\n\n"
         f'Return ONLY the JSON object with patch_type="{patch_type}". No other text.'

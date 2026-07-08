@@ -1,0 +1,85 @@
+{
+  "patch_type": "axial_overlays",
+  "overlays": [
+    {
+      "overlay_id": "grid_0_end_bottom",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 11.951,
+      "z_max_cm": 15.817,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "inconel718",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_1_mid",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 73.295,
+      "z_max_cm": 77.105,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "grid_zircaloy4",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_2_mid",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 125.495,
+      "z_max_cm": 129.305,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "grid_zircaloy4",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_3_mid",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 177.695,
+      "z_max_cm": 181.505,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "grid_zircaloy4",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_4_mid",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 229.895,
+      "z_max_cm": 233.705,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "grid_zircaloy4",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_5_mid",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 282.095,
+      "z_max_cm": 285.905,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "grid_zircaloy4",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_6_mid",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 334.295,
+      "z_max_cm": 338.105,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "grid_zircaloy4",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    },
+    {
+      "overlay_id": "grid_7_end_top",
+      "overlay_kind": "spacer_grid",
+      "z_min_cm": 386.267,
+      "z_max_cm": 390.133,
+      "target_lattice_id": "assembly_lattice",
+      "material_id": "inconel718",
+      "geometry_mode": "homogenized_open_region",
+      "through_path_preserved": true
+    }
+  ]
+}

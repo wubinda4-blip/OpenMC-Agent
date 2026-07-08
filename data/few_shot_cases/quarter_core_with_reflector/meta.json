@@ -1,0 +1,21 @@
+{
+  "case_id": "quarter_core_with_reflector",
+  "structural_features": [
+    "core",
+    "quarter",
+    "reflector",
+    "mox"
+  ],
+  "trigger_terms": [
+    "core",
+    "全堆",
+    "堆芯",
+    "quarter",
+    "四分之一",
+    "reflector",
+    "反射层",
+    "mox",
+    "钚"
+  ],
+  "source_note": "Curated from a verified quarter-core benchmark with radial reflector; illustrative reference only."
+}

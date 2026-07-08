@@ -226,6 +226,20 @@ def test_context_propagation_facts_to_pin_map() -> None:
     assert ctx.expected_counts.get("expected_thimble_plug_count") == 8
 
 
+def test_context_carries_few_shot_case_ids() -> None:
+    state = _init_3b_state()
+    ctx = build_generation_context_from_state(
+        state, "materials", few_shot_case_ids=["assembly_3d_with_spacer_grids"]
+    )
+    assert ctx.few_shot_case_ids == ["assembly_3d_with_spacer_grids"]
+
+
+def test_context_defaults_few_shot_case_ids_empty() -> None:
+    state = _init_3b_state()
+    ctx = build_generation_context_from_state(state, "materials")
+    assert ctx.few_shot_case_ids == []
+
+
 # ---------------------------------------------------------------------------
 # 4. Materials context propagates to overlays
 # ---------------------------------------------------------------------------

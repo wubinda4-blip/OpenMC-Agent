@@ -1,4 +1,11 @@
 from dataclasses import dataclass
+from typing import Any
+
+from openmc_agent.few_shot_cases import (
+    extract_structural_features,
+    list_gold_case_ids,
+    load_gold_case_meta,
+)
 
 
 @dataclass(frozen=True)
@@ -7,13 +14,20 @@ class FewShotExample:
     trigger_terms: tuple[str, ...]
     requirement: str
     structured_outline: str
+    gold_case_id: str | None = None
+    structural_features: tuple[str, ...] = ()
 
-    def model_dump(self) -> dict[str, str]:
-        return {
+    def model_dump(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "name": self.name,
             "requirement": self.requirement,
             "structured_outline": self.structured_outline,
         }
+        if self.gold_case_id:
+            out["gold_case_id"] = self.gold_case_id
+        if self.structural_features:
+            out["structural_features"] = list(self.structural_features)
+        return out
 
 
 FEW_SHOT_EXAMPLES = (
@@ -196,17 +210,59 @@ DEFAULT_FEW_SHOT_EXAMPLE = next(
 )
 
 
-def select_few_shots(requirement: str, *, limit: int = 3) -> list[dict[str, str]]:
+def build_gold_few_shot_examples() -> list[FewShotExample]:
+    """Build FewShotExample entries from gold cases in ``data/few_shot_cases/``.
+
+    Each gold case teaches via its slim IR / patches (loaded lazily by the
+    injection layer), so ``structured_outline`` is empty and ``trigger_terms``
+    / ``structural_features`` come from the case's ``meta.json``.
+    """
+    examples: list[FewShotExample] = []
+    for case_id in list_gold_case_ids():
+        try:
+            meta = load_gold_case_meta(case_id)
+        except FileNotFoundError:
+            continue
+        examples.append(
+            FewShotExample(
+                name=f"gold_{case_id}",
+                trigger_terms=tuple(meta.get("trigger_terms", [])),
+                requirement=meta.get("source_note", ""),
+                structured_outline="",
+                gold_case_id=case_id,
+                structural_features=tuple(meta.get("structural_features", [])),
+            )
+        )
+    return examples
+
+
+def select_few_shots(requirement: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    """Select relevant few-shot examples (abstract outlines + gold cases).
+
+    Gold cases are scored by lexical trigger overlap plus structural-feature
+    intersection (weighted higher); abstract outlines by lexical overlap only.
+    Selection is reactor-type agnostic — purely structural / lexical.
+    """
     terms = _terms(requirement)
-    scored: list[tuple[int, FewShotExample]] = []
+    req_features = extract_structural_features(requirement)
+
+    candidates: list[tuple[float, str, FewShotExample]] = []
     for example in FEW_SHOT_EXAMPLES:
-        score = sum(1 for term in example.trigger_terms if term.lower() in terms)
+        lex = sum(1 for term in example.trigger_terms if term.lower() in terms)
+        if lex:
+            candidates.append((float(lex), example.name, example))
+    for example in build_gold_few_shot_examples():
+        lex = sum(1 for term in example.trigger_terms if term.lower() in terms)
+        struct = len(set(example.structural_features) & req_features)
+        score = float(lex) + 2.0 * float(struct)
         if score:
-            scored.append((score, example))
-    if not scored:
-        scored.append((1, DEFAULT_FEW_SHOT_EXAMPLE))
-    scored.sort(key=lambda item: (-item[0], item[1].name))
-    return [example.model_dump() for _, example in scored[:limit]]
+            candidates.append((score, example.name, example))
+
+    if not candidates:
+        candidates.append((1.0, DEFAULT_FEW_SHOT_EXAMPLE.name, DEFAULT_FEW_SHOT_EXAMPLE))
+
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    return [example.model_dump() for _, _, example in candidates[:limit]]
 
 
 def _terms(text: str) -> set[str]:

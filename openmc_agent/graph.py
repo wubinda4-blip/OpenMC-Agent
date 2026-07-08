@@ -4166,7 +4166,7 @@ def _requirement_with_expert_feedback(state: GraphState) -> str:
 def _augmented_plan_requirement(state: GraphState) -> str:
     base = _requirement_with_expert_feedback(state)
     docs = state.get("openmc_api_docs", [])
-    few_shots = state.get("few_shot_examples", [])
+    few_shots = _enrich_few_shots_with_gold(state.get("few_shot_examples", []))
     parts = [
         base,
         _hard_count_constraints_context(state),
@@ -4181,18 +4181,56 @@ def _augmented_plan_requirement(state: GraphState) -> str:
     return "\n".join(parts)
 
 
-def _compact_context(items: list[dict[str, str]], *, limit: int = 6) -> str:
+def _enrich_few_shots_with_gold(few_shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach slim IR + digest summaries to selected gold few-shot cases.
+
+    Non-gold entries (abstract outlines) pass through unchanged. Missing case
+    data falls back to the original entry so a missing case never breaks the
+    prompt.
+    """
+    from openmc_agent.few_shot_cases import load_monolithic_few_shot
+
+    enriched: list[dict[str, Any]] = []
+    for ex in few_shots:
+        if not isinstance(ex, dict) or not ex.get("gold_case_id"):
+            enriched.append(ex)
+            continue
+        try:
+            gold = load_monolithic_few_shot(ex["gold_case_id"])
+        except FileNotFoundError:
+            enriched.append(ex)
+            continue
+        enriched_ex = dict(ex)
+        enriched_ex["gold_ir_summary"] = json.dumps(gold["slim_ir"], ensure_ascii=False)
+        enriched_ex["gold_digest_summary"] = gold.get("digest", "")
+        enriched.append(enriched_ex)
+    return enriched
+
+
+_COMPACT_WHITELIST: frozenset[str] = frozenset({
+    "symbol", "signature", "doc_summary", "official_url",
+    "name", "requirement", "structured_outline",
+    "gold_case_id", "gold_ir_summary", "gold_digest_summary",
+})
+_COMPACT_TRUNCATE: dict[str, int] = {
+    "gold_ir_summary": 6000,
+    "gold_digest_summary": 1500,
+}
+_COMPACT_DEFAULT_TRUNCATE: int = 700
+
+
+def _compact_context(items: list[dict[str, Any]], *, limit: int = 6) -> str:
     if not items:
         return "[]"
-    compact = []
+    compact: list[dict[str, Any]] = []
     for item in items[:limit]:
-        compact.append(
-            {
-                key: _truncate_text(str(value), 700)
-                for key, value in item.items()
-                if key in {"symbol", "signature", "doc_summary", "official_url", "name", "requirement", "structured_outline"}
-            }
-        )
+        row: dict[str, Any] = {}
+        for key, value in item.items():
+            if key not in _COMPACT_WHITELIST:
+                continue
+            cap = _COMPACT_TRUNCATE.get(key, _COMPACT_DEFAULT_TRUNCATE)
+            row[key] = _truncate_text(str(value), cap)
+        compact.append(row)
     return str(compact)
 
 

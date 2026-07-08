@@ -1,0 +1,18 @@
+{
+  "case_id": "pin_cell_basic",
+  "structural_features": [
+    "pin_cell",
+    "2d",
+    "reflective"
+  ],
+  "trigger_terms": [
+    "pin cell",
+    "pincell",
+    "栅元",
+    "燃料棒",
+    "pin-cell",
+    "reflective",
+    "反射"
+  ],
+  "source_note": "Curated from a verified reflective pin-cell benchmark; illustrative reference only."
+}

@@ -1,0 +1,105 @@
+{
+  "patch_type": "axial_layers",
+  "axial_domain_cm": [
+    -55.0,
+    463.937
+  ],
+  "layers": [
+    {
+      "layer_id": "lower_moderator_buffer",
+      "role": "reflector",
+      "z_min_cm": -55.0,
+      "z_max_cm": -5.0,
+      "fill_type": "material",
+      "fill_id": "borated_water"
+    },
+    {
+      "layer_id": "lower_core_plate",
+      "role": "core_plate",
+      "z_min_cm": -5.0,
+      "z_max_cm": 0.0,
+      "fill_type": "material",
+      "fill_id": "ss304"
+    },
+    {
+      "layer_id": "lower_nozzle",
+      "role": "lower_nozzle",
+      "z_min_cm": 0.0,
+      "z_max_cm": 6.053,
+      "fill_type": "material",
+      "fill_id": "ss304"
+    },
+    {
+      "layer_id": "lower_shoulder_gap",
+      "role": "gas_gap",
+      "z_min_cm": 6.053,
+      "z_max_cm": 10.281,
+      "fill_type": "material",
+      "fill_id": "borated_water"
+    },
+    {
+      "layer_id": "lower_end_plug",
+      "role": "lower_end_plug",
+      "z_min_cm": 10.281,
+      "z_max_cm": 11.951,
+      "fill_type": "material",
+      "fill_id": "zircaloy4"
+    },
+    {
+      "layer_id": "active_fuel",
+      "role": "active_fuel",
+      "z_min_cm": 11.951,
+      "z_max_cm": 377.711,
+      "fill_type": "lattice",
+      "fill_id": "assembly_lattice"
+    },
+    {
+      "layer_id": "upper_end_plug",
+      "role": "upper_end_plug",
+      "z_min_cm": 377.711,
+      "z_max_cm": 379.381,
+      "fill_type": "material",
+      "fill_id": "zircaloy4"
+    },
+    {
+      "layer_id": "upper_plenum",
+      "role": "upper_plenum",
+      "z_min_cm": 379.381,
+      "z_max_cm": 395.381,
+      "fill_type": "material",
+      "fill_id": "helium"
+    },
+    {
+      "layer_id": "upper_shoulder_gap",
+      "role": "gas_gap",
+      "z_min_cm": 395.381,
+      "z_max_cm": 397.51,
+      "fill_type": "material",
+      "fill_id": "borated_water"
+    },
+    {
+      "layer_id": "upper_nozzle",
+      "role": "upper_nozzle",
+      "z_min_cm": 397.51,
+      "z_max_cm": 406.337,
+      "fill_type": "material",
+      "fill_id": "ss304"
+    },
+    {
+      "layer_id": "upper_core_plate",
+      "role": "core_plate",
+      "z_min_cm": 406.337,
+      "z_max_cm": 413.937,
+      "fill_type": "material",
+      "fill_id": "ss304"
+    },
+    {
+      "layer_id": "upper_moderator_buffer",
+      "role": "reflector",
+      "z_min_cm": 413.937,
+      "z_max_cm": 463.937,
+      "fill_type": "material",
+      "fill_id": "borated_water"
+    }
+  ]
+}

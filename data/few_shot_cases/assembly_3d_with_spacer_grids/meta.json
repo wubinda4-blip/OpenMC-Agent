@@ -1,0 +1,27 @@
+{
+  "case_id": "assembly_3d_with_spacer_grids",
+  "structural_features": [
+    "assembly",
+    "3d",
+    "17x17",
+    "axial_overlay",
+    "spacer_grid",
+    "full_symmetry"
+  ],
+  "trigger_terms": [
+    "assembly",
+    "组件",
+    "spacer grid",
+    "格架",
+    "定位格架",
+    "axial",
+    "nozzle",
+    "管座",
+    "end plug",
+    "端塞",
+    "3d",
+    "三维",
+    "17x17"
+  ],
+  "source_note": "Curated from a verified 3D fuel-assembly benchmark with spacer-grid overlays; illustrative reference only."
+}

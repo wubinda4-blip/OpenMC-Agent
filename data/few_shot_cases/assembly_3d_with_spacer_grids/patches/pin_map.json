@@ -1,0 +1,120 @@
+{
+  "patch_type": "pin_map",
+  "variant": "3A",
+  "lattice_size": [
+    17,
+    17
+  ],
+  "default_universe_id": "fuel_pin",
+  "coordinate_convention": {
+    "index_base": 1,
+    "row_origin": "top",
+    "col_origin": "left",
+    "ordering": "row_col"
+  },
+  "guide_tube_coords": [
+    [
+      3,
+      6
+    ],
+    [
+      3,
+      9
+    ],
+    [
+      3,
+      12
+    ],
+    [
+      4,
+      4
+    ],
+    [
+      4,
+      14
+    ],
+    [
+      6,
+      3
+    ],
+    [
+      6,
+      6
+    ],
+    [
+      6,
+      9
+    ],
+    [
+      6,
+      12
+    ],
+    [
+      6,
+      15
+    ],
+    [
+      9,
+      3
+    ],
+    [
+      9,
+      6
+    ],
+    [
+      9,
+      12
+    ],
+    [
+      9,
+      15
+    ],
+    [
+      12,
+      3
+    ],
+    [
+      12,
+      6
+    ],
+    [
+      12,
+      9
+    ],
+    [
+      12,
+      12
+    ],
+    [
+      12,
+      15
+    ],
+    [
+      14,
+      4
+    ],
+    [
+      14,
+      14
+    ],
+    [
+      15,
+      6
+    ],
+    [
+      15,
+      9
+    ],
+    [
+      15,
+      12
+    ]
+  ],
+  "instrument_tube_coords": [
+    [
+      9,
+      9
+    ]
+  ],
+  "source_note": ""
+}

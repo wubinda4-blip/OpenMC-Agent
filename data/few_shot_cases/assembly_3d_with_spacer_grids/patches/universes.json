@@ -1,0 +1,92 @@
+{
+  "patch_type": "universes",
+  "universes": [
+    {
+      "universe_id": "fuel_pin",
+      "kind": "fuel_pin",
+      "cells": [
+        {
+          "id": "fuel",
+          "role": "fuel",
+          "material_id": "uo2_fuel",
+          "region_kind": "cylinder",
+          "r_max_cm": 0.4096
+        },
+        {
+          "id": "clad",
+          "role": "cladding",
+          "material_id": "zircaloy4",
+          "region_kind": "annulus",
+          "r_min_cm": 0.4096,
+          "r_max_cm": 0.475,
+          "protected_through_path": true
+        },
+        {
+          "id": "water",
+          "role": "coolant",
+          "material_id": "borated_water",
+          "region_kind": "background"
+        }
+      ],
+      "source_note": "[reference]"
+    },
+    {
+      "universe_id": "guide_tube",
+      "kind": "guide_tube",
+      "cells": [
+        {
+          "id": "inner_water",
+          "role": "coolant",
+          "material_id": "borated_water",
+          "region_kind": "cylinder",
+          "r_max_cm": 0.561
+        },
+        {
+          "id": "wall",
+          "role": "cladding",
+          "material_id": "zircaloy4",
+          "region_kind": "annulus",
+          "r_min_cm": 0.561,
+          "r_max_cm": 0.612,
+          "protected_through_path": true
+        },
+        {
+          "id": "outer_water",
+          "role": "background",
+          "material_id": "borated_water",
+          "region_kind": "background"
+        }
+      ],
+      "source_note": "[reference]"
+    },
+    {
+      "universe_id": "instrument_tube",
+      "kind": "instrument_tube",
+      "cells": [
+        {
+          "id": "inner_water",
+          "role": "coolant",
+          "material_id": "borated_water",
+          "region_kind": "cylinder",
+          "r_max_cm": 0.561
+        },
+        {
+          "id": "wall",
+          "role": "cladding",
+          "material_id": "zircaloy4",
+          "region_kind": "annulus",
+          "r_min_cm": 0.561,
+          "r_max_cm": 0.612,
+          "protected_through_path": true
+        },
+        {
+          "id": "outer_water",
+          "role": "background",
+          "material_id": "borated_water",
+          "region_kind": "background"
+        }
+      ],
+      "source_note": "[reference]"
+    }
+  ]
+}

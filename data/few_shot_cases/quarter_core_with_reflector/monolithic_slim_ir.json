@@ -1,0 +1,1921 @@
+{
+  "schema_version": "simulation_plan.v2",
+  "model_spec": null,
+  "complex_model": {
+    "name": "Quarter Core With Reflector",
+    "kind": "core",
+    "materials": [
+      {
+        "id": "uo2",
+        "name": "UO2 fuel 3.3 wt%",
+        "density_unit": "g/cm3",
+        "density_value": 10.0,
+        "composition": [
+          {
+            "name": "U235",
+            "percent": 3.3,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 84.85,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 11.85,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 293.6,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "mox43",
+        "name": "4.3% MOX",
+        "density_unit": "g/cm3",
+        "density_value": 10.0,
+        "composition": [
+          {
+            "name": "Pu238",
+            "percent": 0.0817,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu239",
+            "percent": 2.494,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu240",
+            "percent": 1.032,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu241",
+            "percent": 0.4816,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu242",
+            "percent": 0.2107,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U235",
+            "percent": 0.239,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 83.66,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 11.8,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 293.6,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "mox7",
+        "name": "7.0% MOX",
+        "density_unit": "g/cm3",
+        "density_value": 10.0,
+        "composition": [
+          {
+            "name": "Pu238",
+            "percent": 0.133,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu239",
+            "percent": 4.06,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu240",
+            "percent": 1.68,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu241",
+            "percent": 0.784,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu242",
+            "percent": 0.343,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U235",
+            "percent": 0.232,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 81.0,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 11.77,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 293.6,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "mox87",
+        "name": "8.7% MOX",
+        "density_unit": "g/cm3",
+        "density_value": 10.0,
+        "composition": [
+          {
+            "name": "Pu238",
+            "percent": 0.1653,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu239",
+            "percent": 5.044,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu240",
+            "percent": 2.088,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu241",
+            "percent": 0.974,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Pu242",
+            "percent": 0.426,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U235",
+            "percent": 0.228,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 79.4,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 11.67,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 293.6,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "water",
+        "name": "Light water",
+        "density_unit": "g/cm3",
+        "density_value": 0.997,
+        "composition": [
+          {
+            "name": "H1",
+            "percent": 66.67,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 33.33,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 293.6,
+        "sab": [
+          "c_H_in_H2O"
+        ],
+        "depletable": false
+      },
+      {
+        "id": "zircaloy4",
+        "name": "Zircaloy-4",
+        "density_unit": "g/cm3",
+        "density_value": 6.56,
+        "composition": [
+          {
+            "name": "Zr",
+            "percent": 98.23,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Sn",
+            "percent": 1.45,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Fe",
+            "percent": 0.21,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Cr",
+            "percent": 0.1,
+            "percent_type": "wo",
+            "kind": "element"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 293.6,
+        "sab": [],
+        "depletable": false
+      }
+    ],
+    "surfaces": [
+      {
+        "id": "pin_cyl",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.54
+        },
+        "boundary_type": null,
+        "purpose": "Fuel/guide/chamber cylinder radius"
+      },
+      {
+        "id": "xmin_core",
+        "kind": "xplane",
+        "parameters": {
+          "x0": 0.0
+        },
+        "boundary_type": "reflective",
+        "purpose": "West symmetry plane"
+      },
+      {
+        "id": "xmax_core",
+        "kind": "xplane",
+        "parameters": {
+          "x0": 64.26
+        },
+        "boundary_type": "vacuum",
+        "purpose": "East vacuum boundary"
+      },
+      {
+        "id": "ymin_core",
+        "kind": "yplane",
+        "parameters": {
+          "y0": 0.0
+        },
+        "boundary_type": "vacuum",
+        "purpose": "South vacuum boundary"
+      },
+      {
+        "id": "ymax_core",
+        "kind": "yplane",
+        "parameters": {
+          "y0": 64.26
+        },
+        "boundary_type": "reflective",
+        "purpose": "North symmetry plane"
+      },
+      {
+        "id": "zmin_core",
+        "kind": "zplane",
+        "parameters": {
+          "z0": 0.0
+        },
+        "boundary_type": "reflective",
+        "purpose": "Bottom reflective boundary"
+      },
+      {
+        "id": "zmax_core",
+        "kind": "zplane",
+        "parameters": {
+          "z0": 214.2
+        },
+        "boundary_type": "vacuum",
+        "purpose": "Top vacuum boundary"
+      },
+      {
+        "id": "z_fuel_top",
+        "kind": "zplane",
+        "parameters": {
+          "z0": 192.78
+        },
+        "boundary_type": null,
+        "purpose": "Fuel/reflector axial interface"
+      }
+    ],
+    "regions": [
+      {
+        "id": "pin_region",
+        "expression": "-pin_cyl",
+        "surface_ids": [
+          "pin_cyl"
+        ],
+        "purpose": "Inside the fuel/guide/chamber cylinder"
+      },
+      {
+        "id": "moderator_region",
+        "expression": "+pin_cyl",
+        "surface_ids": [
+          "pin_cyl"
+        ],
+        "purpose": "Outside the cylinder (moderator)"
+      },
+      {
+        "id": "fuel_active_region",
+        "expression": "-z_fuel_top & +zmin_core",
+        "surface_ids": [
+          "z_fuel_top",
+          "zmin_core"
+        ],
+        "purpose": "Fuel active height 0-192.78 cm"
+      },
+      {
+        "id": "top_reflector_region",
+        "expression": "+z_fuel_top & -zmax_core",
+        "surface_ids": [
+          "z_fuel_top",
+          "zmax_core"
+        ],
+        "purpose": "Top water reflector 192.78-214.20 cm"
+      }
+    ],
+    "cells": [
+      {
+        "id": "uo2_fuel_cell",
+        "name": "UO2 fuel pin cell",
+        "region_id": "pin_region",
+        "fill_type": "material",
+        "fill_id": "uo2",
+        "temperature_k": null,
+        "purpose": "UO2 fuel cylinder"
+      },
+      {
+        "id": "uo2_mod_cell",
+        "name": "UO2 pin moderator cell",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Water around UO2 fuel"
+      },
+      {
+        "id": "mox43_fuel_cell",
+        "name": "4.3% MOX fuel pin cell",
+        "region_id": "pin_region",
+        "fill_type": "material",
+        "fill_id": "mox43",
+        "temperature_k": null,
+        "purpose": "4.3% MOX fuel cylinder"
+      },
+      {
+        "id": "mox43_mod_cell",
+        "name": "4.3% MOX pin moderator cell",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Water around 4.3% MOX fuel"
+      },
+      {
+        "id": "mox7_fuel_cell",
+        "name": "7.0% MOX fuel pin cell",
+        "region_id": "pin_region",
+        "fill_type": "material",
+        "fill_id": "mox7",
+        "temperature_k": null,
+        "purpose": "7.0% MOX fuel cylinder"
+      },
+      {
+        "id": "mox7_mod_cell",
+        "name": "7.0% MOX pin moderator cell",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Water around 7.0% MOX fuel"
+      },
+      {
+        "id": "mox87_fuel_cell",
+        "name": "8.7% MOX fuel pin cell",
+        "region_id": "pin_region",
+        "fill_type": "material",
+        "fill_id": "mox87",
+        "temperature_k": null,
+        "purpose": "8.7% MOX fuel cylinder"
+      },
+      {
+        "id": "mox87_mod_cell",
+        "name": "8.7% MOX pin moderator cell",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Water around 8.7% MOX fuel"
+      },
+      {
+        "id": "guide_tube_cell",
+        "name": "Guide tube pin cell (water-filled)",
+        "region_id": "pin_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Guide tube homogenized water"
+      },
+      {
+        "id": "guide_tube_mod_cell",
+        "name": "Guide tube moderator cell",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Water around guide tube"
+      },
+      {
+        "id": "fiss_chamber_cell",
+        "name": "Fission chamber pin cell (water-filled)",
+        "region_id": "pin_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Fission chamber homogenized water"
+      },
+      {
+        "id": "fiss_chamber_mod_cell",
+        "name": "Fission chamber moderator cell",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "water",
+        "temperature_k": null,
+        "purpose": "Water around fission chamber"
+      }
+    ],
+    "universes": [
+      {
+        "id": "uo2_pin",
+        "name": "UO2 pin universe",
+        "cell_ids": [
+          "uo2_fuel_cell",
+          "uo2_mod_cell"
+        ],
+        "purpose": "Reusable UO2 pin cell"
+      },
+      {
+        "id": "mox43_pin",
+        "name": "4.3% MOX pin universe",
+        "cell_ids": [
+          "mox43_fuel_cell",
+          "mox43_mod_cell"
+        ],
+        "purpose": "Reusable 4.3% MOX pin cell"
+      },
+      {
+        "id": "mox7_pin",
+        "name": "7.0% MOX pin universe",
+        "cell_ids": [
+          "mox7_fuel_cell",
+          "mox7_mod_cell"
+        ],
+        "purpose": "Reusable 7.0% MOX pin cell"
+      },
+      {
+        "id": "mox87_pin",
+        "name": "8.7% MOX pin universe",
+        "cell_ids": [
+          "mox87_fuel_cell",
+          "mox87_mod_cell"
+        ],
+        "purpose": "Reusable 8.7% MOX pin cell"
+      },
+      {
+        "id": "guide_tube_pin",
+        "name": "Guide tube pin universe",
+        "cell_ids": [
+          "guide_tube_cell",
+          "guide_tube_mod_cell"
+        ],
+        "purpose": "Reusable guide tube pin cell"
+      },
+      {
+        "id": "fiss_chamber_pin",
+        "name": "Fission chamber pin universe",
+        "cell_ids": [
+          "fiss_chamber_cell",
+          "fiss_chamber_mod_cell"
+        ],
+        "purpose": "Reusable fission chamber pin cell"
+      },
+      {
+        "id": "water_univ",
+        "name": "Water-only universe",
+        "cell_ids": [],
+        "purpose": "Universe for water reflector region (no pin cells)"
+      },
+      {
+        "id": "uo2_assembly",
+        "name": "uo2_assembly",
+        "cell_ids": [],
+        "purpose": "Auto-added empty assembly wrapper universe for a core lattice reference to AssemblySpec 'uo2_assembly'."
+      },
+      {
+        "id": "mox_assembly",
+        "name": "mox_assembly",
+        "cell_ids": [],
+        "purpose": "Auto-added empty assembly wrapper universe for a core lattice reference to AssemblySpec 'mox_assembly'."
+      }
+    ],
+    "lattices": [
+      {
+        "id": "uo2_assembly",
+        "name": "UO2 assembly 17x17 pin lattice",
+        "kind": "rect",
+        "pitch_cm": [
+          1.26,
+          1.26
+        ],
+        "lower_left_cm": null,
+        "center_cm": null,
+        "shape": [
+          17,
+          17
+        ],
+        "outer_universe_id": null,
+        "universe_pattern": [
+          [
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin"
+          ],
+          [
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin"
+          ],
+          [
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "guide_tube_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "guide_tube_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "guide_tube_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin"
+          ],
+          [
+            "..."
+          ],
+          [
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin",
+            "uo2_pin"
+          ]
+        ],
+        "rings": [],
+        "fill_universe": "uo2_pin",
+        "overrides": {
+          "guide_tube_pin": [
+            [
+              2,
+              5
+            ],
+            [
+              2,
+              8
+            ],
+            [
+              2,
+              11
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              3,
+              13
+            ],
+            [
+              5,
+              2
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              5,
+              8
+            ],
+            [
+              5,
+              11
+            ],
+            [
+              5,
+              14
+            ],
+            [
+              8,
+              2
+            ],
+            [
+              8,
+              5
+            ],
+            [
+              8,
+              11
+            ],
+            [
+              8,
+              14
+            ],
+            [
+              11,
+              2
+            ],
+            [
+              11,
+              5
+            ],
+            [
+              11,
+              8
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              13,
+              3
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              5
+            ],
+            [
+              14,
+              8
+            ],
+            [
+              14,
+              11
+            ]
+          ],
+          "fiss_chamber_pin": [
+            [
+              8,
+              8
+            ]
+          ]
+        },
+        "expected_counts": {
+          "uo2_pin": 264,
+          "guide_tube_pin": 24,
+          "fiss_chamber_pin": 1
+        },
+        "purpose": "UO2 assembly pin map per input table"
+      },
+      {
+        "id": "mox_assembly",
+        "name": "MOX assembly 17x17 pin lattice",
+        "kind": "rect",
+        "pitch_cm": [
+          1.26,
+          1.26
+        ],
+        "lower_left_cm": null,
+        "center_cm": null,
+        "shape": [
+          17,
+          17
+        ],
+        "outer_universe_id": null,
+        "universe_pattern": [
+          [
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin"
+          ],
+          [
+            "mox43_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox43_pin"
+          ],
+          [
+            "mox43_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "guide_tube_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "guide_tube_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "guide_tube_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox7_pin",
+            "mox43_pin"
+          ],
+          [
+            "..."
+          ],
+          [
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin",
+            "mox43_pin"
+          ]
+        ],
+        "rings": [],
+        "fill_universe": "mox43_pin",
+        "overrides": {
+          "mox7_pin": [
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              2
+            ],
+            [
+              1,
+              3
+            ],
+            [
+              1,
+              4
+            ],
+            [
+              1,
+              5
+            ],
+            [
+              1,
+              6
+            ],
+            [
+              1,
+              7
+            ],
+            [
+              1,
+              8
+            ],
+            [
+              1,
+              9
+            ],
+            [
+              1,
+              10
+            ],
+            [
+              1,
+              11
+            ],
+            [
+              1,
+              12
+            ],
+            [
+              1,
+              13
+            ],
+            [
+              1,
+              14
+            ],
+            [
+              1,
+              15
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              2,
+              15
+            ],
+            [
+              3,
+              1
+            ],
+            [
+              3,
+              15
+            ],
+            [
+              4,
+              1
+            ],
+            [
+              4,
+              15
+            ],
+            [
+              5,
+              1
+            ],
+            [
+              5,
+              15
+            ],
+            [
+              6,
+              1
+            ],
+            [
+              6,
+              15
+            ],
+            [
+              7,
+              1
+            ],
+            [
+              7,
+              15
+            ],
+            [
+              8,
+              1
+            ],
+            [
+              8,
+              15
+            ],
+            [
+              9,
+              1
+            ],
+            [
+              9,
+              15
+            ],
+            [
+              10,
+              1
+            ],
+            [
+              10,
+              15
+            ],
+            [
+              11,
+              1
+            ],
+            [
+              11,
+              15
+            ],
+            [
+              12,
+              1
+            ],
+            [
+              12,
+              15
+            ],
+            [
+              13,
+              1
+            ],
+            [
+              13,
+              15
+            ],
+            [
+              14,
+              1
+            ],
+            [
+              14,
+              15
+            ],
+            [
+              15,
+              1
+            ],
+            [
+              15,
+              2
+            ],
+            [
+              15,
+              3
+            ],
+            [
+              15,
+              4
+            ],
+            [
+              15,
+              5
+            ],
+            [
+              15,
+              6
+            ],
+            [
+              15,
+              7
+            ],
+            [
+              15,
+              8
+            ],
+            [
+              15,
+              9
+            ],
+            [
+              15,
+              10
+            ],
+            [
+              15,
+              11
+            ],
+            [
+              15,
+              12
+            ],
+            [
+              15,
+              13
+            ],
+            [
+              15,
+              14
+            ],
+            [
+              15,
+              15
+            ]
+          ],
+          "mox87_pin": [
+            [
+              3,
+              3
+            ],
+            [
+              3,
+              4
+            ],
+            [
+              3,
+              5
+            ],
+            [
+              3,
+              6
+            ],
+            [
+              3,
+              7
+            ],
+            [
+              3,
+              8
+            ],
+            [
+              3,
+              9
+            ],
+            [
+              3,
+              10
+            ],
+            [
+              3,
+              11
+            ],
+            [
+              3,
+              12
+            ],
+            [
+              3,
+              13
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              4,
+              5
+            ],
+            [
+              4,
+              6
+            ],
+            [
+              4,
+              7
+            ],
+            [
+              4,
+              8
+            ],
+            [
+              4,
+              9
+            ],
+            [
+              4,
+              10
+            ],
+            [
+              4,
+              11
+            ],
+            [
+              4,
+              12
+            ],
+            [
+              5,
+              3
+            ],
+            [
+              5,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              5,
+              6
+            ],
+            [
+              5,
+              7
+            ],
+            [
+              5,
+              8
+            ],
+            [
+              5,
+              9
+            ],
+            [
+              5,
+              10
+            ],
+            [
+              5,
+              11
+            ],
+            [
+              5,
+              12
+            ],
+            [
+              5,
+              13
+            ],
+            [
+              6,
+              3
+            ],
+            [
+              6,
+              4
+            ],
+            [
+              6,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              6,
+              7
+            ],
+            [
+              6,
+              8
+            ],
+            [
+              6,
+              9
+            ],
+            [
+              6,
+              10
+            ],
+            [
+              6,
+              11
+            ],
+            [
+              6,
+              12
+            ],
+            [
+              6,
+              13
+            ],
+            [
+              7,
+              2
+            ],
+            [
+              7,
+              3
+            ],
+            [
+              7,
+              4
+            ],
+            [
+              7,
+              5
+            ],
+            [
+              7,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              7,
+              8
+            ],
+            [
+              7,
+              9
+            ],
+            [
+              7,
+              10
+            ],
+            [
+              7,
+              11
+            ],
+            [
+              7,
+              12
+            ],
+            [
+              7,
+              13
+            ],
+            [
+              7,
+              14
+            ],
+            [
+              8,
+              2
+            ],
+            [
+              8,
+              3
+            ],
+            [
+              8,
+              4
+            ],
+            [
+              8,
+              5
+            ],
+            [
+              8,
+              6
+            ],
+            [
+              8,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              8,
+              9
+            ],
+            [
+              8,
+              10
+            ],
+            [
+              8,
+              11
+            ],
+            [
+              8,
+              12
+            ],
+            [
+              8,
+              13
+            ],
+            [
+              8,
+              14
+            ],
+            [
+              9,
+              2
+            ],
+            [
+              9,
+              3
+            ],
+            [
+              9,
+              4
+            ],
+            [
+              9,
+              5
+            ],
+            [
+              9,
+              6
+            ],
+            [
+              9,
+              7
+            ],
+            [
+              9,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              9,
+              10
+            ],
+            [
+              9,
+              11
+            ],
+            [
+              9,
+              12
+            ],
+            [
+              9,
+              13
+            ],
+            [
+              9,
+              14
+            ],
+            [
+              10,
+              2
+            ],
+            [
+              10,
+              3
+            ],
+            [
+              10,
+              4
+            ],
+            [
+              10,
+              5
+            ],
+            [
+              10,
+              6
+            ],
+            [
+              10,
+              7
+            ],
+            [
+              10,
+              8
+            ],
+            [
+              10,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              10,
+              11
+            ],
+            [
+              10,
+              12
+            ],
+            [
+              10,
+              13
+            ],
+            [
+              10,
+              14
+            ],
+            [
+              11,
+              2
+            ],
+            [
+              11,
+              3
+            ],
+            [
+              11,
+              4
+            ],
+            [
+              11,
+              5
+            ],
+            [
+              11,
+              6
+            ],
+            [
+              11,
+              7
+            ],
+            [
+              11,
+              8
+            ],
+            [
+              11,
+              9
+            ],
+            [
+              11,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              11,
+              12
+            ],
+            [
+              11,
+              13
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              12,
+              3
+            ],
+            [
+              12,
+              4
+            ],
+            [
+              12,
+              5
+            ],
+            [
+              12,
+              6
+            ],
+            [
+              12,
+              7
+            ],
+            [
+              12,
+              8
+            ],
+            [
+              12,
+              9
+            ],
+            [
+              12,
+              10
+            ],
+            [
+              12,
+              11
+            ],
+            [
+              12,
+              12
+            ],
+            [
+              12,
+              13
+            ],
+            [
+              13,
+              3
+            ],
+            [
+              13,
+              4
+            ],
+            [
+              13,
+              5
+            ],
+            [
+              13,
+              6
+            ],
+            [
+              13,
+              7
+            ],
+            [
+              13,
+              8
+            ],
+            [
+              13,
+              9
+            ],
+            [
+              13,
+              10
+            ],
+            [
+              13,
+              11
+            ],
+            [
+              13,
+              12
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              4
+            ],
+            [
+              14,
+              5
+            ],
+            [
+              14,
+              6
+            ],
+            [
+              14,
+              7
+            ],
+            [
+              14,
+              8
+            ],
+            [
+              14,
+              9
+            ],
+            [
+              14,
+              10
+            ],
+            [
+              14,
+              11
+            ],
+            [
+              14,
+              12
+            ]
+          ],
+          "guide_tube_pin": [
+            [
+              2,
+              5
+            ],
+            [
+              2,
+              8
+            ],
+            [
+              2,
+              11
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              3,
+              13
+            ],
+            [
+              5,
+              2
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              5,
+              8
+            ],
+            [
+              5,
+              11
+            ],
+            [
+              5,
+              14
+            ],
+            [
+              8,
+              2
+            ],
+            [
+              8,
+              5
+            ],
+            [
+              8,
+              11
+            ],
+            [
+              8,
+              14
+            ],
+            [
+              11,
+              2
+            ],
+            [
+              11,
+              5
+            ],
+            [
+              11,
+              8
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              13,
+              3
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              5
+            ],
+            [
+              14,
+              8
+            ],
+            [
+              14,
+              11
+            ]
+          ],
+          "fiss_chamber_pin": [
+            [
+              8,
+              8
+            ]
+          ]
+        },
+        "expected_counts": {
+          "mox43_pin": 64,
+          "mox7_pin": 100,
+          "mox87_pin": 100,
+          "guide_tube_pin": 24,
+          "fiss_chamber_pin": 1
+        },
+        "purpose": "MOX assembly pin map per input table"
+      },
+      {
+        "id": "core_lattice",
+        "name": "Quarter-core 2x2 assembly lattice with water reflector",
+        "kind": "rect",
+        "pitch_cm": [
+          21.42,
+          21.42
+        ],
+        "lower_left_cm": null,
+        "center_cm": null,
+        "shape": [
+          3,
+          3
+        ],
+        "outer_universe_id": "water_univ",
+        "universe_pattern": [
+          [
+            "uo2_assembly",
+            "mox_assembly",
+            "water_univ"
+          ],
+          [
+            "mox_assembly",
+            "uo2_assembly",
+            "water_univ"
+          ],
+          [
+            "water_univ",
+            "water_univ",
+            "water_univ"
+          ]
+        ],
+        "rings": [],
+        "fill_universe": null,
+        "overrides": {},
+        "expected_counts": null,
+        "purpose": "2x2 active core with one row/column of water reflector on east and south sides"
+      }
+    ],
+    "lattice_loadings": [],
+    "assemblies": [
+      {
+        "id": "uo2_assembly",
+        "name": "UO2 assembly",
+        "lattice_id": "uo2_assembly",
+        "pitch_cm": 21.42,
+        "boundary": null,
+        "purpose": ""
+      },
+      {
+        "id": "mox_assembly",
+        "name": "MOX assembly",
+        "lattice_id": "mox_assembly",
+        "pitch_cm": 21.42,
+        "boundary": null,
+        "purpose": ""
+      }
+    ],
+    "core": {
+      "id": "core",
+      "name": "[reference]",
+      "lattice_id": "core_lattice",
+      "assembly_ids": [
+        "uo2_assembly",
+        "mox_assembly"
+      ],
+      "reflector_ids": [],
+      "control_rod_ids": [],
+      "boundary": "mixed",
+      "boundary_conditions": {
+        "xmin": "reflective",
+        "xmax": "vacuum",
+        "ymin": "vacuum",
+        "ymax": "reflective",
+        "zmin": "reflective",
+        "zmax": "vacuum"
+      },
+      "axial_layers": [
+        {
+          "id": "fuel_layer",
+          "name": "Fuel active region",
+          "z_min_cm": 0.0,
+          "z_max_cm": 192.78,
+          "fill": {
+            "type": "lattice",
+            "id": "core_lattice"
+          },
+          "loading_id": null,
+          "purpose": "Active fuel region with 2x2 assemblies and radial water reflector"
+        },
+        {
+          "id": "top_reflector_layer",
+          "name": "Top water reflector",
+          "z_min_cm": 192.78,
+          "z_max_cm": 214.2,
+          "fill": {
+            "type": "material",
+            "id": "water"
+          },
+          "loading_id": null,
+          "purpose": "Top axial water reflector"
+        }
+      ],
+      "axial_overlays": [],
+      "symmetry": null,
+      "purpose": "[reference]"
+    },
+    "reflectors": [],
+    "control_rods": [],
+    "trisos": [],
+    "packed_spheres": [],
+    "pebbles": [],
+    "settings": {
+      "run_mode": "eigenvalue",
+      "batches": 15,
+      "inactive": 5,
+      "particles": 1000,
+      "energy_mode": "continuous-energy",
+      "temperature_interpolation": true,
+      "seed": null
+    },
+    "mg_cross_sections_file": null
+  }
+}

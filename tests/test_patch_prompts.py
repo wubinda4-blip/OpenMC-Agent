@@ -122,3 +122,34 @@ def test_retry_prompt_includes_issues() -> None:
     assert "coord_overlap" in prompt
     assert "attempt 1" in prompt.lower() or "attempt 1" in prompt
     assert "NOT generating a SimulationPlan" in prompt
+
+
+# ---------------------------------------------------------------------------
+# patch few-shot reference injection
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_includes_few_shot_when_case_ids_present() -> None:
+    ctx = PatchGenerationContext(few_shot_case_ids=["assembly_3d_with_spacer_grids"])
+    prompt = build_patch_prompt("materials", "assembly requirement", ctx)
+    assert "Reference materials patch" in prompt
+    assert '"patch_type": "materials"' in prompt
+
+
+def test_prompt_omits_few_shot_when_case_ids_empty() -> None:
+    ctx = PatchGenerationContext(few_shot_case_ids=[])
+    prompt = build_patch_prompt("materials", "requirement", ctx)
+    assert "Reference materials patch" not in prompt
+
+
+def test_prompt_omits_few_shot_when_no_patch_available() -> None:
+    # pin_cell_basic publishes no patches/
+    ctx = PatchGenerationContext(few_shot_case_ids=["pin_cell_basic"])
+    prompt = build_patch_prompt("materials", "requirement", ctx)
+    assert "Reference materials patch" not in prompt
+
+
+def test_retry_prompt_also_carries_few_shot() -> None:
+    ctx = PatchGenerationContext(few_shot_case_ids=["assembly_3d_with_spacer_grids"])
+    prompt = build_retry_prompt("materials", "requirement", ctx, [], 1)
+    assert "Reference materials patch" in prompt

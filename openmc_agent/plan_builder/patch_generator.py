@@ -62,6 +62,7 @@ class PatchGenerationContext(AgentBaseModel):
     known_lattice_ids: list[str] = Field(default_factory=list)
     active_fuel_region_cm: tuple[float, float] | None = None
     axial_domain_cm: tuple[float, float] | None = None
+    few_shot_case_ids: list[str] = Field(default_factory=list)
 
 
 class PatchGenerationAttempt(AgentBaseModel):

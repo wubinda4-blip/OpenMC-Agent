@@ -1,0 +1,781 @@
+{
+  "schema_version": "simulation_plan.v2",
+  "model_spec": null,
+  "complex_model": {
+    "name": "Assembly 2D Lattice",
+    "kind": "assembly",
+    "materials": [
+      {
+        "id": "uo2_3.1",
+        "name": "UO2 3.1% enriched",
+        "density_unit": "g/cm3",
+        "density_value": 10.257,
+        "composition": [
+          {
+            "name": "U234",
+            "percent": 0.0263,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U235",
+            "percent": 3.1,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U236",
+            "percent": 0.0143,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 96.8594,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 11.85,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "zircaloy4",
+        "name": "Zircaloy-4",
+        "density_unit": "g/cm3",
+        "density_value": 6.56,
+        "composition": [
+          {
+            "name": "Zr",
+            "percent": 98.23,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Sn",
+            "percent": 1.5,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Fe",
+            "percent": 0.21,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Cr",
+            "percent": 0.1,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "O16",
+            "percent": 0.13,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "borated_water",
+        "name": "Borated water (1300 ppm B)",
+        "density_unit": "g/cm3",
+        "density_value": 0.743,
+        "composition": [
+          {
+            "name": "H1",
+            "percent": 11.19,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 88.81,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "B10",
+            "percent": 0.0002587,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "B11",
+            "percent": 0.0010413,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [
+          "c_H_in_H2O"
+        ],
+        "depletable": false
+      },
+      {
+        "id": "helium",
+        "name": "Helium fill gas",
+        "density_unit": "g/cm3",
+        "density_value": 0.0001785,
+        "composition": [
+          {
+            "name": "He4",
+            "percent": 100.0,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false
+      },
+      {
+        "id": "ss304",
+        "name": "Stainless Steel 304",
+        "density_unit": "g/cm3",
+        "density_value": 8.03,
+        "composition": [
+          {
+            "name": "Fe",
+            "percent": 68.375,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Cr",
+            "percent": 19.0,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Ni",
+            "percent": 9.5,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Mn",
+            "percent": 2.0,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Si",
+            "percent": 1.0,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "C",
+            "percent": 0.08,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "P",
+            "percent": 0.045,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "S",
+            "percent": 0.03,
+            "percent_type": "wo",
+            "kind": "element"
+          }
+        ],
+        "chemical_formula": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false
+      }
+    ],
+    "surfaces": [
+      {
+        "id": "fuel_cyl",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.4096
+        },
+        "boundary_type": null,
+        "purpose": "Fuel pellet outer radius"
+      },
+      {
+        "id": "clad_inner",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.418
+        },
+        "boundary_type": null,
+        "purpose": "Cladding inner radius"
+      },
+      {
+        "id": "clad_outer",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.475
+        },
+        "boundary_type": null,
+        "purpose": "Cladding outer radius"
+      },
+      {
+        "id": "gt_inner",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.561
+        },
+        "boundary_type": null,
+        "purpose": "Guide tube inner radius"
+      },
+      {
+        "id": "gt_outer",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.602
+        },
+        "boundary_type": null,
+        "purpose": "Guide tube outer radius"
+      },
+      {
+        "id": "it_inner",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.559
+        },
+        "boundary_type": null,
+        "purpose": "Instrument tube inner radius"
+      },
+      {
+        "id": "it_outer",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.605
+        },
+        "boundary_type": null,
+        "purpose": "Instrument tube outer radius"
+      },
+      {
+        "id": "xmin",
+        "kind": "xplane",
+        "parameters": {
+          "x0": 0.0
+        },
+        "boundary_type": "reflective",
+        "purpose": "Left boundary of 1/8 symmetric lattice"
+      },
+      {
+        "id": "xmax",
+        "kind": "xplane",
+        "parameters": {
+          "x0": 10.75
+        },
+        "boundary_type": "reflective",
+        "purpose": "Right boundary of 1/8 symmetric lattice"
+      },
+      {
+        "id": "ymin",
+        "kind": "yplane",
+        "parameters": {
+          "y0": 0.0
+        },
+        "boundary_type": "reflective",
+        "purpose": "Bottom boundary of 1/8 symmetric lattice"
+      },
+      {
+        "id": "ymax",
+        "kind": "yplane",
+        "parameters": {
+          "y0": 10.75
+        },
+        "boundary_type": "reflective",
+        "purpose": "Top boundary of 1/8 symmetric lattice"
+      }
+    ],
+    "regions": [
+      {
+        "id": "fuel_region",
+        "expression": "-fuel_cyl",
+        "surface_ids": [
+          "fuel_cyl"
+        ],
+        "purpose": "Fuel pellet region"
+      },
+      {
+        "id": "gap_region",
+        "expression": "+fuel_cyl -clad_inner",
+        "surface_ids": [
+          "fuel_cyl",
+          "clad_inner"
+        ],
+        "purpose": "Gap between fuel and cladding"
+      },
+      {
+        "id": "clad_region",
+        "expression": "+clad_inner -clad_outer",
+        "surface_ids": [
+          "clad_inner",
+          "clad_outer"
+        ],
+        "purpose": "Cladding region"
+      },
+      {
+        "id": "moderator_region",
+        "expression": "+clad_outer",
+        "surface_ids": [
+          "clad_outer"
+        ],
+        "purpose": "Moderator outside cladding"
+      },
+      {
+        "id": "gt_inner_region",
+        "expression": "-gt_inner",
+        "surface_ids": [
+          "gt_inner"
+        ],
+        "purpose": "Guide tube inner (water or poison)"
+      },
+      {
+        "id": "gt_wall_region",
+        "expression": "+gt_inner -gt_outer",
+        "surface_ids": [
+          "gt_inner",
+          "gt_outer"
+        ],
+        "purpose": "Guide tube wall"
+      },
+      {
+        "id": "gt_outer_region",
+        "expression": "+gt_outer",
+        "surface_ids": [
+          "gt_outer"
+        ],
+        "purpose": "Moderator outside guide tube"
+      },
+      {
+        "id": "it_inner_region",
+        "expression": "-it_inner",
+        "surface_ids": [
+          "it_inner"
+        ],
+        "purpose": "Instrument tube inner (water)"
+      },
+      {
+        "id": "it_wall_region",
+        "expression": "+it_inner -it_outer",
+        "surface_ids": [
+          "it_inner",
+          "it_outer"
+        ],
+        "purpose": "Instrument tube wall"
+      },
+      {
+        "id": "it_outer_region",
+        "expression": "+it_outer",
+        "surface_ids": [
+          "it_outer"
+        ],
+        "purpose": "Moderator outside instrument tube"
+      }
+    ],
+    "cells": [
+      {
+        "id": "fuel_cell",
+        "name": "Fuel pellet",
+        "region_id": "fuel_region",
+        "fill_type": "material",
+        "fill_id": "uo2_3.1",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "gap_cell",
+        "name": "Gap",
+        "region_id": "gap_region",
+        "fill_type": "material",
+        "fill_id": "helium",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "clad_cell",
+        "name": "Cladding",
+        "region_id": "clad_region",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "mod_cell",
+        "name": "Moderator",
+        "region_id": "moderator_region",
+        "fill_type": "material",
+        "fill_id": "borated_water",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "gt_inner_cell",
+        "name": "Guide tube inner",
+        "region_id": "gt_inner_region",
+        "fill_type": "material",
+        "fill_id": "borated_water",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "gt_wall_cell",
+        "name": "Guide tube wall",
+        "region_id": "gt_wall_region",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "gt_mod_cell",
+        "name": "Guide tube outer moderator",
+        "region_id": "gt_outer_region",
+        "fill_type": "material",
+        "fill_id": "borated_water",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "it_inner_cell",
+        "name": "Instrument tube inner",
+        "region_id": "it_inner_region",
+        "fill_type": "material",
+        "fill_id": "borated_water",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "it_wall_cell",
+        "name": "Instrument tube wall",
+        "region_id": "it_wall_region",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "temperature_k": 565.0,
+        "purpose": ""
+      },
+      {
+        "id": "it_mod_cell",
+        "name": "Instrument tube outer moderator",
+        "region_id": "it_outer_region",
+        "fill_type": "material",
+        "fill_id": "borated_water",
+        "temperature_k": 565.0,
+        "purpose": ""
+      }
+    ],
+    "universes": [
+      {
+        "id": "fuel_pin",
+        "name": "Fuel pin universe",
+        "cell_ids": [
+          "fuel_cell",
+          "gap_cell",
+          "clad_cell",
+          "mod_cell"
+        ],
+        "purpose": ""
+      },
+      {
+        "id": "guide_tube",
+        "name": "Guide tube universe",
+        "cell_ids": [
+          "gt_inner_cell",
+          "gt_wall_cell",
+          "gt_mod_cell"
+        ],
+        "purpose": ""
+      },
+      {
+        "id": "instrument_tube",
+        "name": "Instrument tube universe",
+        "cell_ids": [
+          "it_inner_cell",
+          "it_wall_cell",
+          "it_mod_cell"
+        ],
+        "purpose": ""
+      }
+    ],
+    "lattices": [
+      {
+        "id": "assembly_lattice",
+        "name": "17x17 assembly lattice (1/8 symmetry)",
+        "kind": "rect",
+        "pitch_cm": [
+          1.26,
+          1.26
+        ],
+        "lower_left_cm": [
+          0.0,
+          0.0
+        ],
+        "center_cm": null,
+        "shape": [
+          17,
+          17
+        ],
+        "outer_universe_id": null,
+        "universe_pattern": [
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "..."
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ]
+        ],
+        "rings": [],
+        "fill_universe": "fuel_pin",
+        "overrides": {
+          "guide_tube": [
+            [
+              2,
+              5
+            ],
+            [
+              2,
+              8
+            ],
+            [
+              2,
+              11
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              3,
+              13
+            ],
+            [
+              5,
+              2
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              5,
+              8
+            ],
+            [
+              5,
+              11
+            ],
+            [
+              5,
+              14
+            ],
+            [
+              8,
+              2
+            ],
+            [
+              8,
+              5
+            ],
+            [
+              8,
+              11
+            ],
+            [
+              8,
+              14
+            ],
+            [
+              11,
+              2
+            ],
+            [
+              11,
+              5
+            ],
+            [
+              11,
+              8
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              13,
+              3
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              5
+            ],
+            [
+              14,
+              8
+            ],
+            [
+              14,
+              11
+            ]
+          ],
+          "instrument_tube": [
+            [
+              8,
+              8
+            ]
+          ]
+        },
+        "expected_counts": {
+          "fuel_pin": 264,
+          "guide_tube": 24,
+          "instrument_tube": 1
+        },
+        "purpose": "[reference]"
+      }
+    ],
+    "lattice_loadings": [],
+    "assemblies": [
+      {
+        "id": "assembly_2a",
+        "name": "[reference]",
+        "lattice_id": "assembly_lattice",
+        "pitch_cm": 21.5,
+        "boundary": "reflective",
+        "purpose": "Single assembly for 2D HZP BOC fuel lattice"
+      }
+    ],
+    "core": null,
+    "reflectors": [],
+    "control_rods": [],
+    "trisos": [],
+    "packed_spheres": [],
+    "pebbles": [],
+    "settings": {
+      "run_mode": "eigenvalue",
+      "batches": 50,
+      "inactive": 10,
+      "particles": 1000,
+      "energy_mode": "continuous-energy",
+      "temperature_interpolation": true,
+      "seed": null
+    },
+    "mg_cross_sections_file": null,
+    "standard_mgxs_library": null
+  }
+}

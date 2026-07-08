@@ -1,0 +1,149 @@
+{
+  "schema_version": "simulation_plan.v2",
+  "model_spec": {
+    "name": "Pin Cell Basic",
+    "kind": "pin_cell",
+    "pin_cell": {
+      "fuel": {
+        "name": "UO2 Fuel",
+        "density_unit": "g/cm3",
+        "density_value": 10.257,
+        "composition": [
+          {
+            "name": "U234",
+            "percent": 0.0263,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U235",
+            "percent": 3.1,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U236",
+            "percent": 0.0143,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 96.8594,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 11.848,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "temperature_k": 565.0,
+        "sab": [],
+        "chemical_formula": "UO2",
+        "enrichment_percent": 3.1,
+        "enrichment_target": "U235",
+        "depletable": true
+      },
+      "moderator": {
+        "name": "Borated Water Moderator",
+        "density_unit": "g/cm3",
+        "density_value": 0.743,
+        "composition": [
+          {
+            "name": "H1",
+            "percent": 11.19,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 88.81,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "B10",
+            "percent": 0.000259,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "B11",
+            "percent": 0.001041,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "temperature_k": 565.0,
+        "sab": [
+          "c_H_in_H2O"
+        ],
+        "chemical_formula": "H2O",
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "depletable": false
+      },
+      "geometry": {
+        "fuel_radius_cm": 0.4096,
+        "pitch_cm": 1.26,
+        "clad_inner_radius_cm": 0.418,
+        "clad_outer_radius_cm": 0.475
+      },
+      "cladding": {
+        "name": "Zircaloy-4 Cladding",
+        "density_unit": "g/cm3",
+        "density_value": 6.56,
+        "composition": [
+          {
+            "name": "Zr",
+            "percent": 98.23,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Sn",
+            "percent": 1.45,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Fe",
+            "percent": 0.21,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "Cr",
+            "percent": 0.1,
+            "percent_type": "wo",
+            "kind": "element"
+          },
+          {
+            "name": "O16",
+            "percent": 0.01,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "temperature_k": 565.0,
+        "sab": [],
+        "chemical_formula": "Zircaloy-4",
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "depletable": false
+      }
+    },
+    "settings": {
+      "run_mode": "eigenvalue",
+      "batches": 50,
+      "inactive": 10,
+      "particles": 1000,
+      "energy_mode": "continuous-energy",
+      "seed": null
+    }
+  },
+  "complex_model": null
+}

@@ -1,0 +1,41 @@
+{
+  "patch_type": "facts",
+  "benchmark_id": "EXAMPLE",
+  "selected_variant": "3A",
+  "geometry_type": "3d_rectangular_assembly",
+  "lattice_size": [
+    17,
+    17
+  ],
+  "pin_pitch_cm": 1.26,
+  "assembly_pitch_cm": 21.5,
+  "has_axial_geometry": true,
+  "has_spacer_grids": true,
+  "has_special_pin_map": false,
+  "active_fuel_region_cm": [
+    11.951,
+    377.711
+  ],
+  "axial_domain_cm": [
+    -55.0,
+    463.937
+  ],
+  "expected_spacer_grid_count": 8,
+  "expected_pin_count": 264,
+  "expected_guide_tube_count": 24,
+  "expected_instrument_tube_count": 1,
+  "expected_pyrex_count": 0,
+  "expected_thimble_plug_count": 0,
+  "material_roles": [
+    "fuel",
+    "coolant",
+    "cladding",
+    "grid_inconel",
+    "grid_zircaloy",
+    "ss304",
+    "helium"
+  ],
+  "source_notes": [
+    "[reference]"
+  ]
+}

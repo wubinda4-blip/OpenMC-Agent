@@ -6,6 +6,7 @@ from langgraph.types import Command
 
 from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.graph import (
+    _compact_context,
     _core_lattice_naming_guidance,
     _pending_expert_questions,
     _pin_count_mismatch_context,
@@ -2698,3 +2699,56 @@ def test_plan_graph_skips_investigation_when_llm_none(tmp_path: Path) -> None:
     )
     assert repair_calls["n"] >= 1
     assert not state.get("investigation_trace")
+
+
+def test_compact_context_preserves_few_shot_requirement_field() -> None:
+    """Regression: _compact_context must not silently drop a selected
+    FewShotExample's ``requirement`` field via its key whitelist."""
+    from openmc_agent.few_shots import select_few_shots
+
+    selected = select_few_shots("设置 eigenvalue keff 临界计算 source batches")
+    assert selected, "expected at least one few-shot example"
+    assert all(ex.get("requirement") for ex in selected)
+
+    rendered = _compact_context(selected)
+    for ex in selected:
+        assert ex["requirement"] in rendered
+
+
+def test_augmented_requirement_includes_gold_ir_for_selected_case() -> None:
+    """A selected gold case injects its slim IR into the monolithic prompt."""
+    from openmc_agent.graph import _augmented_plan_requirement
+
+    state = {
+        "requirement": "build a fuel assembly with spacer grids",
+        "few_shot_examples": [
+            {
+                "name": "gold_assembly_3d_with_spacer_grids",
+                "gold_case_id": "assembly_3d_with_spacer_grids",
+                "requirement": "",
+                "structured_outline": "",
+            }
+        ],
+    }
+    out = _augmented_plan_requirement(state)
+    assert "gold_ir_summary" in out
+    # slim IR structural content survives truncation into the prompt
+    assert '"kind": "assembly"' in out
+
+
+def test_augmented_requirement_omits_gold_ir_without_case_id() -> None:
+    """Abstract outlines (no gold_case_id) must not trigger gold IR loading."""
+    from openmc_agent.graph import _augmented_plan_requirement
+
+    state = {
+        "requirement": "build something",
+        "few_shot_examples": [
+            {
+                "name": "rectangular_assembly_lattice",
+                "requirement": "an assembly",
+                "structured_outline": "outline text",
+            }
+        ],
+    }
+    out = _augmented_plan_requirement(state)
+    assert "gold_ir_summary" not in out

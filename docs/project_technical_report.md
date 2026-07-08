@@ -313,6 +313,28 @@ RAG / GraphRAG / ingested docs / ranked evidence 都只能作为上下文：
 
 ## 9. 维护记录
 
+### 2026-07-08（Few-shot 双轨增强：兼容分层 incremental 迁移）
+
+把已成功的真实 case 作为 few-shot，**同时**接入 monolithic 路径（完整 IR）和 incremental/patch 路径（patch 形态），保证对正在进行的「一次输出→分层 patch」迁移依然生效。
+
+**背景与缺口**：
+- 原 `few_shots.py` 9 条全是抽象「模式提纲」，无真实 IR；且 incremental 路径（`plan_builder/`，默认 `use_incremental_executor=True`）的 `build_patch_prompt` **完全不消费** `state["few_shot_examples"]`（`_augmented_plan_requirement` 只在 monolithic 分支调用）。
+- `_compact_context` 白名单缺 `requirement`，`FewShotExample.requirement` 被静默丢弃（P0 bug）。
+
+**实现**（全部堆型无关，符合 CLAUDE.md 通用性约束）：
+- **数据层** `data/few_shot_cases/<case_id>/`：4 个结构命名的 case（`pin_cell_basic` / `assembly_2d_lattice` / `assembly_3d_with_spacer_grids` / `quarter_core_with_reflector`），各含 `meta.json`（structural_features + trigger_terms）、`monolithic_slim_ir.json`（精简 IR）、`digest.md`（合成结构摘要）、`patches/*.json`（patch 形态，仅 3D assembly case）。`scripts/build_few_shot_case.py` 从成功 run 生成；**anonymize 掉所有堆型标识**（VERA/C5G7/CASL/westinghouse → `[reference]`/`EXAMPLE`，grep CLEAN），数值为 illustrative reference。
+- **Loader** `openmc_agent/few_shot_cases.py`：`slim_ir_from_plan`（剥 source/assumptions/requires_human_confirmation/volume_cm3/capability_report 等元字段 + 精简长 lattice pattern 为 head+ellipsis+tail）、`extract_structural_features`（词法提取 kind/lattice_size/axial_overlay/reflector/quarter 等，**绝不按堆型名**）、`load_patch_few_shots`/`load_monolithic_few_shot`/`list_gold_case_ids`。
+- **Selector** `few_shots.py`：`FewShotExample` 加 `gold_case_id`/`structural_features`；`select_few_shots` 合并抽象提纲 + gold case，按 (词法 + 2×结构特征交集) 打分；`build_gold_few_shot_examples` 从 meta.json 加载。
+- **Incremental 注入**（核心，面向迁移后）：`PatchGenerationContext.few_shot_case_ids` → `run_incremental_planning`/`build_generation_context_from_state` 透传 → `build_patch_prompt` 在 `_PATCH_RULES` 后注入「Reference patch」段（受 `FEW_SHOT_PATCH_BUDGET=2400` 字符/层截断）；`graph.py:_run_incremental_plan_generation` 从 `state["few_shot_examples"]` 提取 gold_case_ids 下发。`build_retry_prompt` 复用 `build_patch_prompt` 自动继承。
+- **Monolithic 注入**：`_augmented_plan_requirement` 经 `_enrich_few_shots_with_gold` 为选中 gold case 附 `gold_ir_summary`/`gold_digest_summary`；`_compact_context` 改差异化截断（gold_ir 6000 / digest 1500 / 其他 700）+ 白名单补 `requirement`（修 P0 bug）。
+- **关键设计**：patch few-shot 必须是 patch 形态（不能是完整 IR），否则违反 `_OUTPUT_CONTRACT`（禁止 complex_model 等出现在 patch schema 外）。与 Phase 7C 的 `output_mode=json_schema` 共存——few-shot 价值在展示正确字段值/建模决策，非教 JSON 格式。
+
+**通用性自检**：`test_no_reactor_type_name_in_*` 断言所有 trigger_terms/structural_features/case_id 不含 PWR/BWR/VERA/C5G7 等堆型名。
+
+**测试**：新增 `tests/test_few_shot_cases.py`（13）+ 扩展 `test_few_shots.py`/`test_patch_prompts.py`/`test_incremental_executor.py`/`test_graph.py`。全量 **818 passed, 3 skipped**。
+
+**边界**：VERA2A/C5G7/pin_cell 的 incremental patch few-shot 暂缺（仅 3D assembly case 有 `patches/`，因为只有它有现成 patch fixture；其余 case 只有 monolithic slim_ir few-shot，incremental 路径退化为泛型 `_PATCH_RULES`）。后续可从 IR 反推 patch 补齐。
+
 ### 2026-07-07（Step 4 续：抑制环境已满足的核数据库路径专家问题）
 
 完成并验证：
