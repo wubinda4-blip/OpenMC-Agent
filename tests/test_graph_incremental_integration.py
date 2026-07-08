@@ -509,11 +509,7 @@ def test_vera3_3b_default_no_monolithic_reflect_artifacts(tmp_path: Path) -> Non
     stale_patch.write_text('{"stale": true}', encoding="utf-8")
 
     raw_patches = _load_fixture_raw("3b")
-    llm_responses = [
-        json.dumps(p)
-        for p in raw_patches
-        if p["patch_type"] in {"facts", "materials", "universes"}
-    ]
+    llm_responses = [json.dumps(p) for p in raw_patches if p["patch_type"] != "settings"]
     fake_llm = FakePatchLLM(llm_responses)
 
     graph = build_plan_graph(
@@ -533,9 +529,11 @@ def test_vera3_3b_default_no_monolithic_reflect_artifacts(tmp_path: Path) -> Non
     inc_result = state.get("incremental_execution_result", {})
     assert inc_result.get("ok") is True
     assert inc_result.get("planning_mode") == "incremental"
-    assert inc_result.get("reference_patch_policy") == "reference_only_for_structural"
+    assert inc_result.get("reference_patch_policy") == "off"
     assert inc_result.get("monolithic_reflect_plan_allowed") is False
     summary = inc_result.get("summary", {})
+    assert summary.get("reference_patches_used") == []
+    assert summary.get("reference_match_status") == "off"
     assert "actual_pin_counts" in summary
     assert "material_aliases_applied" in summary
 

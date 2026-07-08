@@ -225,7 +225,7 @@ def build_plan_graph(
     patch_llm_client: Callable[[str], str] | None = None,
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
-    reference_patch_policy: str = "reference_only_for_structural",
+    reference_patch_policy: str = "off",
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -406,11 +406,11 @@ def _receive_requirement(state: GraphState) -> GraphState:
         build_state.add_event(
             event_type="planning.incremental_recommended_but_not_executed",
             message=(
-                "incremental planning selected; executor will use structural patches"
+                "incremental planning selected; executor will synthesize input-driven structural patches"
             ),
             data={
                 "planning_mode": "incremental",
-                "reference_patch_policy": "reference_only_for_structural",
+                "reference_patch_policy": "off",
                 "monolithic_reflect_plan_allowed": False,
             },
         )
@@ -682,7 +682,7 @@ def _run_incremental_plan_generation(
     *,
     patch_llm_client: PatchLlmClient,
     allow_fallback: bool = False,
-    reference_patch_policy: str = "reference_only_for_structural",
+    reference_patch_policy: str = "off",
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -893,7 +893,7 @@ def _make_generate_plan_node(
     patch_llm_client: Callable[[str], str] | None = None,
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
-    reference_patch_policy: str = "reference_only_for_structural",
+    reference_patch_policy: str = "off",
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):

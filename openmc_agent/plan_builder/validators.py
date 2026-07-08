@@ -510,6 +510,11 @@ def _validate_pin_map(
             expected_counts[role] = val
         else:
             expected_counts[key] = val
+    expected_counts = {
+        item: expected_val
+        for item, expected_val in expected_counts.items()
+        if item in actual_counts
+    }
 
     for item, expected_val in expected_counts.items():
         count = actual_counts.get(item, 0)

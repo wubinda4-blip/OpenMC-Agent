@@ -530,7 +530,8 @@ def run_incremental_planning(
         ``"off"`` (LLM only), ``"reference_only_for_structural"``
         (structural patches from reference, LLM for facts/materials/universes),
         ``"fallback_after_llm_failure"`` (try LLM, then reference),
-        ``"prefer_reference_for_structural"`` (same as reference_only).
+        ``"prefer_reference_for_structural"`` (use reference when available,
+        otherwise continue with input-driven LLM patch generation).
     reference_path
         Explicit path to reference file.  If None, tries benchmark lookup.
     """
@@ -644,10 +645,8 @@ def run_incremental_planning(
             continue
 
         is_structural = patch_type in REFERENCE_PATCH_TYPES
-        strict_reference_first = reference_patch_policy in (
-            "reference_only_for_structural",
-            "prefer_reference_for_structural",
-        )
+        strict_reference_only = reference_patch_policy == "reference_only_for_structural"
+        prefer_reference = reference_patch_policy == "prefer_reference_for_structural"
 
         # Lazy-load reference after facts patch has set benchmark_id.
         if (
@@ -676,7 +675,8 @@ def run_incremental_planning(
         # reference-first structural policies.
         if (
             patch_type == "settings"
-            and not strict_reference_first
+            and not strict_reference_only
+            and not (prefer_reference and reference_data is not None)
         ):
             settings_patch = build_deterministic_settings_patch(state)
             content = settings_patch.model_dump(mode="json")
@@ -731,14 +731,14 @@ def run_incremental_planning(
                             "issue_codes": issue_codes,
                         },
                     )
-                    if strict_reference_first:
+                    if strict_reference_only:
                         return _fail_reference_only(
                             pt=patch_type,
                             code="reference_patch.validation_failed",
                             message=f"{patch_type} reference patch failed validation",
                             detail_codes=issue_codes,
                         )
-            if strict_reference_first:
+            if strict_reference_only:
                 return _fail_reference_only(
                     pt=patch_type,
                     code="reference_patch.required_unavailable",
@@ -749,7 +749,7 @@ def run_incremental_planning(
         if (
             is_structural
             and reference_data is None
-            and strict_reference_first
+            and strict_reference_only
         ):
             return _fail_reference_only(
                 pt=patch_type,
