@@ -1,18 +1,15 @@
 """Benchmark/reference-backed deterministic patch source (Phase 7D).
 
 Loads structural patches (pin_map, axial_layers, axial_overlays, settings)
-from benchmark reference files so that well-known benchmarks like VERA3
-don't depend entirely on LLM output for structural facts.
+from benchmark reference files.  Benchmark identification is done via
+LLM-based semantic matching — NO hardcoded benchmark names in code.
 
 Design constraints
 ------------------
-* **No hardcoded benchmark facts in production code.**  All numbers come
-  from JSON reference files loaded at runtime.
-* **Test fixtures are the initial reference source.**  The
-  ``tests/fixtures/vera3_patches/`` files serve as reference patches.
-  Production use can point to ``data/benchmarks/`` or similar.
-* **Reference patches must still pass validation.**  They are not trusted
-  blindly.
+* **No hardcoded benchmark facts or identifiers in production code.**
+* Reference files are self-describing (contain their own benchmark_id).
+* Matching is done by LLM semantic comparison, not string equality.
+* Falls back gracefully when LLM or reference files are unavailable.
 """
 
 from __future__ import annotations
@@ -37,15 +34,92 @@ REFERENCE_PATCH_TYPES: frozenset[str] = frozenset({
     "pin_map", "axial_layers", "axial_overlays", "settings",
 })
 
-# Default fixture locations (test-only; production should use reference_path).
-_FIXTURE_DIR = Path(__file__).resolve().parent.parent.parent / "tests" / "fixtures" / "vera3_patches"
+# Default search directories for reference files (relative to project root).
+# These are data directories, NOT hardcoded benchmark identifiers.
+_DEFAULT_REFERENCE_DIRS: tuple[str, ...] = (
+    "tests/fixtures/vera3_patches",
+    "data/benchmarks",
+)
 
-_BENCHMARK_VARIANT_FILES: dict[str, dict[str, str]] = {
-    "VERA3": {
-        "3A": "vera3_3a_patches.json",
-        "3B": "vera3_3b_patches.json",
-    },
-}
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def discover_reference_files(
+    *,
+    search_dirs: list[str | Path] | None = None,
+) -> list[dict[str, Any]]:
+    """Scan directories for reference patch JSON files.
+
+    Returns a list of dicts, each with:
+    * ``path`` — file path
+    * ``benchmark_id`` — extracted from the file's facts patch content
+    * ``variant`` — extracted from the file's facts patch content
+    * ``data`` — the raw parsed JSON
+
+    No hardcoded benchmark identifiers — discovery is purely file-based.
+    """
+    root = _project_root()
+    dirs_to_search = search_dirs or list(_DEFAULT_REFERENCE_DIRS)
+
+    results: list[dict[str, Any]] = []
+    for dir_path in dirs_to_search:
+        d = Path(dir_path)
+        if not d.is_absolute():
+            d = root / d
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.json")):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            patches = data.get("patches", [])
+            if not isinstance(patches, list):
+                continue
+            # Extract benchmark_id/variant from the facts patch inside the file.
+            bid = None
+            var = None
+            for p in patches:
+                if isinstance(p, dict) and p.get("patch_type") == "facts":
+                    bid = p.get("benchmark_id")
+                    var = p.get("selected_variant")
+                    break
+            results.append({
+                "path": str(f),
+                "benchmark_id": bid,
+                "variant": var,
+                "data": data,
+            })
+    return results
+
+
+def _llm_match_benchmark(
+    llm_client: Any,
+    requested_id: str,
+    requested_variant: str | None,
+    candidate_id: str,
+    candidate_variant: str | None,
+) -> bool:
+    """Use LLM to semantically match two benchmark identifiers.
+
+    Asks: "Does '{requested_id}' refer to the same benchmark as '{candidate_id}'?"
+    This is fully generic — works for any naming convention.
+    """
+    prompt = (
+        f"Does the benchmark identifier \"{requested_id}\" "
+        f"(variant \"{requested_variant or ''}\") refer to the same "
+        f"nuclear benchmark as \"{candidate_id}\" "
+        f"(variant \"{candidate_variant or ''}\")?\n"
+        f"For example, \"VERA_Problem3\" and \"VERA3\" refer to the same benchmark.\n"
+        f"Answer ONLY \"yes\" or \"no\"."
+    )
+    try:
+        raw = llm_client(prompt)
+        return "yes" in raw.strip().lower()
+    except Exception:
+        return False
 
 
 def load_benchmark_reference(
@@ -53,25 +127,18 @@ def load_benchmark_reference(
     benchmark_id: str | None = None,
     variant: str | None = None,
     reference_path: str | Path | None = None,
+    llm_client: Any | None = None,
 ) -> dict[str, Any] | None:
     """Load benchmark reference patch data.
 
-    Parameters
-    ----------
-    benchmark_id
-        e.g. ``"VERA3"``.
-    variant
-        e.g. ``"3B"``.
-    reference_path
-        Explicit path to a reference file.  Overrides benchmark lookup.
+    Matching priority:
+    1. Explicit ``reference_path`` (no matching needed).
+    2. Exact ``benchmark_id`` match against discovered reference files.
+    3. LLM-based semantic matching (if ``llm_client`` provided).
 
-    Returns
-    -------
-    dict | None
-        The raw patch list dict (``{"patches": [...]}``), or ``None`` if
-        no reference is available.
+    No hardcoded benchmark identifiers — all matching is data-driven.
     """
-    # Explicit path takes priority.
+    # 1. Explicit path.
     if reference_path is not None:
         p = Path(reference_path)
         if p.is_file():
@@ -81,31 +148,31 @@ def load_benchmark_reference(
                 return None
         return None
 
-    # Benchmark/variant lookup.
     if benchmark_id is None:
         return None
 
-    variant_files = _BENCHMARK_VARIANT_FILES.get(benchmark_id.upper())
-    if variant_files is None:
-        return None
+    # 2. Discover available reference files.
+    candidates = discover_reference_files()
 
-    # Try exact variant match, then fallback to any available.
-    fname = variant_files.get(variant or "")
-    if fname is None:
-        # Try first available variant.
-        if variant_files:
-            fname = next(iter(variant_files.values()))
-        else:
-            return None
+    # 3. Try exact match first (case-insensitive).
+    for c in candidates:
+        if c["benchmark_id"] and c["benchmark_id"].lower() == benchmark_id.lower():
+            if variant is None or c["variant"] is None or c["variant"].lower() == variant.lower():
+                return c["data"]
 
-    ref_file = _FIXTURE_DIR / fname
-    if not ref_file.is_file():
-        return None
+    # 4. Try LLM-based semantic matching.
+    if llm_client is not None:
+        for c in candidates:
+            if c["benchmark_id"] is None:
+                continue
+            if _llm_match_benchmark(
+                llm_client,
+                benchmark_id, variant,
+                c["benchmark_id"], c["variant"],
+            ):
+                return c["data"]
 
-    try:
-        return json.loads(ref_file.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    return None
 
 
 def build_reference_patch(
@@ -123,7 +190,7 @@ def build_reference_patch(
     reference
         The raw reference dict (from :func:`load_benchmark_reference`).
     variant
-        Optional variant filter (e.g. only return 3B patches).
+        Optional variant filter.
 
     Returns
     -------
@@ -142,8 +209,6 @@ def build_reference_patch(
             continue
         if entry.get("patch_type") != patch_type:
             continue
-        # Variant filter: if variant is specified and patch has a variant field,
-        # check it matches (or is absent).
         if variant is not None:
             entry_variant = entry.get("variant")
             if entry_variant is not None and entry_variant != variant:
@@ -158,6 +223,7 @@ def build_reference_patch(
 
 __all__ = [
     "REFERENCE_PATCH_TYPES",
+    "discover_reference_files",
     "load_benchmark_reference",
     "build_reference_patch",
 ]

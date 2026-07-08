@@ -551,6 +551,9 @@ def run_incremental_planning(
                 benchmark_id=state.benchmark_id,
                 variant=state.selected_variant,
                 reference_path=reference_path,
+                # Don't pass llm_client here — it would consume patch
+                # generation responses. LLM matching should be done
+                # separately if needed, not in the patch loop.
             )
             if reference_data is not None:
                 state.add_event(
