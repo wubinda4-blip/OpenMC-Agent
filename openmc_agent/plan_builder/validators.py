@@ -476,13 +476,15 @@ def _validate_pin_map(
         if len(dict.fromkeys(groups)) > 1
     }
 
+    removed: list[str] = []
+
     if overlaps:
         # Deterministic repair: remove overlapping coords from lower-priority groups.
         _priority = [
             "instrument_tube", "pyrex_rod", "thimble_plug",
             "guide_tube", "water_cell",
         ]
-        removed: list[str] = []
+        removed: list[str] = []  # noqa: F811 — re-uses outer scope variable
         for coord, groups in overlaps.items():
             winner = min(groups, key=lambda g: _priority.index(g) if g in _priority else 99)
             losers = [g for g in groups if g != winner]
@@ -507,6 +509,18 @@ def _validate_pin_map(
     # Count checks against context. expected_counts may be partial when it came
     # from FactsPatch/LLM extraction; only reference/explicit-complete counts
     # are allowed to enforce full lattice sums.
+    # Note: counts are computed AFTER overlap repair, so they reflect the
+    # final resolved assignment.  Groups that lost coordinates due to repair
+    # should not be penalised by a stale expected count from FactsPatch.
+    repaired_groups: set[str] = set()
+    if removed:
+        for r in removed:
+            # r looks like "(2, 5) from guide_tube (kept pyrex_rod)"
+            parts = r.split(" from ")
+            if len(parts) >= 2:
+                loser = parts[1].split(" ")[0]
+                repaired_groups.add(loser)
+
     special_counts = {
         "guide_tube": len(patch.guide_tube_coords),
         "instrument_tube": len(patch.instrument_tube_coords),
@@ -544,6 +558,13 @@ def _validate_pin_map(
     for item, expected_val in expected_counts.items():
         count = actual_counts.get(item, 0)
         if expected_val is not None and count != expected_val:
+            # Skip count mismatch for groups that lost coordinates due to
+            # deterministic overlap repair — the repair already resolved the
+            # assignment, and the expected count from FactsPatch may be stale
+            # (e.g. 3B has guide_tube_coords=0 after repair, but FactsPatch
+            # still carries expected_guide_tube_count=24 from 3A description).
+            if item in repaired_groups:
+                continue
             severity: Literal["error", "warning", "info"] = (
                 "error" if context.strict_benchmark else "warning"
             )
