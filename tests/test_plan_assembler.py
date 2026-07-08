@@ -1,0 +1,318 @@
+"""Tests for the deterministic assembler (Phase 3)."""
+
+from __future__ import annotations
+
+import pytest
+
+from openmc_agent.plan_builder.assembler import (
+    PlanAssemblyResult,
+    expand_pin_map,
+    assemble_simulation_plan_from_patches,
+)
+from openmc_agent.plan_builder.patches import (
+    AxialLayerPatchItem,
+    AxialLayersPatch,
+    AxialOverlayPatchItem,
+    AxialOverlaysPatch,
+    CellLayerPatch,
+    CoordinateConvention,
+    FactsPatch,
+    MaterialSpecPatch,
+    MaterialsPatch,
+    PinMapPatch,
+    SettingsPatch,
+    UniverseSpecPatch,
+    UniversesPatch,
+)
+from openmc_agent.plan_builder.state import (
+    PlanBuildState,
+    PlanPatchEnvelope,
+    add_validated_patch_to_state,
+    assemble_state_if_ready,
+)
+from openmc_agent.plan_builder.validators import (
+    PatchValidationContext,
+    validate_patch,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helper: minimal valid patch set for 3D assembly
+# ---------------------------------------------------------------------------
+
+
+def _minimal_3d_patches() -> list:
+    return [
+        FactsPatch(
+            benchmark_id="TEST",
+            lattice_size=(17, 17),
+            pin_pitch_cm=1.26,
+            assembly_pitch_cm=21.42,
+            has_axial_geometry=True,
+            has_spacer_grids=True,
+            active_fuel_region_cm=(0.0, 100.0),
+        ),
+        MaterialsPatch(materials=[
+            MaterialSpecPatch(material_id="fuel", name="UO2", role="fuel", density_g_cm3=10.0),
+            MaterialSpecPatch(material_id="water", name="Water", role="coolant", density_g_cm3=0.74),
+            MaterialSpecPatch(material_id="clad", name="Zircaloy-4", role="cladding",
+                              density_g_cm3=6.56, composition={"Zr": 1.0},
+                              composition_status="approximate",
+                              warnings=["Zircaloy-4 approximated as pure Zr"]),
+        ]),
+        UniversesPatch(universes=[
+            UniverseSpecPatch(universe_id="fuel_pin", kind="fuel_pin", cells=[
+                CellLayerPatch(id="fuel", role="fuel", material_id="fuel", region_kind="cylinder"),
+                CellLayerPatch(id="clad", role="cladding", material_id="clad", region_kind="annulus"),
+                CellLayerPatch(id="water", role="coolant", material_id="water", region_kind="background"),
+            ]),
+            UniverseSpecPatch(universe_id="gt", kind="guide_tube", cells=[
+                CellLayerPatch(id="inner_water", role="coolant", material_id="water", region_kind="cylinder"),
+                CellLayerPatch(id="wall", role="cladding", material_id="clad", region_kind="annulus"),
+                CellLayerPatch(id="bg", role="background", material_id="water", region_kind="background"),
+            ]),
+        ]),
+        PinMapPatch(
+            lattice_size=(17, 17),
+            default_universe_id="fuel_pin",
+            guide_tube_coords=[(2, 2), (2, 5)],
+            coordinate_convention=CoordinateConvention(index_base=0),
+        ),
+        AxialLayersPatch(layers=[
+            AxialLayerPatchItem(
+                layer_id="active_fuel", role="active_fuel",
+                z_min_cm=0.0, z_max_cm=100.0,
+                fill_type="lattice", fill_id="assembly_lattice",
+            ),
+        ]),
+        AxialOverlaysPatch(overlays=[
+            AxialOverlayPatchItem(
+                overlay_id="grid1", overlay_kind="spacer_grid",
+                z_min_cm=10.0, z_max_cm=12.0,
+                target_lattice_id="assembly_lattice",
+                material_id="clad",
+                geometry_mode="homogenized_open_region",
+                through_path_preserved=True,
+            ),
+        ]),
+        SettingsPatch(),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 1. Assemble minimal 3D plan from valid patches
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_minimal_3d_plan() -> None:
+    result = assemble_simulation_plan_from_patches(_minimal_3d_patches())
+    assert result.ok is True
+    assert result.plan is not None
+    cm = result.plan.complex_model
+    assert len(cm.materials) >= 2
+    assert len(cm.universes) >= 2
+    assert len(cm.lattices) == 1
+    assert cm.core is not None
+    assert len(cm.core.axial_layers) >= 1
+    assert len(cm.core.axial_overlays) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 2. Missing required patch fails cleanly
+# ---------------------------------------------------------------------------
+
+
+def test_missing_required_patch_fails() -> None:
+    patches = _minimal_3d_patches()
+    # Remove pin_map
+    patches = [p for p in patches if getattr(p, "patch_type", "") != "pin_map"]
+    result = assemble_simulation_plan_from_patches(patches)
+    assert result.ok is False
+    codes = [i.code for i in result.issues]
+    assert "assembly.missing_patch" in codes
+
+
+# ---------------------------------------------------------------------------
+# 3. Pin map expansion 17x17 count
+# ---------------------------------------------------------------------------
+
+
+def test_pin_map_expansion_17x17_count() -> None:
+    pin_map = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+    )
+    grid = expand_pin_map(pin_map)
+    assert len(grid) == 17
+    assert all(len(row) == 17 for row in grid)
+    total = sum(len(row) for row in grid)
+    assert total == 289
+
+
+# ---------------------------------------------------------------------------
+# 4. Pin map special coordinates replace default
+# ---------------------------------------------------------------------------
+
+
+def test_pin_map_special_coords_replace() -> None:
+    pin_map = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+        guide_tube_coords=[(2, 2), (2, 5)],
+        pyrex_rod_coords=[(3, 3)],
+        coordinate_convention=CoordinateConvention(index_base=0),
+    )
+    universe_ids = {
+        "fuel_pin": "fuel_pin",
+        "guide_tube": "gt",
+        "pyrex_rod": "px",
+    }
+    grid = expand_pin_map(pin_map, universe_ids=universe_ids)
+    assert grid[2][2] == "gt"
+    assert grid[2][5] == "gt"
+    assert grid[3][3] == "px"
+    assert grid[0][0] == "fuel_pin"
+
+
+# ---------------------------------------------------------------------------
+# 5. Pin map coordinate convention 1-indexed normalized
+# ---------------------------------------------------------------------------
+
+
+def test_pin_map_1_indexed_convention() -> None:
+    pin_map = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+        guide_tube_coords=[(1, 1)],
+        coordinate_convention=CoordinateConvention(index_base=1),
+    )
+    universe_ids = {"fuel_pin": "fuel_pin", "guide_tube": "gt"}
+    grid = expand_pin_map(pin_map, universe_ids=universe_ids)
+    assert grid[0][0] == "gt"  # (1,1) 1-indexed -> (0,0) 0-indexed
+    assert grid[0][1] == "fuel_pin"
+
+
+# ---------------------------------------------------------------------------
+# 6. Pin map overlap blocked before assembly
+# ---------------------------------------------------------------------------
+
+
+def test_pin_map_overlap_blocked() -> None:
+    pin_map = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+        guide_tube_coords=[(5, 5)],
+        pyrex_rod_coords=[(5, 5)],
+        coordinate_convention=CoordinateConvention(index_base=0),
+    )
+    universe_ids = {"fuel_pin": "fuel_pin", "guide_tube": "gt", "pyrex_rod": "px"}
+    with pytest.raises(ValueError, match="overlap|assigned"):
+        expand_pin_map(pin_map, universe_ids=universe_ids)
+
+
+# ---------------------------------------------------------------------------
+# 7. Assembled axial layers preserve z ranges
+# ---------------------------------------------------------------------------
+
+
+def test_axial_layers_preserve_z_ranges() -> None:
+    result = assemble_simulation_plan_from_patches(_minimal_3d_patches())
+    assert result.ok is True
+    layers = result.plan.complex_model.core.axial_layers
+    fuel_layer = next(l for l in layers if l.id == "active_fuel")
+    assert fuel_layer.z_min_cm == 0.0
+    assert fuel_layer.z_max_cm == 100.0
+    assert fuel_layer.fill.type == "lattice"
+    assert fuel_layer.fill.id == "assembly_lattice"
+
+
+# ---------------------------------------------------------------------------
+# 8. Assembled overlays preserve Level 1 mode
+# ---------------------------------------------------------------------------
+
+
+def test_overlays_preserve_level1_mode() -> None:
+    result = assemble_simulation_plan_from_patches(_minimal_3d_patches())
+    assert result.ok is True
+    overlays = result.plan.complex_model.core.axial_overlays
+    assert len(overlays) == 1
+    ov = overlays[0]
+    assert ov.geometry_mode == "homogenized_open_region"
+    assert ov.through_path_preserved is True
+
+
+# ---------------------------------------------------------------------------
+# 9. Settings patch does not block assembly
+# ---------------------------------------------------------------------------
+
+
+def test_settings_patch_does_not_block() -> None:
+    result = assemble_simulation_plan_from_patches(_minimal_3d_patches())
+    assert result.ok is True
+    assert result.plan is not None
+    # Cross sections is runtime; assembly should succeed without a path
+    assert result.plan.complex_model is not None
+
+
+# ---------------------------------------------------------------------------
+# 14. PlanBuildState assembly lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_plan_build_state_assembly_lifecycle() -> None:
+    from openmc_agent.plan_builder.patches import parse_patch_content
+
+    state = PlanBuildState(
+        state_id="test_assembly",
+        requirement_text="3D assembly",
+    )
+    patches = _minimal_3d_patches()
+    for i, patch in enumerate(patches):
+        ptype = patch.patch_type
+        envelope = PlanPatchEnvelope(
+            patch_id=f"patch_{i}_{ptype}",
+            patch_type=ptype,
+            content=patch.model_dump(mode="json"),
+            source="fixture",
+        )
+        parsed = parse_patch_content(ptype, patch.model_dump(mode="json"))
+        val_result = validate_patch(parsed)
+        assert val_result.ok, f"patch {ptype} failed validation: {[i.code for i in val_result.issues if i.severity == 'error']}"
+        add_validated_patch_to_state(state, envelope, parsed, val_result)
+
+    # All patches should be valid
+    assert len(state.get_valid_patches()) == len(patches)
+
+    # Assemble
+    state = assemble_state_if_ready(state)
+    assert state.assembled_plan is not None
+    event_types = [e.event_type for e in state.build_log]
+    assert "planning.assembly_started" in event_types
+    assert "planning.assembly_completed" in event_types
+
+
+def test_plan_build_state_assembly_failed_no_patches() -> None:
+    state = PlanBuildState(
+        state_id="test_empty",
+        requirement_text="test",
+    )
+    state = assemble_state_if_ready(state)
+    assert state.assembled_plan is None
+    event_types = [e.event_type for e in state.build_log]
+    assert "planning.assembly_failed" in event_types
+
+
+# ---------------------------------------------------------------------------
+# 15. Pin map expansion with out-of-bounds raises
+# ---------------------------------------------------------------------------
+
+
+def test_pin_map_out_of_bounds_raises() -> None:
+    pin_map = PinMapPatch(
+        lattice_size=(5, 5),
+        default_universe_id="fuel",
+        guide_tube_coords=[(10, 10)],
+        coordinate_convention=CoordinateConvention(index_base=0),
+    )
+    with pytest.raises(ValueError, match="out of bounds"):
+        expand_pin_map(pin_map, universe_ids={"guide_tube": "gt"})

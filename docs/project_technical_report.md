@@ -698,3 +698,68 @@ Level 1 近似边界（明确）：
 3. LLM patch generator（per-task 小粒度 LLM 调用）
 4. Local retry router（per-task 重试）
 5. Workflow replacement（incremental executor 接管 generate_plan 节点）
+
+#### Incremental Plan Builder Phase 3: Deterministic assembler and VERA3 patch fixtures
+
+**核心成果：** VERA3 3B 从小 patches 成功组装为完整 3D SimulationPlan，不再需要 LLM 输出 25K JSON。Assembled plan 通过 `assembly3d_guard` 检查。
+
+**Deterministic assembler（`openmc_agent/plan_builder/assembler.py`）：**
+
+- `assemble_simulation_plan_from_patches(patches, strict=True)` → `PlanAssemblyResult{ok, plan, plan_dict, issues, summary}`
+- 不调用 LLM；不调用 OpenMC；不渲染 geometry。
+- 检查 required patches（3D assembly 需要 facts/materials/universes/pin_map/axial_layers/settings；spacer grids 需要 axial_overlays）。
+- 缺少 required patch → `assembly.missing_patch` error。
+- 将 7 种 patch 类型适配为现有 `SimulationPlan` schema 的 `ComplexModelSpec`（materials, cells, universes, lattices, core.axial_layers, core.axial_overlays, assemblies）。
+
+**Pin map expansion（`expand_pin_map`）：**
+
+- LLM / fixture 只提供特殊坐标（如 16 个 Pyrex + 8 个 plug 坐标）。
+- Python 确定性地展开为完整 17×17 universe_pattern（289 entries）。
+- 支持 0-indexed 和 1-indexed 坐标约定。
+- 检查坐标越界和 overlap。
+- 验证：VERA3 3B 的 289 positions = 264 fuel + 16 pyrex + 8 plug + 1 instrument tube。
+
+**VERA3 patch fixtures（`tests/fixtures/vera3_patches/`）：**
+
+- `vera3_3a_patches.json`：7 个 patches（facts + 7 materials + 3 universes + 24 GT + 12 layers + 8 overlays + settings）。
+- `vera3_3b_patches.json`：7 个 patches（facts + 8 materials（含 Pyrex）+ 4 universes（含 pyrex_rod / thimble_plug）+ 16 Pyrex coords + 8 plug coords + 12 layers + 8 overlays + settings）。
+- Fixtures 只用于测试；不写入生产 code。
+- 所有 fixture patches 通过 Phase 2 validators（strict_benchmark=True, 0 errors）。
+
+**Assembly issue codes：**
+`assembly.missing_patch`, `assembly.pin_map_expansion_failed`, `assembly.simulation_plan_schema_invalid`, `assembly.unresolved_universe_reference`, `assembly.completed`
+
+**PlanBuildState assembly helper：**
+- `assemble_state_if_ready(state, strict=True)` → 从 `state.patches`（status='valid'）中读取 patches → parse → assemble → `state.assembled_plan = result.plan.model_dump()`。
+- 3 个新 event codes：`planning.assembly_started`, `planning.assembly_completed`, `planning.assembly_failed`。
+
+**Assembly3d guard 通过验证：**
+- 3A assembled plan：0 个 `assembly3d.axial_layers_required` / `default_z_extent` / `spacer_grid_material_slab`。
+- 3B assembled plan：同样 0 个 blocking errors。
+- 3B 的 z ranges 完整保留（active_fuel: 11.951–377.711 cm）。
+- 8 个 spacer grid overlays 全部 `geometry_mode="homogenized_open_region"` + `through_path_preserved=True`。
+
+**Patch → SimulationPlan 字段映射：**
+
+| Patch | Plan field |
+|---|---|
+| FactsPatch | assembly.pitch_cm, core.boundary, assumptions |
+| MaterialsPatch | complex_model.materials[]（ComplexMaterialSpec + NuclideSpec） |
+| UniversesPatch | complex_model.universes[] + cells[]（UniverseSpec + CellSpec） |
+| PinMapPatch | complex_model.lattices[0].universe_pattern（expand_pin_map 展开） |
+| AxialLayersPatch | core.axial_layers[]（AxialLayerSpec + FillRefSpec） |
+| AxialOverlaysPatch | core.axial_overlays[]（AxialOverlaySpec） |
+| SettingsPatch | plot_specs, execution_check.settings |
+
+**测试覆盖（33 new tests）：**
+- `tests/test_plan_assembler.py`：12 tests（assembly + pin map expansion + state lifecycle）。
+- `tests/test_vera3_patch_fixtures.py`：21 tests（3A/3B fixture assembly + counts + assembly3d guard）。
+- 全量测试：`690 passed, 2 skipped in 54.51s`。无回归。
+
+**当前仍未完成：**
+1. LLM patch generator（per-task 小粒度 LLM 调用，替代 monolithic 25K JSON 输出）
+2. Local retry router（per-task 重试，而非整体 reflect）
+3. Incremental workflow executor（incremental executor 接管 generate_plan 节点）
+4. Renderer/runtime issues（source rejection 修复、plot bounds 修复）
+5. Material/alloy fidelity（Zircaloy-4 / SS-304 / Inconel-718 真实 composition）
+6. Volume-fraction calibrated spacer grid geometry

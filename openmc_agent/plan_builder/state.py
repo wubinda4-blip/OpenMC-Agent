@@ -38,6 +38,9 @@ EVENT_COMPONENT_TASKS_INITIALIZED: str = "planning.component_tasks_initialized"
 EVENT_PATCH_PARSED: str = "planning.patch_parsed"
 EVENT_PATCH_VALIDATED: str = "planning.patch_validated"
 EVENT_PATCH_INVALID: str = "planning.patch_invalid"
+EVENT_ASSEMBLY_STARTED: str = "planning.assembly_started"
+EVENT_ASSEMBLY_COMPLETED: str = "planning.assembly_completed"
+EVENT_ASSEMBLY_FAILED: str = "planning.assembly_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -453,12 +456,98 @@ def add_validated_patch_to_state(
     return state
 
 
+def assemble_state_if_ready(
+    state: PlanBuildState,
+    *,
+    strict: bool = True,
+) -> PlanBuildState:
+    """Attempt to assemble all valid patches in ``state`` into a SimulationPlan.
+
+    Reads ``state.patches`` (status='valid'), parses them, calls the
+    deterministic assembler, and stores the result in ``state.assembled_plan``.
+
+    Parameters
+    ----------
+    state
+        The build state (mutated in place).
+    strict
+        Forwarded to the assembler.
+
+    Returns
+    -------
+    PlanBuildState
+        The updated state (same object, for chaining).
+    """
+    from .patches import parse_patch_content
+    from .assembler import assemble_simulation_plan_from_patches
+
+    valid_envelopes = [
+        env for env in state.patches.values() if env.status == "valid"
+    ]
+    if not valid_envelopes:
+        state.add_event(
+            event_type=EVENT_ASSEMBLY_FAILED,
+            message="no valid patches to assemble",
+            data={"valid_patch_count": 0},
+        )
+        return state
+
+    parsed_patches: list[Any] = []
+    parse_errors: list[str] = []
+    for env in valid_envelopes:
+        try:
+            parsed = parse_patch_content(env.patch_type, env.content)
+            parsed_patches.append(parsed)
+        except Exception as exc:
+            parse_errors.append(f"{env.patch_id}: {exc}")
+
+    if parse_errors:
+        state.add_event(
+            event_type=EVENT_ASSEMBLY_FAILED,
+            message=f"failed to parse {len(parse_errors)} patch(es)",
+            data={"parse_errors": parse_errors},
+        )
+        return state
+
+    state.add_event(
+        event_type=EVENT_ASSEMBLY_STARTED,
+        message=f"assembling {len(parsed_patches)} patches",
+        data={"patch_types": [getattr(p, "patch_type", "?") for p in parsed_patches]},
+    )
+
+    result = assemble_simulation_plan_from_patches(parsed_patches, strict=strict)
+
+    if result.ok and result.plan is not None:
+        state.assembled_plan = result.plan.model_dump(mode="json")
+        state.add_event(
+            event_type=EVENT_ASSEMBLY_COMPLETED,
+            message=f"assembly completed ({len(result.summary)} summary entries)",
+            data=result.summary,
+        )
+    else:
+        error_codes = [i.code for i in result.issues if i.severity == "error"]
+        state.validation_issues.extend(
+            issue.model_dump(mode="json") for issue in result.issues
+        )
+        state.add_event(
+            event_type=EVENT_ASSEMBLY_FAILED,
+            message=f"assembly failed: {error_codes}",
+            data={
+                "error_codes": error_codes,
+                "summary": result.summary,
+            },
+        )
+
+    return state
+
+
 __all__ = [
     "BuildEvent",
     "PlanBuildState",
     "PlanComponentTask",
     "PlanPatchEnvelope",
     "add_validated_patch_to_state",
+    "assemble_state_if_ready",
     "initialize_plan_build_state",
     "create_initial_component_tasks",
     "EVENT_PLANNING_MODE_SELECTED",
@@ -470,4 +559,7 @@ __all__ = [
     "EVENT_PATCH_PARSED",
     "EVENT_PATCH_VALIDATED",
     "EVENT_PATCH_INVALID",
+    "EVENT_ASSEMBLY_STARTED",
+    "EVENT_ASSEMBLY_COMPLETED",
+    "EVENT_ASSEMBLY_FAILED",
 ]

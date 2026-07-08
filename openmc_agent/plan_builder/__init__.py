@@ -19,6 +19,12 @@ and local retry router.
 
 from __future__ import annotations
 
+from .assembler import (
+    PlanAssemblyIssue,
+    PlanAssemblyResult,
+    assemble_simulation_plan_from_patches,
+    expand_pin_map,
+)
 from .mode import (
     PlanningModeDecision,
     should_use_incremental_planning,
@@ -49,6 +55,7 @@ from .state import (
     PlanComponentTask,
     PlanPatchEnvelope,
     add_validated_patch_to_state,
+    assemble_state_if_ready,
     create_initial_component_tasks,
     initialize_plan_build_state,
 )
@@ -95,4 +102,10 @@ __all__ = [
     "PatchValidationResult",
     "add_validated_patch_to_state",
     "validate_patch",
+    # Phase 3 -- assembler
+    "PlanAssemblyIssue",
+    "PlanAssemblyResult",
+    "assemble_simulation_plan_from_patches",
+    "assemble_state_if_ready",
+    "expand_pin_map",
 ]
