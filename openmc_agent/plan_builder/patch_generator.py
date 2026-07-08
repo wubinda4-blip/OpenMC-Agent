@@ -66,10 +66,13 @@ class PatchGenerationAttempt(AgentBaseModel):
 
     attempt_index: int
     raw_text: str | None = None
+    raw_chars: int = 0
     parsed: bool = False
     validated: bool = False
     issues: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
+    contains_full_plan_markers: bool = False
+    contains_full_lattice_suspected: bool = False
 
 
 class PatchGenerationResult(AgentBaseModel):
@@ -82,6 +85,44 @@ class PatchGenerationResult(AgentBaseModel):
     validation: dict[str, Any] | None = None
     attempts: list[PatchGenerationAttempt] = Field(default_factory=list)
     issues: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Output diagnostics
+# ---------------------------------------------------------------------------
+
+# Markers that suggest the LLM returned a full SimulationPlan instead of a patch.
+_FULL_PLAN_MARKERS: tuple[str, ...] = (
+    '"complex_model"',
+    '"simulation_plan"',
+    '"materials.xml"',
+    '"geometry.xml"',
+    '"settings.xml"',
+    '"plot_specs"',
+    '"capability_report"',
+    '"execution_check"',
+)
+
+# Thresholds for full-lattice suspicion in pin_map output.
+_FULL_LATTICE_COORD_THRESHOLD: int = 80
+_FULL_LATTICE_RAW_CHARS_THRESHOLD: int = 3000
+
+
+def _detect_full_plan_markers(raw: str) -> bool:
+    """Check if raw output contains markers of a full SimulationPlan."""
+    return any(marker in raw for marker in _FULL_PLAN_MARKERS)
+
+
+def _detect_full_lattice(raw: str, patch_type: str) -> bool:
+    """Check if pin_map raw output looks like a full expanded lattice."""
+    if patch_type != "pin_map":
+        return False
+    if len(raw) > _FULL_LATTICE_RAW_CHARS_THRESHOLD:
+        return True
+    coord_count = raw.count("[") + raw.count("(")
+    if coord_count > _FULL_LATTICE_COORD_THRESHOLD:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +320,23 @@ def generate_patch(
             continue
 
         attempt.raw_text = raw
+        attempt.raw_chars = len(raw)
+
+        # Output diagnostics: detect forbidden patterns.
+        attempt.contains_full_plan_markers = _detect_full_plan_markers(raw)
+        if attempt.contains_full_plan_markers:
+            attempt.issues.append({
+                "code": "patch_generation.full_plan_markers_detected",
+                "severity": "warning",
+                "message": "raw output contains markers of a full SimulationPlan",
+            })
+        attempt.contains_full_lattice_suspected = _detect_full_lattice(raw, patch_type)
+        if attempt.contains_full_lattice_suspected:
+            attempt.issues.append({
+                "code": "patch_generation.pin_map_full_lattice_detected",
+                "severity": "warning",
+                "message": "pin_map raw output appears to contain full lattice entries",
+            })
 
         # Parse JSON.
         try:

@@ -25,6 +25,13 @@ from .assembler import (
     assemble_simulation_plan_from_patches,
     expand_pin_map,
 )
+from .evaluation import (
+    AssemblySummary,
+    EvaluationReport,
+    GuardSummary,
+    PatchMetric,
+    run_incremental_evaluation,
+)
 from .executor import (
     IncrementalExecutionIssue,
     IncrementalExecutionResult,
@@ -36,6 +43,7 @@ from .executor import (
     route_retry,
     run_incremental_planning,
 )
+from .llm_adapter import PATCH_MAX_TOKENS, make_patch_llm_client
 from .patch_generator import (
     FakePatchLLM,
     PatchGenerationAttempt,
@@ -149,4 +157,12 @@ __all__ = [
     "required_patch_types_for_state",
     "route_retry",
     "run_incremental_planning",
+    # Phase 7 -- LLM adapter + evaluation
+    "AssemblySummary",
+    "EvaluationReport",
+    "GuardSummary",
+    "PATCH_MAX_TOKENS",
+    "PatchMetric",
+    "make_patch_llm_client",
+    "run_incremental_evaluation",
 ]

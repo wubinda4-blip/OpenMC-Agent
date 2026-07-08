@@ -922,3 +922,55 @@ Level 1 近似边界（明确）：
 3. Material/alloy fidelity（真实 composition library）
 4. Volume-fraction calibrated spacer grid geometry
 5. keff benchmark acceptance
+
+#### Incremental Plan Builder Phase 7: Real LLM adapter and evaluation harness
+
+**核心成果：** Graph 可以从现有 LLM provider 自动构造 patch client；evaluation harness 可运行 opt-in 真实 LLM 评估并输出结构化 report；PatchGenerationAttempt 增加 raw_chars / full_plan_markers / full_lattice_suspected 诊断。
+
+**Real LLM adapter（`openmc_agent/plan_builder/llm_adapter.py`）：**
+- `make_patch_llm_client(llm=None, model_name=None, ...)` → `Callable[[str], str]`
+- 复用项目现有 `_client_for_model(model)` 构造 OpenAI-compatible client
+- adapter 只做 prompt → raw_text；不 parse / validate / assemble
+- 支持 callable 直接传入（FakePatchLLM）/ OpenAI client 包装 / 从 model_name 构造
+- per-patch token budgets：`PATCH_MAX_TOKENS` (facts:1200, materials:2500, universes:3500, pin_map:1800, axial_layers:2500, axial_overlays:2500)
+
+**Graph auto-construct patch client（`graph.py`）：**
+- incremental mode + 无显式 `patch_llm_client` → 尝试从 `state["model"]` 构造 adapter
+- auto-constructed client 失败 → fallback 到 monolithic（best-effort）
+- 显式提供的 client 失败 → 受 `allow_monolithic_fallback_for_incremental_failure` 控制
+
+**Evaluation harness（`openmc_agent/plan_builder/evaluation.py`）：**
+- `run_incremental_evaluation(requirement, benchmark_id, selected_variant, llm_client, model, max_patch_attempts, output_dir)` → `(EvaluationReport, PlanBuildState)`
+- 输出 `evaluation_report.json`, `plan_build_state.json`, `assembled_plan.json`, `patches/*.json`
+
+**CLI（`scripts/evaluate_incremental_planning.py`）：**
+- `--benchmark VERA3 --variant 3B --model zhipu:glm-5.2 --out data/evals/...`
+- `--dry-run` 打印 patch order 不调 LLM
+
+**Output diagnostics：**
+- `PatchGenerationAttempt` 新增：`raw_chars`, `contains_full_plan_markers`, `contains_full_lattice_suspected`
+- `patch_generation.full_plan_markers_detected`（warning）
+- `patch_generation.pin_map_full_lattice_detected`（warning，当 coord_count > 80 或 raw_chars > 3000）
+
+**Real LLM tests：opt-in only**
+- `OPENMC_AGENT_RUN_REAL_LLM_TESTS=1` 环境变量控制
+- 默认 skip；CI 不调用真实 LLM
+
+**测试覆盖（13 new tests）：**
+- `tests/test_llm_adapter.py`：4 tests（callable wrap / model_name raise / OpenAI client wrap / token budgets）
+- `tests/test_incremental_real_llm_eval.py`：6 tests + 1 skipped real LLM（fake eval report / raw_chars / full lattice detection / CLI dry-run / failure report）
+- 全量测试：`767 passed, 3 skipped in 62.96s`。无回归。
+
+**VERA3 3B fake eval report summary：**
+- ok=True, planning_mode=incremental
+- patch_metrics: 7 patches all valid (facts/materials/universes/pin_map/axial_layers/axial_overlays/settings)
+- assembly: lattice=[17,17], layers=12, overlays=8, pyrex=16, plugs=8, fuel=264
+- guard: blocking=0
+- no_monolithic_plan_requested=True
+
+**remaining work：**
+1. Real LLM stability evaluation（需真实 API key 手动运行）
+2. Runtime OpenMC smoke test（source rejection 修复、plot bounds 修复）
+3. Material/alloy fidelity（真实 composition library）
+4. Volume-fraction calibrated spacer grid geometry
+5. keff benchmark acceptance

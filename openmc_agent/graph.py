@@ -806,16 +806,39 @@ def _make_generate_plan_node(
             else:
                 return inc_result
 
-        # If incremental mode was recommended but no client is available,
-        # silently fall through to monolithic.  The fallback flag only
-        # controls behaviour when the executor actually runs and *fails*.
-        if pmd.get("mode") == "incremental" and use_incremental_executor:
-            _progress(
-                state,
-                "generate_plan",
-                "incremental mode recommended but no patch_llm_client; "
-                "using monolithic planner",
-            )
+        # Phase 7: auto-construct patch client from model name when incremental.
+        if (
+            pmd.get("mode") == "incremental"
+            and use_incremental_executor
+            and patch_llm_client is None
+        ):
+            model_name = state.get("model", "openai:gpt-4o")
+            try:
+                from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
+                auto_client = make_patch_llm_client(model_name=model_name)
+                _progress(
+                    state,
+                    "generate_plan",
+                    f"auto-constructed patch LLM client from model={model_name}",
+                )
+                inc_result = _run_incremental_plan_generation(
+                    state,
+                    patch_llm_client=auto_client,
+                    # Auto-constructed client failures should fall through to
+                    # monolithic, since the client was a best-effort attempt.
+                    allow_fallback=True,
+                )
+                if inc_result.pop("_fallback_to_monolithic", False):
+                    _progress(state, "generate_plan", "continuing to monolithic path")
+                else:
+                    return inc_result
+            except Exception as exc:
+                _progress(
+                    state,
+                    "generate_plan",
+                    f"auto patch client construction failed: {exc}; "
+                    "falling through to monolithic",
+                )
 
         model = state.get("model", "openai:gpt-4o")
         _progress(state, "generate_plan", f"calling LLM model={model}")
