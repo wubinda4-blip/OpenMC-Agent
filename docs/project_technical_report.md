@@ -974,3 +974,28 @@ Level 1 近似边界（明确）：
 3. Material/alloy fidelity（真实 composition library）
 4. Volume-fraction calibrated spacer grid geometry
 5. keff benchmark acceptance
+
+#### Phase 7B: Real LLM hardening — no unsafe monolithic fallback and strict patch-output contract
+
+**背景问题：** 真实 LLM (deepseek:deepseek-chat) 在 VERA3 3B 上失败。诊断：incremental executor 被调用但第一个 patch 失败（LLM 不遵守 patch prompt 返回完整 plan）→ `allow_fallback=True` 导致回退 monolithic → 25K JSON 截断 → repair 丢失 axial_layers → guard 拦截。
+
+**核心修改：**
+
+1. **禁止不安全的 monolithic fallback（`graph.py`）：**
+   - auto-constructed client 失败时默认 `allow_fallback=False`
+   - 例外：LLM 连接错误（`llm_error`）仍允许回退（连接问题，非架构问题）
+   - 不再出现：incremental 失败 → 静默回退 monolithic → 25K 截断
+
+2. **禁止 full-plan 输出检测（`patch_generator.py`）：**
+   - `patch_generation.full_plan_output_forbidden`（error）— parsed JSON 含 SimulationPlan-only 字段（complex_model, capability_report 等）
+   - `patch_generation.pin_map_full_lattice_forbidden`（error）— pin_map >80 coords 或 >3000 chars
+
+3. **强化 patch prompts（`patch_prompts.py`）：**
+   - CRITICAL OUTPUT CONTRACT + per-patch minimal examples + 禁止字段列表
+
+4. **Incremental artifact 保存（`graph.py`）：**
+   - `<output_dir>/incremental/` 保存 build state + valid/invalid patches（无论成功/失败）
+
+**测试覆盖（6 new tests）：** `773 passed, 3 skipped`。无回归。
+
+**预期行为变化：** 真实 LLM 3B 运行时如果 LLM 不遵守 patch prompt → incremental executor 在 facts patch 失败并停止 → 不回退 monolithic → 不再出现 25K 截断 → 有 patch-level diagnostics。

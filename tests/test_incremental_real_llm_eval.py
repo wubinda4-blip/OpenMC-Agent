@@ -133,8 +133,8 @@ def test_pin_map_full_lattice_detection(tmp_path: Path) -> None:
     assert len(result.attempts) == 1
     attempt = result.attempts[0]
     assert attempt.contains_full_lattice_suspected is True
-    warning_codes = [i["code"] for i in attempt.issues if i.get("severity") == "warning"]
-    assert "patch_generation.pin_map_full_lattice_detected" in warning_codes
+    error_codes = [i["code"] for i in attempt.issues if i.get("severity") == "error"]
+    assert "patch_generation.pin_map_full_lattice_forbidden" in error_codes
 
 
 # ---------------------------------------------------------------------------

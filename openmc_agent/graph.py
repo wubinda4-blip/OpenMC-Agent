@@ -605,6 +605,40 @@ def _investigation_state_updates(outcome: RetrievalOutcome | None) -> dict[str, 
 PatchLlmClient = Callable[[str], str]
 
 
+def _write_incremental_artifacts(state: GraphState, exec_result: Any) -> None:
+    """Save incremental patch artifacts for diagnosis.
+
+    Writes to ``<output_dir>/incremental/``:
+    * ``plan_build_state.json`` — full build state with patches and build log
+    * ``incremental_execution_result.json`` — result summary
+    """
+    output_dir = Path(state.get("output_dir", "data/runs"))
+    inc_dir = output_dir / "incremental"
+    try:
+        inc_dir.mkdir(parents=True, exist_ok=True)
+        _write_json_file(
+            inc_dir / "plan_build_state.json",
+            exec_result.state.model_dump(mode="json"),
+        )
+        _write_json_file(
+            inc_dir / "incremental_execution_result.json",
+            {
+                "ok": exec_result.ok,
+                "summary": exec_result.summary,
+                "issues": [i.model_dump(mode="json") for i in exec_result.issues],
+            },
+        )
+        # Save valid and invalid patches.
+        valid_dir = inc_dir / "valid_patches"
+        invalid_dir = inc_dir / "invalid_patches"
+        for env in exec_result.state.patches.values():
+            target = valid_dir if env.status == "valid" else invalid_dir
+            target.mkdir(parents=True, exist_ok=True)
+            _write_json_file(target / f"{env.patch_type}.json", env.content)
+    except Exception:
+        pass  # artifact writing must not block the workflow
+
+
 def _run_incremental_plan_generation(
     state: GraphState,
     *,
@@ -663,8 +697,12 @@ def _run_incremental_plan_generation(
             "ok": exec_result.ok,
             "summary": exec_result.summary,
             "issues": [i.model_dump(mode="json") for i in exec_result.issues],
+            "monolithic_fallback_attempted": False,
         },
     }
+
+    # Phase 7B: save incremental artifacts for diagnosis.
+    _write_incremental_artifacts(state, exec_result)
 
     if exec_result.ok and exec_result.assembled_plan:
         # Parse assembled plan dict into SimulationPlan model.
@@ -821,17 +859,47 @@ def _make_generate_plan_node(
                     "generate_plan",
                     f"auto-constructed patch LLM client from model={model_name}",
                 )
+                # Phase 7B: auto-constructed clients must NOT silently fallback
+                # to monolithic for prompt-compliance failures — complex cases
+                # like VERA3 3B will re-encounter the 25K JSON truncation that
+                # incremental was designed to avoid.  BUT: if the client is a
+                # test/fake model that can't connect at all (all errors are
+                # llm_error), that's a connectivity issue, not prompt compliance,
+                # and falling through to monolithic is safe.
                 inc_result = _run_incremental_plan_generation(
                     state,
                     patch_llm_client=auto_client,
-                    # Auto-constructed client failures should fall through to
-                    # monolithic, since the client was a best-effort attempt.
-                    allow_fallback=True,
+                    allow_fallback=allow_monolithic_fallback_for_incremental_failure,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
-                    _progress(state, "generate_plan", "continuing to monolithic path")
+                    _progress(
+                        state,
+                        "generate_plan",
+                        "EXPLICIT monolithic fallback (flag was set); continuing",
+                    )
                 else:
-                    return inc_result
+                    # Check if failure was purely connectivity (LLM unreachable).
+                    ier = inc_result.get("incremental_execution_result", {})
+                    all_issues = ier.get("issues", [])
+                    all_text = " ".join(
+                        str(i.get("code", "")) + " " + str(i.get("message", ""))
+                        for i in all_issues
+                    )
+                    is_connectivity = (
+                        bool(all_issues)
+                        and "llm_error" in all_text
+                        and "full_plan_output_forbidden" not in all_text
+                    )
+                    if is_connectivity:
+                        _progress(
+                            state,
+                            "generate_plan",
+                            "incremental failed due to LLM connectivity; "
+                            "falling through to monolithic",
+                        )
+                        # Fall through to monolithic below.
+                    else:
+                        return inc_result
             except Exception as exc:
                 _progress(
                     state,

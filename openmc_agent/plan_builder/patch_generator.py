@@ -91,16 +91,30 @@ class PatchGenerationResult(AgentBaseModel):
 # Output diagnostics
 # ---------------------------------------------------------------------------
 
-# Markers that suggest the LLM returned a full SimulationPlan instead of a patch.
+# Markers that are definitive evidence of a full SimulationPlan output.
+# If ANY of these appear in a patch response (outside the expected patch_type
+# field), the response is a forbidden full-plan output.
 _FULL_PLAN_MARKERS: tuple[str, ...] = (
     '"complex_model"',
     '"simulation_plan"',
     '"materials.xml"',
     '"geometry.xml"',
     '"settings.xml"',
-    '"plot_specs"',
     '"capability_report"',
     '"execution_check"',
+    '"plot_specs"',
+    '"schema_version"',
+)
+
+# Fields that are part of SimulationPlan but NOT part of any patch.
+# Their presence means the LLM returned a full plan.
+_PLAN_ONLY_FIELDS: tuple[str, ...] = (
+    "complex_model",
+    "capability_report",
+    "execution_check",
+    "plot_specs",
+    "schema_version",
+    "model_spec",
 )
 
 # Thresholds for full-lattice suspicion in pin_map output.
@@ -111,6 +125,26 @@ _FULL_LATTICE_RAW_CHARS_THRESHOLD: int = 3000
 def _detect_full_plan_markers(raw: str) -> bool:
     """Check if raw output contains markers of a full SimulationPlan."""
     return any(marker in raw for marker in _FULL_PLAN_MARKERS)
+
+
+def _detect_full_plan_in_parsed(content: dict[str, Any], patch_type: str) -> bool:
+    """Check if parsed JSON contains SimulationPlan-only fields.
+
+    A valid patch should never have top-level keys like ``complex_model``,
+    ``capability_report``, ``execution_check``, etc.
+    """
+    for field in _PLAN_ONLY_FIELDS:
+        if field in content:
+            return True
+    # Also check for nested complex_model content that doesn't belong.
+    if patch_type != "materials" and "materials" in content and isinstance(
+        content["materials"], list
+    ) and len(content.get("materials", [])) > 0:
+        # materials list is valid in MaterialsPatch, but if we also see
+        # other plan-level structure, it's likely a full plan.
+        if any(f in content for f in ("core", "universes", "lattices")):
+            return True
+    return False
 
 
 def _detect_full_lattice(raw: str, patch_type: str) -> bool:
@@ -322,21 +356,36 @@ def generate_patch(
         attempt.raw_text = raw
         attempt.raw_chars = len(raw)
 
-        # Output diagnostics: detect forbidden patterns.
+        # Output diagnostics: detect forbidden patterns (Phase 7B: errors).
         attempt.contains_full_plan_markers = _detect_full_plan_markers(raw)
         if attempt.contains_full_plan_markers:
             attempt.issues.append({
-                "code": "patch_generation.full_plan_markers_detected",
-                "severity": "warning",
-                "message": "raw output contains markers of a full SimulationPlan",
+                "code": "patch_generation.full_plan_output_forbidden",
+                "severity": "error",
+                "message": (
+                    "raw output contains SimulationPlan markers "
+                    "(complex_model, capability_report, etc.). "
+                    "This is a forbidden full-plan output, not a patch."
+                ),
             })
+            attempts.append(attempt)
+            last_issues = attempt.issues
+            continue
+
         attempt.contains_full_lattice_suspected = _detect_full_lattice(raw, patch_type)
         if attempt.contains_full_lattice_suspected:
             attempt.issues.append({
-                "code": "patch_generation.pin_map_full_lattice_detected",
-                "severity": "warning",
-                "message": "pin_map raw output appears to contain full lattice entries",
+                "code": "patch_generation.pin_map_full_lattice_forbidden",
+                "severity": "error",
+                "message": (
+                    "pin_map raw output appears to contain a full expanded "
+                    "lattice (>80 coords or >3000 chars). Only special "
+                    "coordinates are allowed."
+                ),
             })
+            attempts.append(attempt)
+            last_issues = attempt.issues
+            continue
 
         # Parse JSON.
         try:
@@ -347,6 +396,21 @@ def generate_patch(
                 "code": "patch_generation.json_parse_error",
                 "severity": "error",
                 "message": str(exc),
+            })
+            attempts.append(attempt)
+            last_issues = attempt.issues
+            continue
+
+        # Phase 7B: check parsed dict for full-plan-only fields.
+        if _detect_full_plan_in_parsed(content, patch_type):
+            attempt.issues.append({
+                "code": "patch_generation.full_plan_output_forbidden",
+                "severity": "error",
+                "message": (
+                    f"parsed JSON contains SimulationPlan-only fields "
+                    f"(e.g. complex_model, capability_report). This is a "
+                    f"full plan, not a {patch_type} patch."
+                ),
             })
             attempts.append(attempt)
             last_issues = attempt.issues

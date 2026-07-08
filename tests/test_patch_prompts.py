@@ -22,7 +22,7 @@ _ALL_PATCH_TYPES = [
 @pytest.mark.parametrize("patch_type", _ALL_PATCH_TYPES)
 def test_prompt_forbids_full_simulation_plan(patch_type: str) -> None:
     prompt = build_patch_prompt(patch_type, "3D assembly requirement", None)
-    assert "Do NOT output a full SimulationPlan" in prompt
+    assert "NOT generating a SimulationPlan" in prompt
     assert patch_type in prompt
 
 
@@ -121,4 +121,4 @@ def test_retry_prompt_includes_issues() -> None:
     prompt = build_retry_prompt("pin_map", "requirement", None, issues, 1)
     assert "coord_overlap" in prompt
     assert "attempt 1" in prompt.lower() or "attempt 1" in prompt
-    assert "Do NOT output a full SimulationPlan" in prompt
+    assert "NOT generating a SimulationPlan" in prompt

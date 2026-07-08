@@ -274,6 +274,117 @@ def test_generation_failure_preserves_valid_patches() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 7B: forbidden full-plan output detection
+# ---------------------------------------------------------------------------
+
+
+def test_facts_patch_rejects_full_plan_output() -> None:
+    """LLM returns a full SimulationPlan instead of a FactsPatch → rejected."""
+    full_plan_raw = json.dumps({
+        "schema_version": "simulation_plan.v2",
+        "complex_model": {"name": "VERA3", "kind": "assembly"},
+        "capability_report": {"renderability": "none"},
+    })
+    fake = FakePatchLLM([full_plan_raw, full_plan_raw])
+    result = generate_patch(
+        patch_type="facts",
+        requirement="VERA3 3B",
+        llm_client=fake,
+        max_attempts=2,
+    )
+    assert result.ok is False
+    all_codes = [i["code"] for i in result.issues]
+    assert "patch_generation.full_plan_output_forbidden" in all_codes
+
+
+def test_retry_after_full_plan_succeeds() -> None:
+    """Full plan first, then valid patch → success on second attempt."""
+    full_plan_raw = json.dumps({
+        "schema_version": "simulation_plan.v2",
+        "complex_model": {"name": "VERA3", "kind": "assembly"},
+    })
+    valid_facts = json.dumps({
+        "patch_type": "facts",
+        "benchmark_id": "VERA3",
+        "selected_variant": "3B",
+        "lattice_size": [17, 17],
+        "has_axial_geometry": True,
+    })
+    fake = FakePatchLLM([full_plan_raw, valid_facts])
+    result = generate_patch(
+        patch_type="facts",
+        requirement="VERA3 3B",
+        llm_client=fake,
+        max_attempts=2,
+    )
+    assert result.ok is True
+    assert len(result.attempts) == 2
+    assert result.attempts[0].contains_full_plan_markers is True
+    first_codes = [i["code"] for i in result.attempts[0].issues]
+    assert "patch_generation.full_plan_output_forbidden" in first_codes
+
+
+def test_pin_map_full_lattice_forbidden_error() -> None:
+    """Pin_map with >80 coords → forbidden error (not warning)."""
+    huge_coords = [[i, i] for i in range(100)]
+    raw = json.dumps({
+        "patch_type": "pin_map",
+        "lattice_size": [17, 17],
+        "default_universe_id": "fp",
+        "coordinate_convention": {"index_base": 0},
+        "guide_tube_coords": huge_coords,
+    })
+    fake = FakePatchLLM([raw, raw])
+    result = generate_patch(
+        patch_type="pin_map",
+        requirement="17x17",
+        llm_client=fake,
+        max_attempts=2,
+    )
+    assert result.ok is False
+    all_codes = [i["code"] for i in result.issues]
+    assert "patch_generation.pin_map_full_lattice_forbidden" in all_codes
+
+
+def test_non_json_natural_language_response() -> None:
+    """Natural language response → json_parse_error."""
+    fake = FakePatchLLM([
+        "I cannot generate this patch because I need more information.",
+        "I cannot generate this patch.",
+    ])
+    result = generate_patch(
+        patch_type="facts",
+        requirement="test",
+        llm_client=fake,
+        max_attempts=2,
+    )
+    assert result.ok is False
+    all_codes = [i["code"] for i in result.issues]
+    assert any("json_parse_error" in c for c in all_codes)
+
+
+def test_prompt_has_output_contract() -> None:
+    """Verify the hardened prompt contains the output contract."""
+    from openmc_agent.plan_builder.patch_prompts import build_patch_prompt
+    prompt = build_patch_prompt("facts", "test requirement", None)
+    assert "CRITICAL OUTPUT CONTRACT" in prompt
+    assert 'patch_type="facts"' in prompt
+    assert "NOT generating a SimulationPlan" in prompt
+    assert "complex_model" in prompt  # forbidden markers listed
+
+
+def test_retry_prompt_for_full_plan_is_explicit() -> None:
+    """Retry prompt for full_plan output should explicitly mention the issue."""
+    from openmc_agent.plan_builder.patch_prompts import build_retry_prompt
+    issues = [
+        {"code": "patch_generation.full_plan_output_forbidden", "severity": "error", "message": "test"},
+    ]
+    prompt = build_retry_prompt("facts", "req", None, issues, 1)
+    assert "REJECTED" in prompt or "rejected" in prompt
+    assert "full SimulationPlan" in prompt or "full plan" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
 # 13. VERA3 3B pin_map patch generation
 # ---------------------------------------------------------------------------
 

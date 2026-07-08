@@ -120,7 +120,7 @@ def test_executor_generates_in_dependency_order() -> None:
 
     # Check generation order: facts was the first LLM call.
     first_prompt = fake.prompts[0]
-    assert "FactsPatch" in first_prompt
+    assert "patch_type=\"facts\"" in first_prompt or "patch_type: facts" in first_prompt
 
     # Check valid patch types.
     valid_types = {e.patch_type for e in state.patches.values() if e.status == "valid"}
@@ -193,7 +193,7 @@ def test_executor_skips_valid_patch() -> None:
 
     # The first LLM call should be for materials, NOT facts.
     first_prompt = fake.prompts[0]
-    assert "MaterialsPatch" in first_prompt
+    assert "patch_type=\"materials\"" in first_prompt or "patch_type: materials" in first_prompt
 
     # Event should record the skip.
     event_types = [e.event_type for e in state.build_log]
@@ -371,7 +371,7 @@ def test_pin_map_retry_only_current_patch() -> None:
     assert result.ok is True
     # Earlier patches (facts/materials/universes) should each have 1 LLM call.
     # pin_map should have 2 LLM calls (bad + good).
-    pin_map_prompts = [p for p in fake.prompts if "PinMapPatch" in p]
+    pin_map_prompts = [p for p in fake.prompts if "pin_map" in p]
     assert len(pin_map_prompts) >= 2
 
 
