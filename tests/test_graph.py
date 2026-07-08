@@ -934,6 +934,7 @@ def test_plan_graph_reflection_includes_hard_counts_and_mismatch_context(
         plot_tool=lambda run_dir: ToolResult(name="run_geometry_plots", ok=True),
         smoke_test_tool=lambda run_dir, plan: ToolResult(name="run_smoke_test", ok=True),
         max_retries=1,
+        use_incremental_executor=False,
     )
 
     state = graph.invoke(

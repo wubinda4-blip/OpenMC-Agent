@@ -925,6 +925,7 @@ def _make_generate_plan_node(
             and patch_llm_client is None
         ):
             model_name = state.get("model", "openai:gpt-4o")
+            _auto_construct_error: str | None = None
             try:
                 from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
                 auto_client = make_patch_llm_client(model_name=model_name)
@@ -933,55 +934,63 @@ def _make_generate_plan_node(
                     "generate_plan",
                     f"auto-constructed patch LLM client from model={model_name}",
                 )
-                # Phase 7B: auto-constructed clients must NOT silently fallback
-                # to monolithic for prompt-compliance failures — complex cases
-                # like VERA3 3B will re-encounter the 25K JSON truncation that
-                # incremental was designed to avoid.  BUT: if the client is a
-                # test/fake model that can't connect at all (all errors are
-                # llm_error), that's a connectivity issue, not prompt compliance,
-                # and falling through to monolithic is safe.
                 inc_result = _run_incremental_plan_generation(
                     state,
                     patch_llm_client=auto_client,
-                    allow_fallback=allow_monolithic_fallback_for_incremental_failure,
+                    allow_fallback=False,
                     reference_patch_policy=reference_patch_policy,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(
                         state,
                         "generate_plan",
-                        "EXPLICIT monolithic fallback (flag was set); continuing",
+                        "incremental fallback requested; continuing",
                     )
                 else:
-                    # Check if failure was purely connectivity (LLM unreachable).
-                    ier = inc_result.get("incremental_execution_result", {})
-                    all_issues = ier.get("issues", [])
-                    all_text = " ".join(
-                        str(i.get("code", "")) + " " + str(i.get("message", ""))
-                        for i in all_issues
-                    )
-                    is_connectivity = (
-                        bool(all_issues)
-                        and "llm_error" in all_text
-                        and "full_plan_output_forbidden" not in all_text
-                    )
-                    if is_connectivity:
-                        _progress(
-                            state,
-                            "generate_plan",
-                            "incremental failed due to LLM connectivity; "
-                            "falling through to monolithic",
-                        )
-                        # Fall through to monolithic below.
-                    else:
-                        return inc_result
+                    return inc_result
             except Exception as exc:
+                _auto_construct_error = str(exc)
                 _progress(
                     state,
                     "generate_plan",
-                    f"auto patch client construction failed: {exc}; "
-                    "falling through to monolithic",
+                    f"incremental patch client construction failed: {exc}",
                 )
+
+            # Phase 7D: If incremental mode was selected but the executor
+            # could not run (construction failed or connectivity issue),
+            # do NOT silently fall through to monolithic — monolithic will
+            # re-encounter the 25K JSON truncation that incremental was
+            # designed to avoid.  Return a structured failure instead.
+            if _auto_construct_error or pmd.get("mode") == "incremental":
+                error_msg = (
+                    f"incremental.patch_client_unavailable: "
+                    f"{_auto_construct_error or 'incremental executor failed'}"
+                )
+                _progress(
+                    state,
+                    "generate_plan",
+                    f"NOT falling back to monolithic for incremental mode; "
+                    f"returning structured failure",
+                )
+                return {
+                    "simulation_plan": None,
+                    "error": error_msg,
+                    **_trace_event_update(
+                        state,
+                        "plan_generated",
+                        summary=(
+                            f"incremental patch client unavailable: "
+                            f"{_auto_construct_error or 'executor failed'}"
+                        ),
+                        metadata={
+                            "success": False,
+                            "planning_mode": "incremental",
+                            "reason": "patch_client_unavailable",
+                            "auto_construct_error": _auto_construct_error,
+                            "monolithic_fallback_attempted": False,
+                        },
+                    ),
+                }
 
         model = state.get("model", "openai:gpt-4o")
         _progress(state, "generate_plan", f"calling LLM model={model}")
