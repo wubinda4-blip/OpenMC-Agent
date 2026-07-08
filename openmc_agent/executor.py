@@ -626,7 +626,7 @@ def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
         )
     else:
         for component in spec.composition:
-            if component.kind == "element":
+            if component.kind == "element" or _is_element_symbol(component.name):
                 lines.append(
                     f"{variable_name}.add_element("
                     f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
@@ -1011,7 +1011,7 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
         )
     elif spec.composition:
         for component in spec.composition:
-            if component.kind == "element":
+            if component.kind == "element" or _is_element_symbol(component.name):
                 lines.append(
                     f"{variable_name}.add_element("
                     f"{component.name!r}, {component.percent!r}, {component.percent_type!r}"
