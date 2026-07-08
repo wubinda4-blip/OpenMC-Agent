@@ -31,6 +31,7 @@ from openmc_agent.lattice_validation import (
     is_structural_error_confirmation,
     lattice_id_from_schema_path,
 )
+from openmc_agent.plan_builder.material_resolution import resolve_material_id
 from openmc_agent.schemas import AssemblySpec, SimulationPlan, ValidationIssue
 
 
@@ -161,10 +162,15 @@ def auto_repair_lattice_structure(
     has_pin_mismatch = issues is not None and any(
         issue.code == "lattice.pin_count_mismatch" for issue in issues
     )
+    has_overlay_support = issues is not None and any(
+        issue.code == "assembly3d.axial_overlay_requires_renderer_support"
+        for issue in issues
+    )
     if (
         issues is not None
         and not has_id_ref
         and not (has_pin_mismatch and requirement)
+        and not has_overlay_support
     ):
         return None
 
@@ -306,6 +312,22 @@ def auto_repair_lattice_structure(
                     layer.loading_id,
                     loading_ids,
                 )
+        # Axial overlay material_id -> material ids (e.g. 'grid_zircaloy4' -> 'zircaloy4').
+        for i, overlay in enumerate(model.core.axial_overlays):
+            if overlay.material_id and overlay.material_id not in material_ids:
+                resolved = resolve_material_id(overlay.material_id, material_ids)
+                if resolved.ok and resolved.resolved_id:
+                    ops.append({
+                        "op": "replace",
+                        "path": f"/complex_model/core/axial_overlays/{i}/material_id",
+                        "value": resolved.resolved_id,
+                    })
+                else:
+                    replace_if_resolved(
+                        f"/complex_model/core/axial_overlays/{i}/material_id",
+                        overlay.material_id,
+                        material_ids,
+                    )
 
     # Lattice loading base_lattice_id + override universe ids.
     for i, loading in enumerate(model.lattice_loadings):

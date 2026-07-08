@@ -316,3 +316,35 @@ def test_pin_map_out_of_bounds_raises() -> None:
     )
     with pytest.raises(ValueError, match="out of bounds"):
         expand_pin_map(pin_map, universe_ids={"guide_tube": "gt"})
+
+
+def test_assembler_summary_includes_actual_pin_counts() -> None:
+    result = assemble_simulation_plan_from_patches(_minimal_3d_patches())
+    assert result.ok is True
+    assert result.summary["actual_pin_counts"]["fuel_pin"] == 287
+    assert result.summary["actual_pin_counts"]["guide_tube"] == 2
+
+
+def test_assembler_canonicalizes_overlay_material_alias() -> None:
+    patches = _minimal_3d_patches()
+    materials = next(p for p in patches if isinstance(p, MaterialsPatch))
+    materials.materials.append(
+        MaterialSpecPatch(
+            material_id="zircaloy4",
+            name="Zircaloy-4",
+            role="cladding",
+            composition={"Zr": 1.0},
+            composition_status="approximate",
+            warnings=["Zircaloy-4 approximated as pure Zr"],
+        )
+    )
+    overlays = next(p for p in patches if isinstance(p, AxialOverlaysPatch))
+    overlays.overlays[0].material_id = "grid_zircaloy4"
+
+    result = assemble_simulation_plan_from_patches(patches)
+    assert result.ok is True
+    overlay = result.plan.complex_model.core.axial_overlays[0]
+    assert overlay.material_id == "zircaloy4"
+    assert result.summary["material_aliases_applied"] == {
+        "grid_zircaloy4": "zircaloy4"
+    }

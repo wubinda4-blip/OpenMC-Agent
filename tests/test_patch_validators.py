@@ -29,6 +29,7 @@ from openmc_agent.plan_builder.validators import (
     PatchValidationResult,
     validate_patch,
 )
+from openmc_agent.plan_builder.material_resolution import resolve_material_id
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +339,62 @@ def test_pin_map_valid() -> None:
     assert result.ok is True
 
 
+def test_pin_map_partial_expected_counts_warns_not_error() -> None:
+    patch = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+        instrument_tube_coords=[(0, 0)],
+        pyrex_rod_coords=[(i, 1) for i in range(16)],
+        thimble_plug_coords=[(i, 2) for i in range(8)],
+    )
+    context = PatchValidationContext(
+        expected_counts={"fuel_pin": 264},
+        strict_benchmark=True,
+    )
+    result = validate_patch(patch, context)
+    assert result.ok is True
+    assert "patch.pin_map.expected_counts_partial" in _codes(result)
+    assert "patch.pin_map.expected_counts_sum_mismatch" not in _codes(result)
+    assert "patch.pin_map.count_mismatch" not in _codes(result)
+
+
+def test_pin_map_complete_expected_counts_sum_mismatch_fails() -> None:
+    patch = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+    )
+    context = PatchValidationContext(
+        expected_counts={"fuel_pin": 264},
+        expected_counts_complete=True,
+    )
+    result = validate_patch(patch, context)
+    assert result.ok is False
+    assert "patch.pin_map.expected_counts_sum_mismatch" in _codes(result)
+
+
+def test_pin_map_reference_expected_counts_complete_ok() -> None:
+    patch = PinMapPatch(
+        lattice_size=(17, 17),
+        default_universe_id="fuel_pin",
+        instrument_tube_coords=[(0, 0)],
+        pyrex_rod_coords=[(i, 1) for i in range(16)],
+        thimble_plug_coords=[(i, 2) for i in range(8)],
+    )
+    context = PatchValidationContext(
+        reference_expected_counts={
+            "fuel_pin": 264,
+            "pyrex_rod": 16,
+            "thimble_plug": 8,
+            "instrument_tube": 1,
+            "guide_tube": 0,
+        },
+        strict_benchmark=True,
+    )
+    result = validate_patch(patch, context)
+    assert result.ok is True
+    assert "patch.pin_map.expected_counts_sum_mismatch" not in _codes(result)
+
+
 # ---------------------------------------------------------------------------
 # 10. AxialLayersPatch active fuel missing
 # ---------------------------------------------------------------------------
@@ -496,6 +553,49 @@ def test_overlay_material_missing() -> None:
         ),
     ])
     result = validate_patch(patch)
+    assert "patch.axial_overlays.material_missing" in _codes(result)
+
+
+def test_overlay_material_alias_resolves() -> None:
+    patch = AxialOverlaysPatch(overlays=[
+        AxialOverlayPatchItem(
+            overlay_id="grid1",
+            overlay_kind="spacer_grid",
+            z_min_cm=10.0,
+            z_max_cm=12.0,
+            target_lattice_id="assembly_lattice",
+            material_id="grid_zircaloy4",
+            geometry_mode="homogenized_open_region",
+            through_path_preserved=True,
+        ),
+    ])
+    context = PatchValidationContext(
+        known_material_ids=["zircaloy4", "inconel718"],
+    )
+    result = validate_patch(patch, context)
+    assert result.ok is True
+    assert "patch.axial_overlays.material_alias_resolved" in _codes(result)
+    resolved = resolve_material_id("grid_zircaloy4", {"zircaloy4", "inconel718"})
+    assert resolved.ok is True
+    assert resolved.resolved_id == "zircaloy4"
+
+
+def test_overlay_unresolved_material_still_fails() -> None:
+    patch = AxialOverlaysPatch(overlays=[
+        AxialOverlayPatchItem(
+            overlay_id="grid1",
+            overlay_kind="spacer_grid",
+            z_min_cm=10.0,
+            z_max_cm=12.0,
+            target_lattice_id="assembly_lattice",
+            material_id="unknown_grid_material",
+            geometry_mode="homogenized_open_region",
+            through_path_preserved=True,
+        ),
+    ])
+    context = PatchValidationContext(known_material_ids=["zircaloy4", "inconel718"])
+    result = validate_patch(patch, context)
+    assert result.ok is False
     assert "patch.axial_overlays.material_missing" in _codes(result)
 
 

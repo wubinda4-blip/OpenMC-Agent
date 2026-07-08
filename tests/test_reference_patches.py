@@ -249,7 +249,15 @@ def test_resume_skips_valid_patches(tmp_path: Path) -> None:
     for ptype, content in [
         ("facts", {"patch_type": "facts", "benchmark_id": "VERA3", "selected_variant": "3B"}),
         ("materials", {"patch_type": "materials", "materials": [
-            {"material_id": "m", "name": "M", "role": "fuel", "density_g_cm3": 10.0}]}),
+            {"material_id": "m", "name": "M", "role": "fuel", "density_g_cm3": 10.0},
+            {"material_id": "zircaloy4", "name": "Zircaloy-4", "role": "cladding",
+             "density_g_cm3": 6.56, "composition": {"Zr": 1.0},
+             "composition_status": "approximate",
+             "warnings": ["Zircaloy-4 approximated as pure Zr"]},
+            {"material_id": "inconel718", "name": "Inconel-718", "role": "grid_inconel",
+             "density_g_cm3": 8.19, "composition": {"Ni": 1.0},
+             "composition_status": "approximate",
+             "warnings": ["Inconel-718 approximated as pure Ni"]}]}),
         ("universes", {"patch_type": "universes", "universes": [
             {"universe_id": "fp", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]}]}),
     ]:

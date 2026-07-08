@@ -498,3 +498,40 @@ def test_transcript_has_incremental_summary(tmp_path: Path) -> None:
     metadata = plan_generated_events[-1].get("metadata", {})
     assert metadata.get("planning_mode") == "incremental"
     assert metadata.get("success") is True
+
+
+def test_vera3_3b_default_no_monolithic_reflect_artifacts(tmp_path: Path) -> None:
+    raw_patches = _load_fixture_raw("3b")
+    llm_responses = [
+        json.dumps(p)
+        for p in raw_patches
+        if p["patch_type"] in {"facts", "materials", "universes"}
+    ]
+    fake_llm = FakePatchLLM(llm_responses)
+
+    graph = build_plan_graph(
+        generate_plan=_fake_generate_plan_should_not_be_called,
+        export_xml_tool=_fake_export_xml,
+        plot_tool=_fake_plot,
+        smoke_test_tool=_fake_smoke,
+        patch_llm_client=fake_llm,
+    )
+    state = graph.invoke({
+        "requirement": _VERA3_3B_REQ,
+        "model": "test:model",
+        "output_dir": str(tmp_path),
+        "records_path": str(tmp_path / "runs.jsonl"),
+    })
+
+    inc_result = state.get("incremental_execution_result", {})
+    assert inc_result.get("ok") is True
+    assert inc_result.get("planning_mode") == "incremental"
+    assert inc_result.get("reference_patch_policy") == "reference_only_for_structural"
+    assert inc_result.get("monolithic_reflect_plan_allowed") is False
+    summary = inc_result.get("summary", {})
+    assert "actual_pin_counts" in summary
+    assert "material_aliases_applied" in summary
+
+    artifact_names = [Path(p).name for p in state.get("plan_artifacts", [])]
+    assert not any("reflect_plan" in name for name in artifact_names)
+    assert not any("repair_plan_format" in name for name in artifact_names)

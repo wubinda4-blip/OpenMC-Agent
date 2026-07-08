@@ -49,6 +49,7 @@ from openmc_agent.schemas import (
     UniverseSpec,
 )
 
+from .material_resolution import resolve_material_id
 from .patches import (
     AxialLayerPatchItem,
     AxialLayersPatch,
@@ -65,6 +66,7 @@ from .patches import (
     UniversesPatch,
     normalized_coords,
 )
+from .pin_counts import compute_pin_role_counts
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +355,7 @@ def _assemble_lattice(
     facts: FactsPatch | None,
     universes_patch: UniversesPatch | None,
     universe_ids_on_plan: set[str],
-) -> tuple[LatticeSpec | None, list[PlanAssemblyIssue]]:
+) -> tuple[LatticeSpec | None, list[PlanAssemblyIssue], dict[str, int]]:
     issues: list[PlanAssemblyIssue] = []
 
     kind_map = _build_kind_to_universe_map(universes_patch, pin_map)
@@ -367,7 +369,7 @@ def _assemble_lattice(
             message=str(exc),
             path="pin_map",
         ))
-        return None, issues
+        return None, issues, {}
 
     nx, ny = pin_map.lattice_size
     pitch = facts.pin_pitch_cm if facts and facts.pin_pitch_cm else 1.26
@@ -383,21 +385,25 @@ def _assemble_lattice(
             path="pin_map.default_universe_id",
         ))
 
+    universe_kind_by_id = {
+        univ.universe_id: univ.kind
+        for univ in (universes_patch.universes if universes_patch is not None else [])
+    }
+    actual_pin_counts = compute_pin_role_counts(universe_pattern, universe_kind_by_id)
+
     expected_counts: dict[str, int] | None = None
     if facts and facts.expected_pin_count:
-        special_count = sum(
-            len(coords)
-            for coords in [
-                pin_map.guide_tube_coords,
-                pin_map.instrument_tube_coords,
-                pin_map.pyrex_rod_coords,
-                pin_map.thimble_plug_coords,
-                pin_map.water_cell_coords,
-            ]
-        )
         expected_counts = {
-            pin_map.default_universe_id: nx * ny - special_count,
+            "fuel_pin": facts.expected_pin_count,
         }
+        if facts.expected_guide_tube_count is not None:
+            expected_counts["guide_tube"] = facts.expected_guide_tube_count
+        if facts.expected_instrument_tube_count is not None:
+            expected_counts["instrument_tube"] = facts.expected_instrument_tube_count
+        if facts.expected_pyrex_count is not None:
+            expected_counts["pyrex_rod"] = facts.expected_pyrex_count
+        if facts.expected_thimble_plug_count is not None:
+            expected_counts["thimble_plug"] = facts.expected_thimble_plug_count
 
     try:
         lattice = LatticeSpec(
@@ -418,9 +424,9 @@ def _assemble_lattice(
             message=f"lattice assembly failed: {exc}",
             path="lattice",
         ))
-        return None, issues
+        return None, issues, actual_pin_counts
 
-    return lattice, issues
+    return lattice, issues, actual_pin_counts
 
 
 def _assemble_axial_layers(
@@ -474,11 +480,42 @@ def _assemble_axial_overlays(
     patch: AxialOverlaysPatch,
     lattice_id: str,
     material_ids: set[str],
-) -> tuple[list[AxialOverlaySpec], list[PlanAssemblyIssue]]:
+    material_aliases: dict[str, str] | None = None,
+) -> tuple[list[AxialOverlaySpec], list[PlanAssemblyIssue], dict[str, str]]:
     issues: list[PlanAssemblyIssue] = []
     overlays: list[AxialOverlaySpec] = []
+    aliases_applied: dict[str, str] = {}
 
     for item in patch.overlays:
+        material_id = item.material_id
+        if material_id is not None:
+            resolution = resolve_material_id(material_id, material_ids, material_aliases)
+            if resolution.ok and resolution.resolved_id is not None:
+                if resolution.resolved_id != material_id:
+                    aliases_applied[material_id] = resolution.resolved_id
+                    issues.append(PlanAssemblyIssue(
+                        code="assembly.material_alias_resolved",
+                        severity="info",
+                        message=(
+                            f"overlay {item.overlay_id!r} material_id "
+                            f"{material_id!r} resolved to {resolution.resolved_id!r}"
+                        ),
+                        path=f"axial_overlays[{item.overlay_id}].material_id",
+                        expected=resolution.resolved_id,
+                        actual=material_id,
+                    ))
+                material_id = resolution.resolved_id
+            elif item.geometry_mode != "skeleton":
+                issues.append(PlanAssemblyIssue(
+                    code="assembly.unresolved_material_reference",
+                    severity="error",
+                    message=resolution.reason or (
+                        f"overlay {item.overlay_id!r} references missing "
+                        f"material_id {material_id!r}"
+                    ),
+                    path=f"axial_overlays[{item.overlay_id}].material_id",
+                    actual=material_id,
+                ))
         try:
             overlay = AxialOverlaySpec(
                 id=item.overlay_id,
@@ -486,7 +523,7 @@ def _assemble_axial_overlays(
                 z_min_cm=item.z_min_cm,
                 z_max_cm=item.z_max_cm,
                 target_lattice_id=item.target_lattice_id or lattice_id,
-                material_id=item.material_id,
+                material_id=material_id,
                 geometry_mode=item.geometry_mode,
                 through_path_preserved=item.through_path_preserved,
                 volume_fraction=item.volume_fraction,
@@ -504,7 +541,7 @@ def _assemble_axial_overlays(
                 path=f"axial_overlays[{item.overlay_id}]",
             ))
 
-    return overlays, issues
+    return overlays, issues, aliases_applied
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +604,8 @@ def assemble_simulation_plan_from_patches(
     """
     issues: list[PlanAssemblyIssue] = []
     indexed = _extract_patches(patches)
+    actual_pin_counts: dict[str, int] = {}
+    material_aliases_applied: dict[str, str] = {}
 
     facts: FactsPatch | None = indexed.get("facts")
     materials_patch: MaterialsPatch | None = indexed.get("materials")
@@ -605,7 +644,7 @@ def assemble_simulation_plan_from_patches(
     # 4. Assemble lattice from pin map.
     lattice_id = "assembly_lattice"
     if pin_map_patch is not None:
-        lattice, lat_issues = _assemble_lattice(
+        lattice, lat_issues, actual_pin_counts = _assemble_lattice(
             pin_map_patch, facts, universes_patch, universe_ids,
         )
         issues.extend(lat_issues)
@@ -623,7 +662,7 @@ def assemble_simulation_plan_from_patches(
 
     # 6. Assemble axial overlays.
     if axial_overlays_patch is not None:
-        axial_overlays, ao_issues = _assemble_axial_overlays(
+        axial_overlays, ao_issues, material_aliases_applied = _assemble_axial_overlays(
             axial_overlays_patch, lattice_id, material_ids,
         )
         issues.extend(ao_issues)
@@ -763,6 +802,8 @@ def assemble_simulation_plan_from_patches(
             "lattice_present": lattice is not None,
             "axial_layer_count": len(axial_layers),
             "axial_overlay_count": len(axial_overlays),
+            "actual_pin_counts": actual_pin_counts,
+            "material_aliases_applied": material_aliases_applied,
         },
     )
 
@@ -771,5 +812,6 @@ __all__ = [
     "PlanAssemblyIssue",
     "PlanAssemblyResult",
     "expand_pin_map",
+    "compute_pin_role_counts",
     "assemble_simulation_plan_from_patches",
 ]

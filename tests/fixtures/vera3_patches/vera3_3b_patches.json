@@ -1,5 +1,6 @@
 {
   "_doc": "VERA3 3B patch fixtures. Test-only: transcribed from tests/fixtures/vera3_reference.json. All coordinates are 1-based per the VERA3 convention. In 3B, the 24 guide tube positions from 3A are replaced: 16 become Pyrex rods, 8 become thimble plugs.",
+  "material_aliases": {"grid_zircaloy4": "zircaloy4"},
   "patches": [
     {
       "patch_type": "facts",
@@ -68,16 +69,6 @@
           "composition_basis": "weight_frac",
           "composition_status": "approximate",
           "warnings": ["Inconel-718 approximated as pure Ni"]
-        },
-        {
-          "material_id": "grid_zircaloy4",
-          "name": "Zircaloy-4 Grid",
-          "role": "grid_zircaloy",
-          "density_g_cm3": 6.56,
-          "composition": {"Zr": 1.0},
-          "composition_basis": "weight_frac",
-          "composition_status": "approximate",
-          "warnings": ["Zircaloy-4 grid approximated as pure Zr"]
         },
         {
           "material_id": "ss304",

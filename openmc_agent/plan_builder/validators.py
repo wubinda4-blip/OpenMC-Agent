@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from openmc_agent.schemas import AgentBaseModel
 
+from .material_resolution import resolve_material_id
 from .patches import (
     AxialLayerPatchItem,
     AxialLayersPatch,
@@ -77,8 +78,11 @@ class PatchValidationContext(AgentBaseModel):
     benchmark_id: str | None = None
     selected_variant: str | None = None
     expected_counts: dict[str, int] = Field(default_factory=dict)
+    expected_counts_complete: bool = False
+    reference_expected_counts: dict[str, int] = Field(default_factory=dict)
     expected_material_roles: list[str] = Field(default_factory=list)
     known_material_ids: list[str] = Field(default_factory=list)
+    material_aliases: dict[str, str] = Field(default_factory=dict)
     known_universe_ids: list[str] = Field(default_factory=list)
     known_lattice_ids: list[str] = Field(default_factory=list)
     axial_domain_cm: tuple[float, float] | None = None
@@ -475,16 +479,40 @@ def _validate_pin_map(
                 actual=coord,
             ))
 
-    # Count checks against context
-    count_map = {
+    # Count checks against context. expected_counts may be partial when it came
+    # from FactsPatch/LLM extraction; only reference/explicit-complete counts
+    # are allowed to enforce full lattice sums.
+    special_counts = {
         "guide_tube": len(patch.guide_tube_coords),
         "instrument_tube": len(patch.instrument_tube_coords),
         "pyrex_rod": len(patch.pyrex_rod_coords),
         "thimble_plug": len(patch.thimble_plug_coords),
     }
-    for item, count in count_map.items():
-        expected_key = f"expected_{item}_count"
-        expected_val = context.expected_counts.get(expected_key)
+    special_total = sum(special_counts.values()) + len(patch.water_cell_coords)
+    actual_counts = {
+        "fuel_pin": nx * ny - special_total,
+        **special_counts,
+        "guide_tube": special_counts["guide_tube"],
+    }
+    actual_counts["water_cell"] = len(patch.water_cell_coords)
+
+    raw_expected = dict(context.reference_expected_counts or context.expected_counts)
+    expected_counts: dict[str, int] = {}
+    for key, val in raw_expected.items():
+        if not isinstance(val, int):
+            continue
+        if key.startswith("expected_") and key.endswith("_count"):
+            role = key.removeprefix("expected_").removesuffix("_count")
+            role = {
+                "pin": "fuel_pin",
+                "pyrex": "pyrex_rod",
+            }.get(role, role)
+            expected_counts[role] = val
+        else:
+            expected_counts[key] = val
+
+    for item, expected_val in expected_counts.items():
+        count = actual_counts.get(item, 0)
         if expected_val is not None and count != expected_val:
             severity: Literal["error", "warning", "info"] = (
                 "error" if context.strict_benchmark else "warning"
@@ -496,9 +524,49 @@ def _validate_pin_map(
                     f"{item} count={count} does not match "
                     f"expected {expected_val}"
                 ),
-                path=f"{item}_coords",
+                path=f"{item}_coords" if item != "fuel_pin" else "default_universe_id",
                 expected=expected_val,
                 actual=count,
+            ))
+
+    total_cells = nx * ny
+    expected_complete = (
+        context.expected_counts_complete
+        or bool(context.reference_expected_counts)
+    )
+    if context.strict_benchmark and bool(context.reference_expected_counts):
+        expected_complete = True
+    if expected_counts and expected_complete:
+        expected_sum = sum(expected_counts.values())
+        if expected_sum != total_cells:
+            issues.append(PatchValidationIssue(
+                code="patch.pin_map.expected_counts_sum_mismatch",
+                severity="error",
+                message=(
+                    f"complete expected_counts sum {expected_sum} does not "
+                    f"match lattice size {total_cells}"
+                ),
+                path="expected_counts",
+                expected=total_cells,
+                actual=expected_sum,
+            ))
+    elif expected_counts:
+        missing_roles = [
+            role for role, count in actual_counts.items()
+            if count > 0 and role not in expected_counts
+        ]
+        if missing_roles and sum(actual_counts.values()) == total_cells:
+            issues.append(PatchValidationIssue(
+                code="patch.pin_map.expected_counts_partial",
+                severity="warning",
+                message=(
+                    "expected_counts is partial; checking only provided keys "
+                    f"and accepting self-consistent lattice ({total_cells} pins). "
+                    f"Missing roles: {missing_roles}"
+                ),
+                path="expected_counts",
+                expected=expected_counts,
+                actual=actual_counts,
             ))
 
     # Default universe reference
@@ -724,6 +792,36 @@ def _validate_axial_overlays(
                     ),
                     path=f"overlays[{ov.overlay_id}].material_id",
                 ))
+            elif context.known_material_ids:
+                resolved = resolve_material_id(
+                    ov.material_id,
+                    set(context.known_material_ids),
+                    context.material_aliases,
+                )
+                if not resolved.ok:
+                    issues.append(PatchValidationIssue(
+                        code="patch.axial_overlays.material_missing",
+                        severity="error",
+                        message=resolved.reason or (
+                            f"overlay {ov.overlay_id!r} references missing "
+                            f"material_id {ov.material_id!r}"
+                        ),
+                        path=f"overlays[{ov.overlay_id}].material_id",
+                        actual=ov.material_id,
+                    ))
+                elif resolved.resolved_id != ov.material_id:
+                    issues.append(PatchValidationIssue(
+                        code="patch.axial_overlays.material_alias_resolved",
+                        severity="info",
+                        message=(
+                            f"overlay {ov.overlay_id!r} material_id "
+                            f"{ov.material_id!r} resolves to "
+                            f"{resolved.resolved_id!r}"
+                        ),
+                        path=f"overlays[{ov.overlay_id}].material_id",
+                        expected=resolved.resolved_id,
+                        actual=ov.material_id,
+                    ))
             if ov.through_path_preserved is not True:
                 issues.append(PatchValidationIssue(
                     code="patch.axial_overlays.through_path_not_preserved",

@@ -403,10 +403,13 @@ def _receive_requirement(state: GraphState) -> GraphState:
         build_state.add_event(
             event_type="planning.incremental_recommended_but_not_executed",
             message=(
-                "incremental planning recommended but executor is not yet "
-                "implemented; falling back to monolithic"
+                "incremental planning selected; executor will use structural patches"
             ),
-            data={"fallback_reason": "incremental_executor_not_implemented"},
+            data={
+                "planning_mode": "incremental",
+                "reference_patch_policy": "reference_only_for_structural",
+                "monolithic_reflect_plan_allowed": False,
+            },
         )
         updates["plan_build_state"] = build_state.model_dump(mode="json")
     return updates
@@ -666,6 +669,7 @@ def _run_incremental_plan_generation(
     *,
     patch_llm_client: PatchLlmClient,
     allow_fallback: bool = False,
+    reference_patch_policy: str = "reference_only_for_structural",
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -717,7 +721,7 @@ def _run_incremental_plan_generation(
         llm_client=patch_llm_client,
         max_patch_attempts=2,
         strict=True,
-        reference_patch_policy="fallback_after_llm_failure",
+        reference_patch_policy=reference_patch_policy,
         few_shot_case_ids=few_shot_case_ids,
     )
 
@@ -732,6 +736,9 @@ def _run_incremental_plan_generation(
             "summary": exec_result.summary,
             "issues": [i.model_dump(mode="json") for i in exec_result.issues],
             "monolithic_fallback_attempted": False,
+            "planning_mode": "incremental",
+            "reference_patch_policy": reference_patch_policy,
+            "monolithic_reflect_plan_allowed": bool(allow_fallback),
         },
         "plan_artifacts": list(state.get("plan_artifacts", [])) + inc_artifact_paths,
     }
@@ -785,6 +792,8 @@ def _run_incremental_plan_generation(
                 metadata={
                     "success": True,
                     "planning_mode": "incremental",
+                    "reference_patch_policy": reference_patch_policy,
+                    "monolithic_reflect_plan_allowed": bool(allow_fallback),
                     "patch_order": [t.patch_type for t in build_state.component_tasks],
                     "valid_patch_count": len(build_state.get_valid_patches()),
                     "assembly_ok": True,
@@ -823,6 +832,24 @@ def _run_incremental_plan_generation(
         # Return empty so the caller falls through to monolithic.
         return {**state_updates, "_fallback_to_monolithic": True}
 
+    exec_result.state.add_event(
+        event_type="incremental.monolithic_fallback_disabled_for_complex_case",
+        message="monolithic reflect_plan fallback disabled for incremental complex case",
+        data={
+            "planning_mode": "incremental",
+            "reference_patch_policy": reference_patch_policy,
+            "monolithic_reflect_plan_allowed": False,
+        },
+    )
+    state_updates["plan_build_state"] = exec_result.state.model_dump(mode="json")
+    state_updates["incremental_execution_result"]["issues"].append({
+        "code": "incremental.monolithic_fallback_disabled_for_complex_case",
+        "severity": "info",
+        "message": "monolithic reflect_plan fallback disabled for incremental complex case",
+        "patch_type": None,
+        "patch_id": None,
+        "path": None,
+    })
     state_updates.update({
         "simulation_plan": None,
         "error": f"incremental.execution_failed: {'; '.join(error_codes[:3])}",
@@ -1328,6 +1355,8 @@ def _make_plan_validation_router(max_retries: int):
             return "assess"
         if state.get("retry_count", 0) >= max_retries:
             return "stop"
+        if _incremental_reflect_plan_disabled(state):
+            return "stop"
         if _coerce_simulation_plan(state.get("simulation_plan")) is not None:
             return "reflect"
         if state.get("raw_llm_outputs"):
@@ -1390,6 +1419,8 @@ def _make_plan_execution_router(max_retries: int):
             return "ask"
         if report is not None and not _report_should_reflect(report):
             return "save"
+        if _incremental_reflect_plan_disabled(state):
+            return "save"
         if (
             _coerce_simulation_plan(state.get("simulation_plan")) is not None
             and state.get("retry_count", 0) < max_retries
@@ -1413,10 +1444,22 @@ def _make_plan_capability_assessment_router():
             and state.get("capability_repair_errors")
             and _coerce_simulation_plan(state.get("simulation_plan")) is not None
         ):
+            if _incremental_reflect_plan_disabled(state):
+                return "ask"
             return "reflect"
         return "ask"
 
     return _route
+
+
+def _incremental_reflect_plan_disabled(state: GraphState) -> bool:
+    inc = state.get("incremental_execution_result")
+    if not isinstance(inc, dict):
+        return False
+    return (
+        inc.get("planning_mode") == "incremental"
+        and inc.get("monolithic_reflect_plan_allowed") is False
+    )
 
 
 def _make_assess_plan_capability_node(max_retries: int):

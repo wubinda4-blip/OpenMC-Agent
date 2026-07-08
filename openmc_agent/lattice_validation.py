@@ -40,31 +40,68 @@ def lattice_pin_count_issues(
         if not expected or not pattern:
             continue
         actual = lattice_actual_counts(lattice)
+        total_cells = sum(len(row) for row in pattern)
+        expected_total = sum(expected.values())
+
+        # Classify diffs: a universe the LLM omitted from expected_counts
+        # (actual>0 but not listed) vs a real value mismatch (expected listed
+        # a count that differs from the pattern).
+        missing_universes: list[str] = []
+        value_mismatches: list[str] = []
         diff_parts: list[str] = []
         for universe_id in sorted(set(actual) | set(expected)):
             actual_count = actual.get(universe_id, 0)
             expected_count = expected.get(universe_id, 0)
-            if actual_count != expected_count:
-                if message_style == "renderer":
-                    diff_parts.append(
-                        f"{universe_id}: expected {expected_count}, got {actual_count}"
-                    )
-                else:
-                    diff_parts.append(
-                        f"{universe_id}: actual={actual_count} "
-                        f"expected={expected_count} "
-                        f"(diff {actual_count - expected_count:+d})"
-                    )
+            if actual_count == expected_count:
+                continue
+            if actual_count > 0 and universe_id not in expected:
+                missing_universes.append(universe_id)
+            else:
+                value_mismatches.append(universe_id)
+            if message_style == "renderer":
+                diff_parts.append(
+                    f"{universe_id}: expected {expected_count}, got {actual_count}"
+                )
+            else:
+                diff_parts.append(
+                    f"{universe_id}: actual={actual_count} "
+                    f"expected={expected_count} "
+                    f"(diff {actual_count - expected_count:+d})"
+                )
         if not diff_parts:
             continue
-        total_cells = sum(len(row) for row in pattern)
-        expected_total = sum(expected.values())
+
+        schema_path = f"complex_model.lattices.{lattice.id}.universe_pattern"
+
+        # Incomplete expected_counts (omitted universes) with a self-consistent
+        # pattern is downgraded to a warning: the LLM often forgets to list
+        # every universe, but the pattern itself is the ground truth and must
+        # not block rendering. A real value mismatch or a non-self-consistent
+        # pattern stays an error.
+        pattern_self_consistent = bool(actual) and sum(actual.values()) == total_cells
+        if missing_universes and not value_mismatches and pattern_self_consistent:
+            missing_note = ", ".join(missing_universes)
+            issues.append(
+                issue_from_catalog(
+                    "lattice.expected_counts_incomplete",
+                    message=(
+                        f"lattice {lattice.id!r} expected_counts omits universes "
+                        f"present in the pattern: {missing_note}. Pattern is "
+                        f"self-consistent (sum {total_cells} == rows*cols); "
+                        f"accepted with warning. Consider adding the missing "
+                        f"counts to expected_counts for explicit cross-check."
+                    ),
+                    schema_path=schema_path,
+                    route_hint="auto_repair",
+                )
+            )
+            continue
+
         shape_note = ""
         if expected_total != total_cells:
             shape_note = (
                 f" (expected_counts sum {expected_total} != rows*cols {total_cells})"
             )
-        schema_path = f"complex_model.lattices.{lattice.id}.universe_pattern"
         if message_style == "renderer":
             message = (
                 f"lattice {lattice.id!r} pin counts do not match expected_counts: "

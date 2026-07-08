@@ -169,6 +169,24 @@ def test_validate_plan_accepts_matching_expected_counts() -> None:
     assert not any(i.code == "lattice.pin_count_mismatch" for i in report.issues)
 
 
+def test_validate_plan_accepts_incomplete_expected_counts_when_pattern_self_consistent() -> None:
+    """expected_counts omitting some universes is downgraded to a warning when
+    the pattern is self-consistent (sum == rows*cols). The LLM often forgets
+    to list every universe; the pattern is ground truth and must not block."""
+    plan = _plan_with_lattice(
+        expected_counts={"A": 4},  # omits B (actual 2)
+        pattern=[["A", "A", "A"], ["A", "B", "B"]],
+    )
+    report = validate_simulation_plan(plan)
+    assert not any(i.code == "lattice.pin_count_mismatch" for i in report.issues)
+    warnings = [
+        i for i in report.issues if i.code == "lattice.expected_counts_incomplete"
+    ]
+    assert len(warnings) == 1
+    assert "B" in warnings[0].message
+    assert warnings[0].severity == "warning"
+
+
 def test_validate_plan_skips_lattices_without_expected_counts() -> None:
     """Legacy plans without expected_counts are unaffected (opt-in check)."""
     plan = _plan_with_lattice(

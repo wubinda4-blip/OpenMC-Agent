@@ -29,6 +29,7 @@ from openmc_agent.plan_builder.state import (
 )
 from openmc_agent.plan_builder.validators import validate_patch
 from openmc_agent.assembly3d_guard import validate_assembly3d_plan
+from openmc_agent.schemas import SimulationPlan
 
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vera3_patches"
@@ -564,6 +565,42 @@ def test_vera3_3b_full_incremental_execution() -> None:
     assert "assembly3d.axial_layers_required" not in error_codes
     assert "assembly3d.default_z_extent_for_axial_problem" not in error_codes
     assert "assembly3d.spacer_grid_material_slab" not in error_codes
+
+
+def test_vera3_3b_reference_structural_run_succeeds() -> None:
+    raw_patches = _load_fixture_raw("3b")
+    llm_responses = [
+        json.dumps(p)
+        for p in raw_patches
+        if p["patch_type"] in {"facts", "materials", "universes"}
+    ]
+    fake = FakePatchLLM(llm_responses)
+    state = _init_3b_state()
+    result = run_incremental_planning(
+        requirement=_VERA3_3B_REQ,
+        state=state,
+        llm_client=fake,
+        max_patch_attempts=1,
+        reference_patch_policy="reference_only_for_structural",
+    )
+    assert result.ok is True
+    assert result.summary["reference_patches_used"] == [
+        "pin_map", "axial_layers", "axial_overlays"
+    ]
+    assert result.summary["actual_pin_counts"] == {
+        "fuel_pin": 264,
+        "guide_tube": 0,
+        "instrument_tube": 1,
+        "pyrex_rod": 16,
+        "thimble_plug": 8,
+    }
+    assert result.summary["material_aliases_applied"] == {
+        "grid_zircaloy4": "zircaloy4"
+    }
+
+    plan = SimulationPlan.model_validate(result.assembled_plan)
+    issues = validate_assembly3d_plan(plan, requirement=_VERA3_3B_REQ)
+    assert [i for i in issues if i.severity == "error"] == []
 
 
 # ---------------------------------------------------------------------------

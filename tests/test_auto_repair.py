@@ -10,6 +10,7 @@ from openmc_agent.graph import _apply_json_patches
 from openmc_agent.schemas import (
     AssemblySpec,
     AxialLayerSpec,
+    AxialOverlaySpec,
     CellSpec,
     ComplexMaterialSpec,
     ComplexModelSpec,
@@ -93,6 +94,34 @@ def test_repairs_unique_cell_fill_id_typo():
     assert patch == [
         {"op": "replace", "path": "/complex_model/cells/0/fill_id", "value": "fuel_universe"}
     ]
+
+
+def test_repairs_axial_overlay_material_id_typo():
+    """An overlay material_id that uniquely resolves to a defined material
+    (e.g. 'grid_zircaloy4' -> 'zircaloy4') is auto-repaired instead of
+    forcing the overlay to skeleton."""
+    model = ComplexModelSpec(
+        name="m", kind="assembly",
+        materials=[_mat("zircaloy4"), _mat("inconel718")],
+        lattices=[LatticeSpec(id="lat", name="lat", kind="rect", pitch_cm=(1.26, 1.26), universe_pattern=[["fuel_pin"]])],
+        core=CoreSpec(
+            id="core", name="core",
+            lattice_id=None,
+            axial_layers=[],
+            axial_overlays=[
+                AxialOverlaySpec(
+                    id="grid_1", overlay_kind="spacer_grid",
+                    z_min_cm=10.0, z_max_cm=12.0, target_lattice_id="lat",
+                    material_id="grid_zircaloy4",
+                    geometry_mode="homogenized_open_region",
+                    through_path_preserved=True,
+                ),
+            ],
+        ),
+    )
+    patch = auto_repair_lattice_structure(_plan(model))
+    assert patch is not None
+    assert {"op": "replace", "path": "/complex_model/core/axial_overlays/0/material_id", "value": "zircaloy4"} in patch
 
 
 def test_skips_when_typo_is_ambiguous():

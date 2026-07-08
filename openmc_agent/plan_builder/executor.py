@@ -68,6 +68,7 @@ EVENT_REFERENCE_PATCH_LOADED: str = "reference_patch.loaded"
 EVENT_REFERENCE_PATCH_GENERATED: str = "reference_patch.generated"
 EVENT_REFERENCE_PATCH_FALLBACK: str = "reference_patch.fallback_after_llm_failure"
 EVENT_REFERENCE_PATCH_VALIDATION_FAILED: str = "reference_patch.validation_failed"
+EVENT_REFERENCE_COUNTS_APPLIED: str = "patch.pin_map.reference_counts_applied"
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +272,11 @@ def build_generation_context_from_state(
     known_material_ids: list[str] = []
     known_universe_ids: list[str] = []
     expected_counts: dict[str, int] = {}
+    reference_expected_counts: dict[str, int] = {
+        str(k): int(v)
+        for k, v in state.metadata.get("reference_expected_counts", {}).items()
+        if isinstance(v, int)
+    }
     active_fuel: tuple[float, float] | None = None
     axial_domain: tuple[float, float] | None = None
 
@@ -352,7 +358,14 @@ def build_generation_context_from_state(
                     ctx.known_lattice_ids.append(tl)
 
     ctx.expected_counts = expected_counts
+    ctx.reference_expected_counts = reference_expected_counts
+    ctx.expected_counts_complete = bool(state.metadata.get("expected_counts_complete", False))
     ctx.known_material_ids = list(dict.fromkeys(known_material_ids))
+    ctx.material_aliases = {
+        str(k): str(v)
+        for k, v in state.metadata.get("material_aliases", {}).items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
     ctx.known_universe_ids = list(dict.fromkeys(known_universe_ids))
     ctx.active_fuel_region_cm = active_fuel
     ctx.axial_domain_cm = axial_domain
@@ -365,6 +378,7 @@ def build_generation_context_from_state(
             "known_material_count": len(ctx.known_material_ids),
             "known_universe_count": len(ctx.known_universe_ids),
             "expected_count_keys": list(ctx.expected_counts.keys()),
+            "reference_expected_count_keys": list(ctx.reference_expected_counts.keys()),
         },
     )
     return ctx
@@ -418,6 +432,70 @@ def _add_envelope(
     )
     state.add_patch(envelope)
     return envelope
+
+
+def _extract_reference_expected_counts(reference_data: dict[str, Any] | None) -> dict[str, int]:
+    """Extract complete role counts from a reference facts patch."""
+    if not reference_data:
+        return {}
+    patches = reference_data.get("patches", [])
+    if not isinstance(patches, list):
+        return {}
+    mapping = {
+        "expected_pin_count": "fuel_pin",
+        "expected_guide_tube_count": "guide_tube",
+        "expected_instrument_tube_count": "instrument_tube",
+        "expected_pyrex_count": "pyrex_rod",
+        "expected_thimble_plug_count": "thimble_plug",
+    }
+    for entry in patches:
+        if not isinstance(entry, dict) or entry.get("patch_type") != "facts":
+            continue
+        counts: dict[str, int] = {}
+        for fact_key, role in mapping.items():
+            value = entry.get(fact_key)
+            if isinstance(value, int):
+                counts[role] = value
+        return counts
+    return {}
+
+
+def _record_reference_metadata(
+    state: PlanBuildState,
+    reference_data: dict[str, Any] | None,
+) -> None:
+    counts = _extract_reference_expected_counts(reference_data)
+    if counts:
+        if state.metadata.get("reference_expected_counts") != counts:
+            state.add_event(
+                event_type=EVENT_REFERENCE_COUNTS_APPLIED,
+                message="reference expected pin counts applied",
+                data={"expected_counts": counts},
+            )
+        state.metadata["reference_expected_counts"] = counts
+        state.metadata["expected_counts_complete"] = True
+    if reference_data:
+        aliases = reference_data.get("material_aliases")
+        if isinstance(aliases, dict):
+            state.metadata["material_aliases"] = {
+                str(k): str(v)
+                for k, v in aliases.items()
+                if isinstance(k, str) and isinstance(v, str)
+            }
+
+
+def _validation_context_for_state(state: PlanBuildState, patch_type: str) -> Any:
+    from .patch_generator import _to_validation_context
+
+    return _to_validation_context(build_generation_context_from_state(state, patch_type))
+
+
+def _latest_assembly_summary(state: PlanBuildState) -> dict[str, Any]:
+    for event in reversed(state.build_log):
+        if event.event_type in (EVENT_ASSEMBLY_COMPLETED, EVENT_ASSEMBLY_FAILED):
+            summary = event.data.get("summary", event.data)
+            return summary if isinstance(summary, dict) else {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +591,8 @@ def run_incremental_planning(
             "next_recommended_action": "resume_from_failed_patch",
             "monolithic_fallback_attempted": False,
             "reference_patches_used": reference_patches_used,
+            "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
+            "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
         }
 
     for patch_type in order:
@@ -556,6 +636,7 @@ def run_incremental_planning(
                 # separately if needed, not in the patch loop.
             )
             if reference_data is not None:
+                _record_reference_metadata(state, reference_data)
                 state.add_event(
                     event_type=EVENT_REFERENCE_PATCH_LOADED,
                     message=f"benchmark reference loaded for {state.benchmark_id}/{state.selected_variant}",
@@ -578,7 +659,10 @@ def run_incremental_planning(
                 variant=state.selected_variant,
             )
             if ref_patch is not None:
-                val_result = validate_patch(ref_patch)
+                val_result = validate_patch(
+                    ref_patch,
+                    _validation_context_for_state(state, patch_type),
+                )
                 if val_result.ok:
                     content = ref_patch.model_dump(mode="json")
                     _add_envelope(state, patch_type, content, source="fixture")
@@ -640,6 +724,8 @@ def run_incremental_planning(
                         variant=state.selected_variant,
                         reference_path=reference_path,
                     )
+                    if reference_data is not None:
+                        _record_reference_metadata(state, reference_data)
                     # If exact match failed, try LLM semantic matching.
                     if reference_data is None:
                         try:
@@ -649,6 +735,8 @@ def run_incremental_planning(
                                 reference_path=reference_path,
                                 llm_client=llm_client,
                             )
+                            if reference_data is not None:
+                                _record_reference_metadata(state, reference_data)
                         except Exception:
                             pass
                     if reference_data is not None:
@@ -689,6 +777,8 @@ def run_incremental_planning(
                     variant=state.selected_variant,
                     reference_path=reference_path,
                 )
+                if reference_data is not None:
+                    _record_reference_metadata(state, reference_data)
 
             if (
                 is_structural
@@ -701,7 +791,10 @@ def run_incremental_planning(
                     variant=state.selected_variant,
                 )
                 if ref_patch is not None:
-                    val_result = validate_patch(ref_patch)
+                    val_result = validate_patch(
+                        ref_patch,
+                        _validation_context_for_state(state, patch_type),
+                    )
                     if val_result.ok:
                         content = ref_patch.model_dump(mode="json")
                         _add_envelope(state, patch_type, content, source="fixture")
@@ -794,6 +887,8 @@ def run_incremental_planning(
                 "valid_patch_types": sorted({
                     e.patch_type for e in state.patches.values() if e.status == "valid"
                 }),
+                "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
+                "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
             },
         )
     else:
@@ -811,7 +906,13 @@ def run_incremental_planning(
             ok=False,
             state=state,
             issues=issues,
-            summary={"assembled": False},
+            summary={
+                "assembled": False,
+                "failed_stage": "assembly",
+                "issue_codes": [i.code for i in issues],
+                "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
+                "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
+            },
         )
 
 

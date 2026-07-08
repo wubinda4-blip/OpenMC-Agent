@@ -57,7 +57,10 @@ class PatchGenerationContext(AgentBaseModel):
     reference_summary: dict[str, Any] = Field(default_factory=dict)
     strict_benchmark: bool = False
     expected_counts: dict[str, int] = Field(default_factory=dict)
+    expected_counts_complete: bool = False
+    reference_expected_counts: dict[str, int] = Field(default_factory=dict)
     known_material_ids: list[str] = Field(default_factory=list)
+    material_aliases: dict[str, str] = Field(default_factory=dict)
     known_universe_ids: list[str] = Field(default_factory=list)
     known_lattice_ids: list[str] = Field(default_factory=list)
     active_fuel_region_cm: tuple[float, float] | None = None
@@ -383,7 +386,10 @@ def _to_validation_context(
         benchmark_id=gen_context.benchmark_id,
         selected_variant=gen_context.selected_variant,
         expected_counts=gen_context.expected_counts,
+        expected_counts_complete=gen_context.expected_counts_complete,
+        reference_expected_counts=gen_context.reference_expected_counts,
         known_material_ids=gen_context.known_material_ids,
+        material_aliases=gen_context.material_aliases,
         known_universe_ids=gen_context.known_universe_ids,
         known_lattice_ids=gen_context.known_lattice_ids,
         axial_domain_cm=gen_context.axial_domain_cm,

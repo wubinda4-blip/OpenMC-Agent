@@ -719,6 +719,21 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             ),
         ],
     },
+    "lattice.expected_counts_incomplete": {
+        "severity": "warning",
+        "message": "expected_counts omits some universes present in the pattern; pattern is self-consistent (sum == rows*cols)",
+        "schema_path": "complex_model.lattices",
+        "rule_id": "rule.lattice.expected_counts",
+        "concept_id": "openmc.geometry.rect_lattice",
+        "knowledge_refs": [LATTICE_GUIDE],
+        "repair_hints": [
+            _hint(
+                "edit_field",
+                "Add the missing universe counts to expected_counts so it matches the pattern.",
+                target_path="complex_model.lattices.expected_counts",
+            ),
+        ],
+    },
     "cell.material_ref_missing": {
         "severity": "error",
         "message": "cell references missing material",

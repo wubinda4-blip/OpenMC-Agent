@@ -21,6 +21,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -187,6 +188,10 @@ def main() -> int:
         ref_used = report_summary.get("reference_patches_used", [])
         if ref_used:
             print(f"Reference patches used: {ref_used}")
+        if report_summary.get("actual_pin_counts"):
+            print(f"Actual pin counts: {report_summary['actual_pin_counts']}")
+        if report_summary.get("material_aliases_applied"):
+            print(f"Material aliases applied: {report_summary['material_aliases_applied']}")
     print(f"Output: {output_dir}")
     print(f"{'='*60}")
 

@@ -190,6 +190,28 @@ class TestVERA3BAssembly:
         overlays = result.plan.complex_model.core.axial_overlays
         assert len(overlays) == 8
 
+    def test_mid_grid_material_alias_canonicalized(self, vera3_3b_patches: list) -> None:
+        result = assemble_simulation_plan_from_patches(vera3_3b_patches)
+        assert result.ok is True
+        overlays = result.plan.complex_model.core.axial_overlays
+        mid_grid_materials = {
+            ov.material_id for ov in overlays if "_mid" in ov.id
+        }
+        assert mid_grid_materials == {"zircaloy4"}
+        assert result.summary["material_aliases_applied"] == {
+            "grid_zircaloy4": "zircaloy4"
+        }
+
+    def test_actual_pin_counts_summary(self, vera3_3b_patches: list) -> None:
+        result = assemble_simulation_plan_from_patches(vera3_3b_patches)
+        assert result.summary["actual_pin_counts"] == {
+            "fuel_pin": 264,
+            "pyrex_rod": 16,
+            "thimble_plug": 8,
+            "instrument_tube": 1,
+            "guide_tube": 0,
+        }
+
     def test_passes_assembly3d_guard(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         plan = result.plan
