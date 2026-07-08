@@ -113,6 +113,7 @@
 - 已有 PinCell、RectAssembly、Core、TRISO、Skeleton。
 - 3D assembly axial layers 与 Level 1 `homogenized_open_region` overlay 可表达 spacer/support 类结构，但不是体积分数标定模型。
 - HexAssembly、depletion/burnup、pebble-bed renderer 仍未实现。
+- **边界条件无验证**：LLM 提取的边界条件（reflective/vacuum）与输入文档之间没有对照检查；renderer 曾因 fallback 逻辑 bug 将径向面设为 vacuum 导致 57% 泄漏率。
 
 下一步：
 
@@ -121,12 +122,17 @@
 3. HexAssemblyRenderer：先做 skeleton-to-exportable 的最小闭环，覆盖 OpenMC `HexLattice` rings / pitch / outer universe。
 4. Depletion/burnup：先建立 IR 与 settings/operator 边界，不急于跑重计算。
 5. Pebble-bed / stochastic geometry：先定义 capability boundary 和 skeleton 输出，避免伪 runnable。
+6. **边界条件验证**：
+   - FactsPatch 增加显式边界字段（`radial_boundary` / `axial_boundary`），从输入文档提取，不 hardcode 堆型假设。
+   - Validator 增加边界合理性检查：泄漏率 >30% 或 keff 远偏离 1 时发出 warning（非 error，因为不同模型可能合理偏离）。
+   - Renderer 渲染后自检：扫描导出 XML 的 `boundary_type`，与 plan 中的 `assembly.boundary` / `core.boundary` 对照，不一致时记录诊断。
 
 完成标准：
 
 - 新 renderer 能通过 capability report 明确声明 `skeleton/exportable/runnable`。
 - 不支持的 subsystem 保持 skeleton 或 human confirmation，不伪装成功。
 - 物理近似都进入报告和 TODO，而不是静默进入 runnable 结论。
+- 边界条件在 plan → render → XML 链路中可追溯、可验证。
 
 ## 6. P1 主线：复杂 benchmark 验收
 
