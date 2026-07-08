@@ -9,8 +9,10 @@ import pytest
 
 from openmc_agent.plan_builder.reference_patches import (
     REFERENCE_PATCH_TYPES,
+    benchmark_ids_match,
     build_reference_patch,
     load_benchmark_reference,
+    normalize_benchmark_id,
 )
 from openmc_agent.plan_builder.executor import run_incremental_planning
 from openmc_agent.plan_builder.patch_generator import FakePatchLLM
@@ -43,6 +45,27 @@ def test_load_vera3_3b_reference() -> None:
     assert ref is not None
     patches = ref.get("patches", [])
     assert len(patches) == 7
+    assert ref.get("_reference_match_status") == "exact"
+
+
+@pytest.mark.parametrize(
+    "requested_id",
+    ["VERA3", "VERA_PROBLEM_3", "VERA Problem 3", "VERA_Problem3"],
+)
+def test_normalized_benchmark_id_matches_vera3_reference(requested_id: str) -> None:
+    assert benchmark_ids_match(requested_id, "VERA3")
+    ref = load_benchmark_reference(benchmark_id=requested_id, variant="3B")
+    assert ref is not None
+    assert ref.get("_reference_benchmark_id") == "VERA3"
+
+
+def test_normalized_benchmark_id_removes_generic_noise() -> None:
+    assert normalize_benchmark_id("Core Physics Benchmark Problem 3") == "3"
+
+
+def test_reference_loader_wrong_variant_returns_none() -> None:
+    ref = load_benchmark_reference(benchmark_id="VERA_PROBLEM_3", variant="WRONG")
+    assert ref is None
 
 
 def test_load_vera3_3a_reference() -> None:
@@ -143,7 +166,7 @@ def test_reference_only_structural_bypasses_llm() -> None:
     assert result.ok is True
     assert result.assembled_plan is not None
     # Structural patches should be from reference (source=fixture).
-    for ptype in ("pin_map", "axial_layers", "axial_overlays"):
+    for ptype in ("pin_map", "axial_layers", "axial_overlays", "settings"):
         env = next(e for e in state.patches.values() if e.patch_type == ptype)
         assert env.source == "fixture"
 

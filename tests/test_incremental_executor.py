@@ -585,7 +585,7 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
     )
     assert result.ok is True
     assert result.summary["reference_patches_used"] == [
-        "pin_map", "axial_layers", "axial_overlays"
+        "pin_map", "axial_layers", "axial_overlays", "settings"
     ]
     assert result.summary["actual_pin_counts"] == {
         "fuel_pin": 264,
@@ -601,6 +601,69 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
     plan = SimulationPlan.model_validate(result.assembled_plan)
     issues = validate_assembly3d_plan(plan, requirement=_VERA3_3B_REQ)
     assert [i for i in issues if i.severity == "error"] == []
+
+
+def test_reference_only_matches_equivalent_benchmark_id_from_facts() -> None:
+    raw_patches = _load_fixture_raw("3b")
+    llm_responses = []
+    for p in raw_patches:
+        if p["patch_type"] in {"facts", "materials", "universes"}:
+            patched = dict(p)
+            if patched["patch_type"] == "facts":
+                patched["benchmark_id"] = "VERA_PROBLEM_3"
+            llm_responses.append(json.dumps(patched))
+    fake = FakePatchLLM(llm_responses)
+    decision = should_use_incremental_planning(_VERA3_3B_REQ)
+    state = initialize_plan_build_state(requirement=_VERA3_3B_REQ, decision=decision)
+
+    result = run_incremental_planning(
+        requirement=_VERA3_3B_REQ,
+        state=state,
+        llm_client=fake,
+        max_patch_attempts=1,
+        reference_patch_policy="reference_only_for_structural",
+    )
+
+    assert result.ok is True
+    assert state.benchmark_id == "VERA_PROBLEM_3"
+    assert result.summary["reference_match_status"] == "normalized"
+    assert result.summary["reference_patches_used"] == [
+        "pin_map", "axial_layers", "axial_overlays", "settings"
+    ]
+    assert len(fake.prompts) == 3
+
+
+def test_reference_only_missing_reference_fails_without_structural_llm() -> None:
+    raw_patches = _load_fixture_raw("3b")
+    fixture_by_type = {p["patch_type"]: p for p in raw_patches}
+    state = _init_3b_state()
+    state.benchmark_id = "UNKNOWN_BENCHMARK"
+    state.selected_variant = "3B"
+    for ptype in ("facts", "materials", "universes"):
+        content = dict(fixture_by_type[ptype])
+        if ptype == "facts":
+            content["benchmark_id"] = "UNKNOWN_BENCHMARK"
+        state.add_patch(PlanPatchEnvelope(
+            patch_id=f"pre_{ptype}",
+            patch_type=ptype,
+            content=content,
+            status="valid",
+        ))
+    fake = FakePatchLLM([])
+
+    result = run_incremental_planning(
+        requirement=_VERA3_3B_REQ,
+        state=state,
+        llm_client=fake,
+        max_patch_attempts=1,
+        task_order=["pin_map"],
+        reference_patch_policy="reference_only_for_structural",
+    )
+
+    assert result.ok is False
+    assert result.summary["failed_patch_type"] == "pin_map"
+    assert "reference_patch.required_unavailable" in result.summary["issue_codes"]
+    assert len(fake.prompts) == 0
 
 
 # ---------------------------------------------------------------------------

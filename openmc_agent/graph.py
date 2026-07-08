@@ -6,6 +6,7 @@ from typing import Any, Callable, Literal, TypedDict
 import functools
 import json
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -224,6 +225,7 @@ def build_plan_graph(
     patch_llm_client: Callable[[str], str] | None = None,
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
+    reference_patch_policy: str = "reference_only_for_structural",
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -260,6 +262,7 @@ def build_plan_graph(
             patch_llm_client=patch_llm_client,
             use_incremental_executor=use_incremental_executor,
             allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback_for_incremental_failure,
+            reference_patch_policy=reference_patch_policy,
         ),
     )
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
@@ -619,6 +622,16 @@ def _write_incremental_artifacts(state: GraphState, exec_result: Any) -> list[st
     artifact_paths: list[str] = []
     try:
         inc_dir.mkdir(parents=True, exist_ok=True)
+        for stale_file in (
+            inc_dir / "plan_build_state.json",
+            inc_dir / "incremental_execution_result.json",
+        ):
+            if stale_file.exists():
+                stale_file.unlink()
+        for stale_dir_name in ("valid_patches", "invalid_patches", "patch_attempts"):
+            stale_dir = inc_dir / stale_dir_name
+            if stale_dir.exists():
+                shutil.rmtree(stale_dir)
         bs_path = inc_dir / "plan_build_state.json"
         _write_json_file(bs_path, exec_result.state.model_dump(mode="json"))
         artifact_paths.append(str(bs_path))
@@ -742,9 +755,6 @@ def _run_incremental_plan_generation(
         },
         "plan_artifacts": list(state.get("plan_artifacts", [])) + inc_artifact_paths,
     }
-
-    # Phase 7B/7C: save incremental artifacts for diagnosis.
-    inc_artifact_paths = _write_incremental_artifacts(state, exec_result)
 
     if exec_result.ok and exec_result.assembled_plan:
         # Parse assembled plan dict into SimulationPlan model.
@@ -883,6 +893,7 @@ def _make_generate_plan_node(
     patch_llm_client: Callable[[str], str] | None = None,
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
+    reference_patch_policy: str = "reference_only_for_structural",
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):
@@ -899,6 +910,7 @@ def _make_generate_plan_node(
                 state,
                 patch_llm_client=patch_llm_client,
                 allow_fallback=allow_monolithic_fallback_for_incremental_failure,
+                reference_patch_policy=reference_patch_policy,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -932,6 +944,7 @@ def _make_generate_plan_node(
                     state,
                     patch_llm_client=auto_client,
                     allow_fallback=allow_monolithic_fallback_for_incremental_failure,
+                    reference_patch_policy=reference_patch_policy,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

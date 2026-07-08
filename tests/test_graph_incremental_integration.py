@@ -238,6 +238,7 @@ def test_incremental_failure_no_fallback(tmp_path: Path) -> None:
         plot_tool=_fake_plot,
         smoke_test_tool=_fake_smoke,
         patch_llm_client=fake_llm,
+        reference_patch_policy="off",
     )
     state = graph.invoke({
         "requirement": _NON_BENCHMARK_REQ,
@@ -352,6 +353,7 @@ def test_patch_json_failure_handled_locally(tmp_path: Path) -> None:
         plot_tool=_fake_plot,
         smoke_test_tool=_fake_smoke,
         patch_llm_client=fake_llm,
+        reference_patch_policy="off",
     )
     state = graph.invoke({
         "requirement": _VERA3_3B_REQ,
@@ -501,6 +503,11 @@ def test_transcript_has_incremental_summary(tmp_path: Path) -> None:
 
 
 def test_vera3_3b_default_no_monolithic_reflect_artifacts(tmp_path: Path) -> None:
+    stale_valid_dir = tmp_path / "incremental" / "valid_patches"
+    stale_valid_dir.mkdir(parents=True)
+    stale_patch = stale_valid_dir / "stale_pin_map.json"
+    stale_patch.write_text('{"stale": true}', encoding="utf-8")
+
     raw_patches = _load_fixture_raw("3b")
     llm_responses = [
         json.dumps(p)
@@ -535,3 +542,4 @@ def test_vera3_3b_default_no_monolithic_reflect_artifacts(tmp_path: Path) -> Non
     artifact_names = [Path(p).name for p in state.get("plan_artifacts", [])]
     assert not any("reflect_plan" in name for name in artifact_names)
     assert not any("repair_plan_format" in name for name in artifact_names)
+    assert not stale_patch.exists()

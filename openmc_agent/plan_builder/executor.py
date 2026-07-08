@@ -475,6 +475,12 @@ def _record_reference_metadata(
         state.metadata["reference_expected_counts"] = counts
         state.metadata["expected_counts_complete"] = True
     if reference_data:
+        state.metadata["reference_match_status"] = str(
+            reference_data.get("_reference_match_status") or "matched"
+        )
+        ref_path = reference_data.get("_reference_path")
+        if isinstance(ref_path, str):
+            state.metadata["reference_path"] = ref_path
         aliases = reference_data.get("material_aliases")
         if isinstance(aliases, dict):
             state.metadata["material_aliases"] = {
@@ -593,7 +599,39 @@ def run_incremental_planning(
             "reference_patches_used": reference_patches_used,
             "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
             "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
+            "reference_match_status": state.metadata.get(
+                "reference_match_status",
+                "off" if reference_patch_policy == "off" else "unavailable",
+            ),
+            "reference_path": state.metadata.get("reference_path"),
         }
+
+    def _fail_reference_only(
+        *,
+        pt: str,
+        code: str,
+        message: str,
+        detail_codes: list[str] | None = None,
+    ) -> IncrementalExecutionResult:
+        issue_codes = [code] + list(detail_codes or [])
+        issues.append(IncrementalExecutionIssue(
+            code=code,
+            severity="error",
+            message=message,
+            patch_type=pt,
+        ))
+        state.metadata.setdefault("reference_match_status", "unavailable")
+        state.add_event(
+            event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
+            message=message,
+            data={"failed_patch_type": pt, "error_codes": issue_codes},
+        )
+        return IncrementalExecutionResult(
+            ok=False,
+            state=state,
+            issues=issues,
+            summary=_build_failure_summary(pt, issue_codes, 0),
+        )
 
     for patch_type in order:
         # Skip if already valid.
@@ -605,20 +643,11 @@ def run_incremental_planning(
             )
             continue
 
-        # Deterministic settings fallback.
-        if patch_type == "settings":
-            settings_patch = build_deterministic_settings_patch(state)
-            content = settings_patch.model_dump(mode="json")
-            _add_envelope(state, "settings", content, source="deterministic")
-            state.add_event(
-                event_type=EVENT_DETERMINISTIC_SETTINGS_CREATED,
-                message="deterministic settings patch created",
-                data={"source_strategy": settings_patch.source_strategy},
-            )
-            continue
-
-        # Reference-only for structural patches.
         is_structural = patch_type in REFERENCE_PATCH_TYPES
+        strict_reference_first = reference_patch_policy in (
+            "reference_only_for_structural",
+            "prefer_reference_for_structural",
+        )
 
         # Lazy-load reference after facts patch has set benchmark_id.
         if (
@@ -642,6 +671,22 @@ def run_incremental_planning(
                     message=f"benchmark reference loaded for {state.benchmark_id}/{state.selected_variant}",
                     data={"policy": reference_patch_policy},
                 )
+
+        # Deterministic settings fallback remains available outside strict
+        # reference-first structural policies.
+        if (
+            patch_type == "settings"
+            and not strict_reference_first
+        ):
+            settings_patch = build_deterministic_settings_patch(state)
+            content = settings_patch.model_dump(mode="json")
+            _add_envelope(state, "settings", content, source="deterministic")
+            state.add_event(
+                event_type=EVENT_DETERMINISTIC_SETTINGS_CREATED,
+                message="deterministic settings patch created",
+                data={"source_strategy": settings_patch.source_strategy},
+            )
+            continue
 
         use_reference_first = (
             is_structural
@@ -674,15 +719,43 @@ def run_incremental_planning(
                     )
                     continue
                 else:
+                    issue_codes = [
+                        i.code for i in val_result.issues if i.severity == "error"
+                    ]
+                    state.metadata["reference_match_status"] = "validation_failed"
                     state.add_event(
                         event_type=EVENT_REFERENCE_PATCH_VALIDATION_FAILED,
                         message=f"{patch_type} reference patch failed validation",
                         data={
                             "patch_type": patch_type,
-                            "issue_codes": [i.code for i in val_result.issues if i.severity == "error"],
+                            "issue_codes": issue_codes,
                         },
                     )
-            # Reference not available or failed → fall through to LLM.
+                    if strict_reference_first:
+                        return _fail_reference_only(
+                            pt=patch_type,
+                            code="reference_patch.validation_failed",
+                            message=f"{patch_type} reference patch failed validation",
+                            detail_codes=issue_codes,
+                        )
+            if strict_reference_first:
+                return _fail_reference_only(
+                    pt=patch_type,
+                    code="reference_patch.required_unavailable",
+                    message=f"{patch_type} reference patch is required but unavailable",
+                )
+            # Reference not available or failed in prefer mode → fall through to LLM.
+
+        if (
+            is_structural
+            and reference_data is None
+            and strict_reference_first
+        ):
+            return _fail_reference_only(
+                pt=patch_type,
+                code="reference_patch.required_unavailable",
+                message=f"{patch_type} reference patch is required but unavailable",
+            )
 
         # Build context from valid patches.
         ctx = build_generation_context_from_state(
@@ -861,7 +934,17 @@ def run_incremental_planning(
             ok=False,
             state=state,
             issues=issues,
-            summary={"missing_patches": missing},
+            summary={
+                "missing_patches": missing,
+                "failed_patch_type": missing[0] if missing else None,
+                "issue_codes": [i.code for i in issues],
+                "reference_match_status": state.metadata.get(
+                    "reference_match_status",
+                    "off" if reference_patch_policy == "off" else "unavailable",
+                ),
+                "reference_path": state.metadata.get("reference_path"),
+                "reference_patches_used": reference_patches_used,
+            },
         )
 
     # Assemble.
@@ -884,6 +967,11 @@ def run_incremental_planning(
                 "valid_patch_count": len(state.get_valid_patches()),
                 "assembled": True,
                 "reference_patches_used": reference_patches_used,
+                "reference_match_status": state.metadata.get(
+                    "reference_match_status",
+                    "off" if reference_patch_policy == "off" else "unavailable",
+                ),
+                "reference_path": state.metadata.get("reference_path"),
                 "valid_patch_types": sorted({
                     e.patch_type for e in state.patches.values() if e.status == "valid"
                 }),
@@ -910,6 +998,12 @@ def run_incremental_planning(
                 "assembled": False,
                 "failed_stage": "assembly",
                 "issue_codes": [i.code for i in issues],
+                "reference_match_status": state.metadata.get(
+                    "reference_match_status",
+                    "off" if reference_patch_policy == "off" else "unavailable",
+                ),
+                "reference_path": state.metadata.get("reference_path"),
+                "reference_patches_used": reference_patches_used,
                 "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
                 "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
             },

@@ -2,19 +2,21 @@
 
 Loads structural patches (pin_map, axial_layers, axial_overlays, settings)
 from benchmark reference files.  Benchmark identification is done via
-LLM-based semantic matching — NO hardcoded benchmark names in code.
+deterministic identifier normalization plus optional LLM semantic matching —
+NO hardcoded benchmark names in code.
 
 Design constraints
 ------------------
 * **No hardcoded benchmark facts or identifiers in production code.**
 * Reference files are self-describing (contain their own benchmark_id).
-* Matching is done by LLM semantic comparison, not string equality.
+* Matching is data-driven and starts with generic identifier normalization.
 * Falls back gracefully when LLM or reference files are unavailable.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,14 @@ _DEFAULT_REFERENCE_DIRS: tuple[str, ...] = (
     "tests/fixtures/vera3_patches",
     "data/benchmarks",
 )
+
+_BENCHMARK_ID_NOISE_TOKENS: frozenset[str] = frozenset({
+    "benchmark",
+    "problem",
+    "corephysics",
+    "core",
+    "physics",
+})
 
 
 def _project_root() -> Path:
@@ -95,6 +105,49 @@ def discover_reference_files(
     return results
 
 
+def _variant_matches(requested_variant: str | None, candidate_variant: str | None) -> bool:
+    if requested_variant is None or candidate_variant is None:
+        return True
+    return requested_variant.lower() == candidate_variant.lower()
+
+
+def _attach_reference_metadata(
+    data: dict[str, Any],
+    *,
+    path: str | None,
+    benchmark_id: str | None,
+    variant: str | None,
+    match_status: str,
+) -> dict[str, Any]:
+    result = dict(data)
+    result["_reference_path"] = path
+    result["_reference_benchmark_id"] = benchmark_id
+    result["_reference_variant"] = variant
+    result["_reference_match_status"] = match_status
+    return result
+
+
+def normalize_benchmark_id(benchmark_id: str | None) -> str:
+    """Return a generic comparable benchmark identifier.
+
+    Split alphanumeric runs, remove common descriptor words, and concatenate
+    the remaining tokens.  This keeps matching data-driven while handling
+    names such as ``VERA_PROBLEM_3`` and ``VERA3``.
+    """
+    if not benchmark_id:
+        return ""
+    tokens = re.findall(r"[a-z]+|\d+", benchmark_id.lower())
+    filtered = [tok for tok in tokens if tok not in _BENCHMARK_ID_NOISE_TOKENS]
+    return "".join(filtered)
+
+
+def benchmark_ids_match(requested_id: str | None, candidate_id: str | None) -> bool:
+    """Return True when two benchmark ids match under generic normalization."""
+    requested = normalize_benchmark_id(requested_id)
+    candidate = normalize_benchmark_id(candidate_id)
+    return bool(requested and candidate and requested == candidate)
+
+
 def _llm_match_benchmark(
     llm_client: Any,
     requested_id: str,
@@ -143,7 +196,16 @@ def load_benchmark_reference(
         p = Path(reference_path)
         if p.is_file():
             try:
-                return json.loads(p.read_text(encoding="utf-8"))
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    return None
+                return _attach_reference_metadata(
+                    data,
+                    path=str(p),
+                    benchmark_id=None,
+                    variant=None,
+                    match_status="explicit_path",
+                )
             except Exception:
                 return None
         return None
@@ -157,10 +219,30 @@ def load_benchmark_reference(
     # 3. Try exact match first (case-insensitive).
     for c in candidates:
         if c["benchmark_id"] and c["benchmark_id"].lower() == benchmark_id.lower():
-            if variant is None or c["variant"] is None or c["variant"].lower() == variant.lower():
-                return c["data"]
+            if _variant_matches(variant, c["variant"]):
+                return _attach_reference_metadata(
+                    c["data"],
+                    path=c["path"],
+                    benchmark_id=c["benchmark_id"],
+                    variant=c["variant"],
+                    match_status="exact",
+                )
 
-    # 4. Try LLM-based semantic matching.
+    # 4. Try deterministic normalized matching.
+    for c in candidates:
+        if not benchmark_ids_match(benchmark_id, c["benchmark_id"]):
+            continue
+        if not _variant_matches(variant, c["variant"]):
+            continue
+        return _attach_reference_metadata(
+            c["data"],
+            path=c["path"],
+            benchmark_id=c["benchmark_id"],
+            variant=c["variant"],
+            match_status="normalized",
+        )
+
+    # 5. Try LLM-based semantic matching.
     if llm_client is not None:
         # Filter candidates by variant first to avoid wrong-variant matches.
         variant_filtered = [
@@ -172,16 +254,19 @@ def load_benchmark_reference(
                 or c["variant"].lower() == variant.lower()
             )
         ]
-        # If variant filter leaves no candidates, fall back to all.
-        if not variant_filtered:
-            variant_filtered = [c for c in candidates if c["benchmark_id"] is not None]
         for c in variant_filtered:
             if _llm_match_benchmark(
                 llm_client,
                 benchmark_id, variant,
                 c["benchmark_id"], c["variant"],
             ):
-                return c["data"]
+                return _attach_reference_metadata(
+                    c["data"],
+                    path=c["path"],
+                    benchmark_id=c["benchmark_id"],
+                    variant=c["variant"],
+                    match_status="llm",
+                )
 
     return None
 
@@ -234,7 +319,9 @@ def build_reference_patch(
 
 __all__ = [
     "REFERENCE_PATCH_TYPES",
+    "benchmark_ids_match",
     "discover_reference_files",
     "load_benchmark_reference",
+    "normalize_benchmark_id",
     "build_reference_patch",
 ]
