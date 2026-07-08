@@ -868,22 +868,33 @@ def assemble_simulation_plan_from_patches(
         requires_human_confirmation=list(dict.fromkeys(all_confirms)),
     )
 
-    # 11. Build plot specs.
+    # 11. Build plot specs — derive ranges from actual geometry, not hardcoded.
     plot_strategy = (
         settings_patch.plot_strategy if settings_patch else "full_assembly"
     )
+    # Compute actual axial domain from assembled layers.
+    if axial_layers:
+        axial_z_min = min(l.z_min_cm for l in axial_layers)
+        axial_z_max = max(l.z_max_cm for l in axial_layers)
+    else:
+        axial_z_min, axial_z_max = -1.0, 1.0
+    axial_height = axial_z_max - axial_z_min
+    # XY origin centered on assembly.
+    pitch = assembly_pitch or 21.50
+    xy_origin = (pitch / 2.0, pitch / 2.0, (axial_z_min + axial_z_max) / 2.0)
+    xz_origin = (pitch / 2.0, 0.0, (axial_z_min + axial_z_max) / 2.0)
     if plot_strategy == "full_assembly":
         plot_specs = [
             PlotSpec(
                 basis="xy",
-                origin=(0.0, 0.0, 0.0),
-                width_cm=(assembly_pitch or 21.50, assembly_pitch or 21.50),
+                origin=xy_origin,
+                width_cm=(pitch, pitch),
                 filename="assembly_xy.png",
             ),
             PlotSpec(
                 basis="xz",
-                origin=(0.0, 0.0, 0.0),
-                width_cm=(assembly_pitch or 21.50, 463.94),
+                origin=xz_origin,
+                width_cm=(pitch, axial_height),
                 filename="assembly_xz.png",
             ),
         ]
@@ -891,8 +902,8 @@ def assemble_simulation_plan_from_patches(
         plot_specs = [
             PlotSpec(
                 basis="xy",
-                origin=(0.0, 0.0, 0.0),
-                width_cm=(assembly_pitch or 21.50, assembly_pitch or 21.50),
+                origin=xy_origin,
+                width_cm=(pitch, pitch),
                 filename="assembly_xy.png",
             ),
         ]
