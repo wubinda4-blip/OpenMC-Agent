@@ -392,23 +392,13 @@ def _receive_requirement(state: GraphState) -> GraphState:
         f"planning mode={decision.mode} triggers={decision.triggers}",
     )
     if decision.mode == "incremental":
-        # Phase 7D: extract benchmark_id/variant from requirement so
-        # reference patches can be loaded for known benchmarks.
-        req_lower = requirement.lower()
-        benchmark_id = None
-        selected_variant = None
-        if "vera3" in req_lower or "vera 3" in req_lower:
-            benchmark_id = "VERA3"
-        if "3b" in req_lower:
-            selected_variant = "3B"
-        elif "3a" in req_lower:
-            selected_variant = "3A"
-
+        # Phase 7D: benchmark_id/variant are NOT extracted here — that would
+        # require benchmark-specific text matching.  Instead, the executor
+        # extracts them from the FactsPatch content (which the LLM generates
+        # from the requirement).  This keeps graph.py benchmark-agnostic.
         build_state = initialize_plan_build_state(
             requirement=requirement,
             decision=decision,
-            benchmark_id=benchmark_id,
-            selected_variant=selected_variant,
         )
         build_state.add_event(
             event_type="planning.incremental_recommended_but_not_executed",
@@ -714,6 +704,13 @@ def _run_incremental_plan_generation(
             state_id="pbs_incremental", requirement_text=requirement,
         )
 
+    # Propagate selected gold few-shot cases into each patch prompt.
+    few_shot_case_ids = [
+        ex.get("gold_case_id")
+        for ex in state.get("few_shot_examples", [])
+        if isinstance(ex, dict) and ex.get("gold_case_id")
+    ]
+
     exec_result = run_incremental_planning(
         requirement=requirement,
         state=build_state,
@@ -721,6 +718,7 @@ def _run_incremental_plan_generation(
         max_patch_attempts=2,
         strict=True,
         reference_patch_policy="fallback_after_llm_failure",
+        few_shot_case_ids=few_shot_case_ids,
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).

@@ -255,6 +255,8 @@ def _state_has_feature(state: PlanBuildState, feature: str) -> bool:
 def build_generation_context_from_state(
     state: PlanBuildState,
     patch_type: str,
+    *,
+    few_shot_case_ids: list[str] | None = None,
 ) -> PatchGenerationContext:
     """Build a :class:`PatchGenerationContext` enriched from all valid patches."""
     ctx = PatchGenerationContext(
@@ -263,6 +265,7 @@ def build_generation_context_from_state(
         confirmed_facts=dict(state.confirmed_facts),
         extracted_facts=dict(state.extracted_facts),
         strict_benchmark=False,
+        few_shot_case_ids=list(few_shot_case_ids or []),
     )
 
     known_material_ids: list[str] = []
@@ -432,6 +435,7 @@ def run_incremental_planning(
     task_order: list[str] | None = None,
     reference_patch_policy: str = "fallback_after_llm_failure",
     reference_path: str | Path | None = None,
+    few_shot_case_ids: list[str] | None = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -450,19 +454,9 @@ def run_incremental_planning(
     reference_data: dict[str, Any] | None = None
     reference_patches_used: list[str] = []
 
-    # Load reference if policy is active.
-    if reference_patch_policy != "off":
-        reference_data = load_benchmark_reference(
-            benchmark_id=state.benchmark_id,
-            variant=state.selected_variant,
-            reference_path=reference_path,
-        )
-        if reference_data is not None:
-            state.add_event(
-                event_type=EVENT_REFERENCE_PATCH_LOADED,
-                message=f"benchmark reference loaded for {state.benchmark_id}/{state.selected_variant}",
-                data={"policy": reference_patch_policy},
-            )
+    # Note: reference loading is deferred until after facts patch is generated,
+    # so benchmark_id can be extracted from FactsPatch content (LLM output).
+    # This keeps the system benchmark-agnostic — no hardcoded text matching.
 
     state.add_event(
         event_type=EVENT_INCREMENTAL_EXECUTION_STARTED,
@@ -476,6 +470,28 @@ def run_incremental_planning(
 
     order = task_order or default_patch_task_order(state)
     required = required_patch_types_for_state(state)
+
+    def _sync_benchmark_from_facts() -> None:
+        """Extract benchmark_id/variant from the valid FactsPatch content.
+
+        This is benchmark-agnostic: the identification comes from the
+        LLM-generated FactsPatch (which extracts it from the requirement
+        text), NOT from hardcoded text matching in production code.
+        """
+        facts_env = next(
+            (e for e in state.patches.values()
+             if e.patch_type == "facts" and e.status == "valid"),
+            None,
+        )
+        if facts_env is None:
+            return
+        content = facts_env.content
+        bid = content.get("benchmark_id")
+        var = content.get("selected_variant")
+        if bid and not state.benchmark_id:
+            state.benchmark_id = bid
+        if var and not state.selected_variant:
+            state.selected_variant = var
 
     def _build_failure_summary(pt: str, error_codes: list[str], attempt_count: int) -> dict[str, Any]:
         valid_types = sorted({
@@ -523,6 +539,26 @@ def run_incremental_planning(
 
         # Reference-only for structural patches.
         is_structural = patch_type in REFERENCE_PATCH_TYPES
+
+        # Lazy-load reference after facts patch has set benchmark_id.
+        if (
+            is_structural
+            and reference_data is None
+            and reference_patch_policy != "off"
+            and state.benchmark_id is not None
+        ):
+            reference_data = load_benchmark_reference(
+                benchmark_id=state.benchmark_id,
+                variant=state.selected_variant,
+                reference_path=reference_path,
+            )
+            if reference_data is not None:
+                state.add_event(
+                    event_type=EVENT_REFERENCE_PATCH_LOADED,
+                    message=f"benchmark reference loaded for {state.benchmark_id}/{state.selected_variant}",
+                    data={"policy": reference_patch_policy},
+                )
+
         use_reference_first = (
             is_structural
             and reference_data is not None
@@ -562,7 +598,9 @@ def run_incremental_planning(
             # Reference not available or failed → fall through to LLM.
 
         # Build context from valid patches.
-        ctx = build_generation_context_from_state(state, patch_type)
+        ctx = build_generation_context_from_state(
+            state, patch_type, few_shot_case_ids=few_shot_case_ids
+        )
 
         # Generate patch with retry.
         result = generate_patch(
@@ -576,6 +614,8 @@ def run_incremental_planning(
 
         if result.ok and result.envelope is not None:
             state.add_patch(result.envelope)
+            # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
+            _sync_benchmark_from_facts()
             state.add_event(
                 event_type=EVENT_PATCH_GENERATED,
                 message=f"{patch_type} generated and validated",
@@ -590,6 +630,20 @@ def run_incremental_planning(
                 i.get("code", "") for i in result.issues
                 if i.get("severity") == "error"
             ]
+
+            # Lazy-load reference for fallback (benchmark_id may have been
+            # extracted from FactsPatch after initial load attempt).
+            if (
+                is_structural
+                and reference_data is None
+                and reference_patch_policy == "fallback_after_llm_failure"
+                and state.benchmark_id is not None
+            ):
+                reference_data = load_benchmark_reference(
+                    benchmark_id=state.benchmark_id,
+                    variant=state.selected_variant,
+                    reference_path=reference_path,
+                )
 
             if (
                 is_structural
