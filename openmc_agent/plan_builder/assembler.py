@@ -43,9 +43,11 @@ from openmc_agent.schemas import (
     LatticeSpec,
     NuclideSpec,
     PlotSpec,
+    RegionSpec,
     RenderCapabilityReport,
     RunSettingsSpec,
     SimulationPlan,
+    SurfaceSpec,
     UniverseSpec,
 )
 
@@ -286,23 +288,76 @@ def _assemble_materials(
 def _assemble_universes(
     patch: UniversesPatch,
     material_ids: set[str],
-) -> tuple[list[UniverseSpec], list[CellSpec], list[PlanAssemblyIssue]]:
+) -> tuple[list[UniverseSpec], list[CellSpec], list[SurfaceSpec], list[RegionSpec], list[PlanAssemblyIssue]]:
     issues: list[PlanAssemblyIssue] = []
     universes: list[UniverseSpec] = []
     all_cells: list[CellSpec] = []
+    all_surfaces: list[SurfaceSpec] = []
+    all_regions: list[RegionSpec] = []
 
     for univ in patch.universes:
         cell_ids: list[str] = []
+        prev_surface_id: str | None = None
+
         for cell_patch in univ.cells:
             cell_id = f"{univ.universe_id}_{cell_patch.id}"
             fill_type = _patch_fill_type_to_schema(cell_patch, material_ids)
             fill_id = _patch_fill_id_to_schema(cell_patch, material_ids)
+
+            # Build surface/region from cell geometry (region_kind / r_min / r_max).
+            region_id: str | None = None
+            if cell_patch.region_kind == "cylinder" and cell_patch.r_max_cm is not None:
+                # Innermost solid cylinder (e.g. fuel pellet).
+                surf_id = f"surf_{cell_id}"
+                all_surfaces.append(SurfaceSpec(
+                    id=surf_id, kind="zcylinder",
+                    parameters={"r": cell_patch.r_max_cm},
+                    purpose=f"Auto-generated pin cylinder for {cell_id}",
+                ))
+                region_id = f"reg_{cell_id}_in"
+                all_regions.append(RegionSpec(
+                    id=region_id, expression=f"-{surf_id}",
+                    surface_ids=[surf_id],
+                    purpose=f"Inside cylinder for {cell_id}",
+                ))
+                prev_surface_id = surf_id
+
+            elif cell_patch.region_kind == "annulus" and cell_patch.r_max_cm is not None:
+                # Annular layer (e.g. clad, gap).
+                surf_id = f"surf_{cell_id}"
+                all_surfaces.append(SurfaceSpec(
+                    id=surf_id, kind="zcylinder",
+                    parameters={"r": cell_patch.r_max_cm},
+                    purpose=f"Auto-generated pin cylinder for {cell_id}",
+                ))
+                if prev_surface_id is not None:
+                    region_id = f"reg_{cell_id}_annulus"
+                    all_regions.append(RegionSpec(
+                        id=region_id,
+                        expression=f"+{prev_surface_id} -{surf_id}",
+                        surface_ids=[prev_surface_id, surf_id],
+                        purpose=f"Annulus for {cell_id}",
+                    ))
+                prev_surface_id = surf_id
+
+            elif cell_patch.region_kind == "background":
+                # Outermost region (e.g. coolant outside cladding).
+                if prev_surface_id is not None:
+                    region_id = f"reg_{cell_id}_out"
+                    all_regions.append(RegionSpec(
+                        id=region_id,
+                        expression=f"+{prev_surface_id}",
+                        surface_ids=[prev_surface_id],
+                        purpose=f"Outside region for {cell_id}",
+                    ))
+
             try:
                 cell = CellSpec(
                     id=cell_id,
                     name=cell_patch.id,
                     fill_type=fill_type,
                     fill_id=fill_id,
+                    region_id=region_id,
                     purpose=cell_patch.role,
                 )
                 all_cells.append(cell)
@@ -329,7 +384,7 @@ def _assemble_universes(
                 path=f"universes[{univ.universe_id}]",
             ))
 
-    return universes, all_cells, issues
+    return universes, all_cells, all_surfaces, all_regions, issues
 
 
 def _patch_fill_type_to_schema(
@@ -723,7 +778,7 @@ def assemble_simulation_plan_from_patches(
     # 3. Assemble universes + cells.
     if universes_patch is None:
         universes_patch = UniversesPatch(universes=[])
-    plan_universes, plan_cells, univ_issues = _assemble_universes(
+    plan_universes, plan_cells, pin_surfaces, pin_regions, univ_issues = _assemble_universes(
         universes_patch, material_ids,
     )
     issues.extend(univ_issues)
@@ -803,6 +858,8 @@ def assemble_simulation_plan_from_patches(
         kind="assembly",
         materials=plan_materials,
         cells=plan_cells,
+        surfaces=pin_surfaces,
+        regions=pin_regions,
         universes=plan_universes,
         lattices=lattices,
         assemblies=[assembly],
