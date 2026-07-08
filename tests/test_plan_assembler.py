@@ -348,3 +348,36 @@ def test_assembler_canonicalizes_overlay_material_alias() -> None:
     assert result.summary["material_aliases_applied"] == {
         "grid_zircaloy4": "zircaloy4"
     }
+
+
+def test_assembler_canonicalizes_axial_layer_material_variant_suffix() -> None:
+    patches = _minimal_3d_patches()
+    materials = next(p for p in patches if isinstance(p, MaterialsPatch))
+    materials.materials.append(
+        MaterialSpecPatch(
+            material_id="borated_water_3B",
+            name="Borated Water",
+            role="coolant",
+            density_g_cm3=0.743,
+        )
+    )
+    layers = next(p for p in patches if isinstance(p, AxialLayersPatch))
+    layers.layers.append(
+        AxialLayerPatchItem(
+            layer_id="lower_moderator_buffer",
+            role="reflector",
+            z_min_cm=-55.0,
+            z_max_cm=-5.0,
+            fill_type="material",
+            fill_id="borated_water",
+        )
+    )
+
+    result = assemble_simulation_plan_from_patches(patches)
+    assert result.ok is True
+    layer = next(
+        l for l in result.plan.complex_model.core.axial_layers
+        if l.id == "lower_moderator_buffer"
+    )
+    assert layer.fill.id == "borated_water_3B"
+    assert result.summary["material_aliases_applied"]["borated_water"] == "borated_water_3B"

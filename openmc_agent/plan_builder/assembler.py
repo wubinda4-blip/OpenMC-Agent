@@ -497,12 +497,27 @@ def _assemble_axial_layers(
     patch: AxialLayersPatch,
     lattice_id: str,
     material_ids: set[str],
-) -> tuple[list[AxialLayerSpec], list[PlanAssemblyIssue]]:
+) -> tuple[list[AxialLayerSpec], list[PlanAssemblyIssue], dict[str, str]]:
     issues: list[PlanAssemblyIssue] = []
     layers: list[AxialLayerSpec] = []
+    aliases_applied: dict[str, str] = {}
 
     for item in patch.layers:
-        fill = _layer_fill_ref(item, lattice_id, material_ids)
+        fill, alias = _layer_fill_ref(item, lattice_id, material_ids)
+        if alias is not None:
+            original_id, resolved_id = alias
+            aliases_applied[original_id] = resolved_id
+            issues.append(PlanAssemblyIssue(
+                code="assembly.material_alias_resolved",
+                severity="info",
+                message=(
+                    f"axial layer {item.layer_id!r} fill material "
+                    f"{original_id!r} resolved to {resolved_id!r}"
+                ),
+                path=f"axial_layers[{item.layer_id}].fill_id",
+                expected=resolved_id,
+                actual=original_id,
+            ))
         try:
             layer = AxialLayerSpec(
                 id=item.layer_id,
@@ -521,23 +536,30 @@ def _assemble_axial_layers(
                 path=f"axial_layers[{item.layer_id}]",
             ))
 
-    return layers, issues
+    return layers, issues, aliases_applied
 
 
 def _layer_fill_ref(
     item: AxialLayerPatchItem,
     lattice_id: str,
     material_ids: set[str],
-) -> FillRefSpec:
+) -> tuple[FillRefSpec, tuple[str, str] | None]:
     if item.fill_type == "lattice":
-        return FillRefSpec(type="lattice", id=lattice_id)
+        return FillRefSpec(type="lattice", id=lattice_id), None
     if item.fill_type == "void":
-        return FillRefSpec(type="void", id=None)
+        return FillRefSpec(type="void", id=None), None
     if item.fill_type == "material" and item.fill_id:
-        return FillRefSpec(type="material", id=item.fill_id)
+        resolution = resolve_material_id(item.fill_id, material_ids)
+        if resolution.ok and resolution.resolved_id:
+            alias = (
+                (item.fill_id, resolution.resolved_id)
+                if resolution.resolved_id != item.fill_id else None
+            )
+            return FillRefSpec(type="material", id=resolution.resolved_id), alias
+        return FillRefSpec(type="material", id=item.fill_id), None
     if item.fill_type == "universe" and item.fill_id:
-        return FillRefSpec(type="universe", id=item.fill_id)
-    return FillRefSpec(type="void", id=None)
+        return FillRefSpec(type="universe", id=item.fill_id), None
+    return FillRefSpec(type="void", id=None), None
 
 
 def _assemble_axial_overlays(
@@ -717,19 +739,21 @@ def assemble_simulation_plan_from_patches(
 
     # 5. Assemble axial layers.
     if axial_layers_patch is not None:
-        axial_layers, al_issues = _assemble_axial_layers(
+        axial_layers, al_issues, axial_layer_aliases = _assemble_axial_layers(
             axial_layers_patch, lattice_id, material_ids,
         )
         issues.extend(al_issues)
+        material_aliases_applied.update(axial_layer_aliases)
     else:
         axial_layers = []
 
     # 6. Assemble axial overlays.
     if axial_overlays_patch is not None:
-        axial_overlays, ao_issues, material_aliases_applied = _assemble_axial_overlays(
+        axial_overlays, ao_issues, overlay_aliases = _assemble_axial_overlays(
             axial_overlays_patch, lattice_id, material_ids,
         )
         issues.extend(ao_issues)
+        material_aliases_applied.update(overlay_aliases)
     else:
         axial_overlays = []
 

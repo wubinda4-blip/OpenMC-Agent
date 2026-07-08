@@ -84,6 +84,20 @@ def resolve_material_id(
                 issue_code="patch.axial_overlays.material_alias_resolved",
             )
 
+    variant_matches = sorted(
+        known_id for known_id in known_material_ids
+        if _normalize_material_id(known_id).startswith(f"{normalized}_")
+        or normalized.startswith(f"{_normalize_material_id(known_id)}_")
+    )
+    if len(variant_matches) == 1:
+        return MaterialResolutionResult(
+            ok=True,
+            original_id=material_id,
+            resolved_id=variant_matches[0],
+            reason=f"material id variant resolved to {variant_matches[0]!r}",
+            issue_code="patch.axial_overlays.material_alias_resolved",
+        )
+
     return MaterialResolutionResult(
         ok=False,
         original_id=material_id,
