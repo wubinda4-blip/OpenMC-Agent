@@ -162,9 +162,20 @@ def load_benchmark_reference(
 
     # 4. Try LLM-based semantic matching.
     if llm_client is not None:
-        for c in candidates:
-            if c["benchmark_id"] is None:
-                continue
+        # Filter candidates by variant first to avoid wrong-variant matches.
+        variant_filtered = [
+            c for c in candidates
+            if c["benchmark_id"] is not None
+            and (
+                variant is None
+                or c["variant"] is None
+                or c["variant"].lower() == variant.lower()
+            )
+        ]
+        # If variant filter leaves no candidates, fall back to all.
+        if not variant_filtered:
+            variant_filtered = [c for c in candidates if c["benchmark_id"] is not None]
+        for c in variant_filtered:
             if _llm_match_benchmark(
                 llm_client,
                 benchmark_id, variant,

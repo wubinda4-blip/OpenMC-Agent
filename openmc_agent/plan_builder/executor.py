@@ -619,6 +619,48 @@ def run_incremental_planning(
             state.add_patch(result.envelope)
             # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
             _sync_benchmark_from_facts()
+
+            # Phase 7D+: one-time LLM semantic benchmark matching after facts.
+            # This runs ONCE, right after facts is generated, so the LLM call
+            # doesn't interfere with subsequent patch generation responses.
+            if (
+                patch_type == "facts"
+                and reference_patch_policy != "off"
+                and reference_data is None
+                and state.benchmark_id is not None
+            ):
+                import re
+                # Only attempt matching for plausible benchmark identifiers
+                # (avoids wasting an LLM call on test placeholders like "T").
+                alpha_len = len(re.sub(r"[^a-zA-Z]", "", state.benchmark_id))
+                if alpha_len >= 4:
+                    # Try exact match first (no LLM).
+                    reference_data = load_benchmark_reference(
+                        benchmark_id=state.benchmark_id,
+                        variant=state.selected_variant,
+                        reference_path=reference_path,
+                    )
+                    # If exact match failed, try LLM semantic matching.
+                    if reference_data is None:
+                        try:
+                            reference_data = load_benchmark_reference(
+                                benchmark_id=state.benchmark_id,
+                                variant=state.selected_variant,
+                                reference_path=reference_path,
+                                llm_client=llm_client,
+                            )
+                        except Exception:
+                            pass
+                    if reference_data is not None:
+                        state.add_event(
+                            event_type=EVENT_REFERENCE_PATCH_LOADED,
+                            message=(
+                                f"benchmark reference matched for "
+                                f"{state.benchmark_id}/{state.selected_variant}"
+                            ),
+                            data={"policy": reference_patch_policy},
+                        )
+
             state.add_event(
                 event_type=EVENT_PATCH_GENERATED,
                 message=f"{patch_type} generated and validated",
