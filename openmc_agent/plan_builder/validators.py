@@ -1,0 +1,876 @@
+"""Patch validators for incremental plan building (Phase 2).
+
+Each validator checks a single patch in isolation (plus optional lightweight
+cross-references via :class:`PatchValidationContext`).  Validators never
+assemble patches into a full ``SimulationPlan``; they only flag structural /
+semantic issues so a future local retry router can target the exact patch
+that needs regeneration.
+
+Design constraints
+------------------
+* **No OpenMC, no renderer.**
+* **Severity spectrum:** ``error`` blocks assembly; ``warning`` allows it but
+  records a concern; ``info`` is purely advisory.
+* **Approximate compositions are warnings, not errors** — the plan structure
+  can still be built; material fidelity is a separate concern.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from openmc_agent.schemas import AgentBaseModel
+
+from .patches import (
+    AxialLayerPatchItem,
+    AxialLayersPatch,
+    AxialOverlayPatchItem,
+    AxialOverlaysPatch,
+    CoordinateConvention,
+    FactsPatch,
+    MaterialSpecPatch,
+    MaterialsPatch,
+    PinMapPatch,
+    SettingsPatch,
+    UniverseSpecPatch,
+    UniversesPatch,
+    normalized_coords,
+)
+
+
+# ---------------------------------------------------------------------------
+# Result models
+# ---------------------------------------------------------------------------
+
+
+class PatchValidationIssue(AgentBaseModel):
+    """A single validation issue found in a patch."""
+
+    code: str
+    severity: Literal["error", "warning", "info"] = "warning"
+    message: str
+    path: str | None = None
+    expected: Any | None = None
+    actual: Any | None = None
+
+
+class PatchValidationResult(AgentBaseModel):
+    """Result of validating a single patch."""
+
+    patch_id: str | None = None
+    patch_type: str
+    ok: bool = True
+    issues: list[PatchValidationIssue] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class PatchValidationContext(AgentBaseModel):
+    """Cross-reference context for patch validation.
+
+    Allows validators to check references (material IDs, universe IDs, lattice
+    IDs) across patches without assembling a full SimulationPlan.
+    """
+
+    benchmark_id: str | None = None
+    selected_variant: str | None = None
+    expected_counts: dict[str, int] = Field(default_factory=dict)
+    expected_material_roles: list[str] = Field(default_factory=list)
+    known_material_ids: list[str] = Field(default_factory=list)
+    known_universe_ids: list[str] = Field(default_factory=list)
+    known_lattice_ids: list[str] = Field(default_factory=list)
+    axial_domain_cm: tuple[float, float] | None = None
+    active_fuel_region_cm: tuple[float, float] | None = None
+    strict_benchmark: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Alloy detection helpers
+# ---------------------------------------------------------------------------
+
+# (name_pattern, primary_element, display_name)
+_ALLOY_SIGNATURES: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"zircaloy[- ]?4", re.IGNORECASE), "Zr", "Zircaloy-4"),
+    (re.compile(r"zircaloy", re.IGNORECASE), "Zr", "Zircaloy"),
+    (re.compile(r"\bss[- ]?304\b", re.IGNORECASE), "Fe", "SS-304"),
+    (re.compile(r"stainless.*304", re.IGNORECASE), "Fe", "SS-304"),
+    (re.compile(r"inconel[- ]?718", re.IGNORECASE), "Ni", "Inconel-718"),
+    (re.compile(r"inconel", re.IGNORECASE), "Ni", "Inconel"),
+)
+
+
+def _is_pure_element(composition: dict[str, float]) -> tuple[bool, str | None]:
+    """Return (is_pure, element_symbol) for a 1-key composition."""
+    if len(composition) == 1:
+        return True, next(iter(composition))
+    return False, None
+
+
+def _detect_alloy_reduction(
+    mat: MaterialSpecPatch,
+) -> PatchValidationIssue | None:
+    """Check if an alloy material is silently reduced to its primary element."""
+    for pattern, primary_elem, display_name in _ALLOY_SIGNATURES:
+        if not pattern.search(mat.name):
+            continue
+        is_pure, elem = _is_pure_element(mat.composition)
+        if not is_pure or elem is None:
+            continue
+        if str(elem).strip().upper() != primary_elem.upper():
+            continue
+        # The alloy is reduced to pure primary element.
+        if mat.composition_status == "confirmed":
+            return PatchValidationIssue(
+                code="patch.materials.alloy_reduced_to_pure_element",
+                severity="error",
+                message=(
+                    f"material {mat.material_id!r} named {mat.name!r} "
+                    f"({display_name}) has composition reduced to pure "
+                    f"{primary_elem} but composition_status='confirmed'. "
+                    f"{display_name} is a multi-element alloy; either supply "
+                    f"the full composition or change composition_status to "
+                    f"'approximate'/'needs_library'/'needs_confirmation' "
+                    f"with an explicit warning."
+                ),
+                path=f"materials[{mat.material_id}].composition",
+                expected=f"multi-element {display_name} composition",
+                actual=f"pure {primary_elem}",
+            )
+        else:
+            has_warning = any(
+                "approxim" in w.lower() or "pure" in w.lower() or "alloy" in w.lower()
+                for w in mat.warnings
+            )
+            if not has_warning:
+                return PatchValidationIssue(
+                    code="patch.materials.alloy_reduced_to_pure_element",
+                    severity="warning",
+                    message=(
+                        f"material {mat.material_id!r} ({display_name}) is "
+                        f"approximated as pure {primary_elem} but has no "
+                        f"explicit approximation warning in warnings[]."
+                    ),
+                    path=f"materials[{mat.material_id}].warnings",
+                )
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Per-type validators
+# ---------------------------------------------------------------------------
+
+
+def _validate_facts(
+    patch: FactsPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+
+    if patch.lattice_size is not None:
+        nx, ny = patch.lattice_size
+        if nx <= 0 or ny <= 0:
+            issues.append(PatchValidationIssue(
+                code="patch.schema_invalid",
+                severity="error",
+                message=f"lattice_size ({nx}, {ny}) must have positive dimensions",
+                path="lattice_size",
+                actual=patch.lattice_size,
+            ))
+
+    for label, z_range in (
+        ("active_fuel_region_cm", patch.active_fuel_region_cm),
+        ("axial_domain_cm", patch.axial_domain_cm),
+    ):
+        if z_range is not None and z_range[0] >= z_range[1]:
+            issues.append(PatchValidationIssue(
+                code="patch.schema_invalid",
+                severity="error",
+                message=f"{label} z_min={z_range[0]} must be < z_max={z_range[1]}",
+                path=label,
+                actual=z_range,
+            ))
+
+    for label, count in (
+        ("expected_spacer_grid_count", patch.expected_spacer_grid_count),
+        ("expected_pin_count", patch.expected_pin_count),
+        ("expected_guide_tube_count", patch.expected_guide_tube_count),
+        ("expected_instrument_tube_count", patch.expected_instrument_tube_count),
+        ("expected_pyrex_count", patch.expected_pyrex_count),
+        ("expected_thimble_plug_count", patch.expected_thimble_plug_count),
+    ):
+        if count is not None and count < 0:
+            issues.append(PatchValidationIssue(
+                code="patch.schema_invalid",
+                severity="error",
+                message=f"{label}={count} must be non-negative",
+                path=label,
+                actual=count,
+            ))
+
+    if (
+        patch.selected_variant
+        and "3b" in patch.selected_variant.lower()
+        and (patch.expected_pyrex_count or 0) > 0
+        and not patch.has_special_pin_map
+    ):
+        issues.append(PatchValidationIssue(
+            code="patch.schema_invalid",
+            severity="warning",
+            message=(
+                "variant '3B' with Pyrex facts should set "
+                "has_special_pin_map=True"
+            ),
+            path="has_special_pin_map",
+        ))
+
+    if patch.missing_facts:
+        for fact in patch.missing_facts[:5]:
+            issues.append(PatchValidationIssue(
+                code="patch.missing_required_field",
+                severity="info",
+                message=f"missing fact: {fact}",
+                path="missing_facts",
+            ))
+
+    return issues
+
+
+def _validate_materials(
+    patch: MaterialsPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+    seen_ids: set[str] = set()
+
+    for mat in patch.materials:
+        if mat.material_id in seen_ids:
+            issues.append(PatchValidationIssue(
+                code="patch.duplicate_id",
+                severity="error",
+                message=f"duplicate material_id {mat.material_id!r}",
+                path=f"materials[{mat.material_id}]",
+            ))
+        seen_ids.add(mat.material_id)
+
+        if mat.density_g_cm3 is not None and mat.density_g_cm3 <= 0:
+            issues.append(PatchValidationIssue(
+                code="patch.materials.invalid_density",
+                severity="error",
+                message=(
+                    f"material {mat.material_id!r} density_g_cm3="
+                    f"{mat.density_g_cm3} must be positive"
+                ),
+                path=f"materials[{mat.material_id}].density_g_cm3",
+                actual=mat.density_g_cm3,
+            ))
+
+        alloy_issue = _detect_alloy_reduction(mat)
+        if alloy_issue is not None:
+            issues.append(alloy_issue)
+
+        if mat.composition_status == "placeholder":
+            issues.append(PatchValidationIssue(
+                code="patch.materials.placeholder_composition",
+                severity="warning",
+                message=(
+                    f"material {mat.material_id!r} has placeholder composition; "
+                    "structure can still be built but material must be "
+                    "resolved before export"
+                ),
+                path=f"materials[{mat.material_id}].composition_status",
+            ))
+
+        if mat.role and context.expected_material_roles:
+            if mat.role not in context.expected_material_roles:
+                issues.append(PatchValidationIssue(
+                    code="patch.materials.missing_role",
+                    severity="warning",
+                    message=(
+                        f"material {mat.material_id!r} role {mat.role!r} is not "
+                        f"in expected roles {context.expected_material_roles}"
+                    ),
+                    path=f"materials[{mat.material_id}].role",
+                ))
+
+    return issues
+
+
+def _validate_universes(
+    patch: UniversesPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+    seen_ids: set[str] = set()
+
+    for univ in patch.universes:
+        if univ.universe_id in seen_ids:
+            issues.append(PatchValidationIssue(
+                code="patch.universes.duplicate_universe_id",
+                severity="error",
+                message=f"duplicate universe_id {univ.universe_id!r}",
+                path=f"universes[{univ.universe_id}]",
+            ))
+        seen_ids.add(univ.universe_id)
+
+        if not univ.cells:
+            issues.append(PatchValidationIssue(
+                code="patch.universes.empty_universe",
+                severity="error",
+                message=f"universe {univ.universe_id!r} has no cells",
+                path=f"universes[{univ.universe_id}].cells",
+            ))
+            continue
+
+        for cell in univ.cells:
+            if (
+                cell.r_min_cm is not None
+                and cell.r_max_cm is not None
+                and cell.r_min_cm >= cell.r_max_cm
+            ):
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.invalid_radius_order",
+                    severity="error",
+                    message=(
+                        f"cell {cell.id!r} in universe {univ.universe_id!r}: "
+                        f"r_min_cm={cell.r_min_cm} >= r_max_cm={cell.r_max_cm}"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells[{cell.id}]",
+                    actual=(cell.r_min_cm, cell.r_max_cm),
+                ))
+
+        if univ.kind == "fuel_pin":
+            has_fuel = any(
+                "fuel" in c.role.lower() or c.material_id and "fuel" in c.material_id.lower()
+                for c in univ.cells
+            )
+            if not has_fuel:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.fuel_cell_missing",
+                    severity="warning",
+                    message=(
+                        f"fuel_pin universe {univ.universe_id!r} has no cell "
+                        "with a fuel material/role"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
+
+        if univ.kind == "guide_tube":
+            roles_lower = [c.role.lower() for c in univ.cells]
+            has_water = any(
+                "water" in r or "coolant" in r or "background" in r
+                for r in roles_lower
+            )
+            has_wall = any(
+                "wall" in r or "tube" in r or "clad" in r
+                for r in roles_lower
+            )
+            if not has_water:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.guide_tube_wall_missing",
+                    severity="warning",
+                    message=(
+                        f"guide_tube universe {univ.universe_id!r} has no "
+                        "internal water/coolant region"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
+            if not has_wall:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.guide_tube_wall_missing",
+                    severity="warning",
+                    message=(
+                        f"guide_tube universe {univ.universe_id!r} has no "
+                        "tube wall material"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
+
+        if univ.kind == "pyrex_rod":
+            has_pyrex = any(
+                ("pyrex" in c.role.lower() or "pyrex" in (c.material_id or "").lower())
+                for c in univ.cells
+            )
+            if not has_pyrex:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.pyrex_material_missing",
+                    severity="warning",
+                    message=(
+                        f"pyrex_rod universe {univ.universe_id!r} has no cell "
+                        "with pyrex material/role"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
+
+    return issues
+
+
+def _validate_pin_map(
+    patch: PinMapPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+
+    nx, ny = patch.lattice_size
+    if nx <= 0 or ny <= 0:
+        issues.append(PatchValidationIssue(
+            code="patch.schema_invalid",
+            severity="error",
+            message=f"lattice_size ({nx}, {ny}) must have positive dimensions",
+            path="lattice_size",
+        ))
+
+    conv = patch.coordinate_convention
+    if context.strict_benchmark and conv.ordering == "unknown":
+        issues.append(PatchValidationIssue(
+            code="patch.pin_map.coordinate_convention_unknown",
+            severity="error",
+            message="coordinate_convention.ordering is 'unknown' for benchmark validation",
+            path="coordinate_convention.ordering",
+        ))
+
+    coord_groups: dict[str, list[tuple[int, int]]] = {
+        "guide_tube": patch.guide_tube_coords,
+        "instrument_tube": patch.instrument_tube_coords,
+        "pyrex_rod": patch.pyrex_rod_coords,
+        "thimble_plug": patch.thimble_plug_coords,
+        "water_cell": patch.water_cell_coords,
+    }
+
+    for group_name, coords in coord_groups.items():
+        normalized = normalized_coords(coords, conv, patch.lattice_size)
+        for row, col in normalized:
+            if row < 0 or row >= nx or col < 0 or col >= ny:
+                issues.append(PatchValidationIssue(
+                    code="patch.pin_map.coord_out_of_bounds",
+                    severity="error",
+                    message=(
+                        f"{group_name} coord ({row + conv.index_base}, "
+                        f"{col + conv.index_base}) -> normalized ({row}, {col}) "
+                        f"is out of bounds for lattice {nx}x{ny}"
+                    ),
+                    path=f"{group_name}_coords",
+                    actual=(row, col),
+                ))
+
+    # Overlap detection
+    coord_map: dict[tuple[int, int], list[str]] = {}
+    for group_name, coords in coord_groups.items():
+        for nc in normalized_coords(coords, conv, patch.lattice_size):
+            coord_map.setdefault(nc, []).append(group_name)
+
+    for coord, groups in coord_map.items():
+        unique_groups = list(dict.fromkeys(groups))
+        if len(unique_groups) > 1:
+            issues.append(PatchValidationIssue(
+                code="patch.pin_map.coord_overlap",
+                severity="error",
+                message=(
+                    f"coordinate {coord} is assigned to multiple groups: "
+                    f"{unique_groups}"
+                ),
+                path="*_coords",
+                actual=coord,
+            ))
+
+    # Count checks against context
+    count_map = {
+        "guide_tube": len(patch.guide_tube_coords),
+        "instrument_tube": len(patch.instrument_tube_coords),
+        "pyrex_rod": len(patch.pyrex_rod_coords),
+        "thimble_plug": len(patch.thimble_plug_coords),
+    }
+    for item, count in count_map.items():
+        expected_key = f"expected_{item}_count"
+        expected_val = context.expected_counts.get(expected_key)
+        if expected_val is not None and count != expected_val:
+            severity: Literal["error", "warning", "info"] = (
+                "error" if context.strict_benchmark else "warning"
+            )
+            issues.append(PatchValidationIssue(
+                code="patch.pin_map.count_mismatch",
+                severity=severity,
+                message=(
+                    f"{item} count={count} does not match "
+                    f"expected {expected_val}"
+                ),
+                path=f"{item}_coords",
+                expected=expected_val,
+                actual=count,
+            ))
+
+    # Default universe reference
+    if context.known_universe_ids:
+        if patch.default_universe_id not in context.known_universe_ids:
+            issues.append(PatchValidationIssue(
+                code="patch.pin_map.default_universe_missing",
+                severity="warning",
+                message=(
+                    f"default_universe_id {patch.default_universe_id!r} not "
+                    f"in known universe ids"
+                ),
+                path="default_universe_id",
+            ))
+
+    return issues
+
+
+def _validate_axial_layers(
+    patch: AxialLayersPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+
+    if not patch.layers:
+        issues.append(PatchValidationIssue(
+            code="patch.axial_layers.empty",
+            severity="error",
+            message="axial_layers patch has no layers",
+            path="layers",
+        ))
+        return issues
+
+    seen_ids: set[str] = set()
+    layers_with_z: list[tuple[str, float, float]] = []
+
+    for layer in patch.layers:
+        if layer.layer_id in seen_ids:
+            issues.append(PatchValidationIssue(
+                code="patch.duplicate_id",
+                severity="error",
+                message=f"duplicate layer_id {layer.layer_id!r}",
+                path=f"layers[{layer.layer_id}]",
+            ))
+        seen_ids.add(layer.layer_id)
+
+        if layer.z_min_cm is not None and layer.z_max_cm is not None:
+            if layer.z_min_cm >= layer.z_max_cm:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_layers.invalid_range",
+                    severity="error",
+                    message=(
+                        f"layer {layer.layer_id!r}: z_min={layer.z_min_cm} "
+                        f">= z_max={layer.z_max_cm}"
+                    ),
+                    path=f"layers[{layer.layer_id}]",
+                    actual=(layer.z_min_cm, layer.z_max_cm),
+                ))
+            layers_with_z.append((layer.layer_id, layer.z_min_cm, layer.z_max_cm))
+        elif layer.z_min_cm is None and layer.z_max_cm is None:
+            if not layer.requires_human_confirmation:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_layers.invalid_range",
+                    severity="warning",
+                    message=(
+                        f"layer {layer.layer_id!r} has no z values and "
+                        "requires_human_confirmation is False"
+                    ),
+                    path=f"layers[{layer.layer_id}]",
+                ))
+
+        if layer.fill_type in ("lattice", "material", "universe") and not layer.fill_id:
+            issues.append(PatchValidationIssue(
+                code="patch.axial_layers.fill_missing",
+                severity="error",
+                message=(
+                    f"layer {layer.layer_id!r} fill_type={layer.fill_type!r} "
+                    "but fill_id is missing"
+                ),
+                path=f"layers[{layer.layer_id}].fill_id",
+            ))
+
+    # Overlap detection
+    for i in range(len(layers_with_z)):
+        for j in range(i + 1, len(layers_with_z)):
+            id_a, z_min_a, z_max_a = layers_with_z[i]
+            id_b, z_min_b, z_max_b = layers_with_z[j]
+            if z_min_a < z_max_b and z_max_a > z_min_b:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_layers.overlap",
+                    severity="error",
+                    message=(
+                        f"layers {id_a!r} ({z_min_a}–{z_max_a}) and "
+                        f"{id_b!r} ({z_min_b}–{z_max_b}) overlap"
+                    ),
+                    path="layers",
+                ))
+
+    # Domain containment
+    domain = patch.axial_domain_cm or context.axial_domain_cm
+    if domain is not None:
+        for layer_id, z_min, z_max in layers_with_z:
+            if z_min < domain[0] - 1e-9 or z_max > domain[1] + 1e-9:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_layers.invalid_range",
+                    severity="warning",
+                    message=(
+                        f"layer {layer_id!r} ({z_min}–{z_max}) extends outside "
+                        f"axial domain {domain}"
+                    ),
+                    path=f"layers[{layer_id}]",
+                ))
+
+    # Active fuel required for 3D assembly
+    has_active_fuel = any(l.role == "active_fuel" for l in patch.layers)
+    if not has_active_fuel:
+        sev: Literal["error", "warning", "info"] = (
+            "error" if context.strict_benchmark else "warning"
+        )
+        issues.append(PatchValidationIssue(
+            code="patch.axial_layers.active_fuel_missing",
+            severity=sev,
+            message="no layer with role='active_fuel' found",
+            path="layers",
+        ))
+
+    # Default unit slab check
+    for layer in patch.layers:
+        if (
+            layer.z_min_cm == -1.0
+            and layer.z_max_cm == 1.0
+            and (context.benchmark_id or context.selected_variant)
+        ):
+            issues.append(PatchValidationIssue(
+                code="patch.axial_layers.default_unit_slab",
+                severity="error",
+                message=(
+                    f"layer {layer.layer_id!r} uses default z=-1..1 unit slab "
+                    "for an explicit 3D benchmark; provide real z ranges"
+                ),
+                path=f"layers[{layer.layer_id}]",
+            ))
+
+    return issues
+
+
+def _validate_axial_overlays(
+    patch: AxialOverlaysPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+    seen_ids: set[str] = set()
+
+    for ov in patch.overlays:
+        if ov.overlay_id in seen_ids:
+            issues.append(PatchValidationIssue(
+                code="patch.axial_overlays.duplicate_overlay_id",
+                severity="error",
+                message=f"duplicate overlay_id {ov.overlay_id!r}",
+                path=f"overlays[{ov.overlay_id}]",
+            ))
+        seen_ids.add(ov.overlay_id)
+
+        # Z range requirements
+        if ov.geometry_mode != "skeleton":
+            if ov.z_min_cm is None or ov.z_max_cm is None:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.invalid_range",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        f"{ov.geometry_mode!r} requires z_min_cm and z_max_cm"
+                    ),
+                    path=f"overlays[{ov.overlay_id}]",
+                ))
+            elif ov.z_min_cm >= ov.z_max_cm:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.invalid_range",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r}: z_min={ov.z_min_cm} "
+                        f">= z_max={ov.z_max_cm}"
+                    ),
+                    path=f"overlays[{ov.overlay_id}]",
+                ))
+        else:
+            # Skeleton may omit z only if requires_human_confirmation
+            if (
+                ov.z_min_cm is None
+                and ov.z_max_cm is None
+                and not ov.requires_human_confirmation
+                and not ov.material_id
+            ):
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.material_missing",
+                    severity="warning",
+                    message=(
+                        f"skeleton overlay {ov.overlay_id!r} has no z range, "
+                        "no material, and no requires_human_confirmation"
+                    ),
+                    path=f"overlays[{ov.overlay_id}]",
+                ))
+
+        # Homogenized open region requirements
+        if ov.geometry_mode == "homogenized_open_region":
+            if not ov.target_lattice_id:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.target_missing",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'homogenized_open_region' requires target_lattice_id"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].target_lattice_id",
+                ))
+            if not ov.material_id:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.material_missing",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'homogenized_open_region' requires material_id"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].material_id",
+                ))
+            if ov.through_path_preserved is not True:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.through_path_not_preserved",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'homogenized_open_region' requires "
+                        "through_path_preserved=True"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].through_path_preserved",
+                ))
+
+        # Volume fraction calibrated requirements
+        if ov.geometry_mode == "volume_fraction_calibrated":
+            if ov.volume_fraction is None and ov.effective_density_g_cm3 is None:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.volume_fraction_missing",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'volume_fraction_calibrated' requires "
+                        "volume_fraction or effective_density_g_cm3"
+                    ),
+                    path=f"overlays[{ov.overlay_id}]",
+                ))
+
+    return issues
+
+
+def _validate_settings(
+    patch: SettingsPatch,
+    context: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+
+    if patch.cross_sections_runtime_required:
+        issues.append(PatchValidationIssue(
+            code="patch.settings.cross_sections_runtime_only",
+            severity="info",
+            message=(
+                "cross_sections path is a runtime requirement; it does not "
+                "block plan generation"
+            ),
+            path="cross_sections_runtime_required",
+        ))
+
+    if not patch.tallies_required_for_smoke_test:
+        issues.append(PatchValidationIssue(
+            code="patch.settings.tallies_not_required_for_smoke",
+            severity="info",
+            message="tallies are not required for smoke test",
+            path="tallies_required_for_smoke_test",
+        ))
+
+    if patch.plot_strategy != "full_assembly" and context.benchmark_id:
+        issues.append(PatchValidationIssue(
+            code="patch.settings.plot_not_full_assembly",
+            severity="warning",
+            message=(
+                f"plot_strategy={patch.plot_strategy!r}; benchmark problems "
+                "typically use 'full_assembly'"
+            ),
+            path="plot_strategy",
+        ))
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
+_VALIDATORS: dict[str, Any] = {
+    "facts": _validate_facts,
+    "materials": _validate_materials,
+    "universes": _validate_universes,
+    "pin_map": _validate_pin_map,
+    "axial_layers": _validate_axial_layers,
+    "axial_overlays": _validate_axial_overlays,
+    "settings": _validate_settings,
+}
+
+
+def validate_patch(
+    patch: BaseModel,
+    context: PatchValidationContext | None = None,
+) -> PatchValidationResult:
+    """Validate a parsed patch model.
+
+    Parameters
+    ----------
+    patch
+        A parsed patch model (one of the ``*Patch`` classes from
+        :mod:`openmc_agent.plan_builder.patches`).
+    context
+        Optional cross-reference context for reference checking.
+
+    Returns
+    -------
+    PatchValidationResult
+        The validation result with ``ok=True`` if no errors were found.
+    """
+    ctx = context or PatchValidationContext()
+    patch_type = getattr(patch, "patch_type", None)
+    if patch_type is None:
+        return PatchValidationResult(
+            patch_type="unknown",
+            ok=False,
+            issues=[PatchValidationIssue(
+                code="patch.schema_invalid",
+                severity="error",
+                message=f"patch model {type(patch).__name__} has no patch_type field",
+            )],
+        )
+
+    validator = _VALIDATORS.get(patch_type)
+    if validator is None:
+        return PatchValidationResult(
+            patch_type=patch_type,
+            ok=False,
+            issues=[PatchValidationIssue(
+                code="patch.schema_invalid",
+                severity="error",
+                message=f"no validator registered for patch_type {patch_type!r}",
+            )],
+        )
+
+    issues = validator(patch, ctx)
+    errors = [i for i in issues if i.severity == "error"]
+    warnings = [i for i in issues if i.severity == "warning"]
+    infos = [i for i in issues if i.severity == "info"]
+
+    return PatchValidationResult(
+        patch_type=patch_type,
+        ok=len(errors) == 0,
+        issues=issues,
+        summary={
+            "error_count": len(errors),
+            "warning_count": len(warnings),
+            "info_count": len(infos),
+        },
+    )
+
+
+__all__ = [
+    "PatchValidationIssue",
+    "PatchValidationResult",
+    "PatchValidationContext",
+    "validate_patch",
+]

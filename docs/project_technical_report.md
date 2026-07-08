@@ -640,3 +640,61 @@ Level 1 近似边界（明确）：
 4. LLM patch generator（per-task 小粒度 LLM 调用，替代 monolithic 25K JSON 输出）。
 5. Local retry router（per-task 重试，而非整体 reflect）。
 6. Full workflow replacement（incremental executor 接管 generate_plan 节点）。
+
+#### Incremental Plan Builder Phase 2: Patch schemas and validators
+
+**目标：** 定义 patch-based planning 的核心 patch schema 和独立 validators，使每个 patch 可以被独立 parse / validate，validator 可以精确定位是 materials、universes、pin_map、axial_layers 还是 overlays 出错。
+
+**Patch 类型（`openmc_agent/plan_builder/patches.py`）：**
+
+| Patch type | 模型 | 职责 |
+|---|---|---|
+| `facts` | `FactsPatch` | benchmark/geometry/variant/missing data facts |
+| `materials` | `MaterialsPatch` | 材料 catalog（含 composition_status） |
+| `universes` | `UniversesPatch` | universe 定义（fuel pin, guide tube, pyrex rod, ...） |
+| `pin_map` | `PinMapPatch` | 坐标 replacement rules（不展开完整 lattice） |
+| `axial_layers` | `AxialLayersPatch` | axial layer list（z-segmentation） |
+| `axial_overlays` | `AxialOverlaysPatch` | spacer grids / support plates |
+| `settings` | `SettingsPatch` | source/plot/execution 策略 |
+
+**关键设计决策：**
+- PinMapPatch 只表达坐标 replacement rules（如 16 个 Pyrex 坐标），不输出完整 17×17 lattice pattern。这让 LLM 可以输出 200 字节的 patch 而非 25 KB 的完整 JSON。
+- MaterialsPatch 使用 `composition_status` 而非 blocking 结构生成。Zircaloy-4 / SS-304 / Inconel-718 如果被简化为纯元素且标记 `confirmed`，validator 会报 error；标记 `approximate` + warning 则允许通过。
+- UniversesPatch 的 guide_tube 要求有内部 water + tube wall，否则 warning。pyrex_rod 要求有 pyrex material cell。
+
+**Validators（`openmc_agent/plan_builder/validators.py`）：**
+- `validate_patch(patch, context)` 按 patch_type 路由到 per-type validator。
+- `PatchValidationResult` 含 `ok`、`issues`（按 severity: error/warning/info）、`summary`。
+- `PatchValidationContext` 提供跨 patch 引用检查（expected_counts, known_universe_ids, benchmark_id, strict_benchmark 等）。
+- Issue codes 覆盖：`patch.duplicate_id`, `patch.materials.alloy_reduced_to_pure_element`, `patch.universes.guide_tube_wall_missing`, `patch.pin_map.coord_out_of_bounds`, `patch.pin_map.coord_overlap`, `patch.pin_map.count_mismatch`, `patch.axial_layers.overlap`, `patch.axial_layers.active_fuel_missing`, `patch.axial_layers.default_unit_slab`, `patch.axial_overlays.through_path_not_preserved`, `patch.axial_overlays.volume_fraction_missing` 等。
+
+**PlanBuildState 集成（`state.py`）：**
+- `add_validated_patch_to_state(state, envelope, parsed_patch, validation)` 把 validated patch 写入 state：
+  - `validation.ok=True` → patch status valid + `planning.patch_validated` event；
+  - `validation.ok=False` → patch status invalid + `planning.patch_invalid` event（含 error_codes）。
+- 3 个新 event codes：`planning.patch_parsed`, `planning.patch_validated`, `planning.patch_invalid`。
+
+**为什么不在 Phase 2 做 assembler：** assembler 需要 7 种 patch 全部 valid 后才能合成 SimulationPlan。Phase 2 只做 per-patch parse + validate，确保每个 patch 可以独立工作。Phase 3 才做 assembler + VERA3 fixture patches。
+
+**VERA3 3B 将来如何用 patches 避免 25K monolithic JSON：**
+1. `FactsPatch`：VERA3 benchmark_id, variant=3B, lattice_size=(17,17), expected_pyrex_count=16, axial_domain_cm, has_special_pin_map=True
+2. `MaterialsPatch`：UO2, water, Zircaloy-4 (approximate), Pyrex, air — 各自独立小 patch
+3. `UniversesPatch`：fuel_pin, guide_tube, instrument_tube, pyrex_rod, thimble_plug — 每个 universe 的 cells 定义
+4. `PinMapPatch`：17×17, default=fuel_pin, pyrex_rod_coords=[16 positions], thimble_plug_coords=[8 positions] — 只列特殊坐标，不展开 289 格
+5. `AxialLayersPatch`：12 个层（nozzle → end plug → plenum → active fuel → ...）
+6. `AxialOverlaysPatch`：8 个 spacer grid overlays
+7. `SettingsPatch`：active_fuel_box source, full_assembly plot
+
+每个 patch 只有几百到几千字符，LLM 不需要一次性输出 25K。
+
+**测试覆盖（53 new tests）：**
+- `tests/test_patch_schemas.py`：13 tests 覆盖 parse_patch_content 对 7 种类型的路由、envelope 解析、coordinate convention。
+- `tests/test_patch_validators.py`：40 tests 覆盖所有 issue codes 和 PlanBuildState patch lifecycle。
+- 全量测试：`657 passed, 2 skipped in 53.36s`。无回归。
+
+**当前未完成事项：**
+1. Deterministic assembler（合并 valid patches → SimulationPlan）
+2. VERA3 patch fixtures（手写或半自动 fixture patches）
+3. LLM patch generator（per-task 小粒度 LLM 调用）
+4. Local retry router（per-task 重试）
+5. Workflow replacement（incremental executor 接管 generate_plan 节点）

@@ -35,6 +35,9 @@ EVENT_INCREMENTAL_RECOMMENDED_NOT_EXECUTED: str = "planning.incremental_recommen
 EVENT_INCREMENTAL_EXECUTOR_NOT_IMPLEMENTED: str = "planning.incremental_executor_not_implemented"
 EVENT_BUILD_STATE_INITIALIZED: str = "planning.build_state_initialized"
 EVENT_COMPONENT_TASKS_INITIALIZED: str = "planning.component_tasks_initialized"
+EVENT_PATCH_PARSED: str = "planning.patch_parsed"
+EVENT_PATCH_VALIDATED: str = "planning.patch_validated"
+EVENT_PATCH_INVALID: str = "planning.patch_invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +381,84 @@ def create_initial_component_tasks(
     return tasks
 
 
+# ---------------------------------------------------------------------------
+# Patch integration helpers (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def add_validated_patch_to_state(
+    state: PlanBuildState,
+    envelope: PlanPatchEnvelope,
+    parsed_patch: Any,
+    validation: Any,
+) -> PlanBuildState:
+    """Integrate a validated patch into a :class:`PlanBuildState`.
+
+    Parameters
+    ----------
+    state
+        The build state to update (mutated in place and returned).
+    envelope
+        The :class:`PlanPatchEnvelope` wrapping the patch content.
+    parsed_patch
+        The parsed patch model (from :func:`parse_patch_content`).
+    validation
+        The :class:`~openmc_agent.plan_builder.validators.PatchValidationResult`.
+
+    Returns
+    -------
+    PlanBuildState
+        The updated state (same object, for chaining).
+    """
+    patch_type = getattr(parsed_patch, "patch_type", envelope.patch_type)
+    state.add_event(
+        event_type=EVENT_PATCH_PARSED,
+        message=f"patch {envelope.patch_id!r} parsed as {patch_type}",
+        data={"patch_id": envelope.patch_id, "patch_type": patch_type},
+    )
+
+    issue_dicts = [issue.model_dump(mode="json") for issue in validation.issues]
+    envelope.issues = issue_dicts
+
+    if validation.ok:
+        envelope.status = "valid"  # type: ignore[assignment]
+        state.add_patch(envelope)
+        state.add_event(
+            event_type=EVENT_PATCH_VALIDATED,
+            message=f"patch {envelope.patch_id!r} validated ({patch_type})",
+            data={
+                "patch_id": envelope.patch_id,
+                "patch_type": patch_type,
+                "issue_count": len(validation.issues),
+                "summary": validation.summary,
+            },
+        )
+    else:
+        envelope.status = "invalid"  # type: ignore[assignment]
+        state.add_patch(envelope)
+        error_codes = [
+            i.code for i in validation.issues if i.severity == "error"
+        ]
+        state.add_event(
+            event_type=EVENT_PATCH_INVALID,
+            message=f"patch {envelope.patch_id!r} invalid ({patch_type}): {error_codes}",
+            data={
+                "patch_id": envelope.patch_id,
+                "patch_type": patch_type,
+                "error_codes": error_codes,
+                "summary": validation.summary,
+            },
+        )
+
+    return state
+
+
 __all__ = [
     "BuildEvent",
     "PlanBuildState",
     "PlanComponentTask",
     "PlanPatchEnvelope",
+    "add_validated_patch_to_state",
     "initialize_plan_build_state",
     "create_initial_component_tasks",
     "EVENT_PLANNING_MODE_SELECTED",
@@ -391,4 +467,7 @@ __all__ = [
     "EVENT_INCREMENTAL_EXECUTOR_NOT_IMPLEMENTED",
     "EVENT_BUILD_STATE_INITIALIZED",
     "EVENT_COMPONENT_TASKS_INITIALIZED",
+    "EVENT_PATCH_PARSED",
+    "EVENT_PATCH_VALIDATED",
+    "EVENT_PATCH_INVALID",
 ]
