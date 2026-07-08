@@ -25,6 +25,17 @@ from .assembler import (
     assemble_simulation_plan_from_patches,
     expand_pin_map,
 )
+from .executor import (
+    IncrementalExecutionIssue,
+    IncrementalExecutionResult,
+    RetryDecision,
+    build_deterministic_settings_patch,
+    build_generation_context_from_state,
+    default_patch_task_order,
+    required_patch_types_for_state,
+    route_retry,
+    run_incremental_planning,
+)
 from .patch_generator import (
     FakePatchLLM,
     PatchGenerationAttempt,
@@ -128,4 +139,14 @@ __all__ = [
     "generate_and_add_patch_to_state",
     "generate_patch",
     "parse_llm_patch_json",
+    # Phase 5 -- executor + retry router
+    "IncrementalExecutionIssue",
+    "IncrementalExecutionResult",
+    "RetryDecision",
+    "build_deterministic_settings_patch",
+    "build_generation_context_from_state",
+    "default_patch_task_order",
+    "required_patch_types_for_state",
+    "route_retry",
+    "run_incremental_planning",
 ]

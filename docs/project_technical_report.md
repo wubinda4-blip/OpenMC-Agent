@@ -811,3 +811,59 @@ Level 1 近似边界（明确）：
 5. Runtime smoke test（source rejection 修复、plot bounds 修复）
 6. Material/alloy fidelity（真实 composition library）
 7. Volume-fraction calibrated spacer grid geometry
+
+#### Incremental Plan Builder Phase 5: Executor and local retry router
+
+**核心成果：** Incremental executor 从 fake LLM 端到端生成 VERA3 3B 的所有 patches（facts → materials → universes → pin_map → axial_layers → axial_overlays → deterministic settings），按依赖顺序生成，上下文自动传播，失败时只重试当前 patch，最终组装成完整 3D SimulationPlan 并通过 assembly3d guard。
+
+**Executor（`openmc_agent/plan_builder/executor.py`）：**
+- `run_incremental_planning(requirement, state, llm_client, max_patch_attempts, task_order)` → `IncrementalExecutionResult{ok, state, assembled_plan, issues, summary}`
+- 依赖顺序：facts → materials → universes → pin_map → axial_layers → axial_overlays → settings → assembly
+- 跳过已 valid patches（`planning.patch_skipped_already_valid`）
+- Settings 使用 deterministic fallback（不调 LLM）
+- 所有 required patches valid 后调用 `assemble_state_if_ready`
+
+**Dependency-aware context propagation（`build_generation_context_from_state`）：**
+- FactsPatch → benchmark_id, selected_variant, expected_counts, active_fuel_region, axial_domain, feature flags
+- MaterialsPatch → known_material_ids
+- UniversesPatch → known_universe_ids
+- PinMapPatch → expected coordinate counts
+- AxialLayersPatch → active fuel z range, axial domain
+- AxialOverlaysPatch → known_lattice_ids
+- 每个 patch 生成前从已 valid patches 构建上下文（`planning.patch_dependency_context_built`）
+
+**Local retry router（`route_retry`）：**
+- JSON parse / schema error → `retry_same_patch`
+- Local validation error (pin_map.*, axial_layers.*, etc.) → `retry_same_patch`
+- Unresolved reference to missing dependency → `retry_dependency_patch`
+- Unresolved reference but dependency valid → `retry_same_patch`（with enriched context）
+- Unroutable error → `fail`
+
+**Deterministic settings fallback（`build_deterministic_settings_patch`）：**
+- source_strategy=active_fuel_box, plot_strategy=full_assembly
+- cross_sections_runtime_required=True, tallies_required_for_smoke_test=False
+- 不调用 LLM
+
+**Event logging：**
+`planning.incremental_execution_started/completed/failed`, `planning.patch_skipped_already_valid`, `planning.patch_dependency_context_built`, `planning.patch_retry_routed`, `planning.deterministic_settings_patch_created`
+
+**测试覆盖（23 new tests）：**
+- `tests/test_incremental_executor.py`：14 tests（dependency order, skip valid, context propagation, deterministic settings, retry, failure stop, VERA3 3B full execution, pin_map size）
+- `tests/test_retry_router.py`：9 tests（parse error, unresolved material, count mismatch, coord overlap, schema invalid, axial error, unroutable, warnings only）
+- 全量测试：`749 passed, 2 skipped in 50.91s`。无回归。
+
+**VERA3 3B fake incremental execution summary：**
+- 生成顺序：facts → materials → universes → pin_map → axial_layers → axial_overlays → settings(deterministic)
+- pin_map 只输出 24 个特殊坐标（16 Pyrex + 8 plug），不输出 289 格
+- assembled lattice: 17×17 = 289 positions
+- Pyrex count: 16, thimble plug count: 8, instrument tube: 1, fuel: 264
+- axial_layers: 12, axial_overlays: 8
+- assembly3d guard: **0 blocking errors**
+
+**当前仍未完成：**
+1. Graph workflow replacement（incremental executor 接管 generate_plan 节点）
+2. Real LLM integration / evaluation（真实 LLM 稳定性评估）
+3. OpenMC runtime smoke test（source rejection 修复、plot bounds 修复）
+4. Material/alloy fidelity（真实 composition library）
+5. Volume-fraction calibrated spacer grid geometry
+6. keff benchmark acceptance
