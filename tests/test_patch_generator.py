@@ -104,8 +104,9 @@ def test_pin_map_generation_no_full_lattice() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_pin_map_overlap_triggers_retry() -> None:
-    bad_raw = json.dumps({
+def test_pin_map_overlap_repaired_no_retry_needed() -> None:
+    """Overlap is deterministically repaired → patch validates on first attempt."""
+    overlap_raw = json.dumps({
         "patch_type": "pin_map",
         "lattice_size": [17, 17],
         "default_universe_id": "fuel_pin",
@@ -113,15 +114,7 @@ def test_pin_map_overlap_triggers_retry() -> None:
         "guide_tube_coords": [[5, 5]],
         "pyrex_rod_coords": [[5, 5]],
     })
-    good_raw = json.dumps({
-        "patch_type": "pin_map",
-        "lattice_size": [17, 17],
-        "default_universe_id": "fuel_pin",
-        "coordinate_convention": {"index_base": 0, "row_origin": "top", "col_origin": "left", "ordering": "row_col"},
-        "guide_tube_coords": [[5, 5]],
-        "pyrex_rod_coords": [[6, 6]],
-    })
-    fake = FakePatchLLM([bad_raw, good_raw])
+    fake = FakePatchLLM([overlap_raw])
     result = generate_patch(
         patch_type="pin_map",
         requirement="17x17 assembly",
@@ -129,12 +122,11 @@ def test_pin_map_overlap_triggers_retry() -> None:
         max_attempts=2,
     )
     assert result.ok is True
-    assert len(result.attempts) == 2
-    assert result.attempts[0].validated is False
-    assert result.attempts[1].validated is True
-    # First attempt should have coord_overlap issue
+    assert len(result.attempts) == 1  # repaired on first attempt, no retry needed
+    assert result.attempts[0].validated is True
+    # First attempt should have coord_overlap_repaired warning
     first_codes = [i["code"] for i in result.attempts[0].issues]
-    assert "patch.pin_map.coord_overlap" in first_codes
+    assert "patch.pin_map.coord_overlap_repaired" in first_codes
 
 
 # ---------------------------------------------------------------------------

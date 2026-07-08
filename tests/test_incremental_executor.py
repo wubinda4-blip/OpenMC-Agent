@@ -336,8 +336,8 @@ def test_executor_uses_deterministic_settings() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_pin_map_retry_only_current_patch() -> None:
-    """PinMapPatch first has overlap, second is valid."""
+def test_pin_map_overlap_repaired_on_first_attempt() -> None:
+    """PinMapPatch with coord overlap is deterministically repaired → 1 attempt."""
     base_responses = [
         json.dumps({"patch_type": "facts", "benchmark_id": "T",
                      "has_axial_geometry": True, "has_spacer_grids": True}),
@@ -352,18 +352,13 @@ def test_pin_map_retry_only_current_patch() -> None:
             ]},
         ]}),
     ]
-    bad_pin = json.dumps({
+    # Overlap: [5,5] in both guide_tube AND pyrex_rod → repaired (pyrex wins)
+    overlap_pin = json.dumps({
         "patch_type": "pin_map", "lattice_size": [17, 17],
         "default_universe_id": "fp",
         "coordinate_convention": {"index_base": 0},
         "guide_tube_coords": [[5, 5]],
         "pyrex_rod_coords": [[5, 5]],
-    })
-    good_pin = json.dumps({
-        "patch_type": "pin_map", "lattice_size": [17, 17],
-        "default_universe_id": "fp",
-        "coordinate_convention": {"index_base": 0},
-        "guide_tube_coords": [[5, 5]],
     })
     tail_responses = [
         json.dumps({"patch_type": "axial_layers", "layers": [
@@ -377,17 +372,18 @@ def test_pin_map_retry_only_current_patch() -> None:
              "geometry_mode": "homogenized_open_region", "through_path_preserved": True},
         ]}),
     ]
-    fake = FakePatchLLM(base_responses + [bad_pin, good_pin] + tail_responses)
+    fake = FakePatchLLM(base_responses + [overlap_pin] + tail_responses)
     state = _init_3b_state()
     result = run_incremental_planning(
         requirement=_VERA3_3B_REQ, state=state,
         llm_client=fake, max_patch_attempts=2,
+        reference_patch_policy="off",
     )
     assert result.ok is True
-    # Earlier patches (facts/materials/universes) should each have 1 LLM call.
-    # pin_map should have 2 LLM calls (bad + good).
-    pin_map_prompts = [p for p in fake.prompts if "pin_map" in p]
-    assert len(pin_map_prompts) >= 2
+    # pin_map should only need 1 attempt (overlap repaired deterministically)
+    # Count prompts that specifically request pin_map generation
+    pin_map_gen_prompts = [p for p in fake.prompts if 'patch_type="pin_map"' in p]
+    assert len(pin_map_gen_prompts) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +435,8 @@ def test_axial_layers_invalid_json_retries_only_axial() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_repeated_pin_map_failure_stops() -> None:
+def test_repeated_axial_layers_failure_stops() -> None:
+    """Axial layers with invalid z range always fails → executor stops."""
     base_responses = [
         json.dumps({"patch_type": "facts", "benchmark_id": "T",
                      "has_axial_geometry": True, "has_spacer_grids": True}),
@@ -450,14 +447,21 @@ def test_repeated_pin_map_failure_stops() -> None:
             {"universe_id": "fp", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]},
         ]}),
     ]
-    bad_pin = json.dumps({
+    # pin_map now passes (overlap repair fixes it)
+    good_pin = json.dumps({
         "patch_type": "pin_map", "lattice_size": [17, 17],
         "default_universe_id": "fp",
         "coordinate_convention": {"index_base": 0},
-        "guide_tube_coords": [[5, 5]],
-        "pyrex_rod_coords": [[5, 5]],
+        "guide_tube_coords": [[2, 2]],
     })
-    fake = FakePatchLLM(base_responses + [bad_pin, bad_pin])
+    # axial_layers with inverted z range always fails
+    bad_axial = json.dumps({
+        "patch_type": "axial_layers", "layers": [
+            {"layer_id": "f", "role": "active_fuel", "z_min_cm": 100.0, "z_max_cm": 50.0,
+             "fill_type": "lattice", "fill_id": "assembly_lattice"},
+        ],
+    })
+    fake = FakePatchLLM(base_responses + [good_pin, bad_axial, bad_axial])
     state = _init_3b_state()
     result = run_incremental_planning(
         requirement=_VERA3_3B_REQ, state=state,
@@ -470,8 +474,8 @@ def test_repeated_pin_map_failure_stops() -> None:
     assert any(e.patch_type == "materials" and e.status == "valid" for e in state.patches.values())
     # No assembled plan.
     assert result.assembled_plan is None
-    # Summary should report failed patch type.
-    assert result.summary.get("failed_patch_type") == "pin_map"
+    # Should fail at axial_layers now, not pin_map.
+    assert result.summary.get("failed_patch_type") == "axial_layers"
 
 
 # ---------------------------------------------------------------------------

@@ -287,8 +287,13 @@ def test_pin_map_overlap() -> None:
         pyrex_rod_coords=[(5, 5)],
     )
     result = validate_patch(patch)
-    assert "patch.pin_map.coord_overlap" in _codes(result)
-    assert result.ok is False
+    # Overlap is now deterministically repaired (warning, not error)
+    codes = _codes(result)
+    assert "patch.pin_map.coord_overlap_repaired" in codes
+    assert result.ok is True  # repaired, not blocking
+    # Verify the overlap was resolved
+    assert patch.guide_tube_coords == []  # removed from lower-priority group
+    assert patch.pyrex_rod_coords == [(5, 5)]  # kept in higher-priority group
 
 
 # ---------------------------------------------------------------------------

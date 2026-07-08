@@ -517,7 +517,7 @@ def run_incremental_planning(
     max_patch_attempts: int = 2,
     strict: bool = True,
     task_order: list[str] | None = None,
-    reference_patch_policy: str = "fallback_after_llm_failure",
+    reference_patch_policy: str = "off",
     reference_path: str | Path | None = None,
     few_shot_case_ids: list[str] | None = None,
 ) -> IncrementalExecutionResult:
@@ -881,6 +881,22 @@ def run_incremental_planning(
 
             # All retries exhausted.
             attempt_count = len(result.attempts)
+
+            # Phase 7D+: save raw attempt data for diagnosis.
+            patch_attempts = state.metadata.setdefault("patch_attempt_artifacts", {})
+            for att in result.attempts:
+                att_key = f"{patch_type}_attempt_{att.attempt_index + 1}"
+                patch_attempts[att_key] = {
+                    "patch_type": patch_type,
+                    "attempt_index": att.attempt_index,
+                    "raw_chars": att.raw_chars,
+                    "raw_text": (att.raw_text or "")[:5000],
+                    "prompt_text": (att.prompt_text or "")[:3000],
+                    "issues": att.issues,
+                    "output_mode_used": att.output_mode_used,
+                    "error": att.error,
+                }
+
             decision = route_retry(
                 failed_patch_type=patch_type,
                 issues=result.issues,

@@ -459,24 +459,49 @@ def _validate_pin_map(
                     actual=(row, col),
                 ))
 
-    # Overlap detection
+    # Overlap detection with deterministic repair.
+    # When a coordinate appears in multiple groups, keep the FIRST group
+    # (by priority order) and remove it from subsequent groups.  This is
+    # a safe, deterministic operation that resolves the common LLM mistake
+    # of putting the same coordinate in both guide_tube_coords AND
+    # pyrex_rod_coords / thimble_plug_coords.
     coord_map: dict[tuple[int, int], list[str]] = {}
     for group_name, coords in coord_groups.items():
         for nc in normalized_coords(coords, conv, patch.lattice_size):
             coord_map.setdefault(nc, []).append(group_name)
 
-    for coord, groups in coord_map.items():
-        unique_groups = list(dict.fromkeys(groups))
-        if len(unique_groups) > 1:
+    overlaps = {
+        coord: list(dict.fromkeys(groups))
+        for coord, groups in coord_map.items()
+        if len(dict.fromkeys(groups)) > 1
+    }
+
+    if overlaps:
+        # Deterministic repair: remove overlapping coords from lower-priority groups.
+        _priority = [
+            "instrument_tube", "pyrex_rod", "thimble_plug",
+            "guide_tube", "water_cell",
+        ]
+        removed: list[str] = []
+        for coord, groups in overlaps.items():
+            winner = min(groups, key=lambda g: _priority.index(g) if g in _priority else 99)
+            losers = [g for g in groups if g != winner]
+            raw_coord = (coord[0] + conv.index_base, coord[1] + conv.index_base)
+            for loser in losers:
+                attr = f"{loser}_coords"
+                current = getattr(patch, attr, [])
+                if raw_coord in current:
+                    current.remove(raw_coord)
+                    removed.append(f"{coord} from {loser} (kept {winner})")
+        if removed:
             issues.append(PatchValidationIssue(
-                code="patch.pin_map.coord_overlap",
-                severity="error",
+                code="patch.pin_map.coord_overlap_repaired",
+                severity="warning",
                 message=(
-                    f"coordinate {coord} is assigned to multiple groups: "
-                    f"{unique_groups}"
+                    f"deterministically repaired {len(removed)} overlapping "
+                    f"coordinate(s): {removed[:5]}{'...' if len(removed) > 5 else ''}"
                 ),
                 path="*_coords",
-                actual=coord,
             ))
 
     # Count checks against context. expected_counts may be partial when it came

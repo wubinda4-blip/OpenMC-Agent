@@ -224,11 +224,19 @@ def test_fallback_after_llm_failure_uses_reference() -> None:
 
 def test_failure_summary_includes_failed_patch_type() -> None:
     """When executor fails, summary must have failed_patch_type."""
-    bad_pin = json.dumps({
+    # pin_map with overlap → repaired, passes. Then axial_layers fails.
+    overlap_pin = json.dumps({
         "patch_type": "pin_map", "lattice_size": [17, 17],
         "default_universe_id": "fp",
         "coordinate_convention": {"index_base": 0},
-        "guide_tube_coords": [[5, 5]], "pyrex_rod_coords": [[5, 5]],
+        "guide_tube_coords": [[5, 5]],
+        "pyrex_rod_coords": [[5, 5]],
+    })
+    bad_axial = json.dumps({
+        "patch_type": "axial_layers", "layers": [
+            {"layer_id": "f", "role": "active_fuel", "z_min_cm": 100.0, "z_max_cm": 50.0,
+             "fill_type": "lattice", "fill_id": "assembly_lattice"},
+        ],
     })
     responses = [
         json.dumps({"patch_type": "facts", "benchmark_id": "T",
@@ -237,7 +245,8 @@ def test_failure_summary_includes_failed_patch_type() -> None:
             {"material_id": "m", "name": "M", "role": "fuel", "density_g_cm3": 10.0}]}),
         json.dumps({"patch_type": "universes", "universes": [
             {"universe_id": "fp", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]}]}),
-        bad_pin, bad_pin,
+        overlap_pin,      # pin_map: overlap repaired → passes
+        bad_axial, bad_axial,  # axial_layers: always fails
     ]
     fake = FakePatchLLM(responses)
     state = _init_3b_state()
@@ -248,11 +257,12 @@ def test_failure_summary_includes_failed_patch_type() -> None:
     )
     assert result.ok is False
     summary = result.summary
-    assert summary.get("failed_patch_type") == "pin_map"
+    # Should fail at axial_layers now (pin_map overlap was repaired)
+    assert summary.get("failed_patch_type") == "axial_layers"
     assert "facts" in summary.get("valid_patch_types", [])
     assert "materials" in summary.get("valid_patch_types", [])
     assert "universes" in summary.get("valid_patch_types", [])
-    assert "pin_map" in summary.get("invalid_patch_types", [])
+    assert "axial_layers" in summary.get("invalid_patch_types", [])
     assert summary.get("monolithic_fallback_attempted") is False
 
 
