@@ -227,6 +227,8 @@ def _assemble_materials(
         composition: list[NuclideSpec] = []
         percent_type = "ao" if mat.composition_basis == "atom_frac" else "wo"
         for name, fraction in mat.composition.items():
+            if fraction <= 0:
+                continue
             try:
                 composition.append(NuclideSpec(
                     name=name,
