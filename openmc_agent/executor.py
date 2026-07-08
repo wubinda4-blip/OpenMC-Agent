@@ -25,6 +25,17 @@ from openmc_agent.reachability import (
     collect_active_dependencies_from_model,
 )
 
+import re
+
+# Matches element symbols (1-2 letters, no mass number): "He", "Zr", "U", "O".
+# Does NOT match nuclide names with mass numbers: "He4", "U235", "O16".
+_ELEMENT_SYMBOL_RE = re.compile(r"^[A-Z][a-z]?$")
+
+
+def _is_element_symbol(name: str) -> bool:
+    """Return True if name is a bare element symbol (no mass number)."""
+    return bool(_ELEMENT_SYMBOL_RE.match(name))
+
 
 def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
     if _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
@@ -48,6 +59,14 @@ def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
     else:
         for component in spec.composition:
             if component.kind == "element":
+                material.add_element(
+                    component.name,
+                    component.percent,
+                    component.percent_type,
+                )
+            elif _is_element_symbol(component.name):
+                # LLM may output element symbol (e.g. "He") as a nuclide;
+                # route to add_element so OpenMC expands natural isotopes.
                 material.add_element(
                     component.name,
                     component.percent,
@@ -99,7 +118,7 @@ def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
         )
     elif spec.composition:
         for component in spec.composition:
-            if component.kind == "element":
+            if component.kind == "element" or _is_element_symbol(component.name):
                 material.add_element(
                     component.name,
                     component.percent,
