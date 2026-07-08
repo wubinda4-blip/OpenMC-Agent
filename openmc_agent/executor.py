@@ -2705,6 +2705,13 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
     z_max = max(layer.z_max_cm for layer in spec.core.axial_layers)
     boundaries = spec.core.boundary_conditions
     fallback_boundary = _root_boundary_type(spec.core.boundary)
+    # Assembly boundary (typically 'reflective') applies to radial surfaces
+    # when no explicit per-axis boundary_conditions are set.
+    assembly = spec.assemblies[0] if spec.assemblies else None
+    radial_fallback = (
+        getattr(assembly, "boundary", None) or fallback_boundary
+        if assembly else fallback_boundary
+    )
 
     lines = [
         f"assembly_x_min = {lower_left_x!r}",
@@ -2715,19 +2722,19 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
         f"assembly_z_max = {z_max!r}",
         (
             "assembly_xmin = openmc.XPlane("
-            f"x0=assembly_x_min, boundary_type={_axis_boundary(boundaries, 'xmin', fallback_boundary)!r})"
+            f"x0=assembly_x_min, boundary_type={_axis_boundary(boundaries, 'xmin', radial_fallback)!r})"
         ),
         (
             "assembly_xmax = openmc.XPlane("
-            f"x0=assembly_x_max, boundary_type={_axis_boundary(boundaries, 'xmax', fallback_boundary)!r})"
+            f"x0=assembly_x_max, boundary_type={_axis_boundary(boundaries, 'xmax', radial_fallback)!r})"
         ),
         (
             "assembly_ymin = openmc.YPlane("
-            f"y0=assembly_y_min, boundary_type={_axis_boundary(boundaries, 'ymin', fallback_boundary)!r})"
+            f"y0=assembly_y_min, boundary_type={_axis_boundary(boundaries, 'ymin', radial_fallback)!r})"
         ),
         (
             "assembly_ymax = openmc.YPlane("
-            f"y0=assembly_y_max, boundary_type={_axis_boundary(boundaries, 'ymax', fallback_boundary)!r})"
+            f"y0=assembly_y_max, boundary_type={_axis_boundary(boundaries, 'ymax', radial_fallback)!r})"
         ),
         (
             "assembly_zmin = openmc.ZPlane("
