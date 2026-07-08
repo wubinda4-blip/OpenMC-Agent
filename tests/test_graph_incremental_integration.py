@@ -202,7 +202,15 @@ def test_incremental_success_validates_assembled_plan(tmp_path: Path) -> None:
 
 
 def test_incremental_failure_no_fallback(tmp_path: Path) -> None:
-    """Pin_map always fails → graph should NOT call monolithic planner."""
+    """Pin_map always fails → graph should NOT call monolithic planner.
+
+    Uses a non-VERA3 requirement so reference patches are not available.
+    """
+    _NON_BENCHMARK_REQ = (
+        "3D assembly with axial layers, spacer grids, "
+        "三维, 定位格架, special pin map with guide tubes, "
+        "17x17 lattice"
+    )
     bad_pin = json.dumps({
         "patch_type": "pin_map", "lattice_size": [17, 17],
         "default_universe_id": "fp",
@@ -232,7 +240,7 @@ def test_incremental_failure_no_fallback(tmp_path: Path) -> None:
         patch_llm_client=fake_llm,
     )
     state = graph.invoke({
-        "requirement": _VERA3_3B_REQ,
+        "requirement": _NON_BENCHMARK_REQ,
         "model": "test:model",
         "output_dir": str(tmp_path),
         "records_path": str(tmp_path / "runs.jsonl"),
@@ -250,7 +258,15 @@ def test_incremental_failure_no_fallback(tmp_path: Path) -> None:
 
 
 def test_monolithic_fallback_when_enabled(tmp_path: Path) -> None:
-    """When allow_monolithic_fallback=True, failed incremental falls back."""
+    """When allow_monolithic_fallback=True, failed incremental falls back.
+
+    Uses a non-VERA3 requirement so reference patches are not available.
+    """
+    _NON_BENCHMARK_REQ = (
+        "3D assembly with axial layers, spacer grids, "
+        "三维, 定位格架, special pin map with guide tubes, "
+        "17x17 lattice"
+    )
     bad_pin = json.dumps({
         "patch_type": "pin_map", "lattice_size": [17, 17],
         "default_universe_id": "fp",
@@ -287,7 +303,7 @@ def test_monolithic_fallback_when_enabled(tmp_path: Path) -> None:
         allow_monolithic_fallback_for_incremental_failure=True,
     )
     state = graph.invoke({
-        "requirement": _VERA3_3B_REQ,
+        "requirement": _NON_BENCHMARK_REQ,
         "model": "test:model",
         "output_dir": str(tmp_path),
         "records_path": str(tmp_path / "runs.jsonl"),

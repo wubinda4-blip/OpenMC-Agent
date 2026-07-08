@@ -430,7 +430,7 @@ def run_incremental_planning(
     max_patch_attempts: int = 2,
     strict: bool = True,
     task_order: list[str] | None = None,
-    reference_patch_policy: str = "off",
+    reference_patch_policy: str = "fallback_after_llm_failure",
     reference_path: str | Path | None = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
@@ -691,6 +691,10 @@ def run_incremental_planning(
             summary={
                 "valid_patch_count": len(state.get_valid_patches()),
                 "assembled": True,
+                "reference_patches_used": reference_patches_used,
+                "valid_patch_types": sorted({
+                    e.patch_type for e in state.patches.values() if e.status == "valid"
+                }),
             },
         )
     else:

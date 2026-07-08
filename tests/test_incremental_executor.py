@@ -447,6 +447,7 @@ def test_repeated_pin_map_failure_stops() -> None:
     result = run_incremental_planning(
         requirement=_VERA3_3B_REQ, state=state,
         llm_client=fake, max_patch_attempts=2,
+        reference_patch_policy="off",
     )
     assert result.ok is False
     # Earlier patches should still be valid.
@@ -493,6 +494,7 @@ def test_valid_patch_unchanged_after_later_failure() -> None:
     result = run_incremental_planning(
         requirement=_VERA3_3B_REQ, state=state,
         llm_client=fake, max_patch_attempts=2,
+        reference_patch_policy="off",
     )
     assert result.ok is False
     # The pre-existing facts patch should be unchanged.

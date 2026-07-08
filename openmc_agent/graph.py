@@ -392,12 +392,23 @@ def _receive_requirement(state: GraphState) -> GraphState:
         f"planning mode={decision.mode} triggers={decision.triggers}",
     )
     if decision.mode == "incremental":
-        # Phase 1: initialize PlanBuildState for observability.  Phase 0 does
-        # NOT execute incremental planning — it records the state and falls
-        # back to monolithic so existing behavior is unchanged.
+        # Phase 7D: extract benchmark_id/variant from requirement so
+        # reference patches can be loaded for known benchmarks.
+        req_lower = requirement.lower()
+        benchmark_id = None
+        selected_variant = None
+        if "vera3" in req_lower or "vera 3" in req_lower:
+            benchmark_id = "VERA3"
+        if "3b" in req_lower:
+            selected_variant = "3B"
+        elif "3a" in req_lower:
+            selected_variant = "3A"
+
         build_state = initialize_plan_build_state(
             requirement=requirement,
             decision=decision,
+            benchmark_id=benchmark_id,
+            selected_variant=selected_variant,
         )
         build_state.add_event(
             event_type="planning.incremental_recommended_but_not_executed",
@@ -709,6 +720,7 @@ def _run_incremental_plan_generation(
         llm_client=patch_llm_client,
         max_patch_attempts=2,
         strict=True,
+        reference_patch_policy="fallback_after_llm_failure",
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -4180,7 +4192,7 @@ def _compact_context(items: list[dict[str, str]], *, limit: int = 6) -> str:
             {
                 key: _truncate_text(str(value), 700)
                 for key, value in item.items()
-                if key in {"symbol", "signature", "doc_summary", "official_url", "name", "structured_outline"}
+                if key in {"symbol", "signature", "doc_summary", "official_url", "name", "requirement", "structured_outline"}
             }
         )
     return str(compact)

@@ -221,6 +221,7 @@ def test_failure_summary_includes_failed_patch_type() -> None:
     result = run_incremental_planning(
         requirement=_VERA3_3B_REQ, state=state,
         llm_client=fake, max_patch_attempts=2,
+        reference_patch_policy="off",
     )
     assert result.ok is False
     summary = result.summary

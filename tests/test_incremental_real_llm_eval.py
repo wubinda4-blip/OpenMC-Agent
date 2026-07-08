@@ -220,7 +220,7 @@ def test_eval_failure_report(tmp_path: Path) -> None:
     fake = FakePatchLLM(responses)
     report, state = run_incremental_evaluation(
         requirement=_VERA3_3B_REQ,
-        benchmark_id="VERA3",
+        benchmark_id="TEST",  # non-VERA3 so reference not available
         selected_variant="3B",
         llm_client=fake,
         max_patch_attempts=2,
