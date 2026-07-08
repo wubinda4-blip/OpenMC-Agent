@@ -39,6 +39,15 @@ def main() -> int:
     )
     parser.add_argument("--out", default=None, help="Output directory")
     parser.add_argument(
+        "--patch-output-mode", default="auto",
+        choices=["auto", "plain_prompt", "json_object", "json_schema", "tool_call"],
+        help="How to request JSON output from the LLM provider",
+    )
+    parser.add_argument(
+        "--allow-monolithic-fallback", action="store_true", default=False,
+        help="Allow monolithic fallback if incremental fails (default: False)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print planned patch order without calling LLM",
     )
@@ -88,7 +97,7 @@ def main() -> int:
     from openmc_agent.plan_builder.evaluation import run_incremental_evaluation
 
     print(f"\nCreating patch LLM client for model={args.model}...")
-    llm_client = make_patch_llm_client(model_name=args.model)
+    llm_client = make_patch_llm_client(model_name=args.model, output_mode=args.patch_output_mode)
 
     output_dir = args.out or f"data/evals/incremental/{args.benchmark}_{args.variant}"
 

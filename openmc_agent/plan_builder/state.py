@@ -622,6 +622,20 @@ def generate_and_add_patch_to_state(
             for i in result.issues
             if i.get("severity") == "error"
         ]
+        # Phase 7C: save attempt raw/prompt for artifact diagnostics.
+        patch_attempts = state.metadata.setdefault("patch_attempt_artifacts", {})
+        for att in result.attempts:
+            att_key = f"{patch_type}_attempt_{att.attempt_index + 1}"
+            patch_attempts[att_key] = {
+                "patch_type": patch_type,
+                "attempt_index": att.attempt_index,
+                "raw_chars": att.raw_chars,
+                "raw_text": (att.raw_text or "")[:5000],  # cap for state size
+                "prompt_text": (att.prompt_text or "")[:3000],
+                "issues": att.issues,
+                "output_mode_used": att.output_mode_used,
+                "error": att.error,
+            }
         state.add_event(
             event_type=EVENT_PATCH_GENERATION_FAILED,
             message=f"{patch_type} patch generation failed: {error_codes}",

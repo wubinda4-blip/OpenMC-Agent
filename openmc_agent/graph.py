@@ -605,38 +605,59 @@ def _investigation_state_updates(outcome: RetrievalOutcome | None) -> dict[str, 
 PatchLlmClient = Callable[[str], str]
 
 
-def _write_incremental_artifacts(state: GraphState, exec_result: Any) -> None:
+def _write_incremental_artifacts(state: GraphState, exec_result: Any) -> list[str]:
     """Save incremental patch artifacts for diagnosis.
 
-    Writes to ``<output_dir>/incremental/``:
-    * ``plan_build_state.json`` — full build state with patches and build log
-    * ``incremental_execution_result.json`` — result summary
+    Returns list of artifact file paths for plan_artifacts summary.
     """
     output_dir = Path(state.get("output_dir", "data/runs"))
     inc_dir = output_dir / "incremental"
+    artifact_paths: list[str] = []
     try:
         inc_dir.mkdir(parents=True, exist_ok=True)
-        _write_json_file(
-            inc_dir / "plan_build_state.json",
-            exec_result.state.model_dump(mode="json"),
-        )
-        _write_json_file(
-            inc_dir / "incremental_execution_result.json",
-            {
-                "ok": exec_result.ok,
-                "summary": exec_result.summary,
-                "issues": [i.model_dump(mode="json") for i in exec_result.issues],
-            },
-        )
+        bs_path = inc_dir / "plan_build_state.json"
+        _write_json_file(bs_path, exec_result.state.model_dump(mode="json"))
+        artifact_paths.append(str(bs_path))
+        ier_path = inc_dir / "incremental_execution_result.json"
+        _write_json_file(ier_path, {
+            "ok": exec_result.ok,
+            "summary": exec_result.summary,
+            "issues": [i.model_dump(mode="json") for i in exec_result.issues],
+        })
+        artifact_paths.append(str(ier_path))
         # Save valid and invalid patches.
         valid_dir = inc_dir / "valid_patches"
         invalid_dir = inc_dir / "invalid_patches"
         for env in exec_result.state.patches.values():
             target = valid_dir if env.status == "valid" else invalid_dir
             target.mkdir(parents=True, exist_ok=True)
-            _write_json_file(target / f"{env.patch_type}.json", env.content)
+            p = target / f"{env.patch_type}.json"
+            _write_json_file(p, env.content)
+            artifact_paths.append(str(p))
+        # Phase 7C: save patch attempt raw/prompt/issues from metadata.
+        attempts_meta = exec_result.state.metadata.get("patch_attempt_artifacts", {})
+        if attempts_meta:
+            att_dir = inc_dir / "patch_attempts"
+            att_dir.mkdir(parents=True, exist_ok=True)
+            for att_key, att_data in attempts_meta.items():
+                raw = att_data.get("raw_text", "")
+                if raw:
+                    rp = att_dir / f"{att_key}_raw.txt"
+                    rp.write_text(raw, encoding="utf-8")
+                    artifact_paths.append(str(rp))
+                prompt = att_data.get("prompt_text", "")
+                if prompt:
+                    pp = att_dir / f"{att_key}_prompt.txt"
+                    pp.write_text(prompt, encoding="utf-8")
+                    artifact_paths.append(str(pp))
+                issues = att_data.get("issues", [])
+                if issues:
+                    ip = att_dir / f"{att_key}_issues.json"
+                    _write_json_file(ip, issues)
+                    artifact_paths.append(str(ip))
     except Exception:
         pass  # artifact writing must not block the workflow
+    return artifact_paths
 
 
 def _run_incremental_plan_generation(
@@ -690,6 +711,9 @@ def _run_incremental_plan_generation(
         strict=True,
     )
 
+    # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
+    inc_artifact_paths = _write_incremental_artifacts(state, exec_result)
+
     # Serialize build state back into graph state regardless of outcome.
     state_updates: dict[str, Any] = {
         "plan_build_state": exec_result.state.model_dump(mode="json"),
@@ -699,10 +723,11 @@ def _run_incremental_plan_generation(
             "issues": [i.model_dump(mode="json") for i in exec_result.issues],
             "monolithic_fallback_attempted": False,
         },
+        "plan_artifacts": list(state.get("plan_artifacts", [])) + inc_artifact_paths,
     }
 
-    # Phase 7B: save incremental artifacts for diagnosis.
-    _write_incremental_artifacts(state, exec_result)
+    # Phase 7B/7C: save incremental artifacts for diagnosis.
+    inc_artifact_paths = _write_incremental_artifacts(state, exec_result)
 
     if exec_result.ok and exec_result.assembled_plan:
         # Parse assembled plan dict into SimulationPlan model.

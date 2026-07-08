@@ -12,6 +12,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from .patches import (
+    get_patch_allowed_top_level_keys,
+    get_patch_forbidden_top_level_keys,
+)
+
 
 # ---------------------------------------------------------------------------
 # Critical output contract (injected into every patch prompt)
@@ -193,8 +198,19 @@ def build_patch_prompt(
     contract = _OUTPUT_CONTRACT.format(patch_type=patch_type)
     context_block = _context_block(context)
 
+    # Phase 7C: add allowed/forbidden keys.
+    allowed = sorted(get_patch_allowed_top_level_keys(patch_type))
+    forbidden = sorted(get_patch_forbidden_top_level_keys(patch_type))
+    keys_block = (
+        f"Allowed top-level keys for patch_type=\"{patch_type}\":\n"
+        f"  {', '.join(allowed)}\n\n"
+        f"FORBIDDEN top-level keys (will cause immediate rejection):\n"
+        f"  {', '.join(forbidden)}\n\n"
+    )
+
     return (
         f"{contract}\n\n"
+        f"{keys_block}"
         f"{patch_rules}\n\n"
         f"{context_block}"
         f"Requirement:\n{requirement}\n\n"
@@ -212,11 +228,17 @@ def build_retry_prompt(
     """Build a retry prompt for a patch that failed validation."""
     base_prompt = build_patch_prompt(patch_type, requirement, context)
 
-    # Check if the failure was due to forbidden full-plan output.
+    # Check failure type for targeted retry message.
     issue_codes = [i.get("code", "") for i in issues]
     is_full_plan = any(
         "full_plan" in code or "full_lattice" in code
         for code in issue_codes
+    )
+    is_patch_type_issue = any(
+        "patch_type" in code for code in issue_codes
+    )
+    is_parse_error = any(
+        "json_parse" in code for code in issue_codes
     )
 
     issue_lines: list[str] = []
@@ -232,7 +254,18 @@ def build_retry_prompt(
             f"full SimulationPlan, not a {patch_type} patch.\n"
             f"Do not include complex_model/core/materials/universes/lattices "
             f"unless they are part of the {patch_type} schema.\n"
+            f'The first character must be "{{". The last character must be "}}".\n'
             f'Regenerate ONLY the {patch_type} JSON with patch_type="{patch_type}".'
+        )
+    elif is_patch_type_issue:
+        forbidden_block = (
+            f'\n\nYour response must include patch_type="{patch_type}" as a '
+            f'top-level key. Add it exactly. Do not omit or rename it.'
+        )
+    elif is_parse_error:
+        forbidden_block = (
+            f"\n\nYour previous response was not valid JSON.\n"
+            f"Return JSON only. No prose. No markdown."
         )
     else:
         forbidden_block = ""

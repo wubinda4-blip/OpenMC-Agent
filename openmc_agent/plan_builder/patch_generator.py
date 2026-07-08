@@ -28,6 +28,9 @@ from openmc_agent.schemas import AgentBaseModel
 from .patches import (
     PatchParseError,
     parse_patch_content,
+    get_patch_allowed_top_level_keys,
+    get_patch_forbidden_top_level_keys,
+    get_patch_json_schema,
 )
 from .patch_prompts import build_patch_prompt, build_retry_prompt
 from .state import PlanBuildState, PlanPatchEnvelope
@@ -65,6 +68,8 @@ class PatchGenerationAttempt(AgentBaseModel):
     """Record of a single LLM call attempt."""
 
     attempt_index: int
+    patch_type: str = ""
+    prompt_text: str | None = None
     raw_text: str | None = None
     raw_chars: int = 0
     parsed: bool = False
@@ -73,6 +78,7 @@ class PatchGenerationAttempt(AgentBaseModel):
     error: str | None = None
     contains_full_plan_markers: bool = False
     contains_full_lattice_suspected: bool = False
+    output_mode_used: str = ""
 
 
 class PatchGenerationResult(AgentBaseModel):
@@ -244,6 +250,124 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Patch contract validation (Phase 7C)
+# ---------------------------------------------------------------------------
+
+
+def validate_patch_contract(
+    *,
+    patch_type: str,
+    parsed_json: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Check the parsed JSON against the patch contract before model parse.
+
+    Returns a list of issue dicts (empty if contract is satisfied).
+    """
+    issues: list[dict[str, Any]] = []
+    allowed = get_patch_allowed_top_level_keys(patch_type)
+    forbidden = get_patch_forbidden_top_level_keys(patch_type)
+
+    # 1. patch_type field check.
+    actual_pt = parsed_json.get("patch_type")
+    if actual_pt is None:
+        issues.append({
+            "code": "patch_generation.patch_type_missing",
+            "severity": "error",
+            "message": f'top-level "patch_type" key is missing; expected patch_type="{patch_type}"',
+        })
+    elif actual_pt != patch_type:
+        issues.append({
+            "code": "patch_generation.patch_type_mismatch",
+            "severity": "error",
+            "message": f'patch_type is {actual_pt!r}, expected {patch_type!r}',
+        })
+
+    # 2. Forbidden SimulationPlan-only fields.
+    present_forbidden = forbidden & set(parsed_json.keys())
+    if present_forbidden:
+        is_plan_level = any(k in _PLAN_ONLY_FIELDS_MARKER for k in present_forbidden)
+        is_lattice = any(k in _PIN_MAP_FORBIDDEN_MARKER for k in present_forbidden)
+        if is_lattice:
+            issues.append({
+                "code": "patch_generation.pin_map_full_lattice_forbidden",
+                "severity": "error",
+                "message": (
+                    f"forbidden full-lattice fields present: {sorted(present_forbidden)}. "
+                    "PinMapPatch must only contain special coordinates, not a full lattice."
+                ),
+            })
+        else:
+            issues.append({
+                "code": "patch_generation.full_plan_output_forbidden",
+                "severity": "error",
+                "message": (
+                    f"forbidden SimulationPlan-only fields present: {sorted(present_forbidden)}. "
+                    f"This is a full plan, not a {patch_type} patch."
+                ),
+            })
+
+    # 3. Extra unknown keys (warning, not error).
+    if allowed:
+        extra = set(parsed_json.keys()) - allowed
+        harmless_extra = extra - forbidden
+        if harmless_extra:
+            issues.append({
+                "code": "patch_generation.extra_top_level_keys",
+                "severity": "warning",
+                "message": f"unexpected top-level keys: {sorted(harmless_extra)}",
+            })
+
+    return issues
+
+
+_PLAN_ONLY_FIELDS_MARKER = frozenset({
+    "complex_model", "capability_report", "execution_check",
+    "plot_specs", "schema_version", "model_spec",
+    "core", "surfaces", "regions", "assemblies",
+    "reflectors", "control_rods", "trisos", "pebbles",
+    "lattice_loadings", "packed_spheres",
+})
+_PIN_MAP_FORBIDDEN_MARKER = frozenset({
+    "universe_pattern", "full_map", "lattice_map", "rows",
+})
+
+
+# ---------------------------------------------------------------------------
+# Structured client call helper (Phase 7C)
+# ---------------------------------------------------------------------------
+
+
+def _call_llm_for_patch(
+    llm_client: Any,
+    *,
+    prompt: str,
+    patch_type: str,
+    max_tokens: int | None = None,
+) -> tuple[str, str]:
+    """Call the LLM client, preferring structured output if available.
+
+    Returns ``(raw_text, output_mode_used)``.
+    """
+    # If client supports generate_patch_json, use it.
+    if hasattr(llm_client, "generate_patch_json"):
+        try:
+            json_schema = get_patch_json_schema(patch_type)
+            raw = llm_client.generate_patch_json(
+                prompt=prompt,
+                patch_type=patch_type,
+                json_schema=json_schema,
+                max_tokens=max_tokens,
+            )
+            return raw, "structured"
+        except Exception:
+            pass  # fall through to plain callable
+
+    # Plain callable.
+    raw = llm_client(prompt)
+    return raw, "plain_prompt"
+
+
+# ---------------------------------------------------------------------------
 # Validation context adapter
 # ---------------------------------------------------------------------------
 
@@ -328,7 +452,7 @@ def generate_patch(
     last_issues: list[dict[str, Any]] = []
 
     for attempt_idx in range(max_attempts):
-        attempt = PatchGenerationAttempt(attempt_index=attempt_idx)
+        attempt = PatchGenerationAttempt(attempt_index=attempt_idx, patch_type=patch_type)
 
         # Build prompt.
         if attempt_idx == 0:
@@ -339,9 +463,11 @@ def generate_patch(
                 last_issues, attempt_idx,
             )
 
-        # Call LLM.
+        # Call LLM (Phase 7C: prefer structured output if available).
         try:
-            raw = llm_client(prompt)
+            raw, output_mode = _call_llm_for_patch(
+                llm_client, prompt=prompt, patch_type=patch_type,
+            )
         except Exception as exc:
             attempt.error = str(exc)
             attempt.issues.append({
@@ -355,6 +481,8 @@ def generate_patch(
 
         attempt.raw_text = raw
         attempt.raw_chars = len(raw)
+        attempt.prompt_text = prompt
+        attempt.output_mode_used = output_mode
 
         # Output diagnostics: detect forbidden patterns (Phase 7B: errors).
         attempt.contains_full_plan_markers = _detect_full_plan_markers(raw)
@@ -401,20 +529,18 @@ def generate_patch(
             last_issues = attempt.issues
             continue
 
-        # Phase 7B: check parsed dict for full-plan-only fields.
-        if _detect_full_plan_in_parsed(content, patch_type):
-            attempt.issues.append({
-                "code": "patch_generation.full_plan_output_forbidden",
-                "severity": "error",
-                "message": (
-                    f"parsed JSON contains SimulationPlan-only fields "
-                    f"(e.g. complex_model, capability_report). This is a "
-                    f"full plan, not a {patch_type} patch."
-                ),
-            })
+        # Phase 7C: validate patch contract (patch_type, allowed/forbidden keys).
+        contract_issues = validate_patch_contract(
+            patch_type=patch_type, parsed_json=content,
+        )
+        contract_errors = [i for i in contract_issues if i.get("severity") == "error"]
+        if contract_errors:
+            attempt.issues.extend(contract_issues)
             attempts.append(attempt)
-            last_issues = attempt.issues
+            last_issues = contract_errors
             continue
+        # Warnings from contract are recorded but don't block.
+        attempt.issues.extend(contract_issues)
 
         # Parse into patch model.
         try:

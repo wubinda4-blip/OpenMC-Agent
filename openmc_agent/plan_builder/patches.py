@@ -409,6 +409,54 @@ def normalized_coords(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Schema hint helpers (Phase 7C)
+# ---------------------------------------------------------------------------
+
+# SimulationPlan-only fields that should NEVER appear in a patch.
+_PLAN_ONLY_FIELDS: frozenset[str] = frozenset({
+    "complex_model", "capability_report", "execution_check",
+    "plot_specs", "schema_version", "model_spec",
+    "expert_assumptions", "expert_feedback",
+    # complex_model sub-fields that indicate full-plan output.
+    "core", "surfaces", "regions", "assemblies",
+    "reflectors", "control_rods", "trisos", "pebbles",
+    "lattice_loadings", "packed_spheres",
+})
+
+# Pin-map-only forbidden fields (full lattice expansion markers).
+_PIN_MAP_FORBIDDEN_FIELDS: frozenset[str] = frozenset({
+    "universe_pattern", "full_map", "lattice_map", "rows",
+})
+
+
+def get_patch_allowed_top_level_keys(patch_type: str) -> set[str]:
+    """Return the set of allowed top-level JSON keys for a patch type."""
+    model_cls = _PATCH_MODELS.get(patch_type)
+    if model_cls is None:
+        return set()
+    return set(model_cls.model_fields.keys())
+
+
+def get_patch_forbidden_top_level_keys(patch_type: str) -> set[str]:
+    """Return keys that are forbidden in this patch type's top-level JSON.
+
+    Includes SimulationPlan-only fields and (for pin_map) full-lattice markers.
+    """
+    forbidden = set(_PLAN_ONLY_FIELDS)
+    if patch_type == "pin_map":
+        forbidden |= _PIN_MAP_FORBIDDEN_FIELDS
+    return forbidden
+
+
+def get_patch_json_schema(patch_type: str) -> dict[str, Any]:
+    """Return the JSON schema for a patch type's Pydantic model."""
+    model_cls = _PATCH_MODELS.get(patch_type)
+    if model_cls is None:
+        return {}
+    return model_cls.model_json_schema()
+
+
 __all__ = [
     "PatchType",
     "FactsPatch",
@@ -428,4 +476,7 @@ __all__ = [
     "parse_patch_content",
     "parse_patch_envelope",
     "normalized_coords",
+    "get_patch_allowed_top_level_keys",
+    "get_patch_forbidden_top_level_keys",
+    "get_patch_json_schema",
 ]

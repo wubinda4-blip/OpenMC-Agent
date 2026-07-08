@@ -371,6 +371,94 @@ def test_prompt_has_output_contract() -> None:
     assert 'patch_type="facts"' in prompt
     assert "NOT generating a SimulationPlan" in prompt
     assert "complex_model" in prompt  # forbidden markers listed
+    assert "Allowed top-level keys" in prompt  # Phase 7C: allowed keys
+    assert "FORBIDDEN top-level keys" in prompt  # Phase 7C: forbidden keys
+
+
+# ---------------------------------------------------------------------------
+# Phase 7C: patch contract validation
+# ---------------------------------------------------------------------------
+
+
+def test_facts_patch_missing_patch_type_rejected() -> None:
+    """JSON without patch_type field → patch_type_missing error."""
+    raw = json.dumps({"benchmark_id": "VERA3", "lattice_size": [17, 17]})
+    fake = FakePatchLLM([raw, raw])
+    result = generate_patch(
+        patch_type="facts", requirement="test", llm_client=fake, max_attempts=2,
+    )
+    assert result.ok is False
+    all_codes = [i["code"] for i in result.issues]
+    assert "patch_generation.patch_type_missing" in all_codes
+
+
+def test_facts_patch_wrong_patch_type_rejected() -> None:
+    """JSON with wrong patch_type → patch_type_mismatch error."""
+    raw = json.dumps({"patch_type": "materials", "materials": []})
+    fake = FakePatchLLM([raw, raw])
+    result = generate_patch(
+        patch_type="facts", requirement="test", llm_client=fake, max_attempts=2,
+    )
+    assert result.ok is False
+    all_codes = [i["code"] for i in result.issues]
+    assert "patch_generation.patch_type_mismatch" in all_codes
+
+
+def test_materials_patch_with_core_rejected() -> None:
+    """Materials patch with forbidden core field → full_plan_output_forbidden."""
+    raw = json.dumps({
+        "patch_type": "materials",
+        "materials": [{"material_id": "m", "name": "M", "role": "fuel"}],
+        "core": {"axial_layers": []},
+    })
+    fake = FakePatchLLM([raw, raw])
+    result = generate_patch(
+        patch_type="materials", requirement="test", llm_client=fake, max_attempts=2,
+    )
+    assert result.ok is False
+    all_codes = [i["code"] for i in result.issues]
+    assert "patch_generation.full_plan_output_forbidden" in all_codes
+
+
+def test_structured_client_method_used() -> None:
+    """When client has generate_patch_json, it should be preferred."""
+
+    class StructuredFakeClient:
+        def __init__(self) -> None:
+            self.called_structured = False
+            self.response = '{"patch_type": "facts", "benchmark_id": "T"}'
+
+        def __call__(self, prompt: str) -> str:
+            return self.response
+
+        def generate_patch_json(self, *, prompt, patch_type, json_schema=None, **kw):
+            self.called_structured = True
+            assert patch_type == "facts"
+            assert json_schema is not None
+            return self.response
+
+    client = StructuredFakeClient()
+    result = generate_patch(
+        patch_type="facts", requirement="test",
+        llm_client=client, max_attempts=1,
+    )
+    assert result.ok is True
+    assert client.called_structured is True
+
+
+def test_attempt_records_prompt_and_output_mode() -> None:
+    """PatchGenerationAttempt should record prompt_text and output_mode_used."""
+    raw = json.dumps({"patch_type": "facts", "benchmark_id": "T"})
+    fake = FakePatchLLM([raw])
+    result = generate_patch(
+        patch_type="facts", requirement="test requirement",
+        llm_client=fake, max_attempts=1,
+    )
+    assert result.ok is True
+    att = result.attempts[0]
+    assert att.prompt_text is not None
+    assert "CRITICAL OUTPUT CONTRACT" in att.prompt_text
+    assert att.output_mode_used == "plain_prompt"
 
 
 def test_retry_prompt_for_full_plan_is_explicit() -> None:

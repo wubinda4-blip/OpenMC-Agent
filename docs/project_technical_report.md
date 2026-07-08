@@ -999,3 +999,41 @@ Level 1 近似边界（明确）：
 **测试覆盖（6 new tests）：** `773 passed, 3 skipped`。无回归。
 
 **预期行为变化：** 真实 LLM 3B 运行时如果 LLM 不遵守 patch prompt → incremental executor 在 facts patch 失败并停止 → 不回退 monolithic → 不再出现 25K 截断 → 有 patch-level diagnostics。
+
+#### Phase 7C: Structured patch output mode + artifact visibility + contract hardening
+
+**背景问题：** Phase 7B 后真实 LLM 仍不稳定输出合规 patch。失败时 `[9c] Plan artifacts` 显示 `(none)`，无法诊断。
+
+**核心修改：**
+
+1. **Patch contract validation（`patch_generator.py`）：**
+   - `validate_patch_contract()` 在 JSON parse 后、model parse 前检查：
+     - `patch_type` 字段存在且匹配 → 否则 `patch_type_missing` / `patch_type_mismatch`
+     - 禁止 SimulationPlan-only 字段（`complex_model`, `core`, `capability_report` 等）→ `full_plan_output_forbidden`
+     - 禁止 pin_map 全展开字段（`universe_pattern` 等）→ `pin_map_full_lattice_forbidden`
+     - 允许/禁止字段列表由 `get_patch_allowed_top_level_keys()` / `get_patch_forbidden_top_level_keys()` 提供
+
+2. **Structured output mode（`llm_adapter.py`）：**
+   - `StructuredPatchLLMClient` 类：支持 `generate_patch_json()` 方法 + plain `__call__`
+   - `output_mode` 参数：`auto`（默认，优先 structured）、`plain_prompt`、`json_object`、`json_schema`
+   - `_call_llm_for_patch()` 优先使用 structured client，fallback 到 plain callable
+
+3. **Schema hints（`patches.py`）：**
+   - `get_patch_allowed_top_level_keys(patch_type)` → 该 patch 允许的 top-level key 集合
+   - `get_patch_forbidden_top_level_keys(patch_type)` → 禁止的 key（含 SimulationPlan-only + pin_map forbidden）
+   - `get_patch_json_schema(patch_type)` → Pydantic JSON schema
+
+4. **Prompt hardening（`patch_prompts.py`）：**
+   - `build_patch_prompt` 新增 allowed/forbidden keys block
+   - retry prompt 针对 `patch_type_missing`/`mismatch`/`parse_error` 有专门消息
+
+5. **Artifact visibility（`graph.py` + `state.py`）：**
+   - `_write_incremental_artifacts()` 返回 artifact 路径列表
+   - 路径写入 `plan_artifacts`（不再显示 `(none)`）
+   - `generate_and_add_patch_to_state` 在失败时保存 attempt raw_text/prompt_text/issues 到 state metadata
+   - `patch_attempts/` 目录保存 `<patch>_attempt_<n>_raw.txt` / `_prompt.txt` / `_issues.json`
+
+6. **PatchGenerationAttempt 增强：**
+   - 新增 `patch_type`, `prompt_text`, `output_mode_used` 字段
+
+**测试覆盖（5 new tests）：** `778 passed, 3 skipped`。无回归。
