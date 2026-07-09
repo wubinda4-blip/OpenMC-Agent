@@ -100,6 +100,9 @@ def _run_policy_case(
         "std_dev": None,
         "material_composition_report_path": None,
         "statepoint_path": None,
+        "requirement_resolution": {},
+        "feature_summary": {},
+        "task_order": [],
         "notes": [],
         "error": None,
     }
@@ -107,6 +110,38 @@ def _run_policy_case(
     if dry_run:
         result["notes"].append("dry-run: no OpenMC execution, no LLM call")
         result["ok"] = True
+        # Even in dry-run, resolve the requirement references so callers can
+        # verify feature detection would see the file content.
+        try:
+            from openmc_agent.requirement_resolver import (
+                resolve_requirement_references,
+                resolved_requirement_summary,
+            )
+            from openmc_agent.plan_builder.mode import should_use_incremental_planning
+
+            requirement_text = (
+                f"Build the {benchmark} {variant} benchmark model "
+                f"described in {input_path}."
+            )
+            resolved = resolve_requirement_references(requirement_text)
+            summary = resolved_requirement_summary(resolved)
+            result["requirement_resolution"] = summary
+            decision = should_use_incremental_planning(resolved.resolved_requirement)
+            result["feature_summary"] = decision.feature_summary
+            result["task_order"] = []
+            if decision.mode == "incremental":
+                result["task_order"] = [
+                    "facts", "materials", "universes", "pin_map",
+                    "axial_layers", "axial_overlays", "settings",
+                ] if (
+                    decision.feature_summary.get("has_special_pin_map")
+                    or decision.feature_summary.get("has_spacer_grid")
+                    or decision.feature_summary.get("large_lattice_dimension")
+                ) else [
+                    "facts", "materials", "universes", "axial_layers", "settings",
+                ]
+        except Exception as exc:
+            result["notes"].append(f"dry-run requirement resolution failed: {exc}")
         result["material_composition_report_path"] = str(
             case_dir / "material_composition_report.json (would be written)"
         )
@@ -145,6 +180,20 @@ def _run_policy_case(
                 "use_incremental_executor": use_incremental,
             }
         )
+
+        # Record requirement resolution metadata so callers can verify that
+        # the input file content was inlined into feature detection.
+        req_resolution = state.get("requirement_resolution") or {}
+        if req_resolution:
+            result["requirement_resolution"] = req_resolution
+        pmd = state.get("planning_mode_decision") or {}
+        if pmd.get("feature_summary"):
+            result["feature_summary"] = pmd["feature_summary"]
+        # Record the required patch types so callers can verify pin_map and
+        # axial_overlays entered the task order.
+        pbs = state.get("plan_build_state") or {}
+        tasks = pbs.get("component_tasks") or []
+        result["task_order"] = [t.get("patch_type") for t in tasks if t.get("patch_type")]
 
         # Locate the material composition report written by the assembler.
         inc_dir = case_dir / "incremental"

@@ -44,6 +44,12 @@ def test_workflow_case_runner_returns_trace_on_graph_success(monkeypatch, tmp_pa
                 "validation_report": {"is_valid": True, "issue_codes": []},
                 "plan_artifacts": {"capability_report": "capability_report.json"},
                 "planning_mode_decision": {"mode": "monolithic"},
+                "requirement_resolution": {
+                    "original_requirement_chars": 50,
+                    "resolved_requirement_chars": 500,
+                    "referenced_files": ["Input/problem.md"],
+                    "requirement_resolution_warnings": [],
+                },
                 "error": "",
             }
         )
@@ -61,6 +67,10 @@ def test_workflow_case_runner_returns_trace_on_graph_success(monkeypatch, tmp_pa
     summary_event = trace.events[-1]
     assert summary_event.metadata["planning_mode"] == "monolithic"
     assert summary_event.metadata["capability_report"]["renderability"] == "runnable"
+    # Requirement resolution metadata is propagated into the trace.
+    req_res = summary_event.metadata.get("requirement_resolution", {})
+    assert req_res.get("referenced_files") == ["Input/problem.md"]
+    assert req_res.get("resolved_requirement_chars") == 500
 
 
 def test_workflow_case_runner_returns_trace_on_graph_exception(monkeypatch, tmp_path: Path) -> None:

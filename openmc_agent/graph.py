@@ -152,6 +152,7 @@ class GraphState(TypedDict, total=False):
     incremental_execution_result: dict[str, Any]
     use_incremental_executor: bool
     allow_monolithic_fallback_for_incremental_failure: bool
+    requirement_resolution: dict[str, Any]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -379,17 +380,43 @@ def _receive_requirement(state: GraphState) -> GraphState:
     if not requirement:
         _progress(state, "receive_requirement", "failed: requirement is empty")
         return {"error": "requirement is required"}
-    _progress(state, "receive_requirement", f"received {len(requirement)} characters")
+
+    # Resolve local file references so feature detection sees the file content.
+    # This fixes the case where a requirement only says "described in <file>"
+    # without inlining the structural keywords (17x17, guide tube, spacer grid).
+    from openmc_agent.requirement_resolver import (
+        resolve_requirement_references,
+        resolved_requirement_summary,
+    )
+
+    output_dir = state.get("output_dir")
+    base_dir = Path(output_dir) if output_dir else None
+    resolved = resolve_requirement_references(requirement, base_dir=base_dir)
+    resolved_summary = resolved_requirement_summary(resolved)
+    # Use the resolved requirement for downstream planning/LLM calls so the
+    # file content is visible to feature detection AND patch generation.
+    effective_requirement = resolved.resolved_requirement or requirement
+
+    _progress(
+        state,
+        "receive_requirement",
+        f"received {len(requirement)} chars; resolved to {len(effective_requirement)} chars; "
+        f"referenced_files={resolved.referenced_files}",
+    )
 
     # Phase 0: decide planning mode (monolithic vs incremental).
+    # Pass the resolved requirement via plan_context so the mode detector uses
+    # the inlined file content for feature detection without itself reading files.
     decision = should_use_incremental_planning(
-        requirement,
+        effective_requirement,
         retry_history=state.get("retry_history"),
+        plan_context={"resolved_requirement": effective_requirement},
     )
     updates: GraphState = {
-        "requirement": requirement,
-        "hard_count_constraints": _extract_hard_count_constraints(requirement),
+        "requirement": effective_requirement,
+        "hard_count_constraints": _extract_hard_count_constraints(effective_requirement),
         "planning_mode_decision": decision.model_dump(mode="json"),
+        "requirement_resolution": resolved_summary,
     }
     _progress(
         state,
@@ -402,7 +429,7 @@ def _receive_requirement(state: GraphState) -> GraphState:
         # extracts them from the FactsPatch content (which the LLM generates
         # from the requirement).  This keeps graph.py benchmark-agnostic.
         build_state = initialize_plan_build_state(
-            requirement=requirement,
+            requirement=effective_requirement,
             decision=decision,
         )
         build_state.add_event(
@@ -414,6 +441,7 @@ def _receive_requirement(state: GraphState) -> GraphState:
                 "planning_mode": "incremental",
                 "reference_patch_policy": "off",
                 "monolithic_reflect_plan_allowed": False,
+                "requirement_resolution": resolved_summary,
             },
         )
         updates["plan_build_state"] = build_state.model_dump(mode="json")

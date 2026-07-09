@@ -736,10 +736,17 @@ def _check_required_patches(
     issues: list[PlanAssemblyIssue] = []
     for ptype in _REQUIRED_3D:
         if ptype not in indexed:
+            hint = ""
+            if ptype == "pin_map":
+                hint = (
+                    "; possible_cause: feature detection did not see structural "
+                    "signals (guide tubes / large lattice / benchmark variant) — "
+                    "check that the requirement includes the input file content"
+                )
             issues.append(PlanAssemblyIssue(
                 code="assembly.missing_patch",
                 severity="error",
-                message=f"required {ptype} patch is missing",
+                message=f"required {ptype} patch is missing{hint}",
                 path=ptype,
             ))
     if facts and facts.has_spacer_grids and "axial_overlays" not in indexed:

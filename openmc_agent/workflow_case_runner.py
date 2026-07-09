@@ -236,6 +236,7 @@ def _state_trace_metadata(
         "mode": config.mode,
         "runner_config": _safe_model_dump(config),
         "error": state.get("error", ""),
+        "requirement_resolution": state.get("requirement_resolution") or {},
     }
     return metadata
 

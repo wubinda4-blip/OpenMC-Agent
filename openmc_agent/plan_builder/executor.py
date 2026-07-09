@@ -229,11 +229,24 @@ def default_patch_task_order(state: PlanBuildState) -> list[str]:
 
 
 def required_patch_types_for_state(state: PlanBuildState) -> list[str]:
-    """Return the minimal required patch types for this state."""
+    """Return the minimal required patch types for this state.
+
+    Structural patches (``pin_map``, ``axial_overlays``) are required when the
+    feature detector found special pin maps / spacer grids, OR when a benchmark
+    variant is present (which strongly implies a structural assembly model that
+    needs a pin map). This is benchmark-agnostic: it only uses the generic
+    "has_benchmark_variant" flag, not any specific benchmark name.
+    """
     required = ["facts", "materials", "universes", "axial_layers", "settings"]
-    if _state_has_feature(state, "has_spacer_grid"):
+    has_spacer = _state_has_feature(state, "has_spacer_grid")
+    has_special = _state_has_feature(state, "has_special_pin_map")
+    has_large = bool(_state_has_feature(state, "large_lattice_dimension"))
+    has_benchmark_variant = _state_has_feature(state, "has_benchmark_variant")
+    if has_spacer:
         required.append("axial_overlays")
-    if _state_has_feature(state, "has_special_pin_map"):
+    # pin_map is required when there are special pins, a large lattice, or any
+    # benchmark variant (the variant implies a real assembly with a pin map).
+    if has_special or has_large or has_benchmark_variant:
         required.append("pin_map")
     # Preserve canonical order.
     return [t for t in _DEFAULT_ORDER if t in required]
