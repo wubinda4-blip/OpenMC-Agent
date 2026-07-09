@@ -275,6 +275,63 @@ def test_axial_insert_coords_keep_guide_tube_base_for_unseen_model() -> None:
     assert active_layer.loading_id == loading.id
 
 
+def test_existing_llm_insert_loading_is_normalized_and_pruned() -> None:
+    patches = _minimal_3d_patches()
+    materials = next(p for p in patches if getattr(p, "patch_type", "") == "materials")
+    materials.materials.extend([
+        MaterialSpecPatch(
+            material_id="pyrex", name="Pyrex", role="absorber", density_g_cm3=2.23,
+        ),
+        MaterialSpecPatch(
+            material_id="steel", name="Steel", role="structure", density_g_cm3=7.9,
+        ),
+    ])
+    universes = next(p for p in patches if getattr(p, "patch_type", "") == "universes")
+    universes.universes.extend([
+        UniverseSpecPatch(universe_id="pyrex_rod", kind="pyrex_rod", cells=[
+            CellLayerPatch(id="pyrex", role="poison", material_id="pyrex", region_kind="cylinder"),
+        ]),
+        UniverseSpecPatch(universe_id="thimble_plug", kind="thimble_plug", cells=[
+            CellLayerPatch(id="plug", role="plug", material_id="steel", region_kind="cylinder"),
+        ]),
+    ])
+    pin_map = next(p for p in patches if getattr(p, "patch_type", "") == "pin_map")
+    pin_map.guide_tube_coords = []
+    pin_map.pyrex_rod_coords = [(3, 6)]
+    pin_map.thimble_plug_coords = [(3, 9), (6, 6), (9, 3)]
+    pin_map.coordinate_convention = CoordinateConvention(index_base=1)
+    axial_layers = next(p for p in patches if getattr(p, "patch_type", "") == "axial_layers")
+    axial_layers.layers[0].loading_id = "loading_3B"
+    axial_layers.lattice_loadings = [
+        LatticeLoadingPatchItem(
+            loading_id="loading_3B",
+            base_lattice_id="assembly_lattice",
+            derived_lattice_id="assembly_lattice_3B",
+            overrides={
+                "pyrex_rod": [(3, 6)],
+                "thimble_plug": [(3, 9), (6, 6), (9, 3)],
+            },
+            purpose="LLM-generated 3B loading using document coordinates",
+        )
+    ]
+
+    result = assemble_simulation_plan_from_patches(patches)
+
+    assert result.ok is True
+    assert any(i.code == "assembly.axial_loading_coords_normalized" for i in result.issues)
+    assert any(i.code == "assembly.active_insert_loading_pruned" for i in result.issues)
+    model = result.plan.complex_model
+    loading = next(l for l in model.lattice_loadings if l.id == "loading_3B")
+    assert loading.overrides == {"pyrex_rod": [(2, 5)]}
+    lattice = model.lattices[0]
+    assert lattice.universe_pattern[2][5] == "gt"
+    assert lattice.universe_pattern[2][8] == "gt"
+    assert lattice.universe_pattern[5][5] == "gt"
+    assert lattice.universe_pattern[8][2] == "gt"
+    active_layer = next(l for l in model.core.axial_layers if l.id == "active_fuel")
+    assert active_layer.loading_id == "loading_3B"
+
+
 # ---------------------------------------------------------------------------
 # 8. Assembled overlays preserve Level 1 mode
 # ---------------------------------------------------------------------------

@@ -573,6 +573,15 @@ def _normalize_axial_insert_pin_map(
     if axial_layers is None:
         return normalized_pin_map, axial_layers, issues
 
+    axial_layers, loading_issues = _normalize_existing_axial_insert_loadings(
+        axial_layers,
+        pin_map,
+        insert_coord_groups,
+        kind_map,
+        universes_patch,
+    )
+    issues.extend(loading_issues)
+
     pyrex_coords = insert_coord_groups["pyrex_rod"]
     pyrex_uid = kind_map.get("pyrex_rod")
     if not pyrex_coords or not pyrex_uid:
@@ -614,6 +623,146 @@ def _normalize_axial_insert_pin_map(
         "lattice_loadings": list(axial_layers.lattice_loadings) + [loading],
     })
     return normalized_pin_map, normalized_axial_layers, issues
+
+
+def _normalize_existing_axial_insert_loadings(
+    axial_layers: AxialLayersPatch,
+    pin_map: PinMapPatch,
+    insert_coord_groups: dict[str, list[tuple[int, int]]],
+    kind_map: dict[str, str],
+    universes_patch: UniversesPatch,
+) -> tuple[AxialLayersPatch, list[PlanAssemblyIssue]]:
+    """Normalize LLM-provided insert loadings against the pin-map convention.
+
+    ``LatticeLoadingSpec`` is consumed by the renderer as 0-based row/col.
+    LLMs often reuse the document's pin-map convention in the axial layer
+    patch.  When the loading coordinates exactly match a finite-insert pin-map
+    group, convert them deterministically.  Also keep plug-like finite inserts
+    out of active-fuel loadings unless the universe has absorber/poison/control
+    semantics; those positions should remain guide-tube water in the active
+    lattice unless an explicit axial loading proves otherwise.
+    """
+    issues: list[PlanAssemblyIssue] = []
+    if not axial_layers.lattice_loadings:
+        return axial_layers, issues
+
+    uid_to_kind = {uid: kind for kind, uid in kind_map.items()}
+    active_loading_ids = {
+        layer.loading_id
+        for layer in axial_layers.layers
+        if layer.fill_type == "lattice"
+        and layer.role == "active_fuel"
+        and layer.loading_id is not None
+    }
+    if not active_loading_ids:
+        return axial_layers, issues
+
+    changed = False
+    normalized_loadings: list[LatticeLoadingPatchItem] = []
+    for loading in axial_layers.lattice_loadings:
+        overrides_changed = False
+        normalized_overrides: dict[str, list[tuple[int, int]]] = {}
+        for universe_id, positions in loading.overrides.items():
+            kind = uid_to_kind.get(universe_id)
+            if (
+                loading.loading_id in active_loading_ids
+                and kind in insert_coord_groups
+                and not _universe_can_be_active_insert(universe_id, universes_patch)
+            ):
+                overrides_changed = True
+                issues.append(PlanAssemblyIssue(
+                    code="assembly.active_insert_loading_pruned",
+                    severity="warning",
+                    message=(
+                        f"removed plug-like finite insert universe {universe_id!r} "
+                        "from active-fuel lattice loading; base guide-tube water "
+                        "is preserved for that axial region"
+                    ),
+                    path=f"axial_layers.lattice_loadings[{loading.loading_id}].overrides",
+                    actual={universe_id: positions},
+                ))
+                continue
+
+            new_positions = positions
+            if kind in insert_coord_groups:
+                new_positions, did_normalize = _normalize_loading_positions_if_raw_pin_coords(
+                    positions,
+                    insert_coord_groups[kind],
+                    pin_map,
+                )
+                if did_normalize:
+                    overrides_changed = True
+                    issues.append(PlanAssemblyIssue(
+                        code="assembly.axial_loading_coords_normalized",
+                        severity="info",
+                        message=(
+                            f"converted lattice loading coordinates for {universe_id!r} "
+                            "from pin-map convention to 0-based renderer convention"
+                        ),
+                        path=f"axial_layers.lattice_loadings[{loading.loading_id}].overrides.{universe_id}",
+                    ))
+            normalized_overrides[universe_id] = new_positions
+
+        if overrides_changed:
+            changed = True
+            normalized_loadings.append(loading.model_copy(update={
+                "overrides": normalized_overrides,
+            }))
+        else:
+            normalized_loadings.append(loading)
+
+    if not changed:
+        return axial_layers, issues
+    return axial_layers.model_copy(update={"lattice_loadings": normalized_loadings}), issues
+
+
+def _normalize_loading_positions_if_raw_pin_coords(
+    positions: list[tuple[int, int]],
+    raw_pin_coords: list[tuple[int, int]],
+    pin_map: PinMapPatch,
+) -> tuple[list[tuple[int, int]], bool]:
+    if not raw_pin_coords:
+        return positions, False
+    normalized = normalized_coords(
+        raw_pin_coords,
+        pin_map.coordinate_convention,
+        pin_map.lattice_size,
+    )
+    if _coord_set(positions) == _coord_set(normalized):
+        return positions, False
+    if _coord_set(positions) == _coord_set(raw_pin_coords):
+        return normalized, True
+    return positions, False
+
+
+def _coord_set(coords: list[tuple[int, int]]) -> set[tuple[int, int]]:
+    return set(tuple(coord) for coord in coords)
+
+
+def _universe_can_be_active_insert(
+    universe_id: str,
+    universes_patch: UniversesPatch,
+) -> bool:
+    universe = next(
+        (item for item in universes_patch.universes if item.universe_id == universe_id),
+        None,
+    )
+    if universe is None:
+        return False
+    terms = [universe.universe_id, universe.kind]
+    terms.extend(cell.role for cell in universe.cells)
+    text = " ".join(str(term).lower() for term in terms if term)
+    active_tokens = (
+        "absorber",
+        "poison",
+        "burnable",
+        "control",
+        "pyrex",
+        "b4c",
+        "boron",
+        "gadol",
+    )
+    return any(token in text for token in active_tokens)
 
 
 def _dedupe_coords(coords: list[tuple[int, int]]) -> list[tuple[int, int]]:
