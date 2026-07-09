@@ -102,7 +102,18 @@ Rules:
   wall. Do NOT make it a solid rod of cladding material with water outside.
   Correct cell order (inside→out):
     plug (SS304 cylinder) → water_gap (water annulus) → wall (Zircaloy-4 annulus) → outer_coolant (water background)
-- pyrex_rod must include a cell with pyrex material if variant requires it.
+- pyrex_rod must include ALL gap layers from the input spec, not just pyrex+clad.
+  A pyrex rod has concentric annuli with thin gas/water gaps between solid layers.
+  Do NOT merge a gap into an adjacent solid layer. Correct cell order (inside→out):
+    inner_water_or_helium (cylinder, inside inner tube)
+    → inner_tube (SS304 annulus)
+    → gap_1 (water or helium annulus, between inner tube and pyrex)
+    → pyrex (pyrex glass annulus)
+    → gap_2 (water or helium annulus, between pyrex and outer clad)
+    → outer_clad (SS304 annulus)
+    → outer_coolant (water background)
+  Use the exact radii from the input problem description for each layer boundary.
+  If the input does not specify a gap, insert a thin water annulus (0.001–0.01 cm).
 - fuel_pin should have a fuel material cell.
 - Mark through-path cells with protected_through_path=true.
 

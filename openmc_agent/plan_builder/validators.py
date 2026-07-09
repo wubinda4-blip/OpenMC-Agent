@@ -407,6 +407,23 @@ def _validate_universes(
                     ),
                     path=f"universes[{univ.universe_id}].cells",
                 ))
+            # A pyrex rod has concentric annuli with gas/water gaps between
+            # solid layers. If there are only 3-4 cells (pyrex + clad + water)
+            # the LLM likely merged gap layers into adjacent solids.
+            non_background = [c for c in univ.cells if c.region_kind != "background"]
+            if len(non_background) <= 3:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.pyrex_gaps_missing",
+                    severity="warning",
+                    message=(
+                        f"pyrex_rod universe {univ.universe_id!r} has only "
+                        f"{len(non_background)} non-background cells — a pyrex "
+                        f"rod should have inner_tube, gap, pyrex, gap, outer_clad "
+                        f"(5+ cells); thin gas/water gaps between solid layers "
+                        f"are likely missing"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
 
         if univ.kind == "thimble_plug":
             roles_lower = [c.role.lower() for c in univ.cells]

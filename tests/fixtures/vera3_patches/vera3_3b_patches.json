@@ -120,11 +120,15 @@
           "universe_id": "pyrex_rod",
           "kind": "pyrex_rod",
           "cells": [
-            {"id": "pyrex_inner", "role": "pyrex", "material_id": "pyrex", "region_kind": "cylinder", "r_max_cm": 0.4750},
-            {"id": "clad", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.4750, "r_max_cm": 0.5610, "protected_through_path": true},
-            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+            {"id": "inner_water", "role": "coolant", "material_id": "borated_water", "region_kind": "cylinder", "r_max_cm": 0.214},
+            {"id": "inner_tube", "role": "cladding", "material_id": "ss304", "region_kind": "annulus", "r_min_cm": 0.214, "r_max_cm": 0.231},
+            {"id": "gap_1", "role": "coolant", "material_id": "borated_water", "region_kind": "annulus", "r_min_cm": 0.231, "r_max_cm": 0.241},
+            {"id": "pyrex", "role": "poison", "material_id": "pyrex", "region_kind": "annulus", "r_min_cm": 0.241, "r_max_cm": 0.427},
+            {"id": "gap_2", "role": "coolant", "material_id": "borated_water", "region_kind": "annulus", "r_min_cm": 0.427, "r_max_cm": 0.437},
+            {"id": "outer_clad", "role": "cladding", "material_id": "ss304", "region_kind": "annulus", "r_min_cm": 0.437, "r_max_cm": 0.484, "protected_through_path": true},
+            {"id": "outer_water", "role": "background", "material_id": "borated_water", "region_kind": "background"}
           ],
-          "source_note": "VERA3 3B Pyrex rod: borosilicate glass inside Zircaloy-4 tube"
+          "source_note": "VERA3 3B Pyrex rod: SS304 inner tube, water gaps, borosilicate glass, SS304 outer clad"
         },
         {
           "universe_id": "thimble_plug",
