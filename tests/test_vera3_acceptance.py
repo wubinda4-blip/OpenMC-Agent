@@ -22,6 +22,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from helpers.vera3_acceptance import (
     BenchmarkIssue,
     build_vera3_like_plan,

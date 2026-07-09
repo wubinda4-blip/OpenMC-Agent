@@ -12,6 +12,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from openmc_agent.assembly3d_guard import (
     Assembly3DFeatureFlags,
     assembly3d_overlay_issues,

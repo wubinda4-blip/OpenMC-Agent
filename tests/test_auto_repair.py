@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from openmc_agent.auto_repair import _resolve_id, auto_repair_lattice_structure
 from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.graph import _apply_json_patches

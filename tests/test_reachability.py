@@ -11,6 +11,11 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from openmc_agent.reachability import (
     ActiveDependencies,
     collect_active_dependencies,

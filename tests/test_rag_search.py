@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from openmc_agent.error_catalog import issue_from_catalog
@@ -210,7 +211,9 @@ def test_format_rag_evidence_and_merge_preserves_grep_graph_order() -> None:
     assert "documentation context" in rendered
 
 
+@pytest.mark.openmc
 def test_reflect_plan_prompt_contains_rag_evidence_and_constraints() -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
     from openmc_agent.graph import _build_reflection_requirement
 
     issue = issue_from_catalog("runtime.cross_sections_missing")

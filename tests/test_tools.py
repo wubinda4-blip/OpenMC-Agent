@@ -1,3 +1,9 @@
+import pytest
+
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
 from pathlib import Path
 from types import SimpleNamespace
 

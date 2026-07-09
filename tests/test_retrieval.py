@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.retrieval import (
     RetrievalStep,
