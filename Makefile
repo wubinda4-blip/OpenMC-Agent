@@ -23,25 +23,25 @@ ALLOW_REAL_LLM ?=
 # Environment checks
 # ---------------------------------------------------------------------------
 check-env:
-	python scripts/check_environment.py
+	$(PYTHON) scripts/check_environment.py
 
 check-env-openmc:
-	python scripts/check_environment.py --require-openmc
+	$(PYTHON) scripts/check_environment.py --require-openmc
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 test-quick:
-	python -m pytest -q tests/test_schemas.py tests/test_evaluation.py tests/test_benchmark_runner.py
+	$(PYTHON) -m pytest -q tests/test_schemas.py tests/test_evaluation.py tests/test_benchmark_runner.py
 
 test-no-openmc:
-	python -m pytest -q -m "not openmc and not requires_llm"
+	$(PYTHON) -m pytest -q -m "not openmc and not requires_llm"
 
 test-openmc:
-	python -m pytest -q -m openmc
+	$(PYTHON) -m pytest -q -m openmc
 
 test-all:
-	python -m pytest -q
+	$(PYTHON) -m pytest -q
 
 # ---------------------------------------------------------------------------
 # Single-model run (real LLM modeling on one input file)
