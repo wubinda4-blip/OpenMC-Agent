@@ -1,4 +1,4 @@
-.PHONY: check-env check-env-openmc test-quick test-no-openmc test-openmc test-all benchmark-workflow-fake benchmark-workflow-real
+.PHONY: check-env check-env-openmc test-quick test-no-openmc test-openmc test-all benchmark-workflow-fake benchmark-workflow-real diff-workflow-reports gate-workflow-regression
 
 check-env:
 	python scripts/check_environment.py
@@ -32,3 +32,15 @@ benchmark-workflow-real:
 		--mode plan-only \
 		--allow-real-llm \
 		--out data/evals/workflow/real
+
+diff-workflow-reports:
+	python scripts/diff_evaluation_reports.py \
+		--base $${BASE_REPORT} \
+		--head $${HEAD_REPORT} \
+		--out $${OUT_DIFF:-report_diff.md}
+
+gate-workflow-regression:
+	python scripts/diff_evaluation_reports.py \
+		--base $${BASE_REPORT} \
+		--head $${HEAD_REPORT} \
+		--fail-on-regression

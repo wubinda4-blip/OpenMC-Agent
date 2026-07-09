@@ -52,6 +52,52 @@ Each run writes the following files under the selected output directory:
 
 Inspect failed cases using `failed_stage`, `failed_patch_type`, `issue_codes`, and `failure_reasons`. The benchmark is plan-first; OpenMC export, plotting, smoke tests, and transport execution remain opt-in future validation layers.
 
+## P0-H: Report diff and PR regression gate
+
+Two evaluation reports can be compared with `scripts/diff_evaluation_reports.py`. It produces a markdown diff (metric deltas, case status changes, new failures, fixed cases) and optionally fails non-zero when regression thresholds are breached — suitable as a PR gate.
+
+### Save a baseline
+
+```bash
+make benchmark-workflow-fake
+cp -r data/evals/workflow/fake data/evals/workflow/baseline
+```
+
+### Compare against the baseline
+
+```bash
+python scripts/diff_evaluation_reports.py \
+  --base data/evals/workflow/baseline/evaluation_report.json \
+  --head data/evals/workflow/fake/evaluation_report.json \
+  --out data/evals/workflow/fake/report_diff.md
+```
+
+Or via Makefile (pass `BASE_REPORT`, `HEAD_REPORT`, and optional `OUT_DIFF` as env vars):
+
+```bash
+make diff-workflow-reports BASE_REPORT=... HEAD_REPORT=...
+```
+
+### Regression gate
+
+```bash
+python scripts/diff_evaluation_reports.py \
+  --base $BASE_REPORT --head $HEAD_REPORT \
+  --fail-on-regression \
+  --min-pass-rate-delta 0.0 \
+  --min-plan-schema-delta 0.0 \
+  --min-artifact-completeness-delta 0.0
+```
+
+First-batch gated metrics:
+
+- `pass_rate`
+- `plan_schema_success_rate`
+- `artifact_completeness_rate`
+- new failed cases (unless `--allow-new-failures`)
+
+Real LLM benchmark and OpenMC runtime benchmark are **not** part of this gate; they remain opt-in.
+
 ## P0-NEW-1: Controlled material composition policy
 
 Pure-element approximations of structural alloys (Zircaloy-4 -> pure Zr, SS-304 -> pure Fe, Inconel-718 -> pure Ni) lose real absorption from minor constituents (Sn, Cr, Ni, Nb, Mo, ...) and bias keff high. This makes "it runs" indistinguishable from "it runs accurately" and weakens keff comparisons.
