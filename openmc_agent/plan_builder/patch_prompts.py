@@ -140,6 +140,12 @@ CRITICAL RULES:
 - lattice_size is [rows, cols], e.g. [17, 17].
 - coordinate_convention.index_base must be 0 or 1.
 - Each coordinate is [row, col] using the stated convention.
+- pin_map describes the persistent/base repeated radial geometry only.
+- If a coordinate is a guide tube that may contain a finite axial insert
+  (for example a pyrex rod, plug, absorber, or other rod present only over
+  part of z), keep that coordinate in guide_tube_coords in the base pin_map.
+  Put the insert universe in axial_layers.lattice_loadings instead of replacing
+  the base pin_map position.
 
 Minimal example (only special positions, NOT 289 entries):
 {{"patch_type": "pin_map", "lattice_size": [17, 17], "default_universe_id": "fuel_pin",
@@ -150,7 +156,9 @@ Minimal example (only special positions, NOT 289 entries):
 Requested patch type: axial_layers
 Schema: {{"patch_type": "axial_layers", "axial_domain_cm": [float,float],
   "layers": [{{"layer_id", "role", "z_min_cm", "z_max_cm", "fill_type", "fill_id",
-  "requires_human_confirmation", "assumptions": [], "source_note"}}]}}
+  "loading_id", "requires_human_confirmation", "assumptions": [], "source_note"}}],
+  "lattice_loadings": [{{"loading_id", "base_lattice_id", "derived_lattice_id",
+  "overrides": {{"universe_id": [[int,int]]}}, "purpose"}}]}}
 
 Rules:
 - Do NOT generate materials/universes/lattice/full plan.
@@ -159,6 +167,12 @@ Rules:
 - Do NOT use default z=-1..1 for an explicit 3D benchmark.
 - If z values are unknown, set requires_human_confirmation=true; do NOT fabricate.
 - Do NOT represent spacer grids as axial layer material slabs.
+- If a finite axial insert changes only some lattice positions over a known
+  z span, split the lattice-filled z layers at the insert boundaries, add a
+  lattice_loadings entry with overrides={insert_universe_id: [[row,col], ...]},
+  and set loading_id only on the affected lattice-filled layer(s).
+- Do not encode finite axial inserts by changing the base pin_map; the base
+  pin_map should remain the through-path geometry such as guide tubes.
 
 Minimal example (2 layers only, adapt to requirement):
 {{"patch_type": "axial_layers", "axial_domain_cm": [0.0, 400.0], "layers": [

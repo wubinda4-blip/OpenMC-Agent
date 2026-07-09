@@ -69,6 +69,7 @@ from .patches import (
     CellLayerPatch,
     CoordinateConvention,
     FactsPatch,
+    LatticeLoadingPatchItem,
     MaterialSpecPatch,
     MaterialsPatch,
     PinMapPatch,
@@ -515,6 +516,146 @@ def _assemble_lattice(
     return lattice, issues, actual_pin_counts
 
 
+def _normalize_axial_insert_pin_map(
+    pin_map: PinMapPatch | None,
+    axial_layers: AxialLayersPatch | None,
+    universes_patch: UniversesPatch | None,
+) -> tuple[PinMapPatch | None, AxialLayersPatch | None, list[PlanAssemblyIssue]]:
+    """Treat finite insert rods as axial loadings over a guide-tube base.
+
+    Some LLM patch generations put pyrex rods or thimble plugs directly in the
+    base pin map.  That makes those locations occupy the whole active lattice,
+    which blocks guide-tube water in axial regions where the insert is absent.
+    The generic IR model is: guide tube in the base lattice, optional
+    lattice_loading on axial layers that actually contain an insert.
+    """
+    issues: list[PlanAssemblyIssue] = []
+    if pin_map is None or universes_patch is None:
+        return pin_map, axial_layers, issues
+
+    kind_map = _build_kind_to_universe_map(universes_patch, pin_map)
+    guide_uid = kind_map.get("guide_tube")
+    if not guide_uid:
+        return pin_map, axial_layers, issues
+
+    insert_coord_groups = {
+        "pyrex_rod": list(pin_map.pyrex_rod_coords),
+        "thimble_plug": list(pin_map.thimble_plug_coords),
+    }
+    if not any(insert_coord_groups.values()):
+        return pin_map, axial_layers, issues
+
+    guide_coords = _dedupe_coords(
+        list(pin_map.guide_tube_coords)
+        + insert_coord_groups["pyrex_rod"]
+        + insert_coord_groups["thimble_plug"]
+    )
+    normalized_pin_map = pin_map.model_copy(update={
+        "guide_tube_coords": guide_coords,
+        "pyrex_rod_coords": [],
+        "thimble_plug_coords": [],
+    })
+    issues.append(PlanAssemblyIssue(
+        code="assembly.axial_insert_pin_map_normalized",
+        severity="info",
+        message=(
+            "finite insert coordinates were moved out of the base pin map; "
+            "base lattice keeps guide-tube geometry and axial layers carry "
+            "insert-specific lattice loadings where available"
+        ),
+        path="pin_map",
+        actual={
+            "pyrex_rod_coords": len(insert_coord_groups["pyrex_rod"]),
+            "thimble_plug_coords": len(insert_coord_groups["thimble_plug"]),
+        },
+    ))
+
+    if axial_layers is None:
+        return normalized_pin_map, axial_layers, issues
+
+    pyrex_coords = insert_coord_groups["pyrex_rod"]
+    pyrex_uid = kind_map.get("pyrex_rod")
+    if not pyrex_coords or not pyrex_uid:
+        return normalized_pin_map, axial_layers, issues
+
+    if _axial_layers_already_load_universe(axial_layers, pyrex_uid):
+        return normalized_pin_map, axial_layers, issues
+
+    loading_id = _unique_loading_id(axial_layers, "pyrex_rod_loading")
+    try:
+        override_coords = normalized_coords(
+            pyrex_coords,
+            pin_map.coordinate_convention,
+            pin_map.lattice_size,
+        )
+    except ValueError as exc:
+        issues.append(PlanAssemblyIssue(
+            code="assembly.axial_insert_loading_failed",
+            severity="warning",
+            message=f"could not normalize pyrex rod loading coordinates: {exc}",
+            path="pin_map.pyrex_rod_coords",
+        ))
+        return normalized_pin_map, axial_layers, issues
+
+    loading = LatticeLoadingPatchItem(
+        loading_id=loading_id,
+        base_lattice_id="assembly_lattice",
+        derived_lattice_id=f"assembly_lattice_{loading_id}",
+        overrides={pyrex_uid: override_coords},
+        purpose="axial insert loading derived from finite insert coordinates",
+    )
+    updated_layers = _attach_loading_to_lattice_layers(axial_layers.layers, loading_id)
+    normalized_axial_layers = axial_layers.model_copy(update={
+        "layers": updated_layers,
+        "lattice_loadings": list(axial_layers.lattice_loadings) + [loading],
+    })
+    return normalized_pin_map, normalized_axial_layers, issues
+
+
+def _dedupe_coords(coords: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    return list(dict.fromkeys(coords))
+
+
+def _axial_layers_already_load_universe(
+    axial_layers: AxialLayersPatch,
+    universe_id: str,
+) -> bool:
+    return any(
+        universe_id in loading.overrides
+        for loading in axial_layers.lattice_loadings
+    )
+
+
+def _unique_loading_id(axial_layers: AxialLayersPatch, base: str) -> str:
+    existing = {loading.loading_id for loading in axial_layers.lattice_loadings}
+    if base not in existing:
+        return base
+    index = 2
+    while f"{base}_{index}" in existing:
+        index += 1
+    return f"{base}_{index}"
+
+
+def _attach_loading_to_lattice_layers(
+    layers: list[AxialLayerPatchItem],
+    loading_id: str,
+) -> list[AxialLayerPatchItem]:
+    lattice_layers = [layer for layer in layers if layer.fill_type == "lattice"]
+    active_lattice_layers = [layer for layer in lattice_layers if layer.role == "active_fuel"]
+    target_ids = {
+        layer.layer_id
+        for layer in (active_lattice_layers or lattice_layers)
+        if layer.loading_id is None
+    }
+    if not target_ids:
+        return layers
+    return [
+        layer.model_copy(update={"loading_id": loading_id})
+        if layer.layer_id in target_ids else layer
+        for layer in layers
+    ]
+
+
 def _expected_counts_from_facts(facts: FactsPatch | None) -> dict[str, int] | None:
     if facts is None or facts.expected_pin_count is None:
         return None
@@ -852,6 +993,11 @@ def assemble_simulation_plan_from_patches(
     )
     issues.extend(univ_issues)
     universe_ids = {u.id for u in plan_universes}
+
+    pin_map_patch, axial_layers_patch, normalize_issues = _normalize_axial_insert_pin_map(
+        pin_map_patch, axial_layers_patch, universes_patch,
+    )
+    issues.extend(normalize_issues)
 
     # 4. Assemble lattice from pin map.
     lattice_id = "assembly_lattice"

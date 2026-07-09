@@ -226,6 +226,43 @@ def test_axial_layers_preserve_z_ranges() -> None:
     assert fuel_layer.fill.id == "assembly_lattice"
 
 
+def test_axial_insert_coords_keep_guide_tube_base_for_unseen_model() -> None:
+    patches = _minimal_3d_patches()
+    materials = next(p for p in patches if getattr(p, "patch_type", "") == "materials")
+    materials.materials.append(
+        MaterialSpecPatch(
+            material_id="pyrex", name="Pyrex", role="absorber", density_g_cm3=2.23,
+        )
+    )
+    universes = next(p for p in patches if getattr(p, "patch_type", "") == "universes")
+    universes.universes.append(
+        UniverseSpecPatch(universe_id="pyrex_rod", kind="pyrex_rod", cells=[
+            CellLayerPatch(id="pyrex", role="absorber", material_id="pyrex", region_kind="cylinder"),
+        ])
+    )
+    pin_map = next(p for p in patches if getattr(p, "patch_type", "") == "pin_map")
+    pin_map.guide_tube_coords = []
+    pin_map.pyrex_rod_coords = [(3, 6)]
+    pin_map.thimble_plug_coords = [(3, 9), (6, 6), (9, 3)]
+    pin_map.coordinate_convention = CoordinateConvention(index_base=1)
+
+    result = assemble_simulation_plan_from_patches(patches)
+
+    assert result.ok is True
+    assert any(i.code == "assembly.axial_insert_pin_map_normalized" for i in result.issues)
+    model = result.plan.complex_model
+    lattice = model.lattices[0]
+    assert lattice.universe_pattern[2][5] == "gt"
+    assert lattice.universe_pattern[2][8] == "gt"
+    assert lattice.universe_pattern[5][5] == "gt"
+    assert lattice.universe_pattern[8][2] == "gt"
+    assert len(model.lattice_loadings) == 1
+    loading = model.lattice_loadings[0]
+    assert loading.overrides == {"pyrex_rod": [(2, 5)]}
+    active_layer = next(l for l in model.core.axial_layers if l.id == "active_fuel")
+    assert active_layer.loading_id == loading.id
+
+
 # ---------------------------------------------------------------------------
 # 8. Assembled overlays preserve Level 1 mode
 # ---------------------------------------------------------------------------
