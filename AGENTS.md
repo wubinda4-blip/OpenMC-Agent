@@ -7,13 +7,33 @@
 ## 默认工程流程
 
 - 修改代码前先检查当前工作区状态，区分本次任务改动和用户已有脏文件。
-- 代码改动完成后，运行最相关测试；能跑全量 pytest 时优先使用：
+- 代码改动完成后，**必须按顺序执行以下验证，全部通过后才允许 commit**：
 
 ```bash
-conda run -n openmc-env python -m pytest -q
+# 1. 全量单元测试（base Python 即可，~15s）
+conda run -n openmc-env python -m pytest -q -m "not openmc and not requires_llm"
+
+# 2. 编译检查
+conda run -n openmc-env python -m compileall -q openmc_agent scripts
+
+# 3. Fake workflow benchmark（评估平台回归 gate，~5s）
+conda run -n openmc-env python scripts/run_workflow_benchmark.py \
+    --cases tests/fixtures/evaluation_cases.json \
+    --model fake --mode plan-only \
+    --out data/evals/workflow/fake_current
 ```
 
-- 如果只是文档或规则变更，可运行针对变更范围的轻量检查，例如 `git diff --check -- <paths>`，并在最终回复中说明未跑全量测试的原因。
+- 如果已存有 baseline，还应该跑 regression diff：
+
+```bash
+conda run -n openmc-env python scripts/diff_evaluation_reports.py \
+    --base data/evals/workflow/baseline/evaluation_report.json \
+    --head data/evals/workflow/fake_current/evaluation_report.json \
+    --fail-on-regression
+```
+
+- 上述 3 步任一失败时，停止 commit 并向用户说明阻塞点。
+- 如果只是文档或规则变更，可只跑 `git diff --check -- <paths>`，但要在回复中说明跳过测试的原因。
 - 测试通过且确认改动范围无误后，自动执行：
 
 ```bash

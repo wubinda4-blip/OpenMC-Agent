@@ -92,6 +92,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Explicitly allow non-fake LLM model names")
     parser.add_argument("--smoke-test", action="store_true",
                         help="Run OpenMC smoke test after rendering (requires OpenMC)")
+    parser.add_argument("--plot", action="store_true",
+                        help="Generate OpenMC geometry plots (requires OpenMC)")
+    parser.add_argument("--full", action="store_true",
+                        help="Enable both geometry plots and smoke test (equivalent to --plot --smoke-test)")
     parser.add_argument("--no-incremental", action="store_true",
                         help="Use monolithic planner instead of incremental executor")
     parser.add_argument("--dry-run", action="store_true",
@@ -114,9 +118,18 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(args.out) if args.out else Path("data/runs") / f"{benchmark}_{variant}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build the requirement. The requirement resolver will inline the input
+    # file content so the LLM sees the full problem description.
     requirement_text = (
         f"Build the {benchmark} {variant} benchmark model "
         f"described in {input_path}."
+    )
+    # Prepend an explicit operating-state directive so the LLM does not
+    # confuse parameters across variants (e.g. 3A boron=1300ppm vs 3B=1066ppm).
+    # This mirrors compose_operating_state_requirement() from inspect.py.
+    from openmc_agent.inspect import compose_operating_state_requirement
+    requirement_text = compose_operating_state_requirement(
+        requirement_text, variant,
     )
 
     print("=" * 70)
@@ -161,13 +174,17 @@ def main(argv: list[str] | None = None) -> int:
     # --- Real run ---
     from openmc_agent.graph import build_plan_graph
 
-    enable_smoke = args.smoke_test and _openmc_available()
-    if args.smoke_test and not _openmc_available():
-        print("WARNING: --smoke-test requested but OpenMC not available; skipping smoke test",
+    enable_smoke = (args.smoke_test or args.full) and _openmc_available()
+    enable_plot = (args.plot or args.full) and _openmc_available()
+    if (args.smoke_test or args.full) and not _openmc_available():
+        print("WARNING: --smoke-test/--full requested but OpenMC not available; skipping",
+              file=sys.stderr)
+    if (args.plot or args.full) and not _openmc_available():
+        print("WARNING: --plot/--full requested but OpenMC not available; skipping plots",
               file=sys.stderr)
 
     graph = build_plan_graph(
-        enable_plots=False,
+        enable_plots=enable_plot,
         enable_smoke_test=enable_smoke,
         reference_patch_policy=args.reference_patch_policy,
         use_incremental_executor=not args.no_incremental,

@@ -48,11 +48,12 @@ test-all:
 #
 # Usage:
 #   make model                                    # defaults: VERA3 3A, deepseek
-#   make model INPUT=Input/VERA3_problem.md VARIANT=3B
-#   make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2
+#   make model INPUT=Input/VERA3_problem.md VARIANT=3B ALLOW_REAL_LLM=1
+#   make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2 ALLOW_REAL_LLM=1
 #   make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
-#   make model INPUT=Input/VERA3_problem.md MODEL=fake              # no LLM, quick smoke
-#   make model INPUT=Input/VERA3_problem.md SMOKE=1                 # run OpenMC smoke test
+#   make model INPUT=Input/VERA3_problem.md MODEL=fake              # no LLM, quick check
+#   make model INPUT=Input/VERA3_problem.md SMOKE=1 ALLOW_REAL_LLM=1  # OpenMC smoke + keff
+#   make model INPUT=Input/VERA3_problem.md FULL=1 ALLOW_REAL_LLM=1    # plot + smoke (equivalent to --full)
 # ---------------------------------------------------------------------------
 model:
 	$(PYTHON) scripts/run_model.py \
@@ -64,7 +65,8 @@ model:
 		--material-policy $(MAT_POLICY) \
 		--out $(OUT) \
 		$(if $(ALLOW_REAL_LLM),--allow-real-llm) \
-		$(if $(SMOKE),--smoke-test)
+		$(if $(SMOKE),--smoke-test) \
+		$(if $(FULL),--full)
 
 # Dry-run: resolve requirement + feature detection only (no LLM, no OpenMC)
 model-dry:
