@@ -408,6 +408,39 @@ def _validate_universes(
                     path=f"universes[{univ.universe_id}].cells",
                 ))
 
+        if univ.kind == "thimble_plug":
+            roles_lower = [c.role.lower() for c in univ.cells]
+            has_wall = any(
+                "wall" in r or "tube" in r or "clad" in r
+                for r in roles_lower
+            )
+            has_water = any(
+                "water" in r or "coolant" in r
+                for r in roles_lower
+            )
+            if not has_wall:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.thimble_plug_wall_missing",
+                    severity="warning",
+                    message=(
+                        f"thimble_plug universe {univ.universe_id!r} has no tube "
+                        "wall cell — a thimble plug sits inside a guide tube; "
+                        "keep the Zircaloy-4 wall annulus"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
+            if not has_water:
+                issues.append(PatchValidationIssue(
+                    code="patch.universes.thimble_plug_water_missing",
+                    severity="warning",
+                    message=(
+                        f"thimble_plug universe {univ.universe_id!r} has no "
+                        "internal water gap — there should be water between "
+                        "the plug and the tube wall"
+                    ),
+                    path=f"universes[{univ.universe_id}].cells",
+                ))
+
     return issues
 
 

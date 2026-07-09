@@ -97,6 +97,11 @@ Rules:
 - Do NOT generate the lattice, full pin map, or axial layers.
 - Each universe must have at least one cell.
 - guide_tube must include internal coolant AND tube wall material.
+- thimble_plug is a guide tube with a plug inside: it MUST keep the same tube wall
+  (Zircaloy-4 annulus) as a guide_tube, plus a water gap between the plug and the
+  wall. Do NOT make it a solid rod of cladding material with water outside.
+  Correct cell order (inside→out):
+    plug (SS304 cylinder) → water_gap (water annulus) → wall (Zircaloy-4 annulus) → outer_coolant (water background)
 - pyrex_rod must include a cell with pyrex material if variant requires it.
 - fuel_pin should have a fuel material cell.
 - Mark through-path cells with protected_through_path=true.
