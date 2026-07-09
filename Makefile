@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 # Configurable defaults (override via command line, e.g. make model INPUT=foo.md)
 # ---------------------------------------------------------------------------
-PYTHON   ?= conda run -n openmc-env python
+PYTHON   ?= conda run --no-capture-output -n openmc-env python
 MODEL    ?= deepseek:deepseek-chat
 CASES    ?= tests/fixtures/evaluation_cases.json
 
