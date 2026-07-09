@@ -170,7 +170,9 @@ def test_expected_counts_mismatch_is_flagged_not_raised() -> None:
     assert "a: expected 100, got 8" in flagged
 
 
+@pytest.mark.openmc
 def test_expected_counts_mismatch_blocks_export() -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for renderer import")
     """The renderer must block XML export on a count mismatch so a wrong pin map
     can never silently become a runnable model."""
     from openmc_agent.renderers.assembly import _lattice_pattern_errors
@@ -190,7 +192,9 @@ def test_expected_counts_mismatch_blocks_export() -> None:
     assert any("a: expected 100, got 8" in err for err in errors)
 
 
+@pytest.mark.openmc
 def test_expected_counts_match_passes_export_check() -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for renderer import")
     from openmc_agent.renderers.assembly import _lattice_pattern_errors
 
     lattice = LatticeSpec(

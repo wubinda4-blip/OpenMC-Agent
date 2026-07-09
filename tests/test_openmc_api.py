@@ -1,3 +1,10 @@
+import pytest
+
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for OpenMC API introspection tests"
+)
+
 from openmc_agent.openmc_api import (
     build_openmc_knowledge_graph,
     explain_openmc_interface,

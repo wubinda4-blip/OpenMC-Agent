@@ -27,5 +27,8 @@ include = ["openmc_agent*"]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]
 markers = [
-    "integration: end-to-end tests needing a live LLM / OpenMC (skipped on CI)",
+    "openmc: tests requiring the OpenMC Python package/runtime",
+    "integration: integration tests that may require external/runtime dependencies",
+    "requires_llm: tests requiring a real LLM provider/API key",
+    "slow: slow tests",
 ]

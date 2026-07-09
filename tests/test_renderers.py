@@ -4,6 +4,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from openmc_agent.renderers import RENDERERS, choose_renderer, list_renderers
 from openmc_agent.renderers.assembly import RectAssemblyRenderer
 from openmc_agent.renderers.base import BaseRenderer

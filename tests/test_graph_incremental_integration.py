@@ -12,6 +12,11 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from openmc_agent.graph import build_plan_graph
 from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.schemas import SimulationPlan

@@ -1,0 +1,37 @@
+{
+  "name": "OpenMC-Agent",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "mambauser",
+  "workspaceFolder": "/workspace/OpenMC-Agent",
+  "postCreateCommand": "micromamba run -n openmc-env python -m pip install -e \".[dev]\" && micromamba run -n openmc-env make check-env && micromamba run -n openmc-env make test-no-openmc",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/conda/envs/openmc-env/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": [
+          "tests"
+        ]
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    }
+  },
+  "containerEnv": {
+    "OPENMC_AGENT_MODEL": "zhipu:glm-5.2",
+    "OPENMC_AGENT_STREAM": "1",
+    "OPENMC_AGENT_LLM_HEARTBEAT_SECONDS": "10"
+  },
+  "remoteEnv": {
+    "ZHIPUAI_API_KEY": "${localEnv:ZHIPUAI_API_KEY}",
+    "DEEPSEEK_API_KEY": "${localEnv:DEEPSEEK_API_KEY}",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    "OPENMC_CROSS_SECTIONS": "${localEnv:OPENMC_CROSS_SECTIONS}"
+  }
+}

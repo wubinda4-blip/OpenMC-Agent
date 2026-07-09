@@ -5,8 +5,6 @@ from typing import Any, Callable, Literal
 from pydantic import Field, model_validator
 
 from openmc_agent.schemas import AgentBaseModel
-from openmc_agent.executor import build_openmc_material
-from openmc_agent.graph import build_graph, build_plan_graph
 from openmc_agent.llm import (
     DEFAULT_MODEL,
     StructuredOutputResult,
@@ -57,10 +55,19 @@ class EvaluationCase(AgentBaseModel):
     category: EvaluationCategory = "unknown"
     user_request: str = ""
     expected_issue_codes: list[str] = Field(default_factory=list)
+    forbidden_issue_codes: list[str] = Field(default_factory=list)
     expected_renderability: str | None = None
     expected_supported_renderer: str | None = None
     should_require_human_confirmation: bool | None = None
     should_trigger_retrieval: bool | None = None
+    expected_planning_mode: str | None = None
+    expected_incremental_patch_types: list[str] = Field(default_factory=list)
+    expected_artifact_keys: list[str] = Field(default_factory=list)
+    expected_failed_stage: str | None = None
+    expected_failed_patch_type: str | None = None
+    expected_plan_schema_success: bool | None = None
+    expected_incremental_patch_success: bool | None = None
+    expected_artifact_complete: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def __init__(self, *args: Any, **data: Any) -> None:
@@ -125,6 +132,10 @@ class EvaluationMetrics(AgentBaseModel):
     issue_code_recall: float | None = None
     retrieval_trigger_rate: float | None = None
     human_confirmation_rate: float | None = None
+    plan_schema_success_rate: float | None = None
+    incremental_patch_success_rate: float | None = None
+    artifact_completeness_rate: float | None = None
+    planning_mode_accuracy: float | None = None
 
 
 @dataclass(frozen=True)
@@ -169,9 +180,9 @@ def run_test_set(
     enable_smoke_test: bool = False,
     generate_plan: GeneratePlanFn = generate_structured_output,
     repair_plan: RepairPlanFn = repair_structured_output,
-    export_xml_tool: Callable = export_xml,
-    plot_tool: Callable = run_geometry_plots,
-    smoke_test_tool: Callable = run_smoke_test,
+    export_xml_tool: Callable | None = None,
+    plot_tool: Callable | None = None,
+    smoke_test_tool: Callable | None = None,
     success_threshold: float = 0.8,
 ) -> EvaluationSummary:
     output_root = Path(output_dir)
@@ -203,9 +214,9 @@ def run_test_set(
                 enable_smoke_test=enable_smoke_test,
                 generate_plan=generate_plan,
                 repair_plan=repair_plan,
-                export_xml_tool=export_xml_tool,
-                plot_tool=plot_tool,
-                smoke_test_tool=smoke_test_tool,
+                export_xml_tool=export_xml_tool or export_xml,
+                plot_tool=plot_tool or run_geometry_plots,
+                smoke_test_tool=smoke_test_tool or run_smoke_test,
             )
         )
 
@@ -250,18 +261,31 @@ def evaluate_trace_against_case(
         workflow_trace.final_supported_renderer
         or _latest_event_field(workflow_trace, "supported_renderer")
     )
-    triggered_retrieval = any(
-        event.event_type in {"retrieval_started", "retrieval_completed"}
-        for event in workflow_trace.events
-    )
+    triggered_retrieval = _trace_retrieval_triggered(workflow_trace)
     required_human_confirmation = _trace_requires_human_confirmation(workflow_trace)
+
+    planning_mode = _trace_planning_mode(workflow_trace)
+    failed_stage = _trace_failed_stage(workflow_trace)
+    failed_patch_type = _trace_failed_patch_type(workflow_trace)
+    plan_schema_success = _trace_plan_schema_success(workflow_trace)
+    incremental_patch_success = _trace_incremental_patch_success(workflow_trace)
+    observed_patch_types = _trace_incremental_patch_types(workflow_trace)
+    artifact_keys = _trace_artifact_keys(workflow_trace)
+    artifact_complete = _artifact_complete(case.expected_artifact_keys, artifact_keys)
 
     failure_reasons: list[str] = []
     expected_codes = set(case.expected_issue_codes)
     observed_codes = set(observed_issue_codes)
+    forbidden_codes = set(case.forbidden_issue_codes)
+
     if expected_codes and not expected_codes.issubset(observed_codes):
         missing = sorted(expected_codes - observed_codes)
         failure_reasons.append(f"missing expected issue codes: {', '.join(missing)}")
+    forbidden_observed = sorted(forbidden_codes & observed_codes)
+    if forbidden_observed:
+        failure_reasons.append(
+            f"forbidden issue codes observed: {', '.join(forbidden_observed)}"
+        )
     if (
         case.expected_renderability is not None
         and observed_renderability != case.expected_renderability
@@ -295,6 +319,80 @@ def evaluate_trace_against_case(
             f"expected={case.should_require_human_confirmation} "
             f"observed={required_human_confirmation}"
         )
+    planning_mode_match = None
+    if case.expected_planning_mode is not None:
+        planning_mode_match = planning_mode == case.expected_planning_mode
+        if not planning_mode_match:
+            failure_reasons.append(
+                "planning mode mismatch: "
+                f"expected={case.expected_planning_mode} observed={planning_mode}"
+            )
+    if case.expected_incremental_patch_types:
+        missing_patches = sorted(set(case.expected_incremental_patch_types) - set(observed_patch_types))
+        if missing_patches:
+            failure_reasons.append(
+                "missing expected incremental patch types: "
+                f"{', '.join(missing_patches)}"
+            )
+    missing_artifacts: list[str] = []
+    if case.expected_artifact_keys:
+        missing_artifacts = sorted(set(case.expected_artifact_keys) - set(artifact_keys))
+        if missing_artifacts:
+            failure_reasons.append(
+                f"missing expected artifacts: {', '.join(missing_artifacts)}"
+            )
+    if (
+        case.expected_plan_schema_success is not None
+        and plan_schema_success is not None
+        and plan_schema_success != case.expected_plan_schema_success
+    ):
+        failure_reasons.append(
+            "plan schema success mismatch: "
+            f"expected={case.expected_plan_schema_success} observed={plan_schema_success}"
+        )
+    if case.expected_plan_schema_success is not None and plan_schema_success is None:
+        failure_reasons.append("plan schema success unavailable")
+    if (
+        case.expected_incremental_patch_success is not None
+        and incremental_patch_success is not None
+        and incremental_patch_success != case.expected_incremental_patch_success
+    ):
+        failure_reasons.append(
+            "incremental patch success mismatch: "
+            f"expected={case.expected_incremental_patch_success} observed={incremental_patch_success}"
+        )
+    if case.expected_incremental_patch_success is not None and incremental_patch_success is None:
+        failure_reasons.append("incremental patch success unavailable")
+    if (
+        case.expected_artifact_complete is not None
+        and artifact_complete is not None
+        and artifact_complete != case.expected_artifact_complete
+    ):
+        failure_reasons.append(
+            "artifact completeness mismatch: "
+            f"expected={case.expected_artifact_complete} observed={artifact_complete}"
+        )
+    if (
+        case.expected_failed_stage is not None
+        and failed_stage != case.expected_failed_stage
+    ):
+        failure_reasons.append(
+            "failed stage mismatch: "
+            f"expected={case.expected_failed_stage} observed={failed_stage}"
+        )
+    if (
+        case.expected_failed_patch_type is not None
+        and failed_patch_type != case.expected_failed_patch_type
+    ):
+        failure_reasons.append(
+            "failed patch type mismatch: "
+            f"expected={case.expected_failed_patch_type} observed={failed_patch_type}"
+        )
+    actual_failed = workflow_trace.final_status == "failed" or any(
+        event.event_type == "workflow_failed" for event in workflow_trace.events
+    )
+    if actual_failed and not failed_stage:
+        failure_reasons.append("missing failed_stage for failed case")
 
     precision = _precision(observed_codes, expected_codes)
     recall = _recall(observed_codes, expected_codes)
@@ -311,26 +409,35 @@ def evaluate_trace_against_case(
             "issue_code_precision": precision,
             "issue_code_recall": recall,
             "event_count": len(workflow_trace.events),
+            "plan_schema_success": plan_schema_success,
+            "incremental_patch_success": incremental_patch_success,
+            "retrieval_triggered": triggered_retrieval,
+            "artifact_complete": artifact_complete,
+            "planning_mode": planning_mode,
+            "planning_mode_match": planning_mode_match,
+            "failed_stage": failed_stage,
+            "failed_patch_type": failed_patch_type,
+            "forbidden_issue_code_count": len(forbidden_observed),
+            "expected_artifact_count": len(case.expected_artifact_keys),
+            "observed_artifact_count": len(artifact_keys),
+            "observed_incremental_patch_types": observed_patch_types,
+            "observed_artifact_keys": artifact_keys,
+            "missing_artifact_keys": missing_artifacts,
         },
         failure_reasons=failure_reasons,
     )
-
 
 def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationMetrics:
     """Aggregate trace-evaluation results into small benchmark metrics."""
     case_count = len(results)
     pass_count = sum(result.passed for result in results)
     fail_count = case_count - pass_count
-    precisions = [
-        value
-        for result in results
-        if (value := result.metrics.get("issue_code_precision")) is not None
-    ]
-    recalls = [
-        value
-        for result in results
-        if (value := result.metrics.get("issue_code_recall")) is not None
-    ]
+    precisions = _metric_values(results, "issue_code_precision")
+    recalls = _metric_values(results, "issue_code_recall")
+    plan_schema_values = _bool_metric_values(results, "plan_schema_success")
+    incremental_values = _bool_metric_values(results, "incremental_patch_success")
+    artifact_values = _bool_metric_values(results, "artifact_complete")
+    planning_mode_values = _bool_metric_values(results, "planning_mode_match")
     return EvaluationMetrics(
         case_count=case_count,
         pass_count=pass_count,
@@ -348,8 +455,225 @@ def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationM
             if case_count
             else None
         ),
+        plan_schema_success_rate=(
+            sum(plan_schema_values) / len(plan_schema_values)
+            if plan_schema_values
+            else None
+        ),
+        incremental_patch_success_rate=(
+            sum(incremental_values) / len(incremental_values)
+            if incremental_values
+            else None
+        ),
+        artifact_completeness_rate=(
+            sum(artifact_values) / len(artifact_values)
+            if artifact_values
+            else None
+        ),
+        planning_mode_accuracy=(
+            sum(planning_mode_values) / len(planning_mode_values)
+            if planning_mode_values
+            else None
+        ),
     )
 
+
+def _metric_values(results: list[EvaluationResult], key: str) -> list[float]:
+    values: list[float] = []
+    for result in results:
+        value = result.metrics.get(key)
+        if value is not None:
+            values.append(float(value))
+    return values
+
+
+def _bool_metric_values(results: list[EvaluationResult], key: str) -> list[bool]:
+    values: list[bool] = []
+    for result in results:
+        value = result.metrics.get(key)
+        if value is not None:
+            values.append(bool(value))
+    return values
+
+
+
+def _trace_metadata_values(trace: WorkflowTrace, key: str) -> list[Any]:
+    values: list[Any] = []
+    for event in trace.events:
+        if key in event.metadata:
+            values.append(event.metadata[key])
+        retrieval = event.metadata.get("retrieval")
+        if isinstance(retrieval, dict) and key in retrieval:
+            values.append(retrieval[key])
+    return values
+
+
+def _latest_metadata_value(trace: WorkflowTrace, key: str) -> Any:
+    values = _trace_metadata_values(trace, key)
+    return values[-1] if values else None
+
+
+def _trace_retrieval_triggered(trace: WorkflowTrace) -> bool:
+    if any(event.event_type in {"retrieval_started", "retrieval_completed"} for event in trace.events):
+        return True
+    if _latest_metadata_value(trace, "retrieval_triggered") is not None:
+        return bool(_latest_metadata_value(trace, "retrieval_triggered"))
+    for event in trace.events:
+        retrieval = event.metadata.get("retrieval")
+        if isinstance(retrieval, dict):
+            if any(int(retrieval.get(key, 0) or 0) > 0 for key in (
+                "grep_request_count",
+                "grep_evidence_count",
+                "graph_node_count",
+                "graphrag_evidence_count",
+                "rag_evidence_count",
+                "ranked_evidence_count",
+            )):
+                return True
+    return False
+
+
+def _trace_planning_mode(trace: WorkflowTrace) -> str | None:
+    for key in ("planning_mode", "mode"):
+        value = _latest_metadata_value(trace, key)
+        if isinstance(value, str) and value:
+            return value
+    decision = _latest_metadata_value(trace, "planning_mode_decision")
+    if isinstance(decision, dict):
+        mode = decision.get("mode")
+        if isinstance(mode, str):
+            return mode
+    return None
+
+
+def _trace_failed_stage(trace: WorkflowTrace) -> str | None:
+    value = _latest_metadata_value(trace, "failed_stage")
+    if isinstance(value, str) and value:
+        return value
+    for event in reversed(trace.events):
+        if event.event_type == "workflow_failed":
+            stage = event.metadata.get("stage") or event.metadata.get("node")
+            if isinstance(stage, str) and stage:
+                return stage
+    return None
+
+
+def _trace_failed_patch_type(trace: WorkflowTrace) -> str | None:
+    value = _latest_metadata_value(trace, "failed_patch_type")
+    if isinstance(value, str) and value:
+        return value
+    inc_result = _latest_metadata_value(trace, "incremental_execution_result")
+    if isinstance(inc_result, dict):
+        summary = inc_result.get("summary")
+        if isinstance(summary, dict) and isinstance(summary.get("failed_patch_type"), str):
+            return summary["failed_patch_type"]
+        if isinstance(inc_result.get("failed_patch_type"), str):
+            return inc_result["failed_patch_type"]
+    return None
+
+
+def _trace_plan_schema_success(trace: WorkflowTrace) -> bool | None:
+    for key in ("plan_schema_success", "simulation_plan_present"):
+        value = _latest_metadata_value(trace, key)
+        if isinstance(value, bool):
+            return value
+    validation = _latest_metadata_value(trace, "validation_report")
+    if isinstance(validation, dict) and isinstance(validation.get("is_valid"), bool):
+        return validation["is_valid"]
+    value = _latest_metadata_value(trace, "is_valid")
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _trace_incremental_patch_success(trace: WorkflowTrace) -> bool | None:
+    value = _latest_metadata_value(trace, "incremental_patch_success")
+    if isinstance(value, bool):
+        return value
+    inc_result = _latest_metadata_value(trace, "incremental_execution_result")
+    if isinstance(inc_result, dict) and isinstance(inc_result.get("ok"), bool):
+        return inc_result["ok"]
+    patch_status = _latest_metadata_value(trace, "patch_status")
+    if isinstance(patch_status, dict):
+        statuses = [str(v) for v in patch_status.values()]
+        if statuses:
+            return all(status in {"valid", "ok", "success", "completed"} for status in statuses)
+    return None
+
+
+def _trace_incremental_patch_types(trace: WorkflowTrace) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+
+    for key in ("valid_patch_types", "expected_incremental_patch_types", "patch_order"):
+        value = _latest_metadata_value(trace, key)
+        if isinstance(value, list):
+            for item in value:
+                add(item)
+    patch_status = _latest_metadata_value(trace, "patch_status")
+    if isinstance(patch_status, dict):
+        for patch_type, status in patch_status.items():
+            if str(status) in {"valid", "ok", "success", "completed"}:
+                add(patch_type)
+    plan_build = _latest_metadata_value(trace, "plan_build_state_summary") or _latest_metadata_value(trace, "plan_build_state")
+    if isinstance(plan_build, dict):
+        for key in ("valid_patch_types", "patch_order"):
+            value = plan_build.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    add(item)
+        patches = plan_build.get("patches")
+        if isinstance(patches, dict):
+            for patch_type, patch_info in patches.items():
+                status = patch_info.get("status") if isinstance(patch_info, dict) else None
+                if status in {"valid", "ok", "success", "completed"}:
+                    add(patch_type)
+    return ordered
+
+
+def _trace_artifact_keys(trace: WorkflowTrace) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+
+    for key in ("artifact_keys", "expected_artifact_keys"):
+        value = _latest_metadata_value(trace, key)
+        if isinstance(value, list):
+            for item in value:
+                add(item)
+    plan_artifacts = _latest_metadata_value(trace, "plan_artifacts")
+    if isinstance(plan_artifacts, dict):
+        for key in plan_artifacts:
+            add(key)
+    elif isinstance(plan_artifacts, list):
+        for item in plan_artifacts:
+            if isinstance(item, str):
+                name = Path(item).name
+                stem = Path(item).stem
+                add(stem or name)
+            elif isinstance(item, dict):
+                add(item.get("key") or item.get("name") or item.get("type"))
+    for event in trace.events:
+        if event.event_type in {"workflow_completed", "workflow_failed"}:
+            add("workflow_trace")
+        if event.renderability is not None or event.supported_renderer is not None:
+            add("capability_report")
+    return ordered
+
+
+def _artifact_complete(expected_keys: list[str], observed_keys: list[str]) -> bool | None:
+    if not expected_keys:
+        return None
+    return set(expected_keys).issubset(set(observed_keys))
 
 def _trace_issue_codes(trace: WorkflowTrace) -> list[str]:
     seen: set[str] = set()
@@ -423,6 +747,8 @@ def _run_material_case(
         return EvaluationResult(case=case, completed=False, error=result.error)
 
     try:
+        from openmc_agent.executor import build_openmc_material
+
         material = build_openmc_material(result.value)
     except Exception as exc:
         return EvaluationResult(case=case, completed=False, error=str(exc))
@@ -455,6 +781,8 @@ def _run_simulation_case(
     smoke_test_tool: Callable,
 ) -> EvaluationResult:
     if use_plan:
+        from openmc_agent.graph import build_plan_graph
+
         graph = build_plan_graph(
             generate_plan=generate_plan,
             repair_plan=repair_plan,
@@ -466,6 +794,8 @@ def _run_simulation_case(
             max_retries=3,
         )
     else:
+        from openmc_agent.graph import build_graph
+
         graph = build_graph(
             generate_spec=generate_simulation,
             repair_spec=repair_simulation,
