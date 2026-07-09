@@ -604,7 +604,11 @@ def _normalize_axial_insert_pin_map(
         overrides={pyrex_uid: override_coords},
         purpose="axial insert loading derived from finite insert coordinates",
     )
-    updated_layers = _attach_loading_to_lattice_layers(axial_layers.layers, loading_id)
+    updated_layers = _attach_loading_to_lattice_layers(
+        axial_layers.layers,
+        loading_id,
+        axial_layers.lattice_loadings,
+    )
     normalized_axial_layers = axial_layers.model_copy(update={
         "layers": updated_layers,
         "lattice_loadings": list(axial_layers.lattice_loadings) + [loading],
@@ -639,13 +643,15 @@ def _unique_loading_id(axial_layers: AxialLayersPatch, base: str) -> str:
 def _attach_loading_to_lattice_layers(
     layers: list[AxialLayerPatchItem],
     loading_id: str,
+    existing_loadings: list[LatticeLoadingPatchItem],
 ) -> list[AxialLayerPatchItem]:
     lattice_layers = [layer for layer in layers if layer.fill_type == "lattice"]
     active_lattice_layers = [layer for layer in lattice_layers if layer.role == "active_fuel"]
+    loading_by_id = {loading.loading_id: loading for loading in existing_loadings}
     target_ids = {
         layer.layer_id
         for layer in (active_lattice_layers or lattice_layers)
-        if layer.loading_id is None
+        if _layer_can_use_insert_loading(layer, loading_by_id)
     }
     if not target_ids:
         return layers
@@ -654,6 +660,16 @@ def _attach_loading_to_lattice_layers(
         if layer.layer_id in target_ids else layer
         for layer in layers
     ]
+
+
+def _layer_can_use_insert_loading(
+    layer: AxialLayerPatchItem,
+    loading_by_id: dict[str, LatticeLoadingPatchItem],
+) -> bool:
+    if layer.loading_id is None:
+        return True
+    existing = loading_by_id.get(layer.loading_id)
+    return existing is not None and not existing.overrides
 
 
 def _expected_counts_from_facts(facts: FactsPatch | None) -> dict[str, int] | None:

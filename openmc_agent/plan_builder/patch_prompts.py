@@ -171,6 +171,8 @@ Rules:
   z span, split the lattice-filled z layers at the insert boundaries, add a
   lattice_loadings entry with overrides={insert_universe_id: [[row,col], ...]},
   and set loading_id only on the affected lattice-filled layer(s).
+- Do NOT create empty lattice_loadings such as a "base_loading" placeholder.
+  If a lattice-filled layer uses the unmodified base lattice, leave loading_id null.
 - Do not encode finite axial inserts by changing the base pin_map; the base
   pin_map should remain the through-path geometry such as guide tubes.
 

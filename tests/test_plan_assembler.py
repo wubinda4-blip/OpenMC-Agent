@@ -17,6 +17,7 @@ from openmc_agent.plan_builder.patches import (
     CellLayerPatch,
     CoordinateConvention,
     FactsPatch,
+    LatticeLoadingPatchItem,
     MaterialSpecPatch,
     MaterialsPatch,
     PinMapPatch,
@@ -245,6 +246,17 @@ def test_axial_insert_coords_keep_guide_tube_base_for_unseen_model() -> None:
     pin_map.pyrex_rod_coords = [(3, 6)]
     pin_map.thimble_plug_coords = [(3, 9), (6, 6), (9, 3)]
     pin_map.coordinate_convention = CoordinateConvention(index_base=1)
+    axial_layers = next(p for p in patches if getattr(p, "patch_type", "") == "axial_layers")
+    axial_layers.layers[0].loading_id = "base_loading"
+    axial_layers.lattice_loadings = [
+        LatticeLoadingPatchItem(
+            loading_id="base_loading",
+            base_lattice_id="assembly_lattice",
+            derived_lattice_id="assembly_lattice",
+            overrides={},
+            purpose="base lattice",
+        )
+    ]
 
     result = assemble_simulation_plan_from_patches(patches)
 
@@ -256,8 +268,8 @@ def test_axial_insert_coords_keep_guide_tube_base_for_unseen_model() -> None:
     assert lattice.universe_pattern[2][8] == "gt"
     assert lattice.universe_pattern[5][5] == "gt"
     assert lattice.universe_pattern[8][2] == "gt"
-    assert len(model.lattice_loadings) == 1
-    loading = model.lattice_loadings[0]
+    assert len(model.lattice_loadings) == 2
+    loading = next(l for l in model.lattice_loadings if l.id == "pyrex_rod_loading")
     assert loading.overrides == {"pyrex_rod": [(2, 5)]}
     active_layer = next(l for l in model.core.axial_layers if l.id == "active_fuel")
     assert active_layer.loading_id == loading.id
