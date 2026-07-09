@@ -120,6 +120,7 @@ class PlanBuildState(AgentBaseModel):
     patch_status: dict[str, str] = Field(default_factory=dict)
 
     assembled_plan: dict[str, Any] | None = None
+    material_composition_report: dict[str, Any] | None = None
     validation_issues: list[dict[str, Any]] = Field(default_factory=list)
     build_log: list[BuildEvent] = Field(default_factory=list)
 
@@ -464,6 +465,7 @@ def assemble_state_if_ready(
     state: PlanBuildState,
     *,
     strict: bool = True,
+    material_policy: Any = None,
 ) -> PlanBuildState:
     """Attempt to assemble all valid patches in ``state`` into a SimulationPlan.
 
@@ -476,6 +478,9 @@ def assemble_state_if_ready(
         The build state (mutated in place).
     strict
         Forwarded to the assembler.
+    material_policy
+        Optional material composition policy forwarded to the assembler.
+        Accepts the enum, a string value, or None (assembler default).
 
     Returns
     -------
@@ -519,10 +524,17 @@ def assemble_state_if_ready(
         data={"patch_types": [getattr(p, "patch_type", "?") for p in parsed_patches]},
     )
 
-    result = assemble_simulation_plan_from_patches(parsed_patches, strict=strict)
+    assembler_kwargs: dict[str, Any] = {"strict": strict}
+    if material_policy is not None:
+        assembler_kwargs["material_policy"] = material_policy
+    result = assemble_simulation_plan_from_patches(parsed_patches, **assembler_kwargs)
 
     if result.ok and result.plan is not None:
         state.assembled_plan = result.plan.model_dump(mode="json")
+        if result.material_composition_report is not None:
+            state.material_composition_report = (
+                result.material_composition_report.model_dump(mode="json")
+            )
         state.add_event(
             event_type=EVENT_ASSEMBLY_COMPLETED,
             message=f"assembly completed ({len(result.summary)} summary entries)",

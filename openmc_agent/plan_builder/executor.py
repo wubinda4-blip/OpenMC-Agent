@@ -520,6 +520,7 @@ def run_incremental_planning(
     reference_patch_policy: str = "off",
     reference_path: str | Path | None = None,
     few_shot_case_ids: list[str] | None = None,
+    material_policy: Any = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -534,6 +535,9 @@ def run_incremental_planning(
         otherwise continue with input-driven LLM patch generation).
     reference_path
         Explicit path to reference file.  If None, tries benchmark lookup.
+    material_policy
+        Optional material composition policy forwarded to the assembler.
+        Accepts the enum, a string value, or None (assembler default).
     """
     issues: list[IncrementalExecutionIssue] = []
     reference_data: dict[str, Any] | None = None
@@ -964,7 +968,10 @@ def run_incremental_planning(
         )
 
     # Assemble.
-    state = assemble_state_if_ready(state, strict=strict)
+    assemble_kwargs: dict[str, Any] = {"strict": strict}
+    if material_policy is not None:
+        assemble_kwargs["material_policy"] = material_policy
+    state = assemble_state_if_ready(state, **assemble_kwargs)
     if state.assembled_plan is not None:
         state.add_event(
             event_type=EVENT_INCREMENTAL_EXECUTION_COMPLETED,
@@ -972,6 +979,7 @@ def run_incremental_planning(
             data={
                 "patch_count": len(state.patches),
                 "valid_patch_count": len(state.get_valid_patches()),
+                "material_composition_report_present": state.material_composition_report is not None,
             },
         )
         return IncrementalExecutionResult(
@@ -993,6 +1001,10 @@ def run_incremental_planning(
                 }),
                 "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
                 "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
+                "material_composition_policy": _latest_assembly_summary(state).get(
+                    "material_composition_policy", "default"
+                ),
+                "material_composition_report_present": state.material_composition_report is not None,
             },
         )
     else:

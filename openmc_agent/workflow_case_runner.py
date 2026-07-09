@@ -305,6 +305,7 @@ def _artifact_keys(artifacts: list[str] | dict[str, Any]) -> list[str]:
             path = Path(str(artifact))
             keys.add(path.stem or path.name)
     keys.add("capability_report")
+    keys.add("material_composition_report")
     return sorted(keys)
 
 

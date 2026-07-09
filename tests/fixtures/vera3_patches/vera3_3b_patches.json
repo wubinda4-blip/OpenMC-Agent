@@ -57,8 +57,8 @@
           "density_g_cm3": 6.56,
           "composition": {"Zr": 1.0},
           "composition_basis": "weight_frac",
-          "composition_status": "approximate",
-          "warnings": ["Zircaloy-4 approximated as pure Zr"]
+          "composition_status": "needs_library",
+          "warnings": ["Zircaloy-4 stub: pure Zr placeholder pending alloy library substitution"]
         },
         {
           "material_id": "inconel718",
@@ -67,8 +67,8 @@
           "density_g_cm3": 8.19,
           "composition": {"Ni": 1.0},
           "composition_basis": "weight_frac",
-          "composition_status": "approximate",
-          "warnings": ["Inconel-718 approximated as pure Ni"]
+          "composition_status": "needs_library",
+          "warnings": ["Inconel-718 stub: pure Ni placeholder pending alloy library substitution"]
         },
         {
           "material_id": "ss304",
@@ -77,8 +77,8 @@
           "density_g_cm3": 8.00,
           "composition": {"Fe": 1.0},
           "composition_basis": "weight_frac",
-          "composition_status": "approximate",
-          "warnings": ["SS-304 approximated as pure Fe"]
+          "composition_status": "needs_library",
+          "warnings": ["SS-304 stub: pure Fe placeholder pending alloy library substitution"]
         },
         {
           "material_id": "helium",

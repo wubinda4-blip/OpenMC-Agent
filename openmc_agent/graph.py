@@ -226,6 +226,7 @@ def build_plan_graph(
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
+    material_policy: Any = None,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -263,6 +264,7 @@ def build_plan_graph(
             use_incremental_executor=use_incremental_executor,
             allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback_for_incremental_failure,
             reference_patch_policy=reference_patch_policy,
+            material_policy=material_policy,
         ),
     )
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
@@ -672,6 +674,12 @@ def _write_incremental_artifacts(state: GraphState, exec_result: Any) -> list[st
                     ip = att_dir / f"{att_key}_issues.json"
                     _write_json_file(ip, issues)
                     artifact_paths.append(str(ip))
+        # P0-NEW: save material composition report for traceability.
+        mat_rep = getattr(exec_result.state, "material_composition_report", None)
+        if mat_rep:
+            mr_path = inc_dir / "material_composition_report.json"
+            _write_json_file(mr_path, mat_rep)
+            artifact_paths.append(str(mr_path))
     except Exception:
         pass  # artifact writing must not block the workflow
     return artifact_paths
@@ -683,6 +691,7 @@ def _run_incremental_plan_generation(
     patch_llm_client: PatchLlmClient,
     allow_fallback: bool = False,
     reference_patch_policy: str = "off",
+    material_policy: Any = None,
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -736,6 +745,7 @@ def _run_incremental_plan_generation(
         strict=True,
         reference_patch_policy=reference_patch_policy,
         few_shot_case_ids=few_shot_case_ids,
+        material_policy=material_policy,
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -894,6 +904,7 @@ def _make_generate_plan_node(
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
+    material_policy: Any = None,
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):
@@ -911,6 +922,7 @@ def _make_generate_plan_node(
                 patch_llm_client=patch_llm_client,
                 allow_fallback=allow_monolithic_fallback_for_incremental_failure,
                 reference_patch_policy=reference_patch_policy,
+                material_policy=material_policy,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -939,6 +951,7 @@ def _make_generate_plan_node(
                     patch_llm_client=auto_client,
                     allow_fallback=False,
                     reference_patch_policy=reference_patch_policy,
+                    material_policy=material_policy,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

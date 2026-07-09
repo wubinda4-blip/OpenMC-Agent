@@ -52,6 +52,14 @@ from openmc_agent.schemas import (
 )
 
 from .material_resolution import resolve_material_id
+from ..material_policy import (
+    DEFAULT_MATERIAL_POLICY,
+    MaterialCompositionPolicy,
+    MaterialCompositionReport,
+    apply_policy_to_material_patch,
+    build_composition_report,
+    policy_from_value,
+)
 from .patches import (
     AxialLayerPatchItem,
     AxialLayersPatch,
@@ -95,6 +103,7 @@ class PlanAssemblyResult(AgentBaseModel):
     plan_dict: dict[str, Any] | None = None
     issues: list[PlanAssemblyIssue] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    material_composition_report: MaterialCompositionReport | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +230,34 @@ def _extract_patches(
 
 def _assemble_materials(
     patch: MaterialsPatch,
-) -> tuple[list[ComplexMaterialSpec], list[PlanAssemblyIssue]]:
+    *,
+    policy: MaterialCompositionPolicy = DEFAULT_MATERIAL_POLICY,
+) -> tuple[list[ComplexMaterialSpec], list[PlanAssemblyIssue], MaterialCompositionReport]:
     issues: list[PlanAssemblyIssue] = []
     materials: list[ComplexMaterialSpec] = []
+    decisions: dict[str, Any] = {}
+    rewritten_patches: list[MaterialSpecPatch] = []
 
     for mat in patch.materials:
+        rewritten, decision = apply_policy_to_material_patch(mat, policy)
+        rewritten_patches.append(rewritten)
+        decisions[rewritten.material_id] = decision
+        if decision.issue_code == "materials.alloy_library_applied":
+            issues.append(PlanAssemblyIssue(
+                code="materials.alloy_library_applied",
+                severity="info",
+                message=decision.reason,
+                path=f"materials[{rewritten.material_id}]",
+            ))
+        elif decision.issue_code == "materials.alloy_library_missing":
+            issues.append(PlanAssemblyIssue(
+                code="materials.alloy_library_missing",
+                severity="warning",
+                message=decision.reason,
+                path=f"materials[{rewritten.material_id}]",
+            ))
+
+    for mat in rewritten_patches:
         composition: list[NuclideSpec] = []
         percent_type = "ao" if mat.composition_basis == "atom_frac" else "wo"
         for name, fraction in mat.composition.items():
@@ -282,7 +314,8 @@ def _assemble_materials(
                 path=f"materials[{mat.material_id}]",
             ))
 
-    return materials, issues
+    report = build_composition_report(rewritten_patches, policy=policy, decisions=decisions)
+    return materials, issues, report
 
 
 def _assemble_universes(
@@ -728,6 +761,7 @@ def assemble_simulation_plan_from_patches(
     patches: list[Any],
     *,
     strict: bool = True,
+    material_policy: str | MaterialCompositionPolicy | None = None,
 ) -> PlanAssemblyResult:
     """Assemble validated patches into a complete ``SimulationPlan``.
 
@@ -738,17 +772,23 @@ def assemble_simulation_plan_from_patches(
     strict
         When True, missing required patches or unresolved references produce
         errors that block assembly.
+    material_policy
+        Optional material composition policy. Accepts the enum, a string value,
+        or None (uses :data:`DEFAULT_MATERIAL_POLICY`).
 
     Returns
     -------
     PlanAssemblyResult
         ``ok=True`` with a valid ``SimulationPlan`` on success;
-        ``ok=False`` with structured issues on failure.
+        ``ok=False`` with structured issues on failure. The
+        ``material_composition_report`` field is populated on success.
     """
+    policy = policy_from_value(material_policy)
     issues: list[PlanAssemblyIssue] = []
     indexed = _extract_patches(patches)
     actual_pin_counts: dict[str, int] = {}
     material_aliases_applied: dict[str, str] = {}
+    material_composition_report: MaterialCompositionReport | None = None
 
     facts: FactsPatch | None = indexed.get("facts")
     materials_patch: MaterialsPatch | None = indexed.get("materials")
@@ -771,7 +811,9 @@ def assemble_simulation_plan_from_patches(
     # 2. Assemble materials.
     if materials_patch is None:
         materials_patch = MaterialsPatch(materials=[])
-    plan_materials, mat_issues = _assemble_materials(materials_patch)
+    plan_materials, mat_issues, material_composition_report = _assemble_materials(
+        materials_patch, policy=policy,
+    )
     issues.extend(mat_issues)
     material_ids = {m.id for m in plan_materials}
 
@@ -962,7 +1004,10 @@ def assemble_simulation_plan_from_patches(
             "axial_overlay_count": len(axial_overlays),
             "actual_pin_counts": actual_pin_counts,
             "material_aliases_applied": material_aliases_applied,
+            "material_composition_policy": policy.value,
+            "material_composition_report_present": material_composition_report is not None,
         },
+        material_composition_report=material_composition_report,
     )
 
 

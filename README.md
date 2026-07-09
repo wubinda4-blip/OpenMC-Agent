@@ -312,3 +312,31 @@ python scripts/run_workflow_benchmark.py \
   --allow-real-llm \
   --out data/evals/workflow/deepseek_manual
 ```
+
+### P0-NEW-1: Controlled material composition policy
+
+Structural alloys reduced to pure elements (Zircaloy-4 -> pure Zr, SS-304 -> pure Fe, Inconel-718 -> pure Ni) lose real absorption and bias keff high. The controlled alloy library (`openmc_agent/material_library.py`) provides nominal handbook compositions; the policy (`openmc_agent/material_policy.py`, default `apply_alloy_library`) substitutes them only for known structural alloys that the plan reduced to their base element. Fuel, water, helium, and pyrex are always preserved. Every substitution is recorded in a `material_composition_report.json` artifact.
+
+Dry-run comparison (base Python, no OpenMC):
+
+```bash
+python scripts/compare_material_policies.py \
+  --benchmark VERA3 --variant 3A \
+  --input Input/VERA3_problem.md \
+  --model fake --dry-run \
+  --out data/evals/material_policy/VERA3_3A_dry
+```
+
+Real OpenMC smoke comparison (inside `openmc-env`):
+
+```bash
+python scripts/compare_material_policies.py \
+  --benchmark VERA3 --variant 3A \
+  --input Input/VERA3_problem.md \
+  --model deepseek:deepseek-chat \
+  --batches 5 --inactive 1 --particles 1000 \
+  --allow-real-llm \
+  --out data/evals/material_policy/VERA3_3A_alloy
+```
+
+The resulting `comparison_report.json` records `preserve_plan` keff, `apply_alloy_library` keff, and `delta_pcm`. See `docs/evaluation.md` for details and safety boundaries.
