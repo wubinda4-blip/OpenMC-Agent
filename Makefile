@@ -1,11 +1,36 @@
-.PHONY: check-env check-env-openmc test-quick test-no-openmc test-openmc test-all benchmark-workflow-fake benchmark-workflow-real diff-workflow-reports gate-workflow-regression
+.PHONY: check-env check-env-openmc test-quick test-no-openmc test-openmc test-all \
+        benchmark-fake benchmark-real benchmark-save-baseline benchmark-check \
+        model diff-workflow-reports gate-workflow-regression
 
+# ---------------------------------------------------------------------------
+# Configurable defaults (override via command line, e.g. make model INPUT=foo.md)
+# ---------------------------------------------------------------------------
+PYTHON   ?= conda run -n openmc-env python
+MODEL    ?= deepseek:deepseek-chat
+CASES    ?= tests/fixtures/evaluation_cases.json
+
+# Single-model run defaults
+INPUT    ?= Input/VERA3_problem.md
+VARIANT  ?= 3A
+BENCHMARK ?= VERA3
+REF_POLICY ?= reference_only_for_structural
+MAT_POLICY ?= apply_alloy_library
+OUT      ?= data/runs/$(BENCHMARK)_$(VARIANT)
+# Set ALLOW_REAL_LLM=1 on the command line to enable non-fake models
+ALLOW_REAL_LLM ?=
+
+# ---------------------------------------------------------------------------
+# Environment checks
+# ---------------------------------------------------------------------------
 check-env:
 	python scripts/check_environment.py
 
 check-env-openmc:
 	python scripts/check_environment.py --require-openmc
 
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 test-quick:
 	python -m pytest -q tests/test_schemas.py tests/test_evaluation.py tests/test_benchmark_runner.py
 
@@ -18,29 +43,87 @@ test-openmc:
 test-all:
 	python -m pytest -q
 
-benchmark-workflow-fake:
-	python scripts/run_workflow_benchmark.py \
-		--cases tests/fixtures/evaluation_cases.json \
+# ---------------------------------------------------------------------------
+# Single-model run (real LLM modeling on one input file)
+#
+# Usage:
+#   make model                                    # defaults: VERA3 3A, deepseek
+#   make model INPUT=Input/VERA3_problem.md VARIANT=3B
+#   make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2
+#   make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
+#   make model INPUT=Input/VERA3_problem.md MODEL=fake              # no LLM, quick smoke
+#   make model INPUT=Input/VERA3_problem.md SMOKE=1                 # run OpenMC smoke test
+# ---------------------------------------------------------------------------
+model:
+	$(PYTHON) scripts/run_model.py \
+		--input $(INPUT) \
+		--model $(MODEL) \
+		--benchmark $(BENCHMARK) \
+		--variant $(VARIANT) \
+		--reference-patch-policy $(REF_POLICY) \
+		--material-policy $(MAT_POLICY) \
+		--out $(OUT) \
+		$(if $(ALLOW_REAL_LLM),--allow-real-llm) \
+		$(if $(SMOKE),--smoke-test)
+
+# Dry-run: resolve requirement + feature detection only (no LLM, no OpenMC)
+model-dry:
+	$(PYTHON) scripts/run_model.py \
+		--input $(INPUT) \
+		--benchmark $(BENCHMARK) \
+		--variant $(VARIANT) \
+		--dry-run
+
+# ---------------------------------------------------------------------------
+# Workflow benchmark (evaluation cases manifest — for regression tracking)
+# ---------------------------------------------------------------------------
+benchmark-fake:
+	$(PYTHON) scripts/run_workflow_benchmark.py \
+		--cases $(CASES) \
 		--model fake \
 		--mode plan-only \
 		--out data/evals/workflow/fake
 
-benchmark-workflow-real:
-	python scripts/run_workflow_benchmark.py \
-		--cases tests/fixtures/evaluation_cases.json \
-		--model $${OPENMC_AGENT_MODEL:-deepseek:deepseek-chat} \
+benchmark-real:
+	$(PYTHON) scripts/run_workflow_benchmark.py \
+		--cases $(CASES) \
+		--model $(MODEL) \
 		--mode plan-only \
 		--allow-real-llm \
-		--out data/evals/workflow/real
+		--out data/evals/workflow/current
 
+# Save current benchmark result as the regression baseline
+benchmark-save-baseline:
+	rm -rf data/evals/workflow/baseline
+	cp -r data/evals/workflow/current data/evals/workflow/baseline
+	@echo "Baseline saved to data/evals/workflow/baseline"
+
+# Run real benchmark + diff against baseline + regression gate (one command)
+benchmark-check:
+	$(PYTHON) scripts/run_workflow_benchmark.py \
+		--cases $(CASES) \
+		--model $(MODEL) \
+		--mode plan-only \
+		--allow-real-llm \
+		--out data/evals/workflow/current
+	$(PYTHON) scripts/diff_evaluation_reports.py \
+		--base data/evals/workflow/baseline/evaluation_report.json \
+		--head data/evals/workflow/current/evaluation_report.json \
+		--out data/evals/workflow/current/report_diff.md \
+		--fail-on-regression
+	@echo "Diff report: data/evals/workflow/current/report_diff.md"
+
+# ---------------------------------------------------------------------------
+# Report diff (compare any two evaluation_report.json)
+# ---------------------------------------------------------------------------
 diff-workflow-reports:
-	python scripts/diff_evaluation_reports.py \
-		--base $${BASE_REPORT} \
-		--head $${HEAD_REPORT} \
-		--out $${OUT_DIFF:-report_diff.md}
+	$(PYTHON) scripts/diff_evaluation_reports.py \
+		--base $(BASE_REPORT) \
+		--head $(HEAD_REPORT) \
+		--out $(OUT_DIFF:-report_diff.md)
 
 gate-workflow-regression:
-	python scripts/diff_evaluation_reports.py \
-		--base $${BASE_REPORT} \
-		--head $${HEAD_REPORT} \
+	$(PYTHON) scripts/diff_evaluation_reports.py \
+		--base $(BASE_REPORT) \
+		--head $(HEAD_REPORT) \
 		--fail-on-regression

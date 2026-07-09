@@ -292,26 +292,37 @@ pytest                 # 或 python -m pytest
 The P0 workflow benchmark is a lightweight, report-generating evaluation entry point for the workflow trace contract. By default it uses the `fake` model, runs in `plan-only` mode, and does not call OpenMC or a real LLM.
 
 ```bash
-make benchmark-workflow-fake
+make benchmark-fake                # fake model, no LLM/OpenMC
+make benchmark-real                # real LLM (deepseek), plan-only
+make benchmark-save-baseline       # save current result as regression baseline
+make benchmark-check               # run real + diff baseline + regression gate
 ```
 
-The command writes:
+`benchmark-check` runs the real LLM benchmark, compares against the saved baseline, and exits non-zero if `pass_rate` / `plan_schema_success_rate` / `artifact_completeness_rate` regress or new cases fail. Override the model with `MODEL=glm:glm-4-plus`.
 
-- `evaluation_report.json` with aggregate metrics and per-case outcomes;
-- `benchmark_summary.md` with pass rate, planning/artifact metrics, and failed cases;
-- `traces/<case_id>.json` for every case, including failures;
-- `case_artifacts/<case_id>/` for per-case summaries and future artifacts.
+The command writes `evaluation_report.json`, `benchmark_summary.md`, `traces/`, and `case_artifacts/` under the output directory.
 
-Failed cases should be inspected by `failed_stage`, `failed_patch_type`, and `issue_codes` before comparing metric deltas. Real LLM runs are opt-in only:
+### Single-model run (real LLM modeling on one input file)
 
 ```bash
-python scripts/run_workflow_benchmark.py \
-  --cases tests/fixtures/evaluation_cases.json \
-  --model deepseek:deepseek-chat \
-  --mode plan-only \
-  --allow-real-llm \
-  --out data/evals/workflow/deepseek_manual
+# Defaults: VERA3 3A, deepseek, apply_alloy_library
+make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1
+
+# Switch variant / benchmark / input file
+make model INPUT=Input/VERA3_problem.md VARIANT=3B ALLOW_REAL_LLM=1
+make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2 ALLOW_REAL_LLM=1
+
+# Switch LLM model
+make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
+
+# Dry-run (resolve + feature detection, no LLM/OpenMC)
+make model-dry INPUT=Input/VERA3_problem.md
+
+# Run with OpenMC smoke test (keff)
+make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 SMOKE=1
 ```
+
+Output goes to `data/runs/<BENCHMARK>_<VARIANT>/` (overridable via `OUT=...`). Artifacts include `simulation_plan.json`, `model.py`, `incremental/material_composition_report.json`, and traces.
 
 ### P0-NEW-1: Controlled material composition policy
 
