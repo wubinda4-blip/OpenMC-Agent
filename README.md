@@ -159,6 +159,68 @@ python -m openmc_agent.inspect --md-file Input/case2.md --plan --interactive-fee
 
 ---
 
+## Makefile 快速入门
+
+所有命令默认用 `conda run -n openmc-env python` 执行（`aisuite` 在该环境），可通过 `PYTHON=` 覆盖。
+
+### 单文件建模（真实 LLM）
+
+```bash
+# 最常用：跑 VERA3 3A（默认 deepseek）
+make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1
+
+# 切换 variant / 堆型 / 输入文件
+make model INPUT=Input/VERA3_problem.md VARIANT=3B ALLOW_REAL_LLM=1
+make model INPUT=Input/VERA2_problem.md BENCHMARK=VERA2 VARIANT=2A ALLOW_REAL_LLM=1
+
+# 切换 LLM
+make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
+
+# 不调 LLM，只看 feature detection（秒级，不花钱）
+make model-dry INPUT=Input/VERA3_problem.md
+
+# 带 OpenMC smoke test（输出 keff）
+make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 SMOKE=1
+```
+
+输出写入 `data/runs/<BENCHMARK>_<VARIANT>/`，包含 `simulation_plan.json`、`model.py`、`incremental/material_composition_report.json` 和 traces。
+
+### 回归 benchmark（evaluation cases 清单）
+
+```bash
+make benchmark-fake              # 快速 fake（秒级，不用 LLM/OpenMC）
+make benchmark-real              # 真实 LLM，11 个 case
+make benchmark-save-baseline     # 把当前结果存为 baseline
+make benchmark-check             # 跑 + 对比 baseline + regression gate（一键验证）
+```
+
+`benchmark-check` 在 `pass_rate` / `plan_schema_success_rate` / `artifact_completeness_rate` 下降或出现新失败 case 时 exit 非 0，适合 PR gate。换模型：`make benchmark-check MODEL=glm:glm-4-plus`。
+
+### 报告 diff（手动比较任意两个 report）
+
+```bash
+make diff-workflow-reports BASE_REPORT=path/a.json HEAD_REPORT=path/b.json
+make gate-workflow-regression BASE_REPORT=... HEAD_REPORT=...
+```
+
+### 可覆盖的 Makefile 变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `INPUT` | `Input/VERA3_problem.md` | 输入 `.md` / `.txt` / `.json` 文件 |
+| `VARIANT` | `3A` | 变体（3A / 3B / 2A …） |
+| `BENCHMARK` | `VERA3` | 堆型标识 |
+| `MODEL` | `deepseek:deepseek-chat` | LLM 模型（`provider:model` 格式） |
+| `ALLOW_REAL_LLM` | （空 = 不允许） | 设 `=1` 才允许真实 LLM 调用 |
+| `SMOKE` | （空 = 不跑） | 设 `=1` 跑 OpenMC smoke test |
+| `REF_POLICY` | `reference_only_for_structural` | reference patch 策略 |
+| `MAT_POLICY` | `apply_alloy_library` | 材料成分策略 |
+| `OUT` | `data/runs/<BENCHMARK>_<VARIANT>` | 输出目录 |
+| `CASES` | `tests/fixtures/evaluation_cases.json` | benchmark 用例清单 |
+| `PYTHON` | `conda run -n openmc-env python` | Python 解释器 |
+
+---
+
 ## 组件建模示例
 
 `Input/case2.md` 是一个 15x15 PWR 组件用例：默认组件包含燃料棒和导向管，另有一个候选 burnable poison universe，但默认不插入 lattice。完整流程会让 LLM 生成 `SimulationPlan`，本地 `RectAssemblyRenderer` 再做可达性分析，只渲染默认 lattice 实际使用的材料、cell、universe。
