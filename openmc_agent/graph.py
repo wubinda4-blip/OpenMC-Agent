@@ -389,9 +389,16 @@ def _receive_requirement(state: GraphState) -> GraphState:
         resolved_requirement_summary,
     )
 
-    output_dir = state.get("output_dir")
-    base_dir = Path(output_dir) if output_dir else None
-    resolved = resolve_requirement_references(requirement, base_dir=base_dir)
+    # Input files are almost always specified relative to the invocation
+    # directory (cwd), not the per-run output_dir. Try cwd first, then fall
+    # back to output_dir.
+    resolved = resolve_requirement_references(requirement, base_dir=None)
+    if not resolved.referenced_files:
+        output_dir = state.get("output_dir")
+        if output_dir:
+            resolved = resolve_requirement_references(
+                requirement, base_dir=output_dir,
+            )
     resolved_summary = resolved_requirement_summary(resolved)
     # Use the resolved requirement for downstream planning/LLM calls so the
     # file content is visible to feature detection AND patch generation.
