@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.pyc
+.env
+*.h5
+statepoint.*.h5
+data/runs/**/statepoint.*.h5

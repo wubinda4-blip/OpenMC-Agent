@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
+
 from helpers.vera3_acceptance import build_vera3_like_plan, load_vera3_reference
 from openmc_agent.geometry_bounds import (
     compute_geometry_bounds,

@@ -6,6 +6,12 @@ fields, and the build_plan_graph / CLI wiring.
 """
 
 from __future__ import annotations
+import pytest
+
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
 
 from pathlib import Path
 

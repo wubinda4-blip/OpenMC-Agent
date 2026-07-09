@@ -13,7 +13,9 @@
     "case_id": "hex-lattice-unsupported",
     "category": "hex_lattice",
     "user_request": "Build a hexagonal assembly lattice.",
-    "expected_issue_codes": ["lattice.hex.renderer_unsupported"],
+    "expected_issue_codes": [
+      "lattice.hex.renderer_unsupported"
+    ],
     "expected_renderability": "skeleton",
     "expected_supported_renderer": "assembly",
     "should_require_human_confirmation": true,
@@ -23,14 +25,18 @@
     "case_id": "runtime-geometry-overlap",
     "category": "runtime_error",
     "user_request": "Diagnose an OpenMC geometry overlap.",
-    "expected_issue_codes": ["runtime.geometry_overlap"],
+    "expected_issue_codes": [
+      "runtime.geometry_overlap"
+    ],
     "should_trigger_retrieval": true
   },
   {
     "case_id": "cross-sections-missing",
     "category": "runtime_error",
     "user_request": "Handle missing cross_sections.xml.",
-    "expected_issue_codes": ["runtime.cross_sections_missing"],
+    "expected_issue_codes": [
+      "runtime.cross_sections_missing"
+    ],
     "should_require_human_confirmation": true,
     "should_trigger_retrieval": false
   },
@@ -38,7 +44,168 @@
     "case_id": "dangling-lattice-universe",
     "category": "export_xml_error",
     "user_request": "Fix a lattice universe reference that export_xml rejected.",
-    "expected_issue_codes": ["export_xml.dangling_lattice_universe"],
+    "expected_issue_codes": [
+      "export_xml.dangling_lattice_universe"
+    ],
     "should_trigger_retrieval": true
+  },
+  {
+    "case_id": "pin-cell-basic",
+    "category": "pin_cell",
+    "user_request": "Build a simple UO2 pin-cell model with fuel, cladding, moderator, reflective radial boundary, and criticality settings.",
+    "expected_issue_codes": [],
+    "forbidden_issue_codes": [
+      "schema.plan.missing_model",
+      "renderer.unsupported"
+    ],
+    "expected_renderability": "runnable",
+    "expected_supported_renderer": "pin_cell",
+    "should_trigger_retrieval": false,
+    "should_require_human_confirmation": false,
+    "expected_planning_mode": "monolithic",
+    "expected_plan_schema_success": true,
+    "expected_artifact_complete": true,
+    "expected_artifact_keys": [
+      "workflow_trace",
+      "capability_report"
+    ],
+    "metadata": {
+      "mode": "plan_only",
+      "run_openmc": false
+    }
+  },
+  {
+    "case_id": "assembly-2d-basic",
+    "category": "assembly",
+    "user_request": "Build a basic 17x17 2D rectangular assembly lattice with fuel pins, guide tubes, water moderator, and no axial heterogeneity.",
+    "expected_issue_codes": [],
+    "forbidden_issue_codes": [
+      "assembly3d.axial_layers_required",
+      "incremental.execution_failed"
+    ],
+    "expected_renderability": "exportable",
+    "expected_supported_renderer": "assembly",
+    "should_trigger_retrieval": true,
+    "should_require_human_confirmation": false,
+    "expected_planning_mode": "monolithic",
+    "expected_plan_schema_success": true,
+    "expected_artifact_complete": true,
+    "expected_artifact_keys": [
+      "workflow_trace",
+      "capability_report"
+    ],
+    "metadata": {
+      "mode": "plan_only",
+      "run_openmc": false
+    }
+  },
+  {
+    "case_id": "assembly-3d-overlays",
+    "category": "assembly",
+    "user_request": "Build a 3D 17x17 assembly with axial layers and spacer grid overlays. Preserve pin through-path geometry.",
+    "expected_issue_codes": [],
+    "forbidden_issue_codes": [
+      "assembly3d.axial_layers_required",
+      "assembly3d.spacer_grid_material_slab",
+      "assembly3d.pin_through_path_missing"
+    ],
+    "expected_renderability": "exportable",
+    "expected_supported_renderer": "assembly",
+    "should_trigger_retrieval": true,
+    "should_require_human_confirmation": false,
+    "expected_planning_mode": "incremental",
+    "expected_incremental_patch_types": [
+      "facts",
+      "materials",
+      "universes",
+      "pin_map",
+      "axial_layers",
+      "axial_overlays",
+      "settings"
+    ],
+    "expected_plan_schema_success": true,
+    "expected_incremental_patch_success": true,
+    "expected_artifact_complete": true,
+    "expected_artifact_keys": [
+      "workflow_trace",
+      "capability_report"
+    ],
+    "metadata": {
+      "mode": "plan_only",
+      "run_openmc": false
+    }
+  },
+  {
+    "case_id": "quarter-core-or-quarter-assembly",
+    "category": "core",
+    "user_request": "Build a quarter-symmetry core or quarter assembly model with reflective symmetry boundaries and plots centered on the modeled quadrant.",
+    "expected_issue_codes": [],
+    "forbidden_issue_codes": [
+      "geometry_bounds.plot_misses_model",
+      "source_settings.source_misses_fuel"
+    ],
+    "expected_renderability": "skeleton",
+    "should_trigger_retrieval": true,
+    "should_require_human_confirmation": false,
+    "expected_plan_schema_success": true,
+    "expected_artifact_complete": true,
+    "expected_artifact_keys": [
+      "workflow_trace",
+      "capability_report"
+    ],
+    "metadata": {
+      "mode": "plan_only",
+      "run_openmc": false
+    }
+  },
+  {
+    "case_id": "fact-gap-case",
+    "category": "impossible",
+    "user_request": "Build an assembly from an unspecified proprietary fuel with missing density, enrichment, lattice pitch, pin radii, and cross-section library path.",
+    "expected_issue_codes": [
+      "fact_gap.human_confirmation_required"
+    ],
+    "forbidden_issue_codes": [
+      "fact_gap.silently_filled",
+      "materials.fabricated_density"
+    ],
+    "expected_renderability": "skeleton",
+    "should_trigger_retrieval": true,
+    "should_require_human_confirmation": true,
+    "expected_plan_schema_success": true,
+    "expected_artifact_complete": true,
+    "expected_artifact_keys": [
+      "workflow_trace",
+      "capability_report"
+    ],
+    "metadata": {
+      "mode": "plan_only",
+      "run_openmc": false
+    }
+  },
+  {
+    "case_id": "unsupported-hex-or-depletion",
+    "category": "hex_lattice",
+    "user_request": "Build a hexagonal lattice depletion model with burnup steps and transport-depletion coupling.",
+    "expected_issue_codes": [
+      "lattice.hex.renderer_unsupported"
+    ],
+    "forbidden_issue_codes": [
+      "capability.misclassified_runnable"
+    ],
+    "expected_renderability": "skeleton",
+    "expected_supported_renderer": "assembly",
+    "should_trigger_retrieval": true,
+    "should_require_human_confirmation": true,
+    "expected_plan_schema_success": true,
+    "expected_artifact_complete": true,
+    "expected_artifact_keys": [
+      "workflow_trace",
+      "capability_report"
+    ],
+    "metadata": {
+      "mode": "plan_only",
+      "run_openmc": false
+    }
   }
 ]

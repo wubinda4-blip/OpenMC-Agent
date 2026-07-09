@@ -7,7 +7,6 @@ from difflib import get_close_matches
 from pathlib import Path
 
 from openmc_agent.error_catalog import issue_from_catalog
-from openmc_agent.executor import render_openmc_smoke_test_script
 from openmc_agent.schemas import RepairHint, SimulationPlan, ValidationIssue, ValidationReport
 
 
@@ -106,6 +105,8 @@ def run_smoke_test(
     max_batches: int = 20,
     timeout: float = 120.0,
 ) -> ToolResult:
+    from openmc_agent.executor import render_openmc_smoke_test_script
+
     settings = plan.execution_check.settings
     if settings.particles > max_particles or settings.batches > max_batches:
         return ToolResult(

@@ -11,11 +11,6 @@ from openmc_agent.evaluation import (
     aggregate_evaluation_results,
     evaluate_trace_against_case,
 )
-from openmc_agent.graph import (
-    _ask_expert,
-    _make_reflect_plan_node,
-    _make_validate_plan_node,
-)
 from openmc_agent.grep_search import RetrievedEvidence
 from openmc_agent.knowledge_graph import GraphContext
 from openmc_agent.llm import StructuredOutputResult
@@ -225,7 +220,11 @@ def test_summary_helpers_extract_structured_counts() -> None:
     assert capability_summary["supported_renderer"] == "assembly"
 
 
+@pytest.mark.openmc
 def test_validate_plan_node_records_validation_completed() -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import _make_validate_plan_node
+
     node = _make_validate_plan_node(max_retries=1)
 
     updates = node({"simulation_plan": _simple_plan(), "requirement": "pin"})
@@ -234,7 +233,11 @@ def test_validate_plan_node_records_validation_completed() -> None:
     assert "validation_completed" in [event.event_type for event in trace.events]
 
 
+@pytest.mark.openmc
 def test_reflect_plan_records_retrieval_events(monkeypatch) -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import _make_reflect_plan_node
+
     issue = issue_from_catalog("runtime.geometry_overlap")
     report = ValidationReport.from_issues([issue])
     plan = _simple_plan()
@@ -272,7 +275,11 @@ def test_reflect_plan_records_retrieval_events(monkeypatch) -> None:
     assert "reflect_plan_completed" in event_types
 
 
+@pytest.mark.openmc
 def test_reflect_plan_auto_repair_success_records_no_llm(monkeypatch) -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import _make_reflect_plan_node
+
     plan = _complex_plan_with_bad_universe()
     issue = issue_from_catalog("export_xml.dangling_lattice_universe")
     report = ValidationReport.from_issues([issue])
@@ -310,7 +317,11 @@ def test_reflect_plan_auto_repair_success_records_no_llm(monkeypatch) -> None:
     assert completed.metadata["llm_called"] is False
 
 
+@pytest.mark.openmc
 def test_ask_expert_records_human_confirmation_without_interrupt() -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import _ask_expert
+
     issue = issue_from_catalog("runtime.cross_sections_missing")
     report = ValidationReport.from_issues([issue])
     plan = _simple_plan()
@@ -332,7 +343,11 @@ def test_ask_expert_records_human_confirmation_without_interrupt() -> None:
     assert trace.events[-1].metadata["requires_human_confirmation_count"] >= 1
 
 
+@pytest.mark.openmc
 def test_trace_failure_does_not_block_workflow(monkeypatch) -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import _make_validate_plan_node
+
     class BrokenRecorder:
         def __init__(self, *args, **kwargs):
             raise RuntimeError("trace broken")

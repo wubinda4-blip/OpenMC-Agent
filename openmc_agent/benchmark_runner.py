@@ -381,16 +381,32 @@ def fake_case_runner(case: EvaluationCase, ablation: AblationConfig) -> Workflow
             metadata={"requires_human_confirmation_count": 1},
         )
 
+    p0_metadata = {
+        "planning_mode": case.expected_planning_mode,
+        "plan_schema_success": case.expected_plan_schema_success,
+        "incremental_patch_success": case.expected_incremental_patch_success,
+        "artifact_keys": list(case.expected_artifact_keys),
+        "patch_status": {
+            patch_type: "valid" for patch_type in case.expected_incremental_patch_types
+        },
+        "valid_patch_types": list(case.expected_incremental_patch_types),
+        "failed_stage": case.expected_failed_stage,
+        "failed_patch_type": case.expected_failed_patch_type,
+    }
+    p0_metadata = {k: v for k, v in p0_metadata.items() if v not in (None, [], {})}
+
     if case.expected_renderability:
         recorder.add_event(
             "capability_assessed",
             renderability=case.expected_renderability,
             supported_renderer=case.expected_supported_renderer,
+            metadata=p0_metadata,
         )
         recorder.add_event(
             "workflow_completed",
             renderability=case.expected_renderability,
             supported_renderer=case.expected_supported_renderer,
+            metadata=p0_metadata,
         )
         recorder.trace.final_renderability = case.expected_renderability
         recorder.trace.final_supported_renderer = case.expected_supported_renderer
@@ -398,7 +414,7 @@ def fake_case_runner(case: EvaluationCase, ablation: AblationConfig) -> Workflow
             "valid" if case.expected_renderability == "runnable" else "skeleton"
         )
     else:
-        recorder.add_event("workflow_completed", summary="fake workflow completed")
+        recorder.add_event("workflow_completed", summary="fake workflow completed", metadata=p0_metadata)
 
     return recorder.trace
 

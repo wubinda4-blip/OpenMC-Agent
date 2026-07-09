@@ -1,6 +1,10 @@
-import openmc
 import json
 import pytest
+
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
 import shutil
 import subprocess
 import sys

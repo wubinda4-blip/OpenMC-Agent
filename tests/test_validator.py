@@ -1,3 +1,9 @@
+import pytest
+
+pytestmark = pytest.mark.openmc
+openmc = pytest.importorskip(
+    "openmc", reason="OpenMC is required for this integration test"
+)
 from openmc_agent.executor import render_openmc_script
 from openmc_agent.schemas import (
     AxialLayerSpec,
