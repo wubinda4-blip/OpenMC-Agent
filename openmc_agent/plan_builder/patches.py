@@ -230,9 +230,20 @@ class AxialLayerPatchItem(_PatchBase):
     z_max_cm: float | None = None
     fill_type: Literal["lattice", "material", "universe", "void", "unknown"] = "unknown"
     fill_id: str | None = None
+    loading_id: str | None = None
     requires_human_confirmation: bool = False
     assumptions: list[str] = Field(default_factory=list)
     source_note: str | None = None
+
+
+class LatticeLoadingPatchItem(_PatchBase):
+    """A per-axial-layer loading applied to an existing lattice."""
+
+    loading_id: str
+    base_lattice_id: str
+    derived_lattice_id: str | None = None
+    overrides: dict[str, list[tuple[int, int]]] = Field(default_factory=dict)
+    purpose: str = ""
 
 
 class AxialLayersPatch(_PatchBase):
@@ -241,6 +252,7 @@ class AxialLayersPatch(_PatchBase):
     patch_type: Literal["axial_layers"] = "axial_layers"
     layers: list[AxialLayerPatchItem]
     axial_domain_cm: tuple[float, float] | None = None
+    lattice_loadings: list[LatticeLoadingPatchItem] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +433,7 @@ _PLAN_ONLY_FIELDS: frozenset[str] = frozenset({
     # complex_model sub-fields that indicate full-plan output.
     "core", "surfaces", "regions", "assemblies",
     "reflectors", "control_rods", "trisos", "pebbles",
-    "lattice_loadings", "packed_spheres",
+    "packed_spheres",
 })
 
 # Pin-map-only forbidden fields (full lattice expansion markers).
@@ -468,6 +480,7 @@ __all__ = [
     "CoordinateConvention",
     "PinMapPatch",
     "AxialLayerPatchItem",
+    "LatticeLoadingPatchItem",
     "AxialLayersPatch",
     "AxialOverlayPatchItem",
     "AxialOverlaysPatch",

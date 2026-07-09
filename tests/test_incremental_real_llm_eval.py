@@ -67,10 +67,13 @@ def test_vera3_3b_fake_eval_report(tmp_path: Path) -> None:
     # Assembly summary.
     assert report.assembly.ok is True
     assert report.assembly.lattice_size == [17, 17]
-    assert report.assembly.pyrex_count == 16
-    assert report.assembly.thimble_plug_count == 8
-    assert report.assembly.axial_layer_count == 12
+    assert report.assembly.pyrex_count == 0
+    assert report.assembly.thimble_plug_count == 0
+    assert report.assembly.axial_layer_count == 14
     assert report.assembly.overlay_count == 8
+    plan = state.assembled_plan["complex_model"]
+    assert plan["lattice_loadings"][0]["id"] == "pyrex_active_loading"
+    assert len(plan["lattice_loadings"][0]["overrides"]["pyrex_rod"]) == 16
 
     # Guard check.
     assert report.guard.blocking_issue_count == 0

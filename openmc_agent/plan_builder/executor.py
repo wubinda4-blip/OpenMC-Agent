@@ -1013,6 +1013,7 @@ def run_incremental_planning(
                     e.patch_type for e in state.patches.values() if e.status == "valid"
                 }),
                 "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
+                "lattice_loading_count": _latest_assembly_summary(state).get("lattice_loading_count", 0),
                 "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
                 "material_composition_policy": _latest_assembly_summary(state).get(
                     "material_composition_policy", "default"
@@ -1046,6 +1047,7 @@ def run_incremental_planning(
                 "reference_path": state.metadata.get("reference_path"),
                 "reference_patches_used": reference_patches_used,
                 "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
+                "lattice_loading_count": _latest_assembly_summary(state).get("lattice_loading_count", 0),
                 "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
             },
         )

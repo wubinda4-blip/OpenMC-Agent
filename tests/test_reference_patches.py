@@ -95,8 +95,9 @@ def test_build_pin_map_from_reference() -> None:
     ref = load_benchmark_reference(benchmark_id="VERA3", variant="3B")
     patch = build_reference_patch(patch_type="pin_map", reference=ref, variant="3B")
     assert patch is not None
-    assert len(patch.pyrex_rod_coords) == 16
-    assert len(patch.thimble_plug_coords) == 8
+    assert len(patch.guide_tube_coords) == 24
+    assert len(patch.pyrex_rod_coords) == 0
+    assert len(patch.thimble_plug_coords) == 0
     assert len(patch.instrument_tube_coords) == 1
     # Should NOT have a full 289-entry pattern.
     assert not hasattr(patch, "universe_pattern")
@@ -106,7 +107,8 @@ def test_build_axial_layers_from_reference() -> None:
     ref = load_benchmark_reference(benchmark_id="VERA3", variant="3B")
     patch = build_reference_patch(patch_type="axial_layers", reference=ref, variant="3B")
     assert patch is not None
-    assert len(patch.layers) == 12
+    assert len(patch.layers) == 14
+    assert len(patch.lattice_loadings) == 1
     has_fuel = any(l.role == "active_fuel" for l in patch.layers)
     assert has_fuel
 

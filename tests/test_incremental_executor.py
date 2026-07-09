@@ -552,13 +552,20 @@ def test_vera3_3b_full_incremental_execution() -> None:
     assert len(pattern) == 17
     assert all(len(row) == 17 for row in pattern)
     flat = [uid for row in pattern for uid in row]
-    assert sum(1 for u in flat if u == "pyrex_rod") == 16
-    assert sum(1 for u in flat if u == "thimble_plug") == 8
+    assert sum(1 for u in flat if u == "guide_tube") == 24
+    assert sum(1 for u in flat if u == "pyrex_rod") == 0
+    assert sum(1 for u in flat if u == "thimble_plug") == 0
     assert sum(1 for u in flat if u == "instrument_tube") == 1
     assert sum(1 for u in flat if u == "fuel_pin") == 264
+    assert pattern[2][8] == "guide_tube"  # 1-based (3,9)
+    assert pattern[5][5] == "guide_tube"  # 1-based (6,6)
+    assert pattern[8][2] == "guide_tube"  # 1-based (9,3)
+    loading = cm["lattice_loadings"][0]
+    assert loading["id"] == "pyrex_active_loading"
+    assert len(loading["overrides"]["pyrex_rod"]) == 16
 
     # Axial layers + overlays.
-    assert len(cm["core"]["axial_layers"]) == 12
+    assert len(cm["core"]["axial_layers"]) == 14
     assert len(cm["core"]["axial_overlays"]) == 8
 
     # assembly3d guard.
@@ -593,11 +600,12 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
     ]
     assert result.summary["actual_pin_counts"] == {
         "fuel_pin": 264,
-        "guide_tube": 0,
+        "guide_tube": 24,
         "instrument_tube": 1,
-        "pyrex_rod": 16,
-        "thimble_plug": 8,
+        "pyrex_rod": 0,
+        "thimble_plug": 0,
     }
+    assert result.summary["lattice_loading_count"] == 1
     assert result.summary["material_aliases_applied"] == {
         "grid_zircaloy4": "zircaloy4"
     }

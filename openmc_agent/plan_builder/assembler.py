@@ -40,6 +40,7 @@ from openmc_agent.schemas import (
     CoreSpec,
     ExecutionCheckSpec,
     FillRefSpec,
+    LatticeLoadingSpec,
     LatticeSpec,
     NuclideSpec,
     PlotSpec,
@@ -587,10 +588,28 @@ def _assemble_axial_layers(
     patch: AxialLayersPatch,
     lattice_id: str,
     material_ids: set[str],
-) -> tuple[list[AxialLayerSpec], list[PlanAssemblyIssue], dict[str, str]]:
+) -> tuple[list[AxialLayerSpec], list[LatticeLoadingSpec], list[PlanAssemblyIssue], dict[str, str]]:
     issues: list[PlanAssemblyIssue] = []
     layers: list[AxialLayerSpec] = []
+    loadings: list[LatticeLoadingSpec] = []
     aliases_applied: dict[str, str] = {}
+
+    for item in patch.lattice_loadings:
+        try:
+            loadings.append(LatticeLoadingSpec(
+                id=item.loading_id,
+                base_lattice_id=item.base_lattice_id or lattice_id,
+                derived_lattice_id=item.derived_lattice_id,
+                overrides=item.overrides,
+                purpose=item.purpose,
+            ))
+        except Exception as exc:
+            issues.append(PlanAssemblyIssue(
+                code="assembly.simulation_plan_schema_invalid",
+                severity="error",
+                message=f"lattice loading {item.loading_id!r} failed schema: {exc}",
+                path=f"axial_layers.lattice_loadings[{item.loading_id}]",
+            ))
 
     for item in patch.layers:
         fill, alias = _layer_fill_ref(item, lattice_id, material_ids)
@@ -615,6 +634,7 @@ def _assemble_axial_layers(
                 z_min_cm=item.z_min_cm if item.z_min_cm is not None else 0.0,
                 z_max_cm=item.z_max_cm if item.z_max_cm is not None else 0.0,
                 fill=fill,
+                loading_id=item.loading_id,
                 purpose=item.role,
             )
             layers.append(layer)
@@ -626,7 +646,7 @@ def _assemble_axial_layers(
                 path=f"axial_layers[{item.layer_id}]",
             ))
 
-    return layers, issues, aliases_applied
+    return layers, loadings, issues, aliases_applied
 
 
 def _layer_fill_ref(
@@ -845,13 +865,14 @@ def assemble_simulation_plan_from_patches(
 
     # 5. Assemble axial layers.
     if axial_layers_patch is not None:
-        axial_layers, al_issues, axial_layer_aliases = _assemble_axial_layers(
+        axial_layers, lattice_loadings, al_issues, axial_layer_aliases = _assemble_axial_layers(
             axial_layers_patch, lattice_id, material_ids,
         )
         issues.extend(al_issues)
         material_aliases_applied.update(axial_layer_aliases)
     else:
         axial_layers = []
+        lattice_loadings = []
 
     # 6. Assemble axial overlays.
     if axial_overlays_patch is not None:
@@ -911,6 +932,7 @@ def assemble_simulation_plan_from_patches(
         regions=pin_regions,
         universes=plan_universes,
         lattices=lattices,
+        lattice_loadings=lattice_loadings,
         assemblies=[assembly],
         core=core,
         assumptions=list(dict.fromkeys(all_assumptions)),
@@ -1007,6 +1029,7 @@ def assemble_simulation_plan_from_patches(
             "material_count": len(plan_materials),
             "universe_count": len(plan_universes),
             "lattice_present": lattice is not None,
+            "lattice_loading_count": len(lattice_loadings),
             "axial_layer_count": len(axial_layers),
             "axial_overlay_count": len(axial_overlays),
             "actual_pin_counts": actual_pin_counts,

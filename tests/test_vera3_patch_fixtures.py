@@ -140,25 +140,27 @@ class TestVERA3BAssembly:
 
     def test_pyrex_count(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
-        lattice = result.plan.complex_model.lattices[0]
-        flat = [uid for row in lattice.universe_pattern for uid in row]
-        pyrex_count = sum(1 for u in flat if u == "pyrex_rod")
-        assert pyrex_count == 16
+        loading = result.plan.complex_model.lattice_loadings[0]
+        assert loading.id == "pyrex_active_loading"
+        assert len(loading.overrides["pyrex_rod"]) == 16
 
     def test_thimble_plug_count(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         lattice = result.plan.complex_model.lattices[0]
         flat = [uid for row in lattice.universe_pattern for uid in row]
         plug_count = sum(1 for u in flat if u == "thimble_plug")
-        assert plug_count == 8
+        assert plug_count == 0
 
-    def test_guide_tube_count_zero(self, vera3_3b_patches: list) -> None:
-        """In 3B, all 24 guide tube positions are replaced by Pyrex (16) + plugs (8)."""
+    def test_guide_tube_count_preserved_in_base_lattice(self, vera3_3b_patches: list) -> None:
+        """The base lattice keeps guide tubes water-filled; inserts are axial loadings."""
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         lattice = result.plan.complex_model.lattices[0]
         flat = [uid for row in lattice.universe_pattern for uid in row]
         gt_count = sum(1 for u in flat if u == "guide_tube")
-        assert gt_count == 0
+        assert gt_count == 24
+        assert lattice.universe_pattern[2][8] == "guide_tube"  # 1-based (3,9)
+        assert lattice.universe_pattern[5][5] == "guide_tube"  # 1-based (6,6)
+        assert lattice.universe_pattern[8][2] == "guide_tube"  # 1-based (9,3)
 
     def test_instrument_tube_count(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
@@ -180,10 +182,12 @@ class TestVERA3BAssembly:
         total = sum(len(row) for row in lattice.universe_pattern)
         assert total == 289
 
-    def test_axial_layers_12(self, vera3_3b_patches: list) -> None:
+    def test_axial_layers_14(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         layers = result.plan.complex_model.core.axial_layers
-        assert len(layers) == 12
+        assert len(layers) == 14
+        loaded = next(l for l in layers if l.id == "active_fuel_pyrex_span")
+        assert loaded.loading_id == "pyrex_active_loading"
 
     def test_overlays_8(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
@@ -206,28 +210,29 @@ class TestVERA3BAssembly:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         assert result.summary["actual_pin_counts"] == {
             "fuel_pin": 264,
-            "pyrex_rod": 16,
-            "thimble_plug": 8,
+            "guide_tube": 24,
             "instrument_tube": 1,
-            "guide_tube": 0,
+            "pyrex_rod": 0,
+            "thimble_plug": 0,
         }
+        assert result.summary["lattice_loading_count"] == 1
 
     def test_bad_facts_guide_count_does_not_pollute_lattice_expected_counts(
         self,
         vera3_3b_patches: list,
     ) -> None:
         facts = next(p for p in vera3_3b_patches if p.patch_type == "facts")
-        facts.expected_guide_tube_count = 24
+        facts.expected_guide_tube_count = 0
 
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         assert result.ok is True
         lattice = result.plan.complex_model.lattices[0]
         assert lattice.expected_counts == {
             "fuel_pin": 264,
-            "guide_tube": 0,
+            "guide_tube": 24,
             "instrument_tube": 1,
-            "pyrex_rod": 16,
-            "thimble_plug": 8,
+            "pyrex_rod": 0,
+            "thimble_plug": 0,
         }
         assert "assembly.expected_counts_reconciled" in [
             issue.code for issue in result.issues
