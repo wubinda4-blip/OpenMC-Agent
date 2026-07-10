@@ -281,7 +281,6 @@ fi
 # Single-model inspect mode (default)
 # ---------------------------------------------------------------------------
 cmd=(python -m openmc_agent.inspect --plan --verbose --model "$MODEL"
-     --reference-patch-policy off
      --output-dir "$OUTPUT_DIR")
 
 if [[ "$JSON_OUTPUT" -eq 1 ]]; then
