@@ -1,418 +1,995 @@
 # OpenMC-Agent TODO Roadmap
 
-维护日期：2026-07-10
+维护日期：2026-07-10  
+当前基线：`main`，最近确认提交 `ff0db716`（Regenerate invalid incremental plans with diagnostics）
 
-本文档用于整理项目主线、待完成方向和优先级。它不是单次运行生成的 skeleton `TODO.md`，而是仓库级 roadmap。
+本文档用于维护仓库级主线、已完成能力、近期任务和长期方向。  
+它不是单次运行生成的 skeleton `TODO.md`，也不应记录一次性调试日志。
 
-## 重大里程碑（更新于 2026-07-10）
+---
 
-VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
+## 0. 当前阶段判断
 
-| 指标 | 3A | 3B |
-|---|---|---|
-| Patch 全部 LLM 生成 | ✓ (6 patches) | ✓ (6 patches + deterministic settings) |
-| 17×17 base lattice 展开 | ✓ (264 fuel + 24 GT + 1 IT) | ✓ (264 fuel + 24 GT + 1 IT) |
-| 有限轴向插入件 | - | ✓ (16 Pyrex 通过 `lattice_loadings` 覆盖毒物棒轴向段，plug/空导向管中段保持水) |
-| 轴向 12 层 | ✓ | ✓ |
-| 8 个 spacer grid overlays | ✓ | ✓ |
-| ZCylinder 几何自动构建 | ✓ (6 surfaces, 9 regions) | ✓ (10 surfaces, 15 regions) |
-| 边界条件 (radial=reflective, axial=vacuum) | ✓ | ✓ |
-| OpenMC smoke test | ✓ passed | ✓ passed |
-| keff | ~1.149 (偏高，合金近似) | **0.979** ± 0.004 |
-| Leakage | 0% | 低 |
+项目已完成从“LLM 一次性生成大计划”到“分层规划、语义审查、受限修复、受控路由、确定性渲染和回归评估”的主要架构升级。
 
-关键架构突破：
-- 不再依赖 monolithic 25K JSON（incremental patch 生成避免了截断问题）
-- 不再依赖 reference fixture（LLM 直接生成所有 patch，coord_overlap 确定性修复）
-- assembler 自动从 CellLayerPatch 构建 ZCylinder surfaces + regions
-- assembler 通用归一化有限轴向插入件：base lattice 保持水填充导向管，Pyrex/control/insert 类结构进入 `lattice_loadings`
-- 空 `base_loading` 不再覆盖真实 insert loading，避免 3B 退化成 3A-like 水导向管模型
-- 边界条件从实际几何推导（不 hardcode）
-- 元素符号（He/Zr/Fe/Ni）自动路由到 add_element
-- 受控合金 composition policy 已接入：Zircaloy-4 / SS-304 / Inconel-718 的纯元素近似可替换为 nominal 合金成分，并产出 `material_composition_report.json`
-- workflow benchmark 基础版已可输出 `evaluation_report.json`、`benchmark_summary.md`、per-case trace 和 artifact summary
-- **P0-A LLM Semantic Plan Auditor 已完成**（2026-07-10）：只读语义审查接入 workflow，warning-only 不改 pass/fail，strict 仅 evaluation mismatch 失败；semantic fake benchmark 13/13。
-- **P0-B LLM Patch Repair Proposer 已完成**（2026-07-10）：受限 JSON Patch + path allowlist + protected path policy + clone executor + before/after validation；默认 proposal-only，不运行 OpenMC、不改科学事实；repair fake benchmark 16/16。
+当前重心已经发生变化：
 
-优先级约定：
+```text
+过去：复杂模型能否生成并运行
+现在：生成的模型是否具有可信的几何、材料和 benchmark fidelity
+```
 
-- **P0**：影响主流程可信度、评估闭环或复杂模型可用性的近期必做。
-- **P1**：明显提升能力边界或减少人工诊断成本，完成 P0 后推进。
-- **P2**：扩展适用范围或工程体验，依赖前两类稳定后推进。
-- **P3**：探索性或长期方向，先保持接口与边界清晰。
+近期主线不再是继续增加新的 Agent 模块，而是：
 
-## 1. P0 新主线：LLM 智能化闭环
+1. 把 VERA3 3A/3B 打磨为可信的 geometry gold model；
+2. 完成材料和等效结构 fidelity；
+3. 建立几何与数值双重 benchmark acceptance；
+4. 再进行真实 LLM unseen-path 重建；
+5. 最后才把通过验收的知识写入 benchmark memory 和匿名 few-shot。
 
-目标：在保持“LLM 只生成结构化计划、不直接执行代码”的安全边界下，把更多目前依赖确定性 Python glue 的决策环节升级为可观测、可回退、可评估的 LLM 协作环节，逐步接近 Claude/Codex 类成熟 agent 的任务理解、工具选择、反思修复和长期改进能力。
+### 状态总览
 
-设计原则：
+| 能力 | 状态 |
+|---|---|
+| Incremental patch planning | ✅ 已完成并作为复杂模型默认路径 |
+| LLM Semantic Plan Auditor | ✅ 已完成 |
+| LLM Patch Repair Proposer | ✅ 已完成 |
+| LLM Run Supervisor | ✅ 已完成 |
+| Invalid incremental plan 诊断后重新生成 | ✅ 已完成 |
+| Workflow trace / fake benchmark / evaluation metrics | ✅ 已完成基础闭环 |
+| Composable lattice transformations | ✅ 已完成 |
+| Nested component override / through-path preservation | ✅ 已完成 |
+| Axial loading production materialization | ✅ 已完成 |
+| VERA3 geometry contract | ✅ 已建立 |
+| VERA3 rendered XML point-probe tests | ✅ 已建立 |
+| VERA3 plot provenance / annotated plots | ✅ 已建立 |
+| VERA3 benchmark-accurate geometry | 🚧 未完成 |
+| VERA3 benchmark-accurate materials | 🚧 未完成 |
+| VERA3 keff / power acceptance | ⬜ 未开始正式验收 |
+| VERA3 gold memory / few-shot 发布 | ⬜ 禁止在验收前进行 |
 
-- LLM 做语义判断、任务分解、候选方案、审查和修复建议；Python 仍做 schema 校验、硬约束、渲染、OpenMC 执行和回归 gate。
-- 每个新增 LLM 环节必须有 deterministic fallback、trace 记录、可离线 fake 测试和评估指标。
-- 不把 benchmark facts、材料密度、真实 loading map、核数据库路径交给 LLM 自动确认。
-- 先做“只读审查/建议”再做“受控结构化 patch”，最后才考虑受限代码生成。
+---
 
-### P0-A：LLM Semantic Plan Auditor ✅ 已完成（2026-07-10）
+## 1. 最近完成的关键里程碑
 
-目的：在 deterministic validator 之后增加一个只读语义审查环节，检查“输入文档事实、LLM patch、assembled plan、renderer 能力声明”之间是否一致。
+### 1.1 LLM 智能闭环
 
-> 状态（2026-07-10）：已完成。已实现 `semantic_audit` schema / input builder / prompt / client / fake / fallback，接入 workflow trace/artifacts 与 benchmark audit metrics；warning-only 默认不改变 route/pass-fail，strict 仅在 evaluation expectation mismatch 时失败。新增 semantic regression fixture 与 8 个测试文件；semantic fake benchmark 13/13 pass_rate=100%。下方步骤保留为设计参考。
+#### P0-A：Semantic Plan Auditor ✅
 
-优先覆盖：
+已具备：
 
-1. 轴向语义：有限插入件是否应进入 `lattice_loadings`，base lattice 是否错误承载了只在部分轴向出现的结构。
-2. 材料语义：材料 composition policy 是 nominal approximation、plan-provided 还是缺失确认，报告是否说清。
-3. 几何语义：3D/2D、边界条件、spacer overlay、source bounds 是否和输入描述冲突。
-4. Reference 路径审计：复杂模型默认必须是 unseen-model path；reference 只能显式 policy 或 regression gold 使用。
+- structured semantic findings；
+- deterministic fallback；
+- warning-only / strict evaluation 模式；
+- trace 与 artifact；
+- benchmark precision / recall / false-positive 指标；
+- 轴向、材料、reference policy、capability 等语义审查。
 
-实现步骤：
+#### P0-B：Patch Repair Proposer ✅
 
-1. 新增 `semantic_audit` schema：输入摘要、引用 evidence、findings、severity、suggested_patch_target、requires_human_confirmation。
-2. 在 workflow trace 中记录 audit 输入和输出；默认先 warning-only，不改变 plan。
-3. 将 VERA3 3B 导向管/毒物棒 bug 作为首批 semantic regression case：auditor 应能指出 base pin map 和 axial loading 语义不一致。
-4. 指标加入 workflow benchmark：audit finding precision、false positive rate、是否提前发现已知结构错误。
+已具备：
+
+- RFC6902-style 受限 patch；
+- issue-code path allowlist；
+- protected path denylist；
+- clone apply；
+- before/after deterministic validation；
+- accepted / rejected / unsafe 分类；
+- proposal-only / validate-only / apply-if-safe 模式；
+- repair metrics 和 artifacts。
+
+#### P0-C：Run Supervisor ✅
+
+支持动作：
+
+```text
+continue_to_render
+continue_patch_generation
+retry_patch
+request_human_confirmation
+downgrade_to_skeleton
+stop
+```
+
+已具备：
+
+- Python 先计算 allowed actions；
+- deterministic veto；
+- advisory / controlled-route；
+- retry budget；
+- state fingerprint；
+- no-progress / loop detection；
+- deterministic fallback；
+- benchmark action accuracy / unsafe rate 指标。
+
+> 旧 TODO 中“P0-C 下一步待做”的描述已失效。
+
+### 1.2 Incremental planner 稳定化 ✅
+
+复杂模型默认采用：
+
+```text
+facts
+→ materials
+→ universes
+→ pin_map
+→ axial_layers
+→ axial_overlays
+→ settings
+→ assemble
+→ validate
+```
+
+已完成：
+
+- 分层 patch schema；
+- 局部重试；
+- 禁止 full-plan 输出；
+- legacy monolithic fallback 默认关闭；
+- coord overlap 确定性修复；
+- reference patch 显式 policy；
+- failed patch / raw response / artifact 诊断；
+- assembled plan validation 失败后，将 validator diagnostics 返回 patch planner 并启动 fresh incremental regeneration；
+- 不允许只修改 `expected_counts` 掩盖真实 lattice 错误。
+
+最新相关提交：
+
+- `ff0db716`：Regenerate invalid incremental plans with diagnostics
+
+### 1.3 VERA3 geometry IR 与 renderer 架构 ✅
+
+已完成的提交链：
+
+- `0ce30acf`：Establish VERA geometry contracts
+- `71f7af3`：Add composable lattice transformation schemas
+- `e3e301b`：Add deterministic lattice transformation engine
+- `613f351`：Add nested component replacement and through-path guards
+- `0ae4716`：Integrate multi-loading transformations into renderer
+- `e848250`：Migrate VERA3 fixtures to component axial profiles
+- `a8d1722`：Complete VERA3 Step 3
+- `cbda264`：Materialize axial lattice loadings in production renderer
+
+当前支持：
+
+```text
+replace_universe_family
+coordinate_override
+nested_component_override
+```
+
+并支持：
+
+- 一个 axial layer 引用多个 ordered loadings；
+- legacy `loading_id` / `overrides` 迁移；
+- bounded nested-universe fill；
+- guide-tube wall / outer moderator 保留；
+- stable derived-lattice cache key；
+- spacer overlay 与 materialized loading 共存；
+- shoulder 区域保留 guide/instrument through-path；
+- materialization failure 阻止静默回退 base lattice。
+
+### 1.4 VERA3 验收工具基础 ✅
+
+已具备：
+
+- canonical geometry contract；
+- 3A/3B patch fixtures；
+- plan-level acceptance；
+- rendered `geometry.xml` point probes；
+- 3A/3B geometry hash differentiation；
+- XML export；
+- geometry debug；
+- XY / XZ raw plots；
+- 带坐标轴 annotated plots；
+- `plot_manifest.json` 和 SHA256 provenance；
+- plot 强制在目标 output directory 读取本次 XML；
+- plot 异常不再静默吞掉。
+
+---
+
+## 2. 重要纠正：旧里程碑不能继续作为验收结论
+
+旧 TODO 中以下描述已经不再适合作为当前 KPI。
+
+### 2.1 不再检查固定“轴向 12 层”
+
+轴向层数由所有 component profile、finite insert、grid overlap 和 shoulder/nozzle 边界的并集决定。
+
+正确验收指标是：
+
+- axial domain 连续；
+- 无 gap / overlap；
+- 每个 component profile 的 z coverage 正确；
+- 同一 z 段中的 loading / overlay 组合正确；
+- rendered point probes 正确。
+
+固定层数 12、14 或其他数字都不应成为产品断言。
+
+### 2.2 旧 keff 仅是历史 smoke 结果
+
+旧记录：
+
+```text
+3A ~1.149
+3B ~0.979 ± 0.004
+```
+
+是在几何与材料仍存在明显近似或错误时得到的 smoke 结果，不能作为 benchmark acceptance，也不能写入 gold memory。
+
+在以下事项完成前不得据此评价模型准确度：
+
+- fuel pellet-clad helium gap；
+- fuel upper plenum 半径；
+- Pyrex upper gas profile；
+- spacer-grid 质量守恒；
+- nozzle / core-plate homogenized mixture；
+- variant-specific coolant；
+- controlled alloy / Pyrex compositions；
+- 正式收敛设置和 reference comparison。
+
+### 2.3 “能导出 XML”不等于 benchmark-accurate
+
+当前需要区分：
+
+```text
+schema-valid
+renderable
+XML-exportable
+geometry-accepted
+physics-material-accepted
+numerically benchmark-accepted
+```
+
+只有最后三层全部通过，才可晋升为 VERA3 gold model。
+
+---
+
+## 3. P0 当前主线：VERA3 Gold Model
+
+### P0-V0：重新验证最新 production renderer 🚨 立即执行
+
+目标：确认 `cbda264` 之后，最终 XML 已真实包含 axial transformations，而不是只在 assembled plan 中存在。
+
+需要重新生成：
+
+```text
+data/evals/vera3_geometry/3A
+data/evals/vera3_geometry/3B
+```
+
+必须检查：
+
+- ordinary fuel center, `z=100` → UO₂；
+- ordinary fuel center, `z=382` → helium；
+- fuel clad radial point → Zircaloy-4；
+- 3B Pyrex annulus, `z=100` → Pyrex；
+- Pyrex guide wall → Zircaloy-4；
+- thimble center, `z=384` → SS304；
+- same thimble coordinate at `z=382` / `394.5` → water；
+- lower / upper shoulder guide wall → Zircaloy-4；
+- 3A and 3B `geometry.xml` hashes differ；
+- `plot_manifest.json.errors` 为空；
+- geometry debug 无真实 overlap / lost particle / undefined region。
 
 完成标准：
 
-- auditor 不直接修改 plan，但能在报告中稳定指出结构语义冲突。
-- warning-only 模式不会降低现有 fake benchmark 通过率。
-- 至少覆盖 VERA3 3B、2D assembly、3D spacer grid、fact-gap 四类 case。
+- rendered-geometry acceptance 无 blocking issue；
+- annotated XY/XZ 图与 point probes 一致；
+- 结果记录为新的 geometry baseline。
 
-### P0-B：LLM Patch Repair Proposer ✅ 已完成（2026-07-10）
+---
 
-目的：把当前 deterministic auto-repair 覆盖不到的问题交给 LLM 生成“受限 JSON Patch 候选”，再由本地 validator、schema path allowlist 和回归测试决定是否采纳。
+### P0-V1：燃料棒径向 gap 与 plenum 修正 🚧 下一项正式开发任务
 
-> 状态（2026-07-10）：已完成。新增 repair proposal schema、issue→path allowlist、protected path policy、JSON Patch clone executor、before/after deterministic validation、accept/reject/unsafe 判定、prompt/fake client/fallback，接入 workflow trace/artifacts 与 benchmark metrics/CLI。默认 proposal-only，不运行 OpenMC、不改科学事实；validate-only 只作用于 clone。repair proposal tests 19 passed，repair fake benchmark 16/16 pass_rate=100%。下方步骤保留为设计参考。
+当前仍需修正：
 
-实现步骤：
+#### 活性燃料棒
 
-1. 为每个 issue code 定义可修改 schema path allowlist，禁止 LLM patch 触碰 materials facts、benchmark constants、nuclear data path 等高风险字段。
-2. LLM 只输出 RFC6902-style patch 或 patch-schema 层级的结构化修复，不输出 Python 代码。
-3. 应用前后都跑 deterministic validation；失败则保留为建议，不进入 plan。
-4. 对 accepted/rejected patch 记录 rationale，作为后续 few-shot / regression 数据。
+正确径向结构：
 
-完成标准：
+```text
+0.0000–0.4096 cm  UO₂
+0.4096–0.4180 cm  helium gap
+0.4180–0.4750 cm  Zircaloy-4 clad
+r ≥ 0.4750 cm     coolant / grid outer-frame region
+```
 
-- deterministic auto-repair 仍优先；LLM repair 只处理 allowlist 内问题。
-- 每次 repair 都能解释“修了什么、为什么允许、验证是否通过”。
-- benchmark report 统计 accepted/rejected/unsafe repair 数量。
+当前 fixture 仍需要确认是否显式存在 `0.4096–0.418 cm` helium gap。
 
-### P0-C：LLM Run Supervisor ⬜ 待做（下一步）
+#### 上部气腔
 
-目的：让 Agent 像成熟编码 agent 一样管理一次建模 run：根据 trace 决定下一步是继续生成 patch、局部重试、请求用户确认、降级 skeleton、运行 smoke test，还是停止并解释阻塞。
+正确结构：
 
-实现步骤：
+```text
+0.000–0.418 cm  helium
+0.418–0.475 cm  Zircaloy-4 clad
+r ≥ 0.475 cm    coolant / grid outer-frame region
+```
 
-1. 增加 `next_action_decision` schema：候选动作、依据事件、风险、是否需要用户确认。
-2. 先在 `scripts/evaluate_incremental_planning.py` / workflow benchmark 中离线复盘历史 trace，不在线改变流程。
-3. 通过 replay 评估 supervisor 是否比当前硬编码 router 更早定位失败 patch 和阻塞原因。
-4. 达标后以 feature flag 接入真实 workflow，默认 conservative。
-
-完成标准：
-
-- supervisor 的动作建议可复现、可审计，不依赖隐藏上下文。
-- 错误定位粒度至少到 patch type / issue code / renderer stage。
-- 不会绕过 fact-gap human confirmation。
-
-### P1-D：LLM Evidence Synthesizer ⬜ 待做
-
-目的：把 grep/graph/GraphRAG/RAG 的多路证据压缩成“可用于下一步 prompt 或人工审查”的结构化 evidence brief，减少 prompt 噪声并提升修复质量。
-
-实现步骤：
-
-1. 输入 ranked evidence，输出 claims、supporting locators、contradictions、unsafe-auto-fill flags。
-2. 对 retrieval ablation 增加 synthesis quality 指标：useful / irrelevant / unsafe / redundant。
-3. 将 evidence brief 接入 semantic auditor 和 patch repair proposer，而不是直接堆原始片段。
+不得继续使用 `0.4096 cm` 作为 plenum/clad 分界。
 
 完成标准：
 
-- prompt evidence 更短、更可追踪。
-- unsafe fact evidence 不进入自动修复路径。
+- production fixture、geometry contract、acceptance helper 一致；
+- active fuel gap 和 plenum 均有 rendered point probes；
+- XML geometry 无 overlap；
+- fuel volume、gap volume、clad volume 可计算并进入 acceptance report。
 
-### P1-E：LLM Task Decomposer For Unseen Models ⬜ 待做
+---
 
-目的：替代一部分硬编码 feature detection，让 LLM 根据输入文档提出“需要哪些 patch、哪些 renderer 能力、哪些事实缺口、哪些验证步骤”，再由本地 policy 约束。
+### P0-V2：完成 3B Pyrex upper-gas axial profile 🚧
 
-实现步骤：
+输入文件已经给出：
 
-1. 新增 `modeling_task_plan`：patch order、required capabilities、known facts、missing facts、risk tags。
-2. 与现有 `should_use_incremental_planning` 并行运行，先只做对比，不改变路由。
-3. 评估 LLM decomposer 对复杂模型、unsupported subsystem、fact-gap case 的召回率。
-4. 达标后允许它影响 patch order 或追加审查步骤，但不允许跳过 mandatory validation。
+```text
+Pyrex poison segment:
+15.761–376.441 cm
 
-完成标准：
+Pyrex upper helium region inside detailed lattice:
+376.441–397.510 cm
+```
 
-- 对未知复杂模型能提出比纯规则更多的结构风险点。
-- 对简单 pin-cell 不引入额外复杂度。
+需要新增或完善：
 
-### P2-F：Accepted-Run Memory And Few-Shot Mining ⬜ 待做
+```text
+pyrex_upper_plenum_inner_profile
+pyrex_upper_plenum_loading
+```
 
-目的：从通过验证的真实 run 中自动抽取结构模式、失败修复和审查摘要，形成可审计的局部记忆，而不是手工维护越来越多 few-shot。
+径向语义：
 
-实现步骤：
+- SS304 inner tube 保留；
+- SS304 outer clad 保留；
+- poison / inner empty regions切换为 helium；
+- `0.484–0.561 cm` water gap 保留；
+- `0.561–0.602 cm` guide-tube wall 保留；
+- outer moderator 保留。
 
-1. 定义 accepted-run criteria：schema success、validator pass、renderability、可选 smoke pass、人工确认状态。
-2. 从 accepted traces 中抽取 anonymized patch exemplar、failure signature、repair rationale。
-3. 写入可版本化的 `data/few_shot_cases/` 候选区，需要人工 review 后晋升为正式 few-shot。
+需要重新切分并组合 3B 轴向层：
 
-完成标准：
+```text
+376.441–377.711
+fuel active + Pyrex upper gas
 
-- 自动挖掘不直接污染 production prompts。
-- 每个晋升 exemplar 都有 provenance 和适用边界。
+377.711–379.381
+fuel end plug + Pyrex upper gas
 
-### P3-G：Agent-Authored Renderer PR Pipeline ⬜ 待做
+379.381–383.310
+fuel plenum + Pyrex upper gas
 
-目的：保留“LLM 编写新 renderer”的长期能力，但只允许生成候选 PR，不允许在线执行未知 renderer。
+383.310–394.310
+fuel plenum + Pyrex upper gas + thimble
 
-实现步骤：
+394.310–395.381
+fuel plenum + Pyrex upper gas
 
-1. 让 LLM 从 unsupported capability report 生成 renderer design note、schema contract 和候选代码 patch。
-2. 代码必须通过 AST/static checks、sandbox tests、capability contract tests。
-3. 只以 draft PR / review artifact 形式交付，人工合并后才进入 renderer registry。
+395.381–397.510
+fuel positions water + Pyrex upper gas
+```
 
-完成标准：
-
-- 自动生成 renderer 不进入默认运行路径。
-- 新 renderer 的收益必须由 benchmark runner 证明。
-
-## 2. P0 主线：真实评估闭环与回归基准
-
-目标：把当前“功能很多但方向发散”的工程，收束到可量化的 case runner。所有 RAG、GraphRAG、incremental、renderer 改动都应能回答“指标是否变好”。
-
-当前状态：
-
-- 已有 `workflow_trace.py`、`evaluation.py`、`benchmark_runner.py`、`tests/fixtures/evaluation_cases.json`。
-- 已有 `workflow_case_runner.py` / `workflow_benchmark.py` 和 `scripts/run_workflow_benchmark.py`；默认 fake、plan-only、不调用 OpenMC、不调用真实 LLM。
-- benchmark 输出 `evaluation_report.json`、`benchmark_summary.md`、per-case trace 和 artifact summary；fake workflow 已作为本仓库提交前 gate。
-- 真实 LLM / 真实复杂 case 的稳定性仍是 opt-in，尚未形成长期 baseline 和 dashboard。
-
-下一步：
-
-1. ✅ semantic audit / LLM repair 指标已接入 workflow benchmark（audit metrics + repair metrics/CLI）；run supervisor 指标待 P0-C 完成后接入。
-2. 建立真实 LLM opt-in baseline：deepseek / GLM / OpenAI-compatible 模型分别记录 patch success、audit findings、repair success 和 cost/latency。
-3. 增加 retrieval ablation 与 LLM-stage ablation：关闭 semantic audit、repair proposer、evidence synthesizer 后对比指标。
-4. 固化首批复杂评估集：pin-cell、2D assembly、3D assembly with overlays、quarter core、fact-gap case、unsupported hex/depletion case、VERA3 3B axial insert regression。
-5. 为 benchmark report 增加趋势对比：pass rate、new failures、regressions、unsafe repair count、human confirmation preservation。
+在 `386.267–390.133 cm` 还必须叠加 top spacer-grid overlay。
 
 完成标准：
 
-- 一条命令可跑完整评估集。
-- 每个主线改动能报告指标变化。
-- 失败 case 能定位到 patch type / issue code / renderer / retrieval stage。
+- Pyrex 不在 `376.441 cm` 后错误恢复为普通水导向管；
+- 16 个 Pyrex path 在 detailed-lattice upper region 保留正确上部气腔；
+- 8 个 thimble path 与 Pyrex path 坐标互斥；
+- multi-loading + top grid overlay 同时正确渲染；
+- XZ plot 和 point probes 覆盖 poison → gas transition。
 
-## 3. P0 主线：Incremental 分层输出稳定化（已达成主要目标，继续防回归）
+---
 
-目标：复杂模型默认走 input-driven 分层 patch 生成，而不是依赖 monolithic 大 JSON 或 benchmark-specific fixture。
+### P0-V3：Spacer-grid 质量守恒几何 🚧
 
-当前状态：
+当前 `homogenized_open_region` 仍可能把整个 open moderator cell 替换成 grid material，材料体积偏大。
 
-- `plan_builder/` 已实现 `facts -> materials -> universes -> pin_map -> axial_layers -> axial_overlays -> settings` 分层生成、校验、重试、组装。
-- **VERA3 3A 和 3B 均通过真实 LLM (deepseek) incremental pipeline 端到端成功运行**，不使用 reference fixture。
-- coord_overlap 确定性修复（同坐标保留高优先级组）。
-- 有限轴向插入件归一化已修复：base lattice 保持 guide-tube 水通道，Pyrex 等 insert 进入 `lattice_loadings`。
-- 空 `base_loading` 覆盖真实 insert loading 的问题已修复。
-- assembler 自动从 CellLayerPatch 构建 ZCylinder surfaces + regions。
-- 边界条件从实际几何推导（不 hardcode）。
-- reference patch 支持显式策略与 deterministic benchmark id matching；reference 只能作为 gold/reference 回归，不能代替通用建模能力。
-- 3D assembly、spacer grid、special pin map 已有 guard、assembler 与 fixture 回归。
+目标：实现质量/体积守恒的 outer-frame overlay，例如：
 
-下一步：
+```text
+mass_conserving_outer_frame
+```
 
-1. 扩展真实 LLM 测试到其他模型（GLM / OpenAI 兼容模型），记录每层失败类型。
-2. 加强 patch prompt 的最小输出契约：禁止 full plan、禁止 full lattice、要求只输出当前 patch schema。
-3. 扩展 patch few-shot：从现有 IR 反推 pin-cell、2D assembly、quarter-core、unsupported skeleton case 的 patch exemplar。
-4. 增强 resume / artifact 诊断：失败 run 清晰展示最后有效 patch、失败 patch、LLM raw、validation issue、推荐下一步。
-5. 清理文档中仍暗示默认 reference-only 的内容；production 默认应按 unseen model path 处理，reference 仅显式策略启用。
-6. 将 3B axial insert regression 加入正式 workflow benchmark，而不只停留在 unit/fixture 测试。
+输入依据：
 
-完成标准：
+- 端部格架：Inconel-718，质量 1017 g，高度 3.866 cm；
+- 中间格架：Zircaloy-4，质量 875 g，高度 3.810 cm；
+- 质量平均分配到 289 个 pitch cells；
+- grid material 只占 pitch cell 最外侧薄方框；
+- fuel、gap、clad、tube wall、Pyrex、thimble 继续贯穿。
 
-- ✅ VERA3 3B 类复杂 3D assembly 在不使用 reference-only 的情况下能稳定产出可审查 plan。
-- ✅ 每层 patch 的失败可局部重试，不触发 monolithic reflect。
-- policy 行为有单测和 graph integration 测试覆盖。
+需要增加：
 
-## 4. P0 主线：事实缺口与安全边界守护
-
-目标：保持“可检索但不编造事实”的边界，尤其是材料密度、composition、核数据库路径、benchmark 常数、真实 loading map。
-
-当前状态：
-
-- RAG / GraphRAG / few-shot / ingested docs 均声明不能自动确认物理事实。
-- validator、error catalog、retrieval orchestrator 已能保留 human confirmation route。
-- 部分材料仍使用 approximate 纯元素 fallback，并带 warning。
-
-下一步：
-
-1. 建立 fact-gap regression suite：材料密度缺失、composition 缺失、cross section path 缺失、benchmark loading map 缺失都必须保持 human confirmation。
-2. 对 retrieval evidence 加安全分类：context-only、repair-hint、fact-source-candidate、unsafe-auto-fill。
-3. 在 transcript / evaluation report 中显式统计 fact-gap preservation。
-4. 把 approximate composition 与 runnable/exportable 边界进一步收紧，避免“近似可运行”被误读为 benchmark-accurate。
-5. 将 LLM semantic auditor / repair proposer 的 unsafe-auto-fill 行为纳入 regression：任何自动填密度、composition、真实 loading map 的建议都必须被拦截。
+- overlay cross-sectional area / frame thickness；
+- mass/volume consistency validator；
+- renderer outer-frame CSG；
+- overlap checks；
+- per-grid volume acceptance；
+- overlay + transformed lattice combination tests。
 
 完成标准：
 
-- 所有 fact-gap case 不会被 RAG/GraphRAG/few-shot 自动填实。
-- 用户能在报告里看到哪些数据是确认事实，哪些只是 illustrative/approximate。
+- grid material volume 与输入质量在容差内一致；
+- 不再替换整个 moderator open region；
+- 所有 through-path 和 localized insert 保留；
+- geometry debug 和 point probes 通过。
 
-## 5. P1 主线：检索体系收敛与效果评估
+---
 
-目标：把 grep / graph / GraphRAG / RAG 从“多条能力线”收敛成可解释、可评估、可调权重的 retrieval stack。
+### P0-V4：Nozzle / core plate 均匀化材料 🚧
 
-当前状态：
+正确 volume fractions：
 
-- 默认链路：`grep -> graph -> GraphRAG query planner -> GraphRAG -> plain RAG -> evidence ranking`。
-- 已有 query planner、evidence ranker、knowledge ingestion/runtime loader。
-- 权重仍是 heuristic，缺少真实 benchmark calibrated evidence。
+```text
+lower nozzle:
+27.9217 vol% SS304
+72.0783 vol% current-variant coolant
 
-下一步：
+upper nozzle:
+19.1470 vol% SS304
+80.8530 vol% current-variant coolant
 
-1. 在评估 runner 中加入 retrieval ablation：关闭 grep、关闭 graph、关闭 GraphRAG、关闭 RAG、不同 ranker 权重。
-2. 标注 evidence 对修复是否有用：helpful / irrelevant / unsafe / redundant。
-3. 做 query planner confusion matrix：issue intent 是否选对 start nodes、depth、avoid filters。
-4. 增加 LLM Evidence Synthesizer，将多路 evidence 结构化成 claims / contradictions / unsafe flags。
-5. 将 ingested knowledge graph 与 hand-written registry 的冲突、重复、陈旧节点可视化或导出诊断。
-6. 清理策略文档：把 10 个 retrieval/knowledge strategy 文档合并为“当前实现”和“待实验”两层，减少维护分叉。
+lower / upper core plate:
+50 vol% SS304
+50 vol% current-variant coolant
+```
 
-完成标准：
+要求：
 
-- 每次 retrieval 改动能给出 ablation 对比。
-- ranker 权重调整有指标依据。
-- fact-gap 类 issue 的 unsafe evidence 不会进入 auto-repair 路径。
-
-## 6. P1 主线：Renderer 能力与物理 fidelity
-
-目标：在不扩大 LLM 执行权限的前提下，提高可导出/可运行模型的物理表达能力。
-
-当前状态：
-
-- 已有 PinCell、RectAssembly、Core、TRISO、Skeleton。
-- 3D assembly axial layers 与 Level 1 `homogenized_open_region` overlay 可表达 spacer/support 类结构，但不是体积分数标定模型。
-- HexAssembly、depletion/burnup、pebble-bed renderer 仍未实现。
-- 受控合金 composition library 已实现，替代了最危险的纯元素结构合金近似；仍需用 material policy comparison 和 benchmark acceptance 验证 keff 改善。
-- **边界条件无验证**：LLM 提取的边界条件（reflective/vacuum）与输入文档之间没有对照检查；renderer 曾因 fallback 逻辑 bug 将径向面设为 vacuum 导致 57% 泄漏率。
-
-下一步：
-
-1. Material policy comparison：对 VERA3 3A/3B 分别跑 `preserve_plan` vs `apply_alloy_library`，量化 keff delta 和 material report。
-2. Volume-fraction calibrated overlay：为 spacer grid/support plate 加体积/质量标定字段、验证和 renderer。
-3. HexAssemblyRenderer：先做 skeleton-to-exportable 的最小闭环，覆盖 OpenMC `HexLattice` rings / pitch / outer universe。
-4. Depletion/burnup：先建立 IR 与 settings/operator 边界，不急于跑重计算。
-5. Pebble-bed / stochastic geometry：先定义 capability boundary 和 skeleton 输出，避免伪 runnable。
-6. **边界条件验证**：
-   - FactsPatch 增加显式边界字段（`radial_boundary` / `axial_boundary`），从输入文档提取，不 hardcode 堆型假设。
-   - Validator 增加边界合理性检查：泄漏率 >30% 或 keff 远偏离 1 时发出 warning（非 error，因为不同模型可能合理偏离）。
-   - Renderer 渲染后自检：扫描导出 XML 的 `boundary_type`，与 plan 中的 `assembly.boundary` / `core.boundary` 对照，不一致时记录诊断。
+- 3A 和 3B 使用各自 coolant 温度、硼浓度和 composition；
+- nozzle / plate 是 whole-cross-section homogenized slab；
+- detailed lattice 在 `z=397.510 cm` 截断；
+- 不和 guide tube / Pyrex / grid 双重填充；
+- mixture provenance 与 volume fractions 写入 material report。
 
 完成标准：
 
-- 新 renderer 能通过 capability report 明确声明 `skeleton/exportable/runnable`。
-- 不支持的 subsystem 保持 skeleton 或 human confirmation，不伪装成功。
-- 物理近似都进入报告和 TODO，而不是静默进入 runnable 结论。
-- 边界条件在 plan → render → XML 链路中可追溯、可验证。
+- 不再用纯 SS304 slab 替代 mixture；
+- material volume fraction 可确定性验证；
+- 3A/3B mixture materials 不被错误复用。
 
-## 7. P1 主线：复杂 benchmark 验收
+---
 
-目标：从“结构正确”推进到“benchmark workflow 可复现”，但不把 benchmark facts 硬编码进 production code。
+### P0-V5：材料组成可信化 🚧
 
-当前状态：
+优先完成：
 
-- VERA3 3B 有 reference fixture、patch fixture、acceptance helper 和 3D guard 回归。
-- 3B 未见模型路径的 guide-tube/Pyrex axial loading bug 已修复并提交，现有旧 run 需要重新生成 artifacts 才能体现修复。
-- full keff benchmark acceptance 尚未完成。
-- 输入文档与 PDF 资料在工作区存在用户维护的脏文件，尚未纳入受控数据流程。
+1. UO₂：
+   - 3A / 3B 对应 U-234/U-235/U-236/U-238；
+   - O-16 化学计量；
+   - 正确 enrichment 与 density。
 
-下一步：
+2. Pyrex：
+   - B-10 0.712 wt%；
+   - B-11 3.170 wt%；
+   - O-16 55.217 wt%；
+   - Si 40.901 wt%；
+   - density 2.25 g/cc。
 
-1. 明确 benchmark data ownership：哪些是测试 fixture，哪些是用户输入资料，哪些可进入 `data/benchmarks/`。
-2. 做 VERA3 3B full workflow acceptance：plan、render、XML export、plots、smoke test、可选 low-particle keff sanity。
-3. 增加 fixture provenance：每个 reference patch 记录来源、转写边界、不能自动当作事实 source 的说明。
-4. 为 VERA2 / C5G7 / pin-cell 建立小型 acceptance case，优先覆盖结构类型而非堆型名称。
-5. 把“production 不走 reference path”的 acceptance 做成显式 gate：同一 case 应能在 `reference_policy=off` 下产出可审查结构，reference 只用于对照。
+3. Structural alloys：
+   - Zircaloy-4；
+   - SS304；
+   - Inconel-718；
+   - 使用 controlled material library；
+   - 禁止 pure-Zr / pure-Fe 静默进入 benchmark-accurate 结论。
 
-完成标准：
-
-- benchmark fixture 的使用路径清楚：测试 reference、显式 reference policy、或用户输入，不混用。
-- production 代码仍保持堆型无关，不写死 VERA/C5G7 特例。
-
-## 8. P2 主线：工程化与用户体验
-
-目标：降低使用和诊断成本，让项目从研究原型走向可持续维护。
-
-下一步：
-
-1. CLI 增加 `--eval-case` / `--benchmark-suite` / `--retrieval-ablation` 入口。
-2. 统一 run artifact 结构：plan、incremental、retrieval、trace、verification、tool outputs 分目录。
-3. 生成面向用户的 run summary：一句话状态、renderability、阻塞原因、需要用户确认的数据。
-4. CI 分层：fast unit、integration、real OpenMC、real LLM opt-in。
-5. 清理或归档历史 strategy 文档，保留 `docs/project_technical_report.md` + `TODO.md` 作为当前入口。
-6. 增加 LLM supervisor 的用户可读摘要：本轮做了哪些判断、哪些被 deterministic gate 拦截、下一步为什么停止。
+4. Coolant：
+   - variant-specific temperature；
+   - density；
+   - boron ppm；
+   - H/O/B composition；
+   - nozzle/plate mixture 使用同一工况 coolant。
 
 完成标准：
 
-- 新用户能通过 README + TODO 理解当前推荐路径。
-- 失败 run 能在 1-2 个 artifact 中定位原因。
-- CI 不依赖远程模型，真实 LLM 有明确 opt-in 标记。
+- 所有材料有 `composition_status` 和 provenance；
+- no placeholder / approximate material 被标记为 benchmark-confirmed；
+- material report 能区分 confirmed / nominal / approximate / unresolved。
 
-## 9. P2 主线：Prompt、Schema 与 Error Taxonomy 整理
+---
 
-目标：减少隐性规则散落在 prompt、validator、renderer、few-shot、guard 中导致的行为漂移。
+### P0-V6：几何 Gold Acceptance 🚧
 
-下一步：
+几何冻结前必须同时通过：
 
-1. 建立 schema-rule inventory：每个重要字段对应 validator、renderer consumer、retrieval concept、error code。
-2. 清理 prompt 中可能带 benchmark-specific bias 的描述，只保留通用机制。
-3. 对 error catalog 做 coverage audit：哪些 issue 有 route hint、retrieval hint、human confirmation hint、测试。
-4. 将 common repair rules 从 prompt 转移到 deterministic repair / validator hints，减少 LLM 自由发挥。
-5. 为 LLM auditor / repair / supervisor 增加独立 schema 和 issue taxonomy，避免把自然语言自由审查混入核心 SimulationPlan。
+#### Plan-level
+
+- canonical contract diff；
+- base lattice counts；
+- loading coordinates；
+- radial layer radii；
+- axial profile coverage；
+- overlay ranges；
+- boundary conditions；
+- no unresolved blocking fact。
+
+#### Rendered XML-level
+
+- point probes；
+- geometry hashes；
+- geometry debug；
+- no overlaps；
+- no lost particles；
+- no undefined cells/regions；
+- volume consistency；
+- XY/XZ manual inspection。
+
+#### 人工审查
+
+至少检查：
+
+- ordinary fuel path；
+- Pyrex path；
+- thimble path；
+- ordinary guide path；
+- instrument path；
+- lower / upper shoulder；
+- all grid overlap intervals；
+- transition surfaces。
+
+完成后生成：
+
+```text
+data/benchmarks/VERA3/
+  provenance.json
+  geometry_contract.json
+  variant_3a_gold_plan.json
+  variant_3b_gold_plan.json
+  geometry_acceptance_report.json
+  material_acceptance_report.json
+  rendered_hashes.json
+  plots/
+```
+
+---
+
+### P0-V7：数值 Benchmark Acceptance ⬜
+
+只在 V0–V6 完成后开始。
+
+顺序：
+
+1. source / settings smoke；
+2. low-particle run；
+3. convergence study；
+4. production keff run；
+5. reference keff comparison；
+6. pin power / axial power comparison；
+7. uncertainty and bias report。
+
+必须区分误差来源：
+
+- geometry；
+- material composition；
+- homogenization；
+- nuclear data；
+- temperature / boron；
+- statistics；
+- source convergence。
+
+禁止：
+
+- 通过随意调密度拟合 keff；
+- 使用旧 smoke keff 作为目标；
+- 忽略 uncertainty；
+- 在 geometry/material acceptance 前开始数值调参。
+
+---
+
+## 4. P0：真实 LLM 与评估闭环
+
+### 4.1 Real-LLM advisory baseline 🚧
+
+P0-A/B/C 的 fake benchmark 已证明连接和 policy 正确，但仍需真实模型 baseline。
+
+至少测试：
+
+- clean exportable case；
+- failed patch；
+- fact-gap；
+- unsupported subsystem；
+- VERA3 axial/profile conflict；
+- unsafe material repair proposal。
+
+记录：
+
+- semantic precision / false positive；
+- repair accepted / rejected / unsafe；
+- supervisor action accuracy；
+- target-patch accuracy；
+- veto / fallback；
+- latency / token / cost；
+- human-confirmation preservation。
+
+真实模型第一轮只允许：
+
+```text
+semantic audit = warning-only
+repair = proposal-only
+supervisor = advisory
+```
+
+达标后才小范围开启 controlled-route。
+
+### 4.2 Workflow benchmark regression gate 🚧
+
+继续完善：
+
+- report-to-report diff；
+- case status changes；
+- new regressions；
+- fixed cases；
+- unsafe repair count；
+- supervisor unsafe action；
+- fact-gap bypass；
+- artifact completeness；
+- real LLM opt-in baseline trends。
+
+### 4.3 Fact-gap regression suite 🚧
+
+必须覆盖：
+
+- density missing；
+- composition missing；
+- benchmark constants missing；
+- loading map missing；
+- nuclear data path missing；
+- ambiguous axial bounds；
+- conflicting source documents。
 
 完成标准：
 
-- 新增 IR 字段必须同时说明 validation、rendering、retrieval、failure mode。
-- issue code 的 route 行为稳定可测。
+- retrieval / few-shot / auditor / repair / supervisor 均不能自动确认缺失科学事实；
+- 报告明确显示 confirmed / approximate / unresolved。
 
-## 10. P3 探索方向：Renderer Authoring 与自动扩展
+---
 
-目标：保留 agent 在线编写 renderer 的接口，但在安全机制成熟前不进入默认主流程。
+## 5. P1：Unseen-model 智能能力
 
-当前状态：
+### P1-A：LLM Evidence Synthesizer ⬜
 
-- `renderer_authoring/` 是受控 stub / sandbox 方向，主流程未启用。
+目标：将 grep / graph / GraphRAG / RAG 证据压缩为结构化 brief：
 
-下一步：
+```text
+claims
+supporting locators
+contradictions
+unsafe-auto-fill flags
+missing evidence
+```
 
-1. 只允许生成候选 patch/PR，不允许自动执行未知 renderer。
-2. 加入 static checks、sandbox tests、capability contract tests。
-3. 在 benchmark runner 中评估新 renderer 是否真的提升 renderability。
-4. 与 P3-G 保持一致：只产出设计说明、候选 patch 或 draft PR，不进入默认 renderer registry。
+先离线评估，不直接改变 planner facts。
 
-完成标准：
+### P1-B：LLM Task Decomposer ⬜
 
-- 自动生成代码必须先进入 review/test，不直接进入生产渲染路径。
+目标：对 unseen models 生成：
 
-## 11. 建议推进顺序（更新于 2026-07-10）
+```text
+required patch types
+patch order
+required capabilities
+known facts
+fact gaps
+risk tags
+verification plan
+```
 
-VERA3 3A/3B 端到端成功后，重心从"能不能跑通"转向"更智能、更可审计、更不容易静默跑错"：
+先与 deterministic feature detection 并行比较，不允许跳过 mandatory validation。
 
-1. ✅ **P0-A Semantic Plan Auditor**（已完成 2026-07-10）：warning-only 语义审查已接入 workflow 与 benchmark。
-2. ✅ **P0-B Patch Repair Proposer**（已完成 2026-07-10）：allowlist 内结构化 repair patch + 本地 validator 采纳判定。
-3. **P0-C Run Supervisor**（下一步）：先离线 replay trace，再以 feature flag 接入真实 workflow。
-4. **P0 评估闭环升级**：auditor/repair 指标已纳入 benchmark；supervisor 指标待 P0-C；下一步建立真实 LLM opt-in baseline 与 regression diff。
-5. **P0 Fact-gap 安全边界**：防止检索、few-shot 和新增 LLM 环节带来错误"自动填事实"。
-6. **P1 Renderer fidelity**：
-   - 边界条件验证（已加入 TODO）
-   - Volume-fraction calibrated overlay
-   - HexAssembly renderer
-7. **P1 Benchmark acceptance**：把 VERA3 3B 从结构验收推进到 keff 对标，同时保证 `reference_policy=off` 可独立验收。
-8. **P1 Evidence Synthesizer / Task Decomposer**：在安全边界稳定后提升检索压缩和未知模型任务分解能力。
-9. **P2 Accepted-run memory**：从通过验证的 run 中挖掘候选 few-shot，但必须人工晋升。
-10. **P2 工程化与文档收敛**。
+### P1-C：Retrieval ablation ⬜
 
-## 12. 当前不建议做的事
+对比：
 
-- 不要把 VERA/C5G7 等 benchmark facts 写死进 production prompt、validator、renderer 或 guard。
-- 不要让 RAG/GraphRAG 自动确认材料密度、composition、核数据库路径、benchmark 常数或真实 loading map。
-- 不要让新增 LLM 环节直接写最终 `model.py`、直接调用 OpenMC、直接改 renderer registry。
-- 不要把一次通过的真实 LLM 输出无审查地加入 few-shot；必须有 provenance、anonymization 和适用边界。
-- 不要为了单个 benchmark 直接扩大 renderer 能力边界；unsupported subsystem 应保持 skeleton/human confirmation。
-- 不要继续增加新的 strategy 文档而不合并旧文档；优先维护本 TODO 和技术报告。
-- 不要用 monolithic `reflect_plan` 作为复杂模型分层失败的默认兜底。
+- grep off；
+- graph off；
+- GraphRAG off；
+- RAG off；
+- ranker weights；
+- synthesizer off。
+
+指标：
+
+- useful；
+- irrelevant；
+- unsafe；
+- redundant；
+- task success delta。
+
+### P1-D：Supervisor-driven multi-round repair ⬜
+
+在现有 retry budget / loop detection 基础上实现受控闭环：
+
+```text
+audit
+→ repair proposal
+→ deterministic validation
+→ targeted patch retry
+→ reassemble
+→ revalidate
+→ re-audit
+→ render / ask human / stop
+```
+
+第一阶段最多 1–2 轮。
+
+---
+
+## 6. P1：Renderer 与物理能力扩展
+
+只有 VERA3 fidelity 主线稳定后推进。
+
+### 6.1 HexAssemblyRenderer ⬜
+
+- OpenMC HexLattice；
+- ring schema；
+- pitch；
+- outer universe；
+- skeleton → exportable 最小闭环；
+- capability contract tests。
+
+### 6.2 Depletion / burnup boundary ⬜
+
+- IR；
+- settings/operator boundary；
+- material evolution；
+- statepoint / depletion result artifacts；
+- 先定义 capability，不急于大计算。
+
+### 6.3 Pebble-bed / stochastic geometry ⬜
+
+- 明确 unsupported boundary；
+- skeleton 输出；
+- 不伪装 runnable。
+
+### 6.4 Boundary-condition rendered verification 🚧
+
+继续完善 plan → model.py → XML 对照：
+
+- radial boundary；
+- axial boundary；
+- XML `boundary_type`；
+- mismatch blocking diagnostics；
+- leakage anomaly warning。
+
+---
+
+## 7. P1/P2：VERA3 Memory 与 Few-shot
+
+### 前置条件
+
+只有满足以下条件才能发布：
+
+```text
+geometry gold accepted
+material fidelity accepted
+numerical acceptance documented
+provenance complete
+reference_policy=off reconstruction evaluated
+```
+
+### 7.1 Benchmark-specific memory ⬜
+
+建议结构：
+
+```text
+data/benchmark_knowledge/VERA3/
+  provenance.json
+  geometry_contract.json
+  material_contract.json
+  variant_3a_facts.json
+  variant_3b_facts.json
+  validated_patches/
+  gold_plans/
+  acceptance_reports/
+  reference_results/
+  plots/
+```
+
+只在明确识别为 VERA3 时检索。
+
+### 7.2 Reactor-neutral few-shot ⬜
+
+从 gold model 匿名提取：
+
+- component axial profiles；
+- fuel plenum modeling；
+- family-wide universe replacement；
+- finite insert inside guide tube；
+- through-path preservation；
+- multiple loading composition；
+- mass-conserving spacer overlay；
+- homogenized nozzle / plate；
+- rendered point-probe acceptance。
+
+不得保留：
+
+- VERA3 名称；
+- exact benchmark coordinates；
+- exact z constants；
+- enrichment；
+- material densities；
+- reference keff。
+
+### 7.3 Accepted-run mining ⬜
+
+从 accepted traces 自动生成候选 exemplar，但必须：
+
+- 有 provenance；
+- 有适用边界；
+- anonymized；
+- 进入 candidate 区；
+- 人工 review 后晋升；
+- 不自动污染 production prompts。
+
+---
+
+## 8. P2：工程化与用户体验
+
+### 8.1 CI 分层 ⬜
+
+```text
+fast unit
+integration
+OpenMC geometry
+OpenMC transport
+real LLM opt-in
+```
+
+### 8.2 Artifact 目录统一 ⬜
+
+统一：
+
+```text
+plan/
+incremental/
+retrieval/
+semantic_audit/
+repair/
+supervisor/
+render/
+verification/
+transport/
+evaluation/
+```
+
+### 8.3 用户可读 run summary ⬜
+
+输出：
+
+- 当前状态；
+- renderability；
+- blockers；
+- unresolved facts；
+- approximations；
+- supervisor decision；
+- required user action；
+- artifact links。
+
+### 8.4 CLI 收敛 ⬜
+
+增加或统一：
+
+```text
+--eval-case
+--benchmark-suite
+--retrieval-ablation
+--geometry-acceptance
+--material-policy
+--reference-policy
+```
+
+### 8.5 文档收敛 ⬜
+
+当前入口应保持：
+
+```text
+README.md
+TODO.md
+docs/project_technical_report.md
+```
+
+历史 strategy 文档归档，不继续产生重复路线文档。
+
+---
+
+## 9. 推荐推进顺序
+
+### 当前一条主线
+
+1. **重新运行最新 VERA3 3A/3B rendered acceptance**；
+2. **修复 fuel helium gap 与 plenum 半径**；
+3. **实现 Pyrex upper-gas profile 与完整 axial composition**；
+4. **实现 mass-conserving spacer-grid outer frame**；
+5. **实现 nozzle/core-plate variant-specific mixtures**；
+6. **完成可信材料 composition**；
+7. **冻结 geometry gold acceptance**；
+8. **运行 keff / power numerical acceptance**；
+9. **真实 LLM `reference_policy=off` 重建 3A/3B**；
+10. **发布 benchmark-specific memory**；
+11. **提取匿名 reactor-neutral few-shot**；
+12. 再推进 Evidence Synthesizer、Task Decomposer 和新 renderer。
+
+### 近期不应并行扩张的方向
+
+在 VERA3 gold model 完成前，不建议同时大规模开展：
+
+- Hex renderer；
+- depletion；
+- agent-authored renderer；
+- long-term memory 自动晋升；
+- 多模型真实 controlled-route；
+- 大规模 keff 参数调优。
+
+---
+
+## 10. 当前不建议做的事
+
+- 不要把 VERA/C5G7 benchmark facts 写死进 production prompt、validator、renderer 或 guard。
+- 不要让 RAG/GraphRAG/few-shot 自动确认 density、composition、benchmark constants、loading map 或 nuclear-data path。
+- 不要把旧 VERA3 smoke keff 当作 benchmark reference。
+- 不要继续使用固定 axial layer count 作为验收指标。
+- 不要在 geometry/material acceptance 前通过调密度拟合 keff。
+- 不要让 LLM 直接执行未知代码、直接修改 renderer registry 或跳过 deterministic gate。
+- 不要把一次成功的真实 LLM 输出直接加入正式 few-shot。
+- 不要在 gold model 完成前发布 VERA3 benchmark memory。
+- 不要把 spacer grid 整个 open moderator region 替换为结构材料并称为质量守恒。
+- 不要在 nozzle / core-plate slab 中同时保留 detailed lattice。
+- 不要用 monolithic `reflect_plan` 作为 incremental failure 的默认兜底。
+- 不要只验证 assembled plan；必须验证最终 XML 和物理点探针。
+- 不要把 XML export 成功等同于 benchmark-accurate。
+
+---
+
+## 11. Definition of Done：VERA3 Gold
+
+只有全部满足，才能将 VERA3 标为完成：
+
+### Geometry
+
+- [ ] fuel active radial gap 正确；
+- [ ] fuel upper plenum 半径正确；
+- [ ] Pyrex poison / upper gas profile 正确；
+- [ ] thimble finite profile 正确；
+- [ ] guide / instrument through-path 正确；
+- [ ] shoulder transitions 正确；
+- [ ] spacer-grid mass/volume 正确；
+- [ ] nozzle / plate slab 正确；
+- [ ] axial coverage 无 gap / overlap；
+- [ ] rendered point probes 全通过；
+- [ ] geometry debug 无 blocking error；
+- [ ] annotated plots 人工通过。
+
+### Materials
+
+- [ ] UO₂ isotopes 正确；
+- [ ] coolant variant-specific；
+- [ ] Pyrex isotopes 正确；
+- [ ] Zircaloy-4 composition policy 正确；
+- [ ] SS304 composition policy 正确；
+- [ ] Inconel-718 composition policy 正确；
+- [ ] nozzle / plate mixture provenance 完整；
+- [ ] 无 placeholder 被标为 confirmed。
+
+### Numerical
+
+- [ ] settings / source convergence 通过；
+- [ ] keff statistical uncertainty 达标；
+- [ ] reference keff 对比完成；
+- [ ] pin power 对比完成；
+- [ ] axial power 对比完成；
+- [ ] bias / uncertainty 报告完成。
+
+### Agent
+
+- [ ] `reference_policy=off` 可生成可审查结构；
+- [ ] semantic audit 能发现关键偏差；
+- [ ] unsafe repair 全部拦截；
+- [ ] supervisor 不绕过 blockers；
+- [ ] gold-vs-agent structured diff 完成。
+
+### Knowledge
+
+- [ ] benchmark memory provenance 完整；
+- [ ] gold plan 版本化；
+- [ ] anonymous few-shot 人工 review；
+- [ ] benchmark constants 未泄漏进通用 prompt；
+- [ ] accepted-run candidate 与 production few-shot 分离。
