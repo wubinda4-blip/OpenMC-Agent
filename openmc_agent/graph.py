@@ -171,6 +171,14 @@ class GraphState(TypedDict, total=False):
     repair_resolved_issue_codes: list[str]
     repair_remaining_issue_codes: list[str]
     repair_new_issue_codes: list[str]
+    run_supervisor_input_summary: dict[str, Any]
+    run_supervisor_result: dict[str, Any]
+    run_supervisor_action: str
+    run_supervisor_route_override: str
+    supervisor_action_history: list[dict[str, Any]]
+    supervisor_decision_count: int
+    supervisor_retry_count_by_patch: dict[str, int]
+    supervisor_no_progress_count: int
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -257,6 +265,14 @@ def build_plan_graph(
     llm_repair_model: str | None = None,
     llm_repair_allow_fallback: bool = True,
     llm_repair_max_proposals: int = 1,
+    enable_run_supervisor: bool = False,
+    run_supervisor_mode: Literal["off", "advisory", "controlled_route"] = "advisory",
+    run_supervisor_client: Any | None = None,
+    run_supervisor_model: str | None = None,
+    run_supervisor_allow_fallback: bool = True,
+    run_supervisor_max_decisions: int = 5,
+    run_supervisor_max_patch_retries: int = 2,
+    run_supervisor_max_no_progress: int = 2,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -315,6 +331,16 @@ def build_plan_graph(
         allow_fallback=llm_repair_allow_fallback,
         max_proposals=llm_repair_max_proposals,
     ))
+    graph.add_node("run_supervisor", _make_run_supervisor_node(
+        enabled=enable_run_supervisor,
+        mode=run_supervisor_mode,
+        client=run_supervisor_client,
+        model_name=run_supervisor_model,
+        allow_fallback=run_supervisor_allow_fallback,
+        max_decisions=run_supervisor_max_decisions,
+        max_patch_retries=run_supervisor_max_patch_retries,
+        max_no_progress=run_supervisor_max_no_progress,
+    ))
     graph.add_node("ask_expert", _ask_expert)
     graph.add_node("classify_expert_feedback", _classify_expert_feedback)
     graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
@@ -362,12 +388,19 @@ def build_plan_graph(
     graph.add_edge("reflect_plan", "validate_plan")
     graph.add_edge("assess_capability", "semantic_audit")
     graph.add_edge("semantic_audit", "llm_repair_proposal")
+    graph.add_edge("llm_repair_proposal", "run_supervisor")
     graph.add_conditional_edges(
-        "llm_repair_proposal",
-        _make_plan_capability_assessment_router(),
+        "run_supervisor",
+        _make_supervisor_aware_router(
+            enable_supervisor=enable_run_supervisor,
+            supervisor_mode=run_supervisor_mode,
+        ),
         {
             "reflect": "reflect_plan",
             "ask": "ask_expert",
+            "render": "render_plan_script",
+            "generate": "generate_plan",
+            "stop": "save_record",
         },
     )
     graph.add_conditional_edges(
@@ -618,6 +651,227 @@ def _append_many_plan_artifacts(paths: list[str], new_paths: list[str]) -> list[
         if path not in updated:
             updated.append(path)
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Run supervisor node + router
+# ---------------------------------------------------------------------------
+
+SUPERVISOR_ROUTE_MAP: dict[str, str] = {
+    "continue_to_render": "render",
+    "continue_patch_generation": "generate",
+    "retry_patch": "generate",
+    "request_human_confirmation": "ask",
+    "downgrade_to_skeleton": "stop",
+    "stop": "stop",
+}
+
+
+def _make_run_supervisor_node(
+    *,
+    enabled: bool,
+    mode: str,
+    client: Any | None,
+    model_name: str | None,
+    allow_fallback: bool,
+    max_decisions: int,
+    max_patch_retries: int,
+    max_no_progress: int,
+):
+    def _run_supervisor(state: GraphState) -> GraphState:
+        if not enabled or mode == "off":
+            return {}
+
+        from openmc_agent.run_supervisor import (
+            RunSupervisorMode as RSMode,
+            run_supervisor_decision,
+            write_run_supervisor_artifacts,
+        )
+        from openmc_agent.run_supervisor_policy import (
+            DEFAULT_RUN_SUPERVISOR_CONFIG,
+            build_run_supervisor_input,
+            detect_no_progress,
+        )
+        from openmc_agent.run_supervisor_prompts import build_run_supervisor_prompt
+
+        decision_count = state.get("supervisor_decision_count", 0)
+        if decision_count >= max_decisions:
+            return _trace_event_update(
+                state,
+                "workflow_failed",
+                summary="run supervisor: max decisions reached",
+                metadata={"decision_count": decision_count, "max": max_decisions},
+            )
+
+        retry_count_by_patch = dict(state.get("supervisor_retry_count_by_patch") or {})
+        action_history = list(state.get("supervisor_action_history") or [])
+        prev_no_progress = state.get("supervisor_no_progress_count", 0)
+        prev_fingerprint = None
+        if action_history:
+            prev_fingerprint = action_history[-1].get("state_fingerprint")
+
+        config = {
+            **DEFAULT_RUN_SUPERVISOR_CONFIG,
+            "max_decisions": max_decisions,
+            "max_patch_retries": max_patch_retries,
+            "max_no_progress_steps": max_no_progress,
+        }
+
+        supervisor_input = build_run_supervisor_input(
+            state,
+            config=config,
+            decision_count=decision_count,
+            retry_count_by_patch=retry_count_by_patch,
+            no_progress_count=prev_no_progress,
+            action_history=action_history,
+        )
+
+        # Track no-progress.
+        no_progress = detect_no_progress(supervisor_input.state_fingerprint, action_history)
+        if no_progress >= max_no_progress:
+            return _trace_event_update(
+                state,
+                "workflow_failed",
+                summary="run supervisor: no progress threshold reached",
+                metadata={
+                    "no_progress_count": no_progress,
+                    "max": max_no_progress,
+                    "state_fingerprint": supervisor_input.state_fingerprint,
+                },
+            )
+
+        prompt = build_run_supervisor_prompt(supervisor_input)
+        start_update = _trace_event_update(
+            state,
+            "run_supervisor_started",
+            summary="run supervisor decision started",
+            metadata={
+                "decision_id": supervisor_input.decision_id,
+                "model": model_name,
+                "mode": mode,
+                "decision_count": decision_count,
+                "allowed_actions": [a.value for a in supervisor_input.allowed_actions],
+                "state_fingerprint": supervisor_input.state_fingerprint,
+            },
+        )
+        working_state = {**state, **start_update}
+
+        result = run_supervisor_decision(
+            supervisor_input,
+            mode=RSMode(mode),
+            client=client,
+            model_name=model_name,
+            allow_fallback=allow_fallback,
+        )
+
+        # Update retry tracking.
+        final_action = result.final_action
+        if final_action and final_action.value == "retry_patch" and result.proposed_decision:
+            target = result.proposed_decision.target_patch_type
+            if target:
+                retry_count_by_patch[target] = retry_count_by_patch.get(target, 0) + 1
+
+        # Record action in history.
+        new_history_entry = {
+            "decision_id": result.decision_id,
+            "proposed_action": result.proposed_decision.action.value if result.proposed_decision else None,
+            "final_action": final_action.value if final_action else None,
+            "target_patch_type": result.proposed_decision.target_patch_type if result.proposed_decision else None,
+            "accepted": result.accepted,
+            "vetoed": result.vetoed,
+            "veto_reasons": result.veto_reasons,
+            "fallback_used": result.fallback_used,
+            "state_fingerprint": result.state_fingerprint,
+        }
+        updated_history = [*action_history, new_history_entry]
+
+        # Compute route override for controlled_route mode.
+        route_override = ""
+        if mode == "controlled_route" and final_action:
+            route_override = SUPERVISOR_ROUTE_MAP.get(final_action.value, "")
+
+        # Write artifacts.
+        try:
+            output_dir = Path(state.get("output_dir", "data/runs")) / "run_supervisor"
+            write_run_supervisor_artifacts(
+                str(output_dir),
+                supervisor_input,
+                result,
+                prompt=prompt,
+            )
+        except Exception:
+            pass
+
+        meta = {
+            "decision_id": result.decision_id,
+            "mode": result.mode.value,
+            "proposed_action": result.proposed_decision.action.value if result.proposed_decision else None,
+            "final_action": final_action.value if final_action else None,
+            "target_patch_type": result.proposed_decision.target_patch_type if result.proposed_decision else None,
+            "accepted": result.accepted,
+            "executed": result.executed,
+            "vetoed": result.vetoed,
+            "veto_reasons": result.veto_reasons,
+            "fallback_used": result.fallback_used,
+            "model": result.model,
+            "supervisor": result.supervisor,
+            "confidence": result.proposed_decision.confidence if result.proposed_decision else None,
+            "state_fingerprint": result.state_fingerprint,
+            "decision_count": decision_count + 1,
+            "retry_count_by_patch": retry_count_by_patch,
+            "no_progress_count": no_progress,
+            "allowed_actions": [a.value for a in supervisor_input.allowed_actions],
+            "duration_ms": result.duration_ms,
+        }
+
+        event_type = "run_supervisor_decision_accepted"
+        if result.vetoed:
+            event_type = "run_supervisor_decision_vetoed"
+        elif result.fallback_used:
+            event_type = "run_supervisor_fallback_used"
+
+        completed = _trace_event_update(
+            working_state,
+            event_type,
+            summary=f"run supervisor: {final_action.value if final_action else 'none'}"
+            + (" (vetoed)" if result.vetoed else "")
+            + (" (fallback)" if result.fallback_used else ""),
+            metadata=meta,
+        )
+
+        return {
+            **start_update,
+            **completed,
+            "run_supervisor_input_summary": supervisor_input.model_dump(mode="json"),
+            "run_supervisor_result": result.model_dump(mode="json"),
+            "run_supervisor_action": final_action.value if final_action else "",
+            "run_supervisor_route_override": route_override,
+            "supervisor_action_history": updated_history,
+            "supervisor_decision_count": decision_count + 1,
+            "supervisor_retry_count_by_patch": retry_count_by_patch,
+            "supervisor_no_progress_count": no_progress,
+        }
+
+    return _run_supervisor
+
+
+def _make_supervisor_aware_router(
+    *,
+    enable_supervisor: bool,
+    supervisor_mode: str,
+):
+    """Wrap the original capability router with supervisor override support."""
+
+    original_router = _make_plan_capability_assessment_router()
+
+    def _route(state: GraphState) -> str:
+        if enable_supervisor and supervisor_mode == "controlled_route":
+            override = state.get("run_supervisor_route_override")
+            if override and override in {"reflect", "ask", "render", "generate", "stop"}:
+                return override
+        return original_router(state)
+
+    return _route
 
 
 def _build_sqlite_checkpointer(path: str | Path) -> SqliteSaver:

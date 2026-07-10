@@ -48,6 +48,13 @@ def main(argv: list[str] | None = None) -> int:
         llm_repair_model=args.llm_repair_model,
         llm_repair_allow_fallback=args.llm_repair_allow_fallback,
         llm_repair_max_proposals=args.llm_repair_max_proposals,
+        enable_run_supervisor=args.enable_run_supervisor,
+        run_supervisor_mode=args.run_supervisor_mode.replace("-", "_"),
+        run_supervisor_model=args.run_supervisor_model,
+        run_supervisor_allow_fallback=args.run_supervisor_allow_fallback,
+        run_supervisor_max_decisions=args.run_supervisor_max_decisions,
+        run_supervisor_max_patch_retries=args.run_supervisor_max_patch_retries,
+        run_supervisor_max_no_progress=args.run_supervisor_max_no_progress,
     )
     try:
         result = run_workflow_benchmark(config)
@@ -117,6 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-llm-repair-fallback", dest="llm_repair_allow_fallback", action="store_true", default=True)
     parser.add_argument("--disable-llm-repair-fallback", dest="llm_repair_allow_fallback", action="store_false")
     parser.add_argument("--llm-repair-max-proposals", type=int, default=1)
+    parser.add_argument("--enable-run-supervisor", action="store_true")
+    parser.add_argument("--run-supervisor-mode", default="advisory", choices=["advisory", "controlled-route"])
+    parser.add_argument("--run-supervisor-model", default=None)
+    parser.add_argument("--allow-run-supervisor-fallback", dest="run_supervisor_allow_fallback", action="store_true", default=True)
+    parser.add_argument("--disable-run-supervisor-fallback", dest="run_supervisor_allow_fallback", action="store_false")
+    parser.add_argument("--run-supervisor-max-decisions", type=int, default=5)
+    parser.add_argument("--run-supervisor-max-patch-retries", type=int, default=2)
+    parser.add_argument("--run-supervisor-max-no-progress", type=int, default=2)
     return parser
 
 

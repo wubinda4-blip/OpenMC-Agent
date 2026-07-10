@@ -60,6 +60,13 @@ class WorkflowBenchmarkConfig(AgentBaseModel):
     llm_repair_model: str | None = None
     llm_repair_allow_fallback: bool = True
     llm_repair_max_proposals: int = 1
+    enable_run_supervisor: bool = False
+    run_supervisor_mode: Literal["advisory", "controlled_route"] = "advisory"
+    run_supervisor_model: str | None = None
+    run_supervisor_allow_fallback: bool = True
+    run_supervisor_max_decisions: int = 5
+    run_supervisor_max_patch_retries: int = 2
+    run_supervisor_max_no_progress: int = 2
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -277,6 +284,13 @@ def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> Workflow
         llm_repair_model=config.llm_repair_model,
         llm_repair_allow_fallback=config.llm_repair_allow_fallback,
         llm_repair_max_proposals=config.llm_repair_max_proposals,
+        enable_run_supervisor=config.enable_run_supervisor,
+        run_supervisor_mode=config.run_supervisor_mode.replace("-", "_"),
+        run_supervisor_model=config.run_supervisor_model,
+        run_supervisor_allow_fallback=config.run_supervisor_allow_fallback,
+        run_supervisor_max_decisions=config.run_supervisor_max_decisions,
+        run_supervisor_max_patch_retries=config.run_supervisor_max_patch_retries,
+        run_supervisor_max_no_progress=config.run_supervisor_max_no_progress,
     )
     return run_workflow_case(case, runner_config)
 
