@@ -304,6 +304,52 @@ def test_incremental_validation_failure_schedules_fresh_patch_generation() -> No
 
 
 @pytest.mark.openmc
+def test_incremental_component_profile_capability_failure_schedules_regeneration(
+    monkeypatch,
+) -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import (
+        _make_assess_plan_capability_node,
+        _make_supervisor_aware_router,
+    )
+
+    issue = issue_from_catalog(
+        "assembly3d.component_profile_as_material_slab",
+        message="component-profile layer is incorrectly filled by a material slab",
+    )
+    capability = RenderCapabilityReport(
+        renderability="skeleton",
+        is_executable=False,
+        supported_renderer="assembly",
+        reasons=[issue.message],
+        issues=[issue],
+    )
+    monkeypatch.setattr("openmc_agent.graph._capability_for_plan", lambda _plan: capability)
+
+    node = _make_assess_plan_capability_node(max_retries=2)
+    updates = node(
+        {
+            "simulation_plan": _complex_plan_with_pin_count_mismatch(),
+            "requirement": "Build an assembly from the source input.",
+            "retry_count": 0,
+            "incremental_execution_result": {
+                "planning_mode": "incremental",
+                "monolithic_reflect_plan_allowed": False,
+            },
+        }
+    )
+
+    assert updates["simulation_plan"] is None
+    assert updates["retry_count"] == 1
+    assert updates["incremental_regeneration_pending"] is True
+    assert updates["plan_build_state"] == {}
+    assert "component-profile layer" in updates["requirement"]
+    assert _make_supervisor_aware_router(
+        enable_supervisor=True, supervisor_mode="advisory"
+    )(updates) == "generate"
+
+
+@pytest.mark.openmc
 def test_reflect_plan_records_retrieval_events(monkeypatch) -> None:
     pytest.importorskip("openmc", reason="OpenMC is required for graph import")
     from openmc_agent.graph import _make_reflect_plan_node

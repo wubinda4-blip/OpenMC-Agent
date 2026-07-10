@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timezone
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
@@ -891,6 +892,8 @@ def _make_supervisor_aware_router(
     original_router = _make_plan_capability_assessment_router()
 
     def _route(state: GraphState) -> str:
+        if state.get("incremental_regeneration_pending"):
+            return "generate"
         if enable_supervisor and supervisor_mode == "controlled_route":
             override = state.get("run_supervisor_route_override")
             if override and override in {"reflect", "ask", "render", "generate", "stop"}:
@@ -904,7 +907,17 @@ def _build_sqlite_checkpointer(path: str | Path) -> SqliteSaver:
     checkpoint_path = Path(path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(checkpoint_path), check_same_thread=False)
-    saver = SqliteSaver(conn)
+    # Resume payloads contain our Pydantic schema instances. Explicitly allow
+    # this module before LangGraph makes unregistered MessagePack types fatal.
+    saver = SqliteSaver(
+        conn,
+        serde=JsonPlusSerializer(
+            allowed_msgpack_modules=[
+                ("openmc_agent.schemas", "SimulationPlan"),
+                ("openmc_agent.schemas", "ValidationReport"),
+            ],
+        ),
+    )
     saver.setup()
     return saver
 
@@ -2248,7 +2261,7 @@ def _make_assess_plan_capability_node(max_retries: int):
                 + (f"; {len(repair_errors)} self-repair error(s)" if repair_errors else "")
             ),
         )
-        return {
+        updates: GraphState = {
             "simulation_plan": updated_plan,
             "simulation_spec": updated_plan.model_spec,
             "validation_report": updated_report,
@@ -2272,6 +2285,26 @@ def _make_assess_plan_capability_node(max_retries: int):
                 },
             ),
         }
+        if inject_invalid and _incremental_reflect_plan_disabled(state):
+            _progress(
+                state,
+                "assess_capability",
+                "incremental capability failure needs regeneration; returning diagnostics to patch planner",
+            )
+            updates.update(
+                {
+                    "simulation_plan": None,
+                    "simulation_spec": None,
+                    "retry_count": retry_count + 1,
+                    "error": "",
+                    "incremental_regeneration_pending": True,
+                    "plan_build_state": {},
+                    "requirement": _incremental_regeneration_requirement(
+                        state.get("requirement", ""), updated_report
+                    ),
+                }
+            )
+        return updates
 
     return _assess_plan_capability
 
@@ -4481,6 +4514,9 @@ SELF_REPAIRABLE_CODES = frozenset({
     "lattice_loading.override_universe_ref_missing",
     "surface.cylinder_radius_invalid",
     "material.mixed_percent_type",
+    # A component-profile layer must preserve the assembly's tube paths; a
+    # material slab is a planner structural error, not a missing expert fact.
+    "assembly3d.component_profile_as_material_slab",
 })
 
 
