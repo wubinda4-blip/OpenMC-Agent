@@ -231,9 +231,34 @@ class AxialLayerPatchItem(_PatchBase):
     fill_type: Literal["lattice", "material", "universe", "void", "unknown"] = "unknown"
     fill_id: str | None = None
     loading_id: str | None = None
+    loading_ids: list[str] = Field(default_factory=list)
     requires_human_confirmation: bool = False
     assumptions: list[str] = Field(default_factory=list)
     source_note: str | None = None
+
+
+class LatticeTransformationPatchItem(_PatchBase):
+    """A single composable lattice transformation in a patch."""
+
+    operation_id: str
+    operation_kind: Literal[
+        "replace_universe_family",
+        "coordinate_override",
+        "nested_component_override",
+    ]
+    replacement_universe_id: str
+
+    source_universe_id: str | None = None
+    source_universe_ids: list[str] = Field(default_factory=list)
+    target_coordinates: list[tuple[int, int]] = Field(default_factory=list)
+
+    component_role: str | None = None
+    component_path_id: str | None = None
+    preserve_component_roles: list[str] = Field(default_factory=list)
+    preserve_path_ids: list[str] = Field(default_factory=list)
+
+    priority: int = 0
+    purpose: str = ""
 
 
 class LatticeLoadingPatchItem(_PatchBase):
@@ -242,6 +267,7 @@ class LatticeLoadingPatchItem(_PatchBase):
     loading_id: str
     base_lattice_id: str
     derived_lattice_id: str | None = None
+    transformations: list[LatticeTransformationPatchItem] = Field(default_factory=list)
     overrides: dict[str, list[tuple[int, int]]] = Field(default_factory=dict)
     purpose: str = ""
 
@@ -480,6 +506,7 @@ __all__ = [
     "CoordinateConvention",
     "PinMapPatch",
     "AxialLayerPatchItem",
+    "LatticeTransformationPatchItem",
     "LatticeLoadingPatchItem",
     "AxialLayersPatch",
     "AxialOverlayPatchItem",

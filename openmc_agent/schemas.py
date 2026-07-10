@@ -396,6 +396,33 @@ class CellSpec(AgentBaseModel):
             "Leaving fill_id empty for a material/universe/lattice fill",
         ],
     )
+    component_role: str | None = Field(
+        default=None,
+        description=(
+            "Reactor-type-agnostic component identity (e.g. fuel_internal, "
+            "cladding, inner_flow, tube_wall, outer_moderator, insert, "
+            "poison, gas_gap, end_plug). Used by nested_component_override "
+            "to target the right cell within a universe without replacing "
+            "the whole lattice position."
+        ),
+    )
+    component_path_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional stable path identifier for a component within a "
+            "universe, complementing component_role when multiple cells "
+            "share the same role (e.g. two gas_gap cells at different radii)."
+        ),
+    )
+    protected_through_path: bool = Field(
+        default=False,
+        description=(
+            "True when this cell must survive any transformation applied to "
+            "its parent universe (e.g. a guide-tube wall or instrument-tube "
+            "wall). Nested_component_override must not delete or replace "
+            "cells with this flag."
+        ),
+    )
     temperature_k: float | None = Field(default=None, gt=0)
     purpose: str = ""
 
@@ -731,6 +758,15 @@ class AxialLayerSpec(AgentBaseModel):
         description="Final OpenMC object filled into this axial root cell."
     )
     loading_id: str | None = None
+    loading_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered list of loading ids composed to produce the derived "
+            "lattice for this layer. When non-empty, loading_id is ignored "
+            "by the normalizer. When empty and loading_id is set, it is "
+            "migrated to [loading_id]."
+        ),
+    )
     purpose: str = ""
 
     @model_validator(mode="after")
@@ -834,6 +870,81 @@ class AxialOverlaySpec(AgentBaseModel):
         return self
 
 
+class LatticeTransformationOperation(AgentBaseModel):
+    """A single composable transformation applied to a base lattice.
+
+    Three operation kinds are supported:
+
+    - ``replace_universe_family``: all base positions of a source universe
+      (or set of universes) are replaced by a replacement universe, without
+      enumerating individual coordinates.
+    - ``coordinate_override``: specific (row, col) coordinates are replaced
+      by a replacement universe (legacy sparse override, generalised).
+    - ``nested_component_override``: at specific coordinates, only a named
+      component within the base universe is swapped while preserve-listed
+      components (e.g. tube_wall, outer_moderator) are kept intact.
+
+    Operations have a ``priority`` that controls execution order within a
+    loading: lower priority executes first. Recommended defaults:
+
+    - replace_universe_family: 100
+    - coordinate_override: 200
+    - nested_component_override: 300
+
+    Explicit priority values are respected; ties break by operation_id.
+    """
+
+    operation_id: str = Field(min_length=1)
+    operation_kind: Literal[
+        "replace_universe_family",
+        "coordinate_override",
+        "nested_component_override",
+    ]
+    replacement_universe_id: str = Field(min_length=1)
+
+    source_universe_id: str | None = None
+    source_universe_ids: list[str] = Field(default_factory=list)
+
+    target_coordinates: list[tuple[int, int]] = Field(default_factory=list)
+
+    component_role: str | None = None
+    component_path_id: str | None = None
+
+    preserve_component_roles: list[str] = Field(default_factory=list)
+    preserve_path_ids: list[str] = Field(default_factory=list)
+
+    priority: int = 0
+    purpose: str = ""
+
+    @model_validator(mode="after")
+    def validate_operation_fields(self) -> "LatticeTransformationOperation":
+        if self.operation_kind == "replace_universe_family":
+            if not self.source_universe_id and not self.source_universe_ids:
+                raise ValueError(
+                    "replace_universe_family requires source_universe_id or source_universe_ids"
+                )
+            if self.target_coordinates:
+                raise ValueError(
+                    "replace_universe_family must not specify target_coordinates; "
+                    "it replaces all matching positions"
+                )
+        elif self.operation_kind == "coordinate_override":
+            if not self.target_coordinates:
+                raise ValueError(
+                    "coordinate_override requires target_coordinates"
+                )
+        elif self.operation_kind == "nested_component_override":
+            if not self.target_coordinates:
+                raise ValueError(
+                    "nested_component_override requires target_coordinates"
+                )
+            if not self.component_role and not self.component_path_id:
+                raise ValueError(
+                    "nested_component_override requires component_role or component_path_id"
+                )
+        return self
+
+
 class LatticeLoadingSpec(AgentBaseModel):
     id: str = Field(min_length=1)
     base_lattice_id: str = Field(
@@ -844,17 +955,33 @@ class LatticeLoadingSpec(AgentBaseModel):
         default=None,
         description="Optional id for the renderer-generated derived lattice.",
     )
+    transformations: list[LatticeTransformationOperation] = Field(
+        default_factory=list,
+        description=(
+            "Composable transformations applied to the base lattice to "
+            "produce a derived lattice. When non-empty, legacy 'overrides' "
+            "is ignored by the normalizer. When empty, 'overrides' is "
+            "migrated to coordinate_override operations automatically."
+        ),
+    )
     overrides: dict[str, list[tuple[int, int]]] = Field(
         default_factory=dict,
-        description="Universe id -> [(row, col)] overrides applied to base_lattice_id.",
+        description="Legacy universe-id -> [(row, col)] overrides. Migrated to transformations at normalization time.",
     )
     purpose: str = ""
 
     @field_validator("overrides", mode="before")
     @classmethod
-    def _coerce_none_to_empty_dict(cls, value: Any) -> Any:
+    def _coerce_overrides_none(cls, value: Any) -> Any:
         if value is None:
             return {}
+        return value
+
+    @field_validator("transformations", mode="before")
+    @classmethod
+    def _coerce_transformations_none(cls, value: Any) -> Any:
+        if value is None:
+            return []
         return value
 
 
