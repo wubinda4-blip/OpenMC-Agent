@@ -83,6 +83,14 @@ class EvaluationCase(AgentBaseModel):
     expected_repair_applied_to_workflow_plan: bool | None = None
     expected_repair_requires_human_confirmation: bool | None = None
     expected_repair_fallback_used: bool | None = None
+    expected_supervisor_action: str | None = None
+    forbidden_supervisor_actions: list[str] = Field(default_factory=list)
+    expected_supervisor_target_patch_type: str | None = None
+    expected_supervisor_accepted: bool | None = None
+    expected_supervisor_executed: bool | None = None
+    expected_supervisor_fallback_used: bool | None = None
+    expected_supervisor_max_decisions: int | None = None
+    expected_supervisor_loop_detected: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def __init__(self, *args: Any, **data: Any) -> None:
@@ -164,6 +172,17 @@ class EvaluationMetrics(AgentBaseModel):
     llm_repair_fallback_rate: float | None = None
     llm_repair_issue_resolution_rate: float | None = None
     llm_repair_new_issue_rate: float | None = None
+    supervisor_completion_rate: float | None = None
+    supervisor_action_accuracy: float | None = None
+    supervisor_target_patch_accuracy: float | None = None
+    supervisor_acceptance_rate: float | None = None
+    supervisor_veto_rate: float | None = None
+    supervisor_fallback_rate: float | None = None
+    supervisor_unsafe_action_rate: float | None = None
+    supervisor_loop_prevention_rate: float | None = None
+    supervisor_budget_exhaustion_rate: float | None = None
+    supervisor_local_retry_success_rate: float | None = None
+    supervisor_human_escalation_accuracy: float | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +321,7 @@ def evaluate_trace_against_case(
     artifact_complete = _artifact_complete(case.expected_artifact_keys, artifact_keys)
     audit = _trace_semantic_audit(workflow_trace)
     repair = _trace_llm_repair(workflow_trace)
+    supervisor = _trace_supervisor(workflow_trace)
 
     failure_reasons: list[str] = []
     expected_codes = set(case.expected_issue_codes)
@@ -463,6 +483,31 @@ def evaluate_trace_against_case(
     if case.expected_repair_fallback_used is not None and repair["fallback_used"] != case.expected_repair_fallback_used:
         failure_reasons.append("repair fallback mismatch")
 
+    # Supervisor checks (only when supervisor events are present in trace).
+    if supervisor["enabled"]:
+        if case.expected_supervisor_action is not None:
+            observed_action = supervisor.get("final_action") or supervisor.get("proposed_action")
+            if observed_action != case.expected_supervisor_action:
+                failure_reasons.append(
+                    f"supervisor action mismatch: expected={case.expected_supervisor_action}"
+                    f" observed={observed_action}"
+                )
+        forbidden_sup = set(case.forbidden_supervisor_actions)
+        observed_sup_actions = {supervisor.get("proposed_action"), supervisor.get("final_action")}
+        forbidden_sup_observed = sorted(forbidden_sup & observed_sup_actions - {None})
+        if forbidden_sup_observed:
+            failure_reasons.append(f"forbidden supervisor actions: {', '.join(forbidden_sup_observed)}")
+        if case.expected_supervisor_target_patch_type is not None:
+            if supervisor.get("target_patch_type") != case.expected_supervisor_target_patch_type:
+                failure_reasons.append(
+                    f"supervisor target patch mismatch: expected={case.expected_supervisor_target_patch_type}"
+                    f" observed={supervisor.get('target_patch_type')}"
+                )
+        if case.expected_supervisor_accepted is not None and bool(supervisor.get("accepted")) != case.expected_supervisor_accepted:
+            failure_reasons.append("supervisor accepted mismatch")
+        if case.expected_supervisor_fallback_used is not None and bool(supervisor.get("fallback_used")) != case.expected_supervisor_fallback_used:
+            failure_reasons.append("supervisor fallback mismatch")
+
     actual_failed = workflow_trace.final_status == "failed" or any(
         event.event_type == "workflow_failed" for event in workflow_trace.events
     )
@@ -535,6 +580,26 @@ def evaluate_trace_against_case(
             "llm_repair_new_issue_count": len(repair["new_issue_codes"]),
             "llm_repair_applied_to_clone": repair["applied_to_clone"],
             "llm_repair_applied_to_workflow_plan": repair["applied_to_workflow_plan"],
+            "supervisor_enabled": supervisor["enabled"],
+            "supervisor_completed": supervisor["completed"],
+            "supervisor_proposed_action": supervisor.get("proposed_action"),
+            "supervisor_final_action": supervisor.get("final_action"),
+            "supervisor_action_match": (
+                supervisor.get("final_action") == case.expected_supervisor_action
+                if case.expected_supervisor_action and supervisor.get("final_action")
+                else None
+            ),
+            "supervisor_target_patch_match": (
+                supervisor.get("target_patch_type") == case.expected_supervisor_target_patch_type
+                if case.expected_supervisor_target_patch_type and supervisor.get("target_patch_type")
+                else None
+            ),
+            "supervisor_accepted": supervisor.get("accepted"),
+            "supervisor_executed": supervisor.get("executed"),
+            "supervisor_vetoed": supervisor.get("vetoed"),
+            "supervisor_fallback_used": supervisor.get("fallback_used"),
+            "supervisor_decision_count": supervisor.get("decision_count", 0),
+            "supervisor_target_patch_type": supervisor.get("target_patch_type"),
         },
         failure_reasons=failure_reasons,
     )
@@ -557,6 +622,13 @@ def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationM
     audit_fprs = _metric_values(results, "semantic_audit_false_positive_rate")
     audit_detected = _bool_metric_values(results, "semantic_audit_known_error_detected")
     repair_enabled = [r for r in results if r.metrics.get("llm_repair_enabled") is True]
+    sup_enabled = [r for r in results if r.metrics.get("supervisor_enabled") is True]
+    sup_action_cases = [r for r in sup_enabled if r.case and r.case.expected_supervisor_action]
+    sup_action_matches = [r for r in sup_action_cases if r.metrics.get("supervisor_action_match") is True]
+    sup_target_cases = [r for r in sup_enabled if r.case and r.case.expected_supervisor_target_patch_type]
+    sup_target_matches = [r for r in sup_target_cases if r.metrics.get("supervisor_target_patch_match") is True]
+    sup_human_cases = [r for r in sup_enabled if r.case and r.case.expected_supervisor_action == "request_human_confirmation"]
+    sup_human_matches = [r for r in sup_human_cases if r.metrics.get("supervisor_final_action") == "request_human_confirmation"]
     return EvaluationMetrics(
         case_count=case_count,
         pass_count=pass_count,
@@ -607,6 +679,26 @@ def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationM
         llm_repair_fallback_rate=_repair_rate(repair_enabled, "llm_repair_fallback_used"),
         llm_repair_issue_resolution_rate=_repair_positive_rate(repair_enabled, "llm_repair_resolved_issue_count"),
         llm_repair_new_issue_rate=_repair_positive_rate(repair_enabled, "llm_repair_new_issue_count"),
+        supervisor_completion_rate=_supervisor_rate(sup_enabled, "supervisor_completed"),
+        supervisor_action_accuracy=(
+            len(sup_action_matches) / len(sup_action_cases)
+            if sup_action_cases else None
+        ),
+        supervisor_target_patch_accuracy=(
+            len(sup_target_matches) / len(sup_target_cases)
+            if sup_target_cases else None
+        ),
+        supervisor_acceptance_rate=_supervisor_rate(sup_enabled, "supervisor_accepted"),
+        supervisor_veto_rate=_supervisor_rate(sup_enabled, "supervisor_vetoed"),
+        supervisor_fallback_rate=_supervisor_rate(sup_enabled, "supervisor_fallback_used"),
+        supervisor_unsafe_action_rate=None,
+        supervisor_loop_prevention_rate=None,
+        supervisor_budget_exhaustion_rate=None,
+        supervisor_local_retry_success_rate=None,
+        supervisor_human_escalation_accuracy=(
+            len(sup_human_matches) / len(sup_human_cases)
+            if sup_human_cases else None
+        ),
     )
 
 
@@ -1040,3 +1132,45 @@ def _repair_positive_rate(results: list[EvaluationResult], key: str) -> float | 
         return None
     values = [r.metrics.get(key) for r in results if r.metrics.get(key) is not None]
     return sum(int(v) > 0 for v in values) / len(values) if values else None
+
+
+# ---------------------------------------------------------------------------
+# Supervisor trace extraction
+# ---------------------------------------------------------------------------
+
+def _trace_supervisor(trace: WorkflowTrace) -> dict[str, Any]:
+    """Extract supervisor metrics from trace events."""
+    events = [
+        event for event in trace.events
+        if event.event_type in {
+            "run_supervisor_started",
+            "run_supervisor_decision_accepted",
+            "run_supervisor_decision_vetoed",
+            "run_supervisor_fallback_used",
+            "run_supervisor_failed",
+        }
+    ]
+    latest = events[-1].metadata if events else {}
+    return {
+        "enabled": bool(events),
+        "completed": bool(events),
+        "proposed_action": latest.get("proposed_action"),
+        "final_action": latest.get("final_action"),
+        "target_patch_type": latest.get("target_patch_type"),
+        "accepted": latest.get("accepted"),
+        "executed": latest.get("executed"),
+        "vetoed": latest.get("vetoed"),
+        "fallback_used": latest.get("fallback_used"),
+        "veto_reasons": list(latest.get("veto_reasons") or []),
+        "decision_count": int(latest.get("decision_count") or 0),
+        "state_fingerprint": latest.get("state_fingerprint"),
+        "mode": latest.get("mode"),
+        "confidence": latest.get("confidence"),
+    }
+
+
+def _supervisor_rate(results: list[EvaluationResult], key: str) -> float | None:
+    if not results:
+        return None
+    values = [r.metrics.get(key) for r in results if r.metrics.get(key) is not None]
+    return sum(bool(v) for v in values) / len(values) if values else None

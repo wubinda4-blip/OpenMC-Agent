@@ -282,5 +282,54 @@
     ],
     "expected_repair_applied_to_clone": false,
     "expected_repair_applied_to_workflow_plan": false
+  },
+  {
+    "case_id": "supervisor-clean-exportable",
+    "category": "pin_cell",
+    "user_request": "Supervisor test: clean exportable pin-cell plan.",
+    "expected_renderability": "runnable",
+    "expected_supported_renderer": "pin_cell",
+    "should_require_human_confirmation": false,
+    "expected_supervisor_action": "continue_to_render",
+    "expected_supervisor_accepted": true,
+    "expected_supervisor_fallback_used": false
+  },
+  {
+    "case_id": "supervisor-failed-pinmap-retry",
+    "category": "assembly",
+    "user_request": "Supervisor test: failed pin_map patch with retry budget.",
+    "expected_failed_patch_type": "pin_map",
+    "expected_renderability": "skeleton",
+    "expected_supervisor_action": "retry_patch",
+    "expected_supervisor_target_patch_type": "pin_map",
+    "expected_supervisor_accepted": true
+  },
+  {
+    "case_id": "supervisor-fact-gap-human",
+    "category": "impossible",
+    "user_request": "Supervisor test: unresolved fact gap requires human confirmation.",
+    "should_require_human_confirmation": true,
+    "expected_supervisor_action": "request_human_confirmation",
+    "expected_supervisor_accepted": true
+  },
+  {
+    "case_id": "supervisor-unsupported-skeleton",
+    "category": "hex_lattice",
+    "user_request": "Supervisor test: unsupported hex lattice, downgrade to skeleton.",
+    "expected_renderability": "skeleton",
+    "expected_supported_renderer": "skeleton",
+    "expected_supervisor_action": "downgrade_to_skeleton",
+    "expected_supervisor_accepted": true
+  },
+  {
+    "case_id": "supervisor-malicious-render-vetoed",
+    "category": "assembly",
+    "user_request": "Supervisor test: LLM proposes render with blockers, must be vetoed.",
+    "expected_issue_codes": ["assembly.missing_patch"],
+    "expected_renderability": "skeleton",
+    "forbidden_supervisor_actions": ["continue_to_render"],
+    "metadata": {
+      "simulated_proposed_action": "continue_to_render"
+    }
   }
 ]

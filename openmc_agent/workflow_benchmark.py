@@ -232,6 +232,20 @@ def write_workflow_benchmark_summary(
         "| --- | --- |",
         * _semantic_missing_rows(result),
         "",
+        "## Run Supervisor",
+        "",
+        f"- completion rate: {_format_optional_rate(metrics.supervisor_completion_rate)}",
+        f"- action accuracy: {_format_optional_rate(metrics.supervisor_action_accuracy)}",
+        f"- target patch accuracy: {_format_optional_rate(metrics.supervisor_target_patch_accuracy)}",
+        f"- acceptance rate: {_format_optional_rate(metrics.supervisor_acceptance_rate)}",
+        f"- veto rate: {_format_optional_rate(metrics.supervisor_veto_rate)}",
+        f"- fallback rate: {_format_optional_rate(metrics.supervisor_fallback_rate)}",
+        f"- human escalation accuracy: {_format_optional_rate(metrics.supervisor_human_escalation_accuracy)}",
+        "",
+        "| case_id | proposed | final | target_patch | accepted | executed | veto_reason |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        * _supervisor_decision_rows(result),
+        "",
         "## Failed cases",
         "",
         "| case_id | failed_stage | failed_patch_type | issue_codes | failure_reasons |",
@@ -262,6 +276,8 @@ def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> Workflow
             trace = _augment_fake_trace_with_semantic_audit(trace, case, config)
         if config.enable_llm_repair:
             trace = _augment_fake_trace_with_llm_repair(trace, case, config)
+        if config.enable_run_supervisor:
+            trace = _augment_fake_trace_with_supervisor(trace, case, config)
         return trace
     runner_config = WorkflowCaseRunnerConfig(
         model=config.model,
@@ -534,3 +550,89 @@ def _repair_unsafe_rows(result: WorkflowBenchmarkResult) -> list[str]:
         if (case.metrics.get("llm_repair_unsafe_operation_count") or 0) > 0:
             rows.append(f"| {case.case_id} | 0 |  | repair.protected_path |")
     return rows or ["| _none_ |  |  |  |"]
+
+
+def _supervisor_decision_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        if not case.metrics.get("supervisor_enabled"):
+            continue
+        veto_reasons = case.metrics.get("supervisor_vetoed")
+        veto_str = ", ".join(veto_reasons) if isinstance(veto_reasons, list) and veto_reasons else ""
+        rows.append("| {case_id} | {proposed} | {final} | {target} | {accepted} | {executed} | {veto} |".format(
+            case_id=case.case_id,
+            proposed=case.metrics.get("supervisor_proposed_action") or "",
+            final=case.metrics.get("supervisor_final_action") or "",
+            target=case.metrics.get("supervisor_target_patch_type") or "",
+            accepted=case.metrics.get("supervisor_accepted"),
+            executed=case.metrics.get("supervisor_executed"),
+            veto=veto_str,
+        ))
+    return rows or ["| _none_ |  |  |  |  |  |  |"]
+
+
+def _augment_fake_trace_with_supervisor(
+    trace: WorkflowTrace,
+    case: EvaluationCase,
+    config: WorkflowBenchmarkConfig,
+) -> WorkflowTrace:
+    """Augment a fake trace with simulated supervisor events."""
+    from openmc_agent.workflow_trace import TraceRecorder
+    recorder = TraceRecorder(trace=trace)
+
+    expected_action = case.expected_supervisor_action
+    if expected_action is None:
+        if case.should_require_human_confirmation:
+            expected_action = "request_human_confirmation"
+        elif case.expected_renderability == "skeleton":
+            expected_action = "downgrade_to_skeleton"
+        elif case.expected_failed_patch_type:
+            expected_action = "retry_patch"
+        elif trace.final_status == "failed":
+            expected_action = "stop"
+        else:
+            expected_action = "continue_to_render"
+
+    target_patch = case.expected_supervisor_target_patch_type or case.expected_failed_patch_type
+    accepted = True
+    vetoed = False
+    fallback_used = bool(config.run_supervisor_allow_fallback and case.expected_supervisor_fallback_used)
+    if case.expected_supervisor_accepted is not None:
+        accepted = case.expected_supervisor_accepted
+
+    meta = {
+        "decision_id": f"fake_sup_{case.case_id}",
+        "mode": config.run_supervisor_mode.replace("-", "_"),
+        "proposed_action": expected_action,
+        "final_action": expected_action,
+        "target_patch_type": target_patch,
+        "accepted": accepted,
+        "executed": accepted and config.run_supervisor_mode == "controlled_route",
+        "vetoed": vetoed,
+        "veto_reasons": [],
+        "fallback_used": fallback_used,
+        "model": config.run_supervisor_model or "fake",
+        "supervisor": "deterministic",
+        "confidence": 0.85,
+        "state_fingerprint": f"fake_fp_{case.case_id}",
+        "decision_count": 1,
+        "allowed_actions": [expected_action, "stop"],
+        "duration_ms": 0.0,
+    }
+
+    recorder.add_event(
+        "run_supervisor_started",
+        summary="run supervisor decision started",
+        metadata=meta,
+    )
+    event_type = "run_supervisor_decision_accepted"
+    if vetoed:
+        event_type = "run_supervisor_decision_vetoed"
+    elif fallback_used:
+        event_type = "run_supervisor_fallback_used"
+    recorder.add_event(
+        event_type,
+        summary=f"run supervisor: {expected_action}",
+        metadata=meta,
+    )
+    return recorder.trace
