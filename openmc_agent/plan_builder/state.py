@@ -124,6 +124,14 @@ class PlanBuildState(AgentBaseModel):
     validation_issues: list[dict[str, Any]] = Field(default_factory=list)
     build_log: list[BuildEvent] = Field(default_factory=list)
 
+    # Validation-driven patch repair is deliberately independent of graph
+    # retries.  These JSON-serializable ledgers prevent duplicate candidates
+    # from being proposed again after resume/checkpoint restore.
+    validation_repair_history: list[dict[str, Any]] = Field(default_factory=list)
+    validation_repair_attempts_by_fingerprint: dict[str, int] = Field(default_factory=dict)
+    validation_repair_candidate_hashes: dict[str, list[str]] = Field(default_factory=dict)
+    validation_full_patch_regenerations_by_fingerprint: dict[str, int] = Field(default_factory=dict)
+
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     # ------------------------------------------------------------------
@@ -255,6 +263,7 @@ class PlanBuildState(AgentBaseModel):
             "valid_patch_count": len(self.get_valid_patches()),
             "has_assembled_plan": self.assembled_plan is not None,
             "validation_issue_count": len(self.validation_issues),
+            "validation_repair_count": len(self.validation_repair_history),
             "build_log_events": len(self.build_log),
         }
 

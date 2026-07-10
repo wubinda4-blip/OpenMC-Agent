@@ -36,6 +36,14 @@ from openmc_agent.plan_builder import (
     initialize_plan_build_state,
 )
 from openmc_agent.plan_builder.state import PlanBuildState
+from openmc_agent.plan_builder.validation_repair import (
+    PatchRepairProposal,
+    build_patch_repair_request,
+    commit_accepted_patch_repair,
+    evaluate_patch_repair_proposal,
+)
+from openmc_agent.plan_builder.validation_repair_policy import policy_for_issue_code
+from openmc_agent.plan_builder.validation_repair_prompts import build_patch_repair_prompt
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
 from openmc_agent.repair_proposal import (
@@ -161,6 +169,7 @@ class GraphState(TypedDict, total=False):
     plan_build_state: dict[str, Any]
     incremental_execution_result: dict[str, Any]
     incremental_regeneration_pending: bool
+    incremental_patch_repair_accepted: bool
     use_incremental_executor: bool
     allow_monolithic_fallback_for_incremental_failure: bool
     requirement_resolution: dict[str, Any]
@@ -252,6 +261,7 @@ def build_plan_graph(
     retrieval_policy: RetrievalPolicy | None = None,
     knowledge_graph_path: str | Path | None = None,
     patch_llm_client: Callable[[str], str] | None = None,
+    patch_repair_llm_client: Any | None = None,
     use_incremental_executor: bool = True,
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
@@ -315,7 +325,13 @@ def build_plan_graph(
             material_policy=material_policy,
         ),
     )
-    graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
+    graph.add_node(
+        "validate_plan",
+        _make_validate_plan_node(
+            max_retries,
+            patch_repair_llm_client=patch_repair_llm_client or patch_llm_client,
+        ),
+    )
     graph.add_node("repair_plan_format", _make_repair_plan_format_node(generate_plan, max_retries))
     graph.add_node("assess_capability", _make_assess_plan_capability_node(max_retries))
     graph.add_node("semantic_audit", _make_semantic_audit_node(
@@ -384,6 +400,7 @@ def build_plan_graph(
             "reflect": "reflect_plan",
             "generate": "generate_plan",
             "repair_format": "repair_plan_format",
+            "repair_validate": "validate_plan",
             "stop": "save_record",
         },
     )
@@ -1840,7 +1857,129 @@ def _make_validate_spec_node(max_retries: int):
     return _validate_spec
 
 
-def _make_validate_plan_node(max_retries: int):
+def _write_validation_repair_artifact(
+    output_dir: str | Path | None,
+    name: str,
+    payload: Any,
+) -> str | None:
+    """Best-effort, JSON-only repair artifact writer."""
+    try:
+        root = Path(output_dir or "data/runs") / "validation_repair"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / name
+        _write_json_file(path, payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload)
+        return str(path)
+    except Exception:
+        return None
+
+
+def _plan_build_state_for_validation_repair(value: Any) -> PlanBuildState | None:
+    try:
+        if isinstance(value, PlanBuildState):
+            return value
+        if isinstance(value, dict) and value.get("patches"):
+            return PlanBuildState.model_validate(value)
+    except Exception:
+        return None
+    return None
+
+
+def _invoke_patch_repair_llm(client: Any, request: Any, prompt: str) -> str | dict[str, Any]:
+    """Support the explicit repair protocol and JSON-only callable test clients."""
+    schema = PatchRepairProposal.model_json_schema()
+    if hasattr(client, "propose_patch_repair"):
+        return client.propose_patch_repair(request, prompt=prompt, json_schema=schema)
+    if callable(client):
+        return client(prompt)
+    raise TypeError("patch repair LLM client is unavailable")
+
+
+def _try_incremental_validation_patch_repair(
+    *,
+    state: GraphState,
+    report: ValidationReport,
+    target_patch_types: list[str],
+    llm_client: Any | None,
+) -> tuple[PlanBuildState | None, Any | None, dict[str, Any]]:
+    """Evaluate at most two patch edits without mutating the workflow state."""
+    build_state = _plan_build_state_for_validation_repair(state.get("plan_build_state"))
+    if build_state is None or llm_client is None:
+        return build_state, None, {"status": "unavailable"}
+    eligible = [i for i in report.issues if i.severity == "error"]
+    if any(i.requires_human_confirmation or i.route_hint in {"ask_expert", "retrieval"} for i in eligible):
+        return build_state, None, {"status": "requires_human_confirmation"}
+    for target_patch_type in target_patch_types:
+        policies = [policy_for_issue_code(issue.code) for issue in eligible]
+        policy = next((p for p in policies if p is not None and p.owner_patch_type == target_patch_type), None)
+        policy_source = "registry" if policy is not None else "heuristic_fallback"
+        allowed = list(policy.allowed_path_patterns) if policy else ["/**"]
+        forbidden = list(policy.forbidden_path_patterns) if policy else []
+        fingerprint_report = report
+        from openmc_agent.plan_builder.validation_repair import compute_validation_issue_fingerprint
+        fingerprint = compute_validation_issue_fingerprint(fingerprint_report, target_patch_type=target_patch_type)
+        attempts = build_state.validation_repair_attempts_by_fingerprint.get(fingerprint, 0)
+        if attempts >= 2:
+            continue
+        request = build_patch_repair_request(
+            state=build_state, report=report, target_patch_type=target_patch_type,
+            allowed_path_patterns=allowed, forbidden_path_patterns=forbidden, attempt_index=attempts,
+        )
+        if request is None:
+            continue
+        _write_validation_repair_artifact(state.get("output_dir"), "diagnosis.json", {
+            "target_patch_type": target_patch_type,
+            "issue_fingerprint": fingerprint,
+            "policy_source": policy_source,
+            "issues": request.issues,
+            "previous_patch_hash": request.previous_patch_hash,
+        })
+        request_path = _write_validation_repair_artifact(
+            state.get("output_dir"), f"request_{attempts}.json", request
+        )
+        _write_validation_repair_artifact(state.get("output_dir"), f"patch_before_{attempts}.json", request.previous_patch_content)
+        _write_validation_repair_artifact(state.get("output_dir"), f"plan_validation_before_{attempts}.json", report)
+        build_state.add_event(
+            "planning.validation_patch_repair_started",
+            "validation-driven patch repair started",
+            {"target_patch_type": target_patch_type, "issue_fingerprint": fingerprint, "policy_source": policy_source},
+        )
+        try:
+            raw = _invoke_patch_repair_llm(llm_client, request, build_patch_repair_prompt(request))
+            proposal = PatchRepairProposal.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
+        except Exception as exc:
+            build_state.validation_repair_attempts_by_fingerprint[fingerprint] = attempts + 1
+            return build_state, None, {"status": "failed", "reason": str(exc), "request_path": request_path}
+        _write_validation_repair_artifact(state.get("output_dir"), f"proposal_{attempts}.json", proposal)
+        build_state.add_event(
+            "planning.validation_patch_repair_proposed", "patch repair proposal received",
+            {"target_patch_type": target_patch_type, "issue_fingerprint": fingerprint},
+        )
+        evaluation = evaluate_patch_repair_proposal(
+            state=build_state, request=request, proposal=proposal, requirement=state.get("requirement", ""),
+        )
+        build_state.validation_repair_attempts_by_fingerprint[fingerprint] = attempts + 1
+        if evaluation.candidate_hash:
+            build_state.validation_repair_candidate_hashes.setdefault(fingerprint, []).append(evaluation.candidate_hash)
+        _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
+        if evaluation.repaired_patch is not None:
+            _write_validation_repair_artifact(state.get("output_dir"), f"patch_after_{attempts}.json", evaluation.repaired_patch)
+        if evaluation.repaired_plan is not None:
+            _write_validation_repair_artifact(state.get("output_dir"), f"plan_validation_after_{attempts}.json", {"issues": evaluation.issues_after})
+        if evaluation.accepted:
+            commit_accepted_patch_repair(build_state, evaluation, request)
+            build_state.add_event("planning.validation_patch_repair_accepted", "patch repair accepted", evaluation.model_dump(mode="json"))
+            return build_state, evaluation, {"status": "accepted", "policy_source": policy_source}
+        event = "planning.validation_patch_repair_no_progress" if evaluation.status in {"rejected_no_improvement", "rejected_duplicate_candidate"} else "planning.validation_patch_repair_rejected"
+        build_state.add_event(event, "patch repair rejected", evaluation.model_dump(mode="json"))
+        # A no-progress candidate cannot improve on a second identical prompt;
+        # retain the candidate hash and immediately fall through to regeneration.
+        if evaluation.status in {"rejected_no_improvement", "rejected_duplicate_candidate"}:
+            return build_state, evaluation, {"status": evaluation.status, "policy_source": policy_source}
+        return build_state, evaluation, {"status": evaluation.status, "policy_source": policy_source}
+    return build_state, None, {"status": "budget_exhausted"}
+
+
+def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any | None = None):
     def _validate_plan(state: GraphState) -> GraphState:
         _progress(state, "validate_plan", "validating SimulationPlan")
         plan = _coerce_simulation_plan(state.get("simulation_plan"))
@@ -1888,12 +2027,74 @@ def _make_validate_plan_node(max_retries: int):
                 and retry_count < max_retries
             ):
                 target_patch_types = _incremental_plan_repair_patch_targets(report)
+                repaired_build_state, repair_evaluation, repair_meta = _try_incremental_validation_patch_repair(
+                    state=state,
+                    report=report,
+                    target_patch_types=target_patch_types,
+                    llm_client=patch_repair_llm_client,
+                )
+                if repair_evaluation is not None and repair_evaluation.accepted and repair_evaluation.repaired_plan:
+                    repaired_plan = SimulationPlan.model_validate(repair_evaluation.repaired_plan)
+                    return {
+                        "simulation_plan": repaired_plan,
+                        "simulation_spec": repaired_plan.model_spec,
+                        "validation_report": report,
+                        "retry_history": history,
+                        "retry_count": retry_count,
+                        "incremental_patch_repair_accepted": True,
+                        "incremental_regeneration_pending": False,
+                        "plan_build_state": repaired_build_state.model_dump(mode="json") if repaired_build_state else state.get("plan_build_state"),
+                        **_trace_event_update(state, "planning.validation_patch_repair_accepted", summary="validation patch repair accepted; revalidating assembled clone", report=report, plan=repaired_plan, metadata=repair_meta),
+                    }
                 repair_build_state = _plan_build_state_with_repair_request(
-                    state.get("plan_build_state"),
+                    repaired_build_state.model_dump(mode="json") if repaired_build_state else state.get("plan_build_state"),
                     report=report,
                     target_patch_types=target_patch_types,
                 )
+                if target_patch_types and repaired_build_state is not None:
+                    from openmc_agent.plan_builder.validation_repair import compute_validation_issue_fingerprint
+                    regeneration_fingerprint = compute_validation_issue_fingerprint(
+                        report, target_patch_type=target_patch_types[0]
+                    )
+                    regeneration_count = repaired_build_state.validation_full_patch_regenerations_by_fingerprint.get(
+                        regeneration_fingerprint, 0
+                    )
+                    if regeneration_count >= 1:
+                        return {
+                            "simulation_plan": plan,
+                            "simulation_spec": plan.model_spec,
+                            "validation_report": report,
+                            "retry_history": history,
+                            "error": "; ".join(report.errors),
+                            "plan_build_state": repaired_build_state.model_dump(mode="json"),
+                            **_trace_event_update(
+                                state,
+                                "planning.validation_patch_repair_fallback_to_regeneration",
+                                summary="validation patch repair and one full regeneration budget exhausted",
+                                report=report,
+                                plan=plan,
+                                metadata={"issue_fingerprint": regeneration_fingerprint, "full_patch_regeneration_budget": 1},
+                            ),
+                        }
+                    repaired_build_state.validation_full_patch_regenerations_by_fingerprint[
+                        regeneration_fingerprint
+                    ] = regeneration_count + 1
+                    repair_build_state = _plan_build_state_with_repair_request(
+                        repaired_build_state.model_dump(mode="json"),
+                        report=report,
+                        target_patch_types=target_patch_types,
+                    )
                 if target_patch_types and repair_build_state is not None:
+                    if repaired_build_state is not None:
+                        repaired_build_state.add_event(
+                            "planning.validation_patch_repair_fallback_to_regeneration",
+                            "patch edit did not pass acceptance; using targeted full-patch regeneration",
+                            {"target_patch_types": target_patch_types, "patch_repair_status": repair_meta.get("status")},
+                        )
+                        repair_build_state = repaired_build_state.model_dump(mode="json")
+                        repair_build_state = _plan_build_state_with_repair_request(
+                            repair_build_state, report=report, target_patch_types=target_patch_types
+                        )
                     _progress(
                         state,
                         "validate_plan",
@@ -1929,6 +2130,7 @@ def _make_validate_plan_node(max_retries: int):
                                 "issue_codes": [issue.code for issue in report.issues],
                                 "target_patch_types": target_patch_types,
                                 "repair_mode": "targeted_patch_regeneration",
+                                "patch_repair_status": repair_meta.get("status"),
                             },
                         ),
                     }
@@ -2017,6 +2219,7 @@ def _make_validate_plan_node(max_retries: int):
             "simulation_spec": plan.model_spec if plan is not None else None,
             "plan_artifacts": artifact_paths,
             "error": "",
+            "incremental_patch_repair_accepted": False,
             **_trace_event_update(
                 state,
                 "validation_completed",
@@ -2156,6 +2359,11 @@ def _plan_build_state_with_repair_request(
         payload = dict(build_state)
     else:
         return None
+    # Only a persisted incremental state with actual patch envelopes can be
+    # targeted.  Placeholder/stale graph data must take the fresh-generation
+    # fallback rather than masquerading as a repairable cache.
+    if not payload.get("patches"):
+        return None
     metadata = dict(payload.get("metadata") or {})
     metadata["plan_validation_repair"] = {
         "target_patch_types": list(target_patch_types),
@@ -2205,6 +2413,8 @@ def _make_validation_router(max_retries: int):
 def _make_plan_validation_router(max_retries: int):
     def _route(state: GraphState) -> str:
         report = state.get("validation_report")
+        if state.get("incremental_patch_repair_accepted"):
+            return "repair_validate"
         if report is not None and report.is_valid and _coerce_simulation_plan(state.get("simulation_plan")) is not None:
             return "assess"
         if state.get("retry_count", 0) >= max_retries:
@@ -3495,6 +3705,7 @@ def _make_reflect_plan_node(
                 existing_paths=artifact_paths,
             ),
             "error": "",
+            "incremental_patch_repair_accepted": False,
             **_investigation_state_updates(investigation_outcome),
             **reflect_completed_update,
         }

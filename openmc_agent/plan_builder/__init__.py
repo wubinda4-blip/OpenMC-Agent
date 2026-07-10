@@ -101,6 +101,18 @@ from .validators import (
     PatchValidationResult,
     validate_patch,
 )
+from .validation_repair import (
+    PatchRepairEvaluation,
+    PatchRepairOperation,
+    PatchRepairProposal,
+    PatchRepairRequest,
+    compute_validation_issue_fingerprint,
+    evaluate_patch_repair_proposal,
+)
+from .validation_repair_policy import (
+    ValidationIssueRepairPolicy,
+    policy_for_issue_code,
+)
 
 __all__ = [
     # Phase 0
@@ -138,6 +150,15 @@ __all__ = [
     "PatchValidationResult",
     "add_validated_patch_to_state",
     "validate_patch",
+    # Validation-driven patch repair
+    "PatchRepairOperation",
+    "PatchRepairRequest",
+    "PatchRepairProposal",
+    "PatchRepairEvaluation",
+    "compute_validation_issue_fingerprint",
+    "evaluate_patch_repair_proposal",
+    "ValidationIssueRepairPolicy",
+    "policy_for_issue_code",
     # Phase 3 -- assembler
     "PlanAssemblyIssue",
     "PlanAssemblyResult",

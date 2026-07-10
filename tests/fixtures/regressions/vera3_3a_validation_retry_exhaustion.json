@@ -1,0 +1,13 @@
+{
+  "case_id": "vera3_3a_validation_retry_exhaustion",
+  "sanitized": true,
+  "target_patch_type": "pin_map",
+  "rounds": [
+    {"retry_count": 0, "issue_code": "lattice.pin_count_mismatch", "schema_path": "complex_model.lattices.assembly_lattice.universe_pattern", "target_patch_sha256": "093c50806fc93afc698cd0c7a16797a12b3d8f4f7d1ccd4296222a2e085de18e"},
+    {"retry_count": 1, "issue_code": "lattice.pin_count_mismatch", "schema_path": "complex_model.lattices.assembly_lattice.universe_pattern", "target_patch_sha256": "093c50806fc93afc698cd0c7a16797a12b3d8f4f7d1ccd4296222a2e085de18e"},
+    {"retry_count": 2, "issue_code": "lattice.pin_count_mismatch", "schema_path": "complex_model.lattices.assembly_lattice.universe_pattern", "target_patch_sha256": "093c50806fc93afc698cd0c7a16797a12b3d8f4f7d1ccd4296222a2e085de18e"}
+  ],
+  "three_rounds_same_patch_hash": true,
+  "three_rounds_same_issue_fingerprint": true,
+  "direct_failure_reason": "targeted full-patch regeneration repeated the same invalid pin-map result"
+}

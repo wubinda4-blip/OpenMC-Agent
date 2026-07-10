@@ -329,37 +329,62 @@ def max_risk(a: RepairRiskLevel, b: RepairRiskLevel) -> RepairRiskLevel:
     return a if order[a] >= order[b] else b
 
 
+def apply_json_patch_to_clone(
+    document: Mapping[str, Any] | AgentBaseModel,
+    operations: Sequence[Any],
+) -> PatchApplicationResult:
+    """Atomically apply a constrained RFC6902 subset to a deep-copied mapping.
+
+    This is deliberately document-agnostic: both full-plan repair and
+    incremental patch repair use the same JSON Pointer implementation.  A
+    failed operation returns no candidate, so callers can never observe a
+    partially modified document.
+    """
+    from openmc_agent.repair_policy import REPAIR_PATCH_APPLICATION_FAILED, decode_json_pointer
+
+    data = copy.deepcopy(_to_plain_dict(document))
+    try:
+        for operation in operations:
+            if isinstance(operation, Mapping):
+                op = operation.get("op")
+                path = operation.get("path")
+                value = operation.get("value")
+            else:
+                op = getattr(operation, "op", None)
+                path = getattr(operation, "path", None)
+                value = getattr(operation, "value", None)
+            if not isinstance(op, str) or not isinstance(path, str):
+                raise ValueError("operation must contain string op and path")
+            if path == "":
+                raise ValueError("root modification is forbidden")
+            parts = decode_json_pointer(path)
+            parent, key = _resolve_parent(data, parts, create_missing=False)
+            if op == "test":
+                current = _read_child(parent, key)
+                if current != value:
+                    raise ValueError(f"test failed at {path}")
+            elif op == "remove":
+                _remove_child(parent, key)
+            elif op == "replace":
+                _replace_child(parent, key, value)
+            elif op == "add":
+                if not parts:
+                    raise ValueError("root add is forbidden")
+                parent, key = _resolve_parent(data, parts, create_missing=False)
+                _add_child(parent, key, value)
+            else:  # pragma: no cover; pydantic blocks this
+                raise ValueError(f"unsupported op {op}")
+    except Exception as exc:
+        return PatchApplicationResult(ok=False, error_code=REPAIR_PATCH_APPLICATION_FAILED, error=str(exc))
+    return PatchApplicationResult(ok=True, plan=data)
+
+
 def apply_repair_patch_to_clone(
     plan: Mapping[str, Any] | AgentBaseModel,
     operations: Sequence[RepairPatchOperation],
 ) -> PatchApplicationResult:
-    from openmc_agent.repair_policy import REPAIR_PATCH_APPLICATION_FAILED, decode_json_pointer
-
-    data = copy.deepcopy(_to_plain_dict(plan))
-    try:
-        for operation in operations:
-            if operation.path == "":
-                raise ValueError("root modification is forbidden")
-            parts = decode_json_pointer(operation.path)
-            parent, key = _resolve_parent(data, parts, create_missing=False)
-            if operation.op == "test":
-                current = _read_child(parent, key)
-                if current != operation.value:
-                    raise ValueError(f"test failed at {operation.path}")
-            elif operation.op == "remove":
-                _remove_child(parent, key)
-            elif operation.op == "replace":
-                _replace_child(parent, key, operation.value)
-            elif operation.op == "add":
-                if not parts:
-                    raise ValueError("root add is forbidden")
-                parent, key = _resolve_parent(data, parts, create_missing=False)
-                _add_child(parent, key, operation.value)
-            else:  # pragma: no cover; pydantic blocks this
-                raise ValueError(f"unsupported op {operation.op}")
-    except Exception as exc:
-        return PatchApplicationResult(ok=False, error_code=REPAIR_PATCH_APPLICATION_FAILED, error=str(exc))
-    return PatchApplicationResult(ok=True, plan=data)
+    """Compatibility wrapper for full-plan repair callers."""
+    return apply_json_patch_to_clone(plan, operations)
 
 
 def _resolve_parent(data: Any, parts: list[str], *, create_missing: bool) -> tuple[Any, str]:
