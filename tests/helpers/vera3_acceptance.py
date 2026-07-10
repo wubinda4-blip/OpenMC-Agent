@@ -35,6 +35,7 @@ from openmc_agent.schemas import (
     CoreSpec,
     ExecutionCheckSpec,
     LatticeSpec,
+    LatticeLoadingSpec,
     NuclideSpec,
     PlotSpec,
     RegionSpec,
@@ -46,6 +47,7 @@ from openmc_agent.schemas import (
 )
 
 REFERENCE_PATH = Path("tests/fixtures/vera3_reference.json")
+CONTRACT_PATH = Path("tests/fixtures/vera3_geometry_contract.json")
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +78,11 @@ def load_vera3_reference(path: Path | str = REFERENCE_PATH) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def load_vera3_geometry_contract(path: Path | str = CONTRACT_PATH) -> dict[str, Any]:
+    """Load the canonical VERA3 geometry contract (test-only)."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def to_0_indexed(pos_1based: list[int] | tuple[int, int]) -> tuple[int, int]:
     """Convert a document 1-based (row, col) to internal 0-indexed (row, col).
 
@@ -103,6 +110,163 @@ def _pin_kind(universe_id: str, universe_name: str = "") -> str:
     if "guide" in text or "_gt" in text or text.endswith("gt"):
         return "G"
     return "F"
+
+
+def collect_base_lattice_counts(plan: SimulationPlan | dict[str, Any]) -> dict[str, int]:
+    """Count base-lattice universe ids without applying axial insert loadings."""
+    model = plan.complex_model if isinstance(plan, SimulationPlan) else plan.get("complex_model", plan)
+    lattices = model.lattices if isinstance(model, ComplexModelSpec) else model.get("lattices", [])
+    if not lattices:
+        return {}
+    lattice = lattices[0]
+    pattern = lattice.universe_pattern if isinstance(lattice, LatticeSpec) else lattice.get("universe_pattern", [])
+    counts: dict[str, int] = {}
+    for row in pattern:
+        for universe_id in row:
+            counts[universe_id] = counts.get(universe_id, 0) + 1
+    return counts
+
+
+def collect_loading_override_counts(
+    plan: SimulationPlan | dict[str, Any], loading_id: str | None = None
+) -> dict[str, int]:
+    """Count override coordinates in one loading or across all loadings."""
+    model = plan.complex_model if isinstance(plan, SimulationPlan) else plan.get("complex_model", plan)
+    loadings = model.lattice_loadings if isinstance(model, ComplexModelSpec) else model.get("lattice_loadings", [])
+    counts: dict[str, int] = {}
+    for loading in loadings:
+        current_id = loading.id if isinstance(loading, LatticeLoadingSpec) else loading.get("id")
+        if loading_id is not None and current_id != loading_id:
+            continue
+        overrides = loading.overrides if isinstance(loading, LatticeLoadingSpec) else loading.get("overrides", {})
+        for universe_id, coordinates in overrides.items():
+            counts[universe_id] = counts.get(universe_id, 0) + len(coordinates)
+    return counts
+
+
+def collect_active_lattice_union(plan: SimulationPlan) -> tuple[float, float] | None:
+    """Return the contiguous union of all active-fuel lattice layer bounds."""
+    model = plan.complex_model
+    if model is None or model.core is None:
+        return None
+    layers = sorted(
+        (layer for layer in model.core.axial_layers
+         if layer.fill.type == "lattice" and "active_fuel" in layer.id),
+        key=lambda layer: layer.z_min_cm,
+    )
+    if not layers:
+        return None
+    return (layers[0].z_min_cm, layers[-1].z_max_cm)
+
+
+def validate_axial_layer_continuity(
+    plan: SimulationPlan, tolerance_cm: float = 1e-6
+) -> list[BenchmarkIssue]:
+    """Return deterministic gaps/overlaps in the complete axial layer partition."""
+    model = plan.complex_model
+    if model is None or model.core is None:
+        return [BenchmarkIssue("vera3.active_lattice_coverage_gap", "error", "plan has no axial layers")]
+    layers = sorted(model.core.axial_layers, key=lambda layer: layer.z_min_cm)
+    issues: list[BenchmarkIssue] = []
+    for previous, current in zip(layers, layers[1:]):
+        delta = current.z_min_cm - previous.z_max_cm
+        if delta > tolerance_cm:
+            issues.append(BenchmarkIssue("vera3.active_lattice_coverage_gap", "error", "axial layer gap", actual=delta))
+        elif delta < -tolerance_cm:
+            issues.append(BenchmarkIssue("vera3.active_lattice_coverage_overlap", "error", "axial layer overlap", actual=-delta))
+    return issues
+
+
+def diagnose_vera3_component_geometry(
+    plan_or_patch_fixture: SimulationPlan | dict[str, Any],
+    contract: dict[str, Any],
+    *,
+    variant: str,
+) -> list[BenchmarkIssue]:
+    """Diagnose known VERA3 component/profile errors without changing the plan.
+
+    This is a deliberately test-only oracle. It recognizes legacy whole-layer
+    fuel-pin internals, finite inserts incorrectly placed in the base lattice,
+    and radial/axial insert omissions from either an assembled plan or raw
+    patch fixture.
+    """
+    raw = plan_or_patch_fixture.model_dump(mode="json") if isinstance(plan_or_patch_fixture, SimulationPlan) else plan_or_patch_fixture
+    model = raw.get("complex_model", raw)
+    core = model.get("core", {})
+    layers = core.get("axial_layers", [])
+    if not layers and "patches" in raw:
+        axial = next((patch for patch in raw["patches"] if patch.get("patch_type") == "axial_layers"), {})
+        layers = axial.get("layers", [])
+        model = {**model, "lattice_loadings": axial.get("lattice_loadings", [])}
+    issues: list[BenchmarkIssue] = []
+    fuel_segments = contract["component_profiles"]["fuel_pin"]["axial_segments"]
+    for segment in fuel_segments:
+        segment_id = segment["id"]
+        if segment_id not in {"lower_end_plug", "upper_end_plug", "upper_plenum"}:
+            continue
+        matching = next(
+            (layer for layer in layers if layer.get("id", layer.get("layer_id")) == segment_id),
+            None,
+        )
+        fill = (matching or {}).get("fill", matching or {})
+        fill_type = fill.get("type", fill.get("fill_type"))
+        fill_id = fill.get("id", fill.get("fill_id"))
+        expected_material = segment["internal_material"]
+        if fill_type == "material" and fill_id == expected_material:
+            issues.append(BenchmarkIssue(
+                "vera3.component_material_slab", "error",
+                f"{segment_id} is a whole-assembly {expected_material} slab instead of fuel-pin internal content",
+                path=f"core.axial_layers.{segment_id}",
+            ))
+            issues.append(BenchmarkIssue(
+                "vera3.fuel_pin_profile_missing", "error",
+                f"{segment_id} lacks a fuel-pin component profile",
+                path=f"core.axial_layers.{segment_id}",
+            ))
+
+    if variant == "3B":
+        universes = {u.get("universe_id", u.get("id")): u for u in raw.get("patches", [{}])[0:0]}
+        if "patches" in raw:
+            universe_patch = next((p for p in raw["patches"] if p.get("patch_type") == "universes"), {})
+            universes = {u["universe_id"]: u for u in universe_patch.get("universes", [])}
+        elif model.get("universes"):
+            cells = {cell.get("id"): cell for cell in model.get("cells", [])}
+            universes = {
+                universe.get("id"): {"cells": [cells.get(cell_id, {}) for cell_id in universe.get("cell_ids", [])]}
+                for universe in model.get("universes", [])
+            }
+        pyrex = universes.get("pyrex_rod") or universes.get("pyrex_pin")
+        if pyrex:
+            expected = {item["id"]: item["material"] for item in contract["component_profiles"]["pyrex_rod"]["radial_layers"]}
+            cells = pyrex.get("cells", [])
+            actual = {cell.get("id"): cell.get("material_id", cell.get("fill_id")) for cell in cells}
+            if any(actual.get(key) != material for key, material in expected.items() if key in {"gap_1", "gap_2"}):
+                issues.append(BenchmarkIssue("vera3.pyrex_gap_material_mismatch", "error", "Pyrex internal gaps do not match the helium contract"))
+            expected_ids = set(expected)
+            actual_ids = set(actual)
+            radii = [(cell.get("r_min_cm", 0.0), cell.get("r_max_cm")) for cell in cells if cell.get("r_max_cm") is not None]
+            if expected_ids - actual_ids or (radii and any(right <= left for left, right in radii)):
+                issues.append(BenchmarkIssue("vera3.pyrex_radial_stack_mismatch", "error", "Pyrex radial stack omits or invalidates contract layers"))
+
+        base_counts = collect_base_lattice_counts(raw)
+        if base_counts.get("pyrex_rod", 0) or base_counts.get("pyrex_pin", 0) or base_counts.get("thimble_plug", 0) or base_counts.get("plug_pin", 0):
+            issues.append(BenchmarkIssue("vera3.base_lattice_contains_finite_insert", "error", "finite Pyrex or thimble insert appears in base lattice"))
+        loading_counts = collect_loading_override_counts(raw)
+        if loading_counts.get("thimble_plug", 0) + loading_counts.get("plug_pin", 0) != 8:
+            issues.append(BenchmarkIssue("vera3.thimble_loading_missing", "error", "3B requires an 8-coordinate finite thimble loading"))
+        pyrex_profile = contract["component_profiles"]["pyrex_rod"]["axial_profile"]
+        nominal_top = pyrex_profile["nominal_plenum_top_cm"]["value"]
+        nozzle_start = next(zone for zone in contract["assembly_level_zones"] if zone["id"] == "upper_nozzle")["z_min_cm"]["value"]
+        if nominal_top > nozzle_start:
+            issues.append(BenchmarkIssue("vera3.pyrex_axial_profile_conflict", "warning", "nominal Pyrex plenum intersects homogenized upper nozzle"))
+
+    if isinstance(plan_or_patch_fixture, SimulationPlan):
+        issues.extend(validate_axial_layer_continuity(plan_or_patch_fixture))
+        active = collect_active_lattice_union(plan_or_patch_fixture)
+        expected = contract["derived_breakpoints"]["active_fuel_region_cm"]["value"]
+        if active is None or abs(active[0] - expected[0]) > 1e-6 or abs(active[1] - expected[1]) > 1e-6:
+            issues.append(BenchmarkIssue("vera3.active_lattice_coverage_gap", "error", "active lattice union does not cover active fuel"))
+    return issues
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +308,7 @@ def validate_vera3_plan_structure(
     issues: list[BenchmarkIssue] = []
     tol = reference.get("tolerance_cm", 1.0e-3)
     meta = reference["assembly_metadata"]
+    pm = reference["pin_maps"][variant]
     model = plan.complex_model
 
     if model is None or model.kind != "assembly":
@@ -174,18 +339,18 @@ def validate_vera3_plan_structure(
                                      "axial domain does not cover the expected range",
                                      expected=list(exp_domain), actual=list(domain)))
 
-    # 1c. active fuel height
-    fuel_layer = next((L for L in layers if L.fill.type == "lattice"), None)
+    # 1c. Active fuel can be split by finite insert loading boundaries.
+    fuel_union = collect_active_lattice_union(plan)
     exp_fuel = meta["active_fuel_region_cm"]
-    if fuel_layer is None:
+    if fuel_union is None:
         issues.append(BenchmarkIssue("vera3.active_fuel_height_mismatch", "error",
-                                     "no lattice-filled active fuel layer found"))
+                                      "no lattice-filled active fuel layer found"))
     else:
-        if abs(fuel_layer.z_min_cm - exp_fuel[0]) > tol or abs(fuel_layer.z_max_cm - exp_fuel[1]) > tol:
+        if abs(fuel_union[0] - exp_fuel[0]) > tol or abs(fuel_union[1] - exp_fuel[1]) > tol:
             issues.append(BenchmarkIssue("vera3.active_fuel_height_mismatch", "error",
-                                         "active fuel region z-range mismatch",
-                                         expected=list(exp_fuel),
-                                         actual=[fuel_layer.z_min_cm, fuel_layer.z_max_cm]))
+                                          "active fuel region z-range mismatch",
+                                          expected=list(exp_fuel),
+                                          actual=list(fuel_union)))
 
     # 2. spacer grids as overlays
     ref_grids = reference["spacer_grids"]
@@ -255,7 +420,10 @@ def validate_vera3_plan_structure(
         actual_counts: dict[str, int] = {}
         for k in flat:
             actual_counts[k] = actual_counts.get(k, 0) + 1
-        for letter, exp_count in pm["counts"].items():
+        expected_base_counts = pm["counts"]
+        if variant == "3B":
+            expected_base_counts = {"F": 264, "G": 24, "I": 1, "P": 0, "T": 0}
+        for letter, exp_count in expected_base_counts.items():
             act = actual_counts.get(letter, 0)
             if act != exp_count:
                 issues.append(BenchmarkIssue("vera3.pin_count_mismatch", "error",
@@ -275,12 +443,19 @@ def validate_vera3_plan_structure(
         # instrument tube
         _check_coord("I", pm["instrument_tube_position_1based"], "instrument tube",
                      "vera3.instrument_tube_coordinate_mismatch")
-        # pyrex (3B)
-        for pos in pm["pyrex_positions_1based"]:
-            _check_coord("P", pos, "pyrex rod", "vera3.pyrex_coordinate_mismatch")
-        # plugs (3B)
-        for pos in pm["plug_positions_1based"]:
-            _check_coord("T", pos, "thimble plug", "vera3.plug_coordinate_mismatch")
+        if variant == "3B":
+            for pos in pm["guide_tube_positions_1based"]:
+                _check_coord("G", pos, "base guide tube", "vera3.guide_tube_coordinate_mismatch")
+            loading_counts = collect_loading_override_counts(plan)
+            if loading_counts.get("pyrex_rod", 0) + loading_counts.get("pyrex_pin", 0) != 16:
+                issues.append(BenchmarkIssue("vera3.pyrex_loading_count_mismatch", "error", "Pyrex loading must override 16 coordinates", expected=16, actual=loading_counts))
+            if loading_counts.get("thimble_plug", 0) + loading_counts.get("plug_pin", 0) != 8:
+                issues.append(BenchmarkIssue("vera3.thimble_loading_missing", "error", "thimble loading must override 8 coordinates", expected=8, actual=loading_counts))
+            loading = next((item for item in model.lattice_loadings if item.id == "pyrex_active_loading"), None)
+            actual_coords = set((loading.overrides.get("pyrex_pin") or loading.overrides.get("pyrex_rod") or []) if loading else [])
+            expected_coords = {to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]}
+            if actual_coords != expected_coords:
+                issues.append(BenchmarkIssue("vera3.pyrex_coordinate_mismatch", "error", "Pyrex loading coordinates mismatch", expected=sorted(expected_coords), actual=sorted(actual_coords)))
 
     # 4. material references resolve
     cell_material_ids = {c.fill_id for c in model.cells if c.fill_type == "material"}
@@ -435,9 +610,9 @@ def _vera3_lattice_pattern(reference: dict, variant: str) -> list[list[str]]:
     placements = {
         "G": pm["guide_tube_positions_1based"],
         "I": [pm["instrument_tube_position_1based"]],
-        "P": pm["pyrex_positions_1based"],
-        "T": pm["plug_positions_1based"],
     }
+    if variant != "3B":
+        placements.update({"P": pm["pyrex_positions_1based"], "T": pm["plug_positions_1based"]})
     for letter, positions in placements.items():
         uid = uid_for.get(letter)
         if uid is None:
@@ -467,6 +642,7 @@ def build_vera3_like_plan(
     placement, default z, pure-water guide tube). No LLM is involved.
     """
     meta = reference["assembly_metadata"]
+    pm = reference["pin_maps"][variant]
     materials = _vera3_materials(variant)
     cells, universes = _vera3_pin_universes(variant, pure_water_guide=pure_water_guide)
 
@@ -474,13 +650,6 @@ def build_vera3_like_plan(
     if mutate_pin is not None:
         r0, c0 = mutate_pin  # 0-indexed; replace whatever is there with a fuel pin
         pattern[r0][c0] = "fuel_pin"
-    if wrong_pyrex is not None and variant == "3B":
-        # Relocate a pyrex rod: clear its first documented position (-> fuel) and
-        # place a pyrex at the given wrong 0-indexed (fuel) coordinate.
-        first_pyrex_0 = to_0_indexed(reference["pin_maps"]["3B"]["pyrex_positions_1based"][0])
-        pattern[first_pyrex_0[0]][first_pyrex_0[1]] = "fuel_pin"
-        r0, c0 = wrong_pyrex
-        pattern[r0][c0] = "pyrex_pin"
 
     lattices = [LatticeSpec(
         id="assembly_lattice", name="VERA3 17x17 assembly", kind="rect",
@@ -488,7 +657,24 @@ def build_vera3_like_plan(
         universe_pattern=pattern,
     )]
 
-    # axial layers (transcribed from reference)
+    lattice_loadings: list[LatticeLoadingSpec] = []
+    if variant == "3B":
+        pyrex_coords = [to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]]
+        if wrong_pyrex is not None:
+            pyrex_coords[0] = wrong_pyrex
+        lattice_loadings = [
+            LatticeLoadingSpec(
+                id="pyrex_active_loading", base_lattice_id="assembly_lattice",
+                overrides={"pyrex_pin": pyrex_coords},
+            ),
+            LatticeLoadingSpec(
+                id="thimble_plug_loading", base_lattice_id="assembly_lattice",
+                overrides={"plug_pin": [to_0_indexed(pos) for pos in pm["plug_positions_1based"]]},
+            ),
+        ]
+
+    # Axial layers retain the legacy slab fixture for acceptance regressions;
+    # component diagnostics intentionally flag its end-plug/plenum slabs.
     ref_layers = reference["axial_layers"]
     if default_z:
         layers = [AxialLayerSpec(id="fuel", name="fuel", z_min_cm=-1.0, z_max_cm=1.0,
@@ -545,6 +731,7 @@ def build_vera3_like_plan(
             boundary_conditions=None,
             axial_layers=layers, axial_overlays=overlays,
         ),
+        lattice_loadings=lattice_loadings,
         settings=RunSettingsSpec(batches=6, inactive=2, particles=50),
     )
     return SimulationPlan(
@@ -557,9 +744,16 @@ def build_vera3_like_plan(
 
 __all__ = [
     "BenchmarkIssue",
+    "CONTRACT_PATH",
     "REFERENCE_PATH",
     "build_vera3_like_plan",
+    "collect_active_lattice_union",
+    "collect_base_lattice_counts",
+    "collect_loading_override_counts",
+    "diagnose_vera3_component_geometry",
+    "load_vera3_geometry_contract",
     "load_vera3_reference",
     "to_0_indexed",
+    "validate_axial_layer_continuity",
     "validate_vera3_plan_structure",
 ]

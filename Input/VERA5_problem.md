@@ -3,6 +3,7 @@
 > **来源**: CASL-U-2012-0131-004《VERA Core Physics Benchmark Problems》Problem #5
 > **反应堆**: Watts Bar Nuclear 1 (WBN1) Cycle 1 初始堆芯(全堆芯)
 > **状态**: 寿期初 (BOL) / 热态零功率 (HZP) 等温条件
+> **坐标约定**: 组件内 17×17 采用 **1-based `(row, col)`**，左上角 `(1,1)`，中心仪表管 `(9,9)`；全堆芯组件阵列坐标见 Figure 9。
 
 ---
 
@@ -27,9 +28,75 @@
 - **Region 2**:富集度 **2.619%**
 - **Region 3**:富集度 **3.10%**
 
-离散毒物为 Pyrex 棒,按组件内 Pyrex 棒数标识,本堆芯出现的 Pyrex 数量为:**8、12、16、20、24** 根(环状布置见 §1.5)。每个组件导向管必含离散可燃毒物、RCCA 棒let 或套管塞三者之一。
+离散毒物为 Pyrex 棒,按组件内 Pyrex 棒数标识,本堆芯出现的 Pyrex 数量为:**8、12、16、20、24** 根。每个组件导向管必含**离散可燃毒物(Pyrex)、RCCA 棒let 或套管塞**三者之一——即空导向管(无 Pyrex、无 RCCA)一律放套管塞。
+
+**N 根 Pyrex 的逐根空间布置**来自原文 Figure 5(§1.5,"Burnable Absorber Rodlet Configurations",八分之一对称)。所有坐标均为组件内 1-based `(行,列)`:
+
+| Pyrex 根数 | 坐标 |
+|---|---|
+| 8 | `(4,4), (4,14), (6,9), (9,6), (9,12), (12,9), (14,4), (14,14)` |
+| 12 | `(3,6), (3,12), (4,4), (4,14), (6,3), (6,15), (12,3), (12,15), (14,4), (14,14), (15,6), (15,12)` |
+| 16 | `(3,6), (3,12), (4,4), (4,14), (6,3), (6,9), (6,15), (9,6), (9,12), (12,3), (12,9), (12,15), (14,4), (14,14), (15,6), (15,12)` |
+| 20 | `(3,6), (3,12), (4,4), (4,14), (6,3), (6,6), (6,9), (6,12), (6,15), (9,6), (9,12), (12,3), (12,6), (12,9), (12,12), (12,15), (14,4), (14,14), (15,6), (15,12)` |
+| 24 | `(3,6), (3,9), (3,12), (4,4), (4,14), (6,3), (6,6), (6,9), (6,12), (6,15), (9,3), (9,6), (9,12), (9,15), (12,3), (12,6), (12,9), (12,12), (12,15), (14,4), (14,14), (15,6), (15,9), (15,12)` |
+
+**§8.1(各题 §1.5)只含单根 Pyrex 棒的材料与径向尺寸,不含 N 根在 17×17 中的位置**,不要把"环状截面"误当 N 根布置图。
 
 > 完整的逐组件富集度与 Pyrex 数布置见原文 Figure 9(四分之一对称)。Regions 1/2/3 在堆芯内分区布置,Pyrex 主要配于 Region 1/2 组件。
+
+### 3.1 各类组件 17×17 canonical pin map（按 Pyrex 数查用）
+
+每个组件按其在 Figure 9 中的 Pyrex 数(8/12/16/20/24)选用下图;空导向管(无 Pyrex)放套管塞。图例:`F`=燃料、`P`=Pyrex、`T`=套管塞、`I`=仪表管。
+
+**8 Pyrex(+16 套管塞)**：
+
+```text
+01: F F F F F F F F F F F F F F F F F
+02: F F F F F F F F F F F F F F F F F
+03: F F F F F T F F T F F T F F F F F
+04: F F F P F F F F F F F F F P F F F
+05: F F F F F F F F F F F F F F F F F
+06: F F T F F T F F P F F T F F T F F
+07: F F F F F F F F F F F F F F F F F
+08: F F F F F F F F F F F F F F F F F
+09: F F T F F P F F I F F P F F T F F
+10: F F F F F F F F F F F F F F F F F
+11: F F F F F F F F F F F F F F F F F
+12: F F T F F T F F P F F T F F T F F
+13: F F F F F F F F F F F F F F F F F
+14: F F F P F F F F F F F F F P F F F
+15: F F F F F T F F T F F T F F F F F
+16: F F F F F F F F F F F F F F F F F
+17: F F F F F F F F F F F F F F F F F
+```
+
+**12 Pyrex(+12 套管塞)**：
+
+```text
+01: F F F F F F F F F F F F F F F F F
+02: F F F F F F F F F F F F F F F F F
+03: F F F F F P F F T F F P F F F F F
+04: F F F P F F F F F F F F F P F F F
+05: F F F F F F F F F F F F F F F F F
+06: F F P F F T F F T F F T F F P F F
+07: F F F F F F F F F F F F F F F F F
+08: F F F F F F F F F F F F F F F F F
+09: F F T F F T F F I F F T F F T F F
+10: F F F F F F F F F F F F F F F F F
+11: F F F F F F F F F F F F F F F F F
+12: F F P F F T F F T F F T F F P F F
+13: F F F F F F F F F F F F F F F F F
+14: F F F P F F F F F F F F F P F F F
+15: F F F F F P F F T F F P F F F F F
+16: F F F F F F F F F F F F F F F F F
+17: F F F F F F F F F F F F F F F F F
+```
+
+**16 Pyrex(+8 套管塞)** / **20 Pyrex(+4 套管塞)** / **24 Pyrex(+0 套管塞)**:坐标见上方 §3 表格；按 `P = 表中 N 根坐标`、`T = 24 根导向管 − P` 生成，可视化栅格与 VERA3 §5.4(16)、VERA4 §7.1(20)、全填充(24)一致。
+
+**pin-map 校验清单**：每个组件 17×17=289，`F=264, I=1`；导向管位 24 = Pyrex + 套管塞(+ RCCA，若该组件为 RCCA 位置)；故 `Pyrex 数 + 套管塞数 = 24`(RCCA 组件除外)。1-indexed `(r,c)`→IR 0-indexed `(r-1,c-1)`，中心 `(9,9)→(8,8)`。
+
+> ⚠️ **堆芯级 Figure 9 装配图未转录**：组件内 pin map 已完整(§3 表 + §3.1 栅格)，但"哪个组件位置是哪个 Region + 几根 Pyrex + 是否 RCCA/仪表"的逐组件全堆芯布置仍在原文 Figure 9(四分之一对称)，建模全堆芯前需补该图。RCCA 棒簇(Figure 10)、仪表套管 58 位(Figure 11)同理待补。
 
 ## 4. RCCA 棒簇布置(图 10)
 
@@ -225,3 +292,5 @@
 - 径向组件功率分布(全堆芯,归一化);
 - 平均轴向功率分布(49 层网格);
 - 轴向偏移。
+
+> 这里的 **49 层**是轴向 **tally 计数网格**(约 3 in / 7.6 cm 区段,格架区用薄层分辨),叠加在几何之上;几何轴向层按 §15 的反射层/nozzle/格架子层独立划分,tally 网格细化不要求几何层同等细化。

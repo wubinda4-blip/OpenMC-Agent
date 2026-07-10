@@ -70,6 +70,16 @@
 - 不计气腔弹簧的体积或质量。
 - 二维栅元模型取正方形栅元,边长 = 棒栅距 1.26 cm(半径 0.63 cm),四周反射边界,构成无限栅格中的单栅元。
 
+**canonical pin cell**(本题无多棒 lattice,无需 pin map;单栅元即唯一几何,1E 工况在芯块外增 ZrB₂ 涂层):
+
+```text
+region:  fuel_cell | gap_cell | clad_cell | moderator_cell
+r (cm):  r<0.4096  | 0.4096<r<0.418 | 0.418<r<0.475 | 0.475<r<0.63
+material: UO2       | He        | Zircaloy-4 | 含硼 H2O
+```
+
+校验:`fuel_radius 0.4096 < clad_inner 0.418 < clad_outer 0.475 < pitch/2 0.63`;`expected_counts={fuel_cell:1}`(单栅元);边界全反射。
+
 ## 6. 材料属性 (§2)
 
 ### 6.1 默认材料密度

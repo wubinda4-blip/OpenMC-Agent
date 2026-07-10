@@ -61,5 +61,10 @@ data/runs/*/
 **/plan_artifacts/
 **/simulation_plan.json
 
+# Local evaluation outputs and source PDFs are reproducible or externally
+# sourced inputs; keep them out of routine code commits.
+data/evals/
+Input/CASL-U-2012-0131-004.pdf
+
 # Local planning notes — keep private, do not track
 Plan.md

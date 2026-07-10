@@ -1,6 +1,6 @@
 {
   "_doc_source": "Input/VERA3_problem.md (CASL-U-2012-0131-004, VERA Problem 3)",
-  "_note": "VERA3 benchmark reference. Test-only: NO production code may read this. All numbers are transcribed from the input document; null means the document did not state it.",
+  "_note": "DEPRECATED compatibility fixture. It uses a legacy whole-layer axial representation and is not authoritative for component profiles. Use vera3_geometry_contract.json for canonical geometry facts. Test-only: NO production code may read this.",
   "problem_id": "VERA3",
   "geometry_type": "3d_rectangular_assembly",
   "coordinate_convention": {

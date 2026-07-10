@@ -1,0 +1,69 @@
+{
+  "contract_version": 1,
+  "benchmark_id": "VERA3",
+  "source": {
+    "path": "Input/VERA3_problem.md",
+    "document": "CASL-U-2012-0131-004",
+    "notes": ["Test-only canonical geometry contract; production code must not load this file."]
+  },
+  "coordinate_convention": {
+    "indexing": {"value": "1-based row/col", "status": "confirmed", "source_section": "Section 4", "derivation": null},
+    "center_instrument_tube": {"value": [9, 9], "status": "confirmed", "source_section": "Section 4.2", "derivation": null},
+    "internal_conversion": {"value": "(row-1, col-1)", "status": "derived", "source_section": "Section 5.4", "derivation": "1-based document coordinates map to zero-based IR coordinates."}
+  },
+  "assembly_level_zones": [
+    {"id": "lower_moderator_buffer", "z_min_cm": {"value": -55.0, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "z_max_cm": {"value": -5.0, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "fill": "borated_water"},
+    {"id": "lower_core_plate", "z_min_cm": {"value": -5.0, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "z_max_cm": {"value": 0.0, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "fill": "ss304_coolant_50_50"},
+    {"id": "lower_nozzle", "z_min_cm": {"value": 0.0, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 11", "derivation": null}, "z_max_cm": {"value": 6.053, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 11", "derivation": null}, "fill": "homogenized_ss304_coolant"},
+    {"id": "lower_shoulder_coolant", "z_min_cm": {"value": 6.053, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "z_max_cm": {"value": 10.281, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "fill": "borated_water_with_through_paths"},
+    {"id": "upper_shoulder_coolant", "z_min_cm": {"value": 395.381, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "z_max_cm": {"value": 397.510, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "fill": "borated_water_with_guide_instrument_paths"},
+    {"id": "upper_nozzle", "z_min_cm": {"value": 397.510, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 11", "derivation": null}, "z_max_cm": {"value": 406.337, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 11", "derivation": null}, "fill": "homogenized_ss304_coolant"},
+    {"id": "upper_core_plate", "z_min_cm": {"value": 406.337, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "z_max_cm": {"value": 413.937, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "fill": "ss304_coolant_50_50"},
+    {"id": "upper_moderator_buffer", "z_min_cm": {"value": 413.937, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "z_max_cm": {"value": 463.937, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "fill": "borated_water"}
+  ],
+  "component_profiles": {
+    "fuel_pin": {
+      "through_path_statement": "Fuel-pin axial profile changes only r < 0.475 cm; cladding and external borated-water semantics remain present.",
+      "axial_segments": [
+        {"id": "lower_end_plug", "z_min_cm": {"value": 10.281, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.3", "derivation": null}, "z_max_cm": {"value": 11.951, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.3", "derivation": null}, "internal_material": "zircaloy4", "outer_semantics": "cladding/coolant preserved"},
+        {"id": "active_fuel", "z_min_cm": {"value": 11.951, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.2", "derivation": null}, "z_max_cm": {"value": 377.711, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.2", "derivation": null}, "internal_material": "uo2", "outer_semantics": "helium_gap/cladding/coolant preserved"},
+        {"id": "upper_end_plug", "z_min_cm": {"value": 377.711, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.3", "derivation": null}, "z_max_cm": {"value": 379.381, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.3", "derivation": null}, "internal_material": "zircaloy4", "outer_semantics": "cladding/coolant preserved"},
+        {"id": "upper_plenum", "z_min_cm": {"value": 379.381, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.3", "derivation": null}, "z_max_cm": {"value": 395.381, "unit": "cm", "status": "confirmed", "source_section": "Section 6.1 / 7.3", "derivation": null}, "internal_material": "helium", "outer_semantics": "Zircaloy-4 cladding and external borated water preserved"}
+      ]
+    },
+    "guide_tube": {
+      "radial_layers": [{"r_min_cm": 0.0, "r_max_cm": 0.561, "material": "borated_water"}, {"r_min_cm": 0.561, "r_max_cm": 0.602, "material": "zircaloy4"}],
+      "through_path_statement": "Guide tube remains a continuous path through the detailed lattice and is not replaced by fuel-pin profile changes.",
+      "axial_extent": {"value": [6.053, 397.510], "unit": "cm", "status": "confirmed", "source_section": "Section 8.3", "derivation": null},
+      "dashpot_policy": {"value": "ignored", "status": "confirmed", "source_section": "Section 8.3", "derivation": null}
+    },
+    "instrument_tube": {
+      "radial_layers": [{"r_min_cm": 0.0, "r_max_cm": 0.559, "material": "borated_water"}, {"r_min_cm": 0.559, "r_max_cm": 0.605, "material": "zircaloy4"}],
+      "through_path_statement": "Instrument tube remains water-filled and is not replaced by fuel-pin changes or a SS304 instrument sleeve.",
+      "axial_extent": {"value": [6.053, 397.510], "unit": "cm", "status": "modeling_assumption", "source_section": "Section 8.3", "derivation": "Input adopts detailed-lattice extent because original end geometry is not separately specified."},
+      "dashpot_policy": {"value": "not specified", "status": "missing", "source_section": "Section 8.3", "derivation": null}
+    },
+    "pyrex_rod": {
+      "radial_layers": [
+        {"id": "inner_region", "r_min_cm": 0.0, "r_max_cm": 0.214, "material": "helium", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "inner_tube", "r_min_cm": 0.214, "r_max_cm": 0.231, "material": "ss304", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "gap_1", "r_min_cm": 0.231, "r_max_cm": 0.241, "material": "helium", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "pyrex", "r_min_cm": 0.241, "r_max_cm": 0.427, "material": "pyrex", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "gap_2", "r_min_cm": 0.427, "r_max_cm": 0.437, "material": "helium", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "outer_clad", "r_min_cm": 0.437, "r_max_cm": 0.484, "material": "ss304", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "water_gap", "r_min_cm": 0.484, "r_max_cm": 0.561, "material": "borated_water", "status": "confirmed", "source_section": "Section 12.2"},
+        {"id": "guide_wall", "r_min_cm": 0.561, "r_max_cm": 0.602, "material": "zircaloy4", "status": "confirmed", "source_section": "Section 12.2"}
+      ],
+      "axial_profile": {"poison_bottom_cm": {"value": 15.761, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "poison_height_cm": {"value": 360.68, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "poison_top_cm": {"value": 376.441, "unit": "cm", "status": "derived", "source_section": "Section 12.1", "derivation": "15.761 + 360.68"}, "gas_plenum_height_cm": {"value": 22.2, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "nominal_plenum_top_cm": {"value": 398.641, "unit": "cm", "status": "derived", "source_section": "Section 12.1", "derivation": "376.441 + 22.2"}, "end_plug_height_cm": {"value": 2.54, "unit": "cm", "status": "modeling_assumption", "source_section": "Section 12.1 / 12.3", "derivation": "Original table does not uniquely locate both end plugs."}}
+    },
+    "thimble_plug": {"axial_profile": {"bottom_cm": {"value": 383.31, "unit": "cm", "status": "confirmed", "source_section": "Section 13", "derivation": null}, "height_cm": {"value": 11.0, "unit": "cm", "status": "confirmed", "source_section": "Section 13", "derivation": null}, "top_cm": {"value": 394.31, "unit": "cm", "status": "derived", "source_section": "Section 13", "derivation": "383.31 + 11.0"}}, "through_path_statement": "Outside the finite plug interval, all selected positions remain ordinary water-filled guide tubes."}
+  },
+  "variant_loadings": {
+    "3A": {"base_lattice": {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}, "finite_inserts": []},
+    "3B": {"base_lattice": {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}, "finite_inserts": [{"id": "pyrex", "base_lattice_id": "assembly_lattice", "coordinate_count": 16, "coordinates_1based": [[3,6],[4,4],[6,3],[3,12],[4,14],[6,15],[12,3],[14,4],[15,6],[12,15],[14,14],[15,12],[9,6],[9,12],[6,9],[12,9]], "z_range_cm": [15.761, 376.441]}, {"id": "thimble_plug", "base_lattice_id": "assembly_lattice", "coordinate_count": 8, "coordinates_1based": [[3,9],[6,6],[6,12],[9,3],[9,15],[12,6],[12,12],[15,9]], "z_range_cm": [383.31, 394.31]}]}
+  },
+  "spacer_grids": [{"count": 8, "status": "confirmed", "source_section": "Section 9", "through_path_statement": "Grid is an outer-cell overlay and does not replace fuel, cladding, guide tube, instrument tube, or insert internals."}],
+  "derived_breakpoints": {"active_fuel_region_cm": {"value": [11.951, 377.711], "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "axial_domain_cm": {"value": [-55.0, 463.937], "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}},
+  "conflicts": [{"id": "pyrex_nominal_plenum_intersects_homogenized_upper_nozzle", "status": "conflicting", "facts": ["Pyrex nominal plenum top is 398.641 cm", "homogenized upper nozzle begins at 397.510 cm"], "source_section": "Sections 11.2 / 12.1 / 12.3", "resolution": "Do not silently preserve the nominal extension in a detailed lattice; input directs detailed lattice/inserts to stop at 397.510 cm."}],
+  "modeling_assumptions": [{"id": "guide_tube_nozzle_connection", "status": "modeling_assumption", "source_section": "Section 8.3 / 11.2", "text": "Guide tubes connect to nozzles mechanically, but are not explicitly represented inside homogenized nozzle slabs."}]
+}

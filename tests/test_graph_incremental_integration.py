@@ -22,6 +22,10 @@ from openmc_agent.llm import StructuredOutputResult
 from openmc_agent.schemas import SimulationPlan
 from openmc_agent.tools import ToolResult
 from openmc_agent.plan_builder.patch_generator import FakePatchLLM
+from helpers.vera3_acceptance import (
+    collect_base_lattice_counts,
+    collect_loading_override_counts,
+)
 
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vera3_patches"
@@ -197,7 +201,17 @@ def test_incremental_success_validates_assembled_plan(tmp_path: Path) -> None:
         else:
             cm = plan.complex_model.model_dump(mode="json") if hasattr(plan, "complex_model") else {}
         core = cm.get("core", {})
-        assert len(core.get("axial_layers", [])) == 12
+        layers = core.get("axial_layers", [])
+        assert layers
+        assert layers[0]["z_min_cm"] == pytest.approx(-55.0)
+        assert layers[-1]["z_max_cm"] == pytest.approx(463.937)
+        assert all(
+            left["z_max_cm"] == pytest.approx(right["z_min_cm"])
+            for left, right in zip(layers, layers[1:])
+        )
+        active = [layer for layer in layers if "active_fuel" in layer["id"]]
+        assert active[0]["z_min_cm"] == pytest.approx(11.951)
+        assert active[-1]["z_max_cm"] == pytest.approx(377.711)
         assert len(core.get("axial_overlays", [])) == 8
 
 
@@ -464,11 +478,22 @@ def test_vera3_3b_graph_end_to_end(tmp_path: Path) -> None:
         if lattices:
             pattern = lattices[0].get("universe_pattern", [])
             assert len(pattern) == 17
-            flat = [uid for row in pattern for uid in row]
-            assert sum(1 for u in flat if u == "pyrex_rod") == 16
-            assert sum(1 for u in flat if u == "thimble_plug") == 8
+            base_counts = collect_base_lattice_counts(assembled)
+            assert base_counts == {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}
+            assert base_counts.get("pyrex_rod", 0) == 0
+            assert base_counts.get("thimble_plug", 0) == 0
+            loading_counts = collect_loading_override_counts(assembled, "pyrex_active_loading")
+            assert loading_counts == {"pyrex_rod": 16}
+            loading = next(item for item in cm.get("lattice_loadings", []) if item["id"] == "pyrex_active_loading")
+            assert loading["base_lattice_id"] == "assembly_lattice"
         core = cm.get("core", {})
-        assert len(core.get("axial_layers", [])) == 12
+        layers = core.get("axial_layers", [])
+        assert layers[0]["z_min_cm"] == pytest.approx(-55.0)
+        assert layers[-1]["z_max_cm"] == pytest.approx(463.937)
+        assert all(left["z_max_cm"] == pytest.approx(right["z_min_cm"]) for left, right in zip(layers, layers[1:]))
+        active = [layer for layer in layers if "active_fuel" in layer["id"]]
+        assert active[0]["z_min_cm"] == pytest.approx(11.951)
+        assert active[-1]["z_max_cm"] == pytest.approx(377.711)
         assert len(core.get("axial_overlays", [])) == 8
 
 
