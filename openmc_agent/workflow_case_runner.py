@@ -46,6 +46,11 @@ class WorkflowCaseRunnerConfig(AgentBaseModel):
     allow_monolithic_fallback_for_incremental_failure: bool = False
 
     timeout_s: float | None = None
+    enable_semantic_audit: bool = False
+    semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only"
+    semantic_audit_client: Any | None = None
+    semantic_audit_model: str | None = None
+    semantic_audit_allow_fallback: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -78,6 +83,11 @@ def run_workflow_case(
                 config.allow_monolithic_fallback_for_incremental_failure
             ),
             reference_patch_policy=config.reference_patch_policy,
+            enable_semantic_audit=config.enable_semantic_audit,
+            semantic_audit_mode=config.semantic_audit_mode,
+            semantic_audit_client=config.semantic_audit_client,
+            semantic_audit_model=config.semantic_audit_model,
+            semantic_audit_allow_fallback=config.semantic_audit_allow_fallback,
         )
         state = graph.invoke(
             {
@@ -237,6 +247,8 @@ def _state_trace_metadata(
         "runner_config": _safe_model_dump(config),
         "error": state.get("error", ""),
         "requirement_resolution": state.get("requirement_resolution") or {},
+        "semantic_audit_result": state.get("semantic_audit_result") or {},
+        "semantic_audit_findings": state.get("semantic_audit_findings") or [],
     }
     return metadata
 

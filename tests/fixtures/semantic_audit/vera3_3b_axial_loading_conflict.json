@@ -1,0 +1,15 @@
+{
+  "case_id": "vera3-3b-axial-loading-conflict",
+  "requirement_summary": "3D assembly with finite poison/Pyrex insert semantics",
+  "assembled_plan_summary": {
+    "dimension": "2d",
+    "pin_role_counts": {"fuel": 260, "pyrex_rod": 16, "guide_tube": 13},
+    "special_pin_roles": ["pyrex_rod"],
+    "special_coordinates_summary": [{"role": "pyrex_rod", "coord": [1, 1]}],
+    "axial_layers": [],
+    "lattice_loadings": [],
+    "axial_overlays": []
+  },
+  "expected_semantic_condition": "finite insert appears in base pin map without axial loading",
+  "expected_audit_finding_codes": ["audit.axial.partial_insert_in_base_lattice"]
+}

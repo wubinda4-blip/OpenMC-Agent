@@ -51,6 +51,10 @@ class WorkflowBenchmarkConfig(AgentBaseModel):
     categories: list[str] = Field(default_factory=list)
 
     allow_real_llm: bool = False
+    enable_semantic_audit: bool = False
+    semantic_audit_mode: Literal["warning_only", "strict_evaluation"] = "warning_only"
+    semantic_audit_model: str | None = None
+    semantic_audit_allow_fallback: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -177,6 +181,24 @@ def write_workflow_benchmark_summary(
         f"- issue precision: {_format_optional_rate(metrics.issue_code_precision)}",
         f"- issue recall: {_format_optional_rate(metrics.issue_code_recall)}",
         "",
+        "## Semantic Audit",
+        "",
+        f"- enabled: {any(c.metrics.get('semantic_audit_enabled') for c in result.cases)}",
+        f"- completion rate: {_format_optional_rate(metrics.semantic_audit_completion_rate)}",
+        f"- fallback rate: {_format_optional_rate(metrics.semantic_audit_fallback_rate)}",
+        f"- finding precision: {_format_optional_rate(metrics.semantic_audit_finding_precision)}",
+        f"- finding recall: {_format_optional_rate(metrics.semantic_audit_finding_recall)}",
+        f"- false positive rate: {_format_optional_rate(metrics.semantic_audit_false_positive_rate)}",
+        f"- known error detection rate: {_format_optional_rate(metrics.semantic_audit_known_error_detection_rate)}",
+        "",
+        "| case_id | finding_code | severity | patch_target | confidence | human_confirmation |",
+        "| --- | --- | --- | --- | --- | --- |",
+        * _semantic_finding_rows(result),
+        "",
+        "| case_id | missing_finding_code |",
+        "| --- | --- |",
+        * _semantic_missing_rows(result),
+        "",
         "## Failed cases",
         "",
         "| case_id | failed_stage | failed_patch_type | issue_codes | failure_reasons |",
@@ -202,7 +224,10 @@ def write_workflow_benchmark_summary(
 
 def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> WorkflowTrace:
     if config.model == "fake":
-        return fake_case_runner(case, AblationConfig(name="workflow_fake"))
+        trace = fake_case_runner(case, AblationConfig(name="workflow_fake"))
+        if config.enable_semantic_audit:
+            trace = _augment_fake_trace_with_semantic_audit(trace, case, config)
+        return trace
     runner_config = WorkflowCaseRunnerConfig(
         model=config.model,
         output_dir=str(Path(config.output_dir) / "case_artifacts"),
@@ -215,6 +240,10 @@ def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> Workflow
         enable_openmc_tools=config.enable_openmc_tools,
         allow_monolithic_fallback_for_incremental_failure=False,
         metadata=config.metadata,
+        enable_semantic_audit=config.enable_semantic_audit,
+        semantic_audit_mode=config.semantic_audit_mode.replace("-", "_"),
+        semantic_audit_model=config.semantic_audit_model,
+        semantic_audit_allow_fallback=config.semantic_audit_allow_fallback,
     )
     return run_workflow_case(case, runner_config)
 
@@ -314,3 +343,55 @@ def _format_optional_rate(value: float | None) -> str:
 
 def _new_run_id() -> str:
     return f"workflow_{uuid4().hex[:12]}"
+
+
+def _augment_fake_trace_with_semantic_audit(trace: WorkflowTrace, case: EvaluationCase, config: WorkflowBenchmarkConfig) -> WorkflowTrace:
+    from openmc_agent.workflow_trace import TraceRecorder
+    recorder = TraceRecorder(trace=trace)
+    codes = list(case.expected_audit_finding_codes)
+    findings = [
+        {
+            "finding_code": code,
+            "severity": "error" if "conflict" in code or "partial_insert" in code else "warning",
+            "suggested_patch_target": "pin_map" if "axial" in code else "none",
+            "confidence": 0.9,
+            "requires_human_confirmation": bool(case.expected_audit_requires_human_confirmation),
+        }
+        for code in codes
+    ]
+    meta = {
+        "audit_id": f"fake_{case.case_id}",
+        "auditor": "FakeSemanticAuditClient",
+        "model": config.semantic_audit_model or config.model,
+        "finding_count": len(codes),
+        "finding_codes": codes,
+        "findings": findings,
+        "severity_counts": {"error": sum(1 for f in findings if f["severity"] == "error"), "warning": sum(1 for f in findings if f["severity"] == "warning")},
+        "fallback_used": bool(config.semantic_audit_allow_fallback and case.expected_semantic_audit_fallback_used),
+        "duration_ms": 0.0,
+        "mode": config.semantic_audit_mode.replace("-", "_"),
+    }
+    recorder.add_event("semantic_audit_started", summary="fake semantic audit started", metadata={"audit_id": meta["audit_id"]})
+    recorder.add_event("semantic_audit_completed", summary="fake semantic audit completed", metadata=meta)
+    if meta["fallback_used"]:
+        recorder.add_event("semantic_audit_fallback_used", summary="fake semantic audit fallback", metadata=meta)
+    return recorder.trace
+
+def _semantic_finding_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        codes = case.metrics.get("semantic_audit_finding_codes") or []
+        for code in codes:
+            rows.append(f"| {case.case_id} | {code} |  |  |  |  |")
+    return rows or ["| _none_ |  |  |  |  |"]
+
+def _semantic_missing_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        observed = set(case.metrics.get("semantic_audit_finding_codes") or [])
+        # expected codes are not stored on case result; failures carry the missing detail.
+        for reason in case.failure_reasons:
+            if reason.startswith("missing expected audit finding codes:"):
+                for code in reason.split(":", 1)[1].split(","):
+                    rows.append(f"| {case.case_id} | {code.strip()} |")
+    return rows or ["| _none_ |  |"]

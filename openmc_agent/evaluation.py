@@ -68,6 +68,12 @@ class EvaluationCase(AgentBaseModel):
     expected_plan_schema_success: bool | None = None
     expected_incremental_patch_success: bool | None = None
     expected_artifact_complete: bool | None = None
+    expected_audit_finding_codes: list[str] = Field(default_factory=list)
+    forbidden_audit_finding_codes: list[str] = Field(default_factory=list)
+    expected_audit_min_finding_count: int | None = None
+    expected_audit_max_finding_count: int | None = None
+    expected_audit_requires_human_confirmation: bool | None = None
+    expected_semantic_audit_fallback_used: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def __init__(self, *args: Any, **data: Any) -> None:
@@ -136,6 +142,12 @@ class EvaluationMetrics(AgentBaseModel):
     incremental_patch_success_rate: float | None = None
     artifact_completeness_rate: float | None = None
     planning_mode_accuracy: float | None = None
+    semantic_audit_completion_rate: float | None = None
+    semantic_audit_fallback_rate: float | None = None
+    semantic_audit_finding_precision: float | None = None
+    semantic_audit_finding_recall: float | None = None
+    semantic_audit_false_positive_rate: float | None = None
+    semantic_audit_known_error_detection_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -272,6 +284,7 @@ def evaluate_trace_against_case(
     observed_patch_types = _trace_incremental_patch_types(workflow_trace)
     artifact_keys = _trace_artifact_keys(workflow_trace)
     artifact_complete = _artifact_complete(case.expected_artifact_keys, artifact_keys)
+    audit = _trace_semantic_audit(workflow_trace)
 
     failure_reasons: list[str] = []
     expected_codes = set(case.expected_issue_codes)
@@ -388,6 +401,23 @@ def evaluate_trace_against_case(
             "failed patch type mismatch: "
             f"expected={case.expected_failed_patch_type} observed={failed_patch_type}"
         )
+    if case.expected_audit_finding_codes or case.forbidden_audit_finding_codes or case.expected_audit_min_finding_count is not None or case.expected_audit_max_finding_count is not None:
+        if audit["mode"] == "strict_evaluation":
+            missing_audit = sorted(set(case.expected_audit_finding_codes) - set(audit["finding_codes"]))
+            forbidden_audit = sorted(set(case.forbidden_audit_finding_codes) & set(audit["finding_codes"]))
+            if missing_audit:
+                failure_reasons.append(f"missing expected audit finding codes: {', '.join(missing_audit)}")
+            if forbidden_audit:
+                failure_reasons.append(f"forbidden audit finding codes observed: {', '.join(forbidden_audit)}")
+            if case.expected_audit_min_finding_count is not None and audit["finding_count"] < case.expected_audit_min_finding_count:
+                failure_reasons.append("semantic audit finding count below minimum")
+            if case.expected_audit_max_finding_count is not None and audit["finding_count"] > case.expected_audit_max_finding_count:
+                failure_reasons.append("semantic audit finding count above maximum")
+    if case.expected_audit_requires_human_confirmation is not None and audit["requires_human_confirmation"] != case.expected_audit_requires_human_confirmation and audit["mode"] == "strict_evaluation":
+        failure_reasons.append("semantic audit human confirmation mismatch")
+    if case.expected_semantic_audit_fallback_used is not None and audit["fallback_used"] != case.expected_semantic_audit_fallback_used and audit["mode"] == "strict_evaluation":
+        failure_reasons.append("semantic audit fallback mismatch")
+
     actual_failed = workflow_trace.final_status == "failed" or any(
         event.event_type == "workflow_failed" for event in workflow_trace.events
     )
@@ -396,6 +426,14 @@ def evaluate_trace_against_case(
 
     precision = _precision(observed_codes, expected_codes)
     recall = _recall(observed_codes, expected_codes)
+    audit_expected = set(case.expected_audit_finding_codes)
+    audit_forbidden = set(case.forbidden_audit_finding_codes)
+    audit_observed = set(audit["finding_codes"])
+    audit_tp = len(audit_expected & audit_observed)
+    audit_fp = len(audit_forbidden & audit_observed)
+    audit_fn = len(audit_expected - audit_observed)
+    audit_precision = audit_tp / (audit_tp + audit_fp) if (audit_expected or audit_forbidden) and (audit_tp + audit_fp) else (1.0 if audit_expected or audit_forbidden else None)
+    audit_recall = audit_tp / len(audit_expected) if audit_expected else None
     return EvaluationResult(
         case=case,
         case_id=case.case_id,
@@ -423,6 +461,18 @@ def evaluate_trace_against_case(
             "observed_incremental_patch_types": observed_patch_types,
             "observed_artifact_keys": artifact_keys,
             "missing_artifact_keys": missing_artifacts,
+            "semantic_audit_enabled": audit["enabled"],
+            "semantic_audit_completed": audit["completed"],
+            "semantic_audit_fallback_used": audit["fallback_used"],
+            "semantic_audit_finding_count": audit["finding_count"],
+            "semantic_audit_finding_codes": audit["finding_codes"],
+            "semantic_audit_true_positive_count": audit_tp,
+            "semantic_audit_false_positive_count": audit_fp,
+            "semantic_audit_false_negative_count": audit_fn,
+            "semantic_audit_precision": audit_precision,
+            "semantic_audit_recall": audit_recall,
+            "semantic_audit_false_positive_rate": (audit_fp / len(audit_forbidden) if audit_forbidden else None),
+            "semantic_audit_known_error_detected": (audit_tp > 0 if audit_expected else None),
         },
         failure_reasons=failure_reasons,
     )
@@ -438,6 +488,12 @@ def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationM
     incremental_values = _bool_metric_values(results, "incremental_patch_success")
     artifact_values = _bool_metric_values(results, "artifact_complete")
     planning_mode_values = _bool_metric_values(results, "planning_mode_match")
+    audit_completed_values = _bool_metric_values(results, "semantic_audit_completed")
+    audit_fallback_values = _bool_metric_values(results, "semantic_audit_fallback_used")
+    audit_precisions = _metric_values(results, "semantic_audit_precision")
+    audit_recalls = _metric_values(results, "semantic_audit_recall")
+    audit_fprs = _metric_values(results, "semantic_audit_false_positive_rate")
+    audit_detected = _bool_metric_values(results, "semantic_audit_known_error_detected")
     return EvaluationMetrics(
         case_count=case_count,
         pass_count=pass_count,
@@ -475,6 +531,12 @@ def aggregate_evaluation_results(results: list[EvaluationResult]) -> EvaluationM
             if planning_mode_values
             else None
         ),
+        semantic_audit_completion_rate=(sum(audit_completed_values) / len(audit_completed_values) if audit_completed_values else None),
+        semantic_audit_fallback_rate=(sum(audit_fallback_values) / len(audit_fallback_values) if audit_fallback_values else None),
+        semantic_audit_finding_precision=(sum(audit_precisions) / len(audit_precisions) if audit_precisions else None),
+        semantic_audit_finding_recall=(sum(audit_recalls) / len(audit_recalls) if audit_recalls else None),
+        semantic_audit_false_positive_rate=(sum(audit_fprs) / len(audit_fprs) if audit_fprs else None),
+        semantic_audit_known_error_detection_rate=(sum(audit_detected) / len(audit_detected) if audit_detected else None),
     )
 
 
@@ -831,3 +893,25 @@ def _run_simulation_case(
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _trace_semantic_audit(trace: WorkflowTrace) -> dict[str, Any]:
+    completed = [event for event in trace.events if event.event_type == "semantic_audit_completed"]
+    latest = completed[-1].metadata if completed else {}
+    findings = latest.get("findings") or []
+    codes = latest.get("finding_codes") or []
+    if not codes and isinstance(findings, list):
+        codes = [f.get("finding_code") for f in findings if isinstance(f, dict) and f.get("finding_code")]
+    requires_human = False
+    if isinstance(findings, list):
+        requires_human = any(bool(f.get("requires_human_confirmation")) for f in findings if isinstance(f, dict))
+    mode = latest.get("mode") or _latest_metadata_value(trace, "semantic_audit_mode") or "warning_only"
+    return {
+        "enabled": bool(completed),
+        "completed": bool(completed),
+        "fallback_used": bool(latest.get("fallback_used")),
+        "finding_count": int(latest.get("finding_count") or len(codes or [])),
+        "finding_codes": [str(c) for c in (codes or []) if c],
+        "requires_human_confirmation": requires_human,
+        "mode": mode,
+    }
