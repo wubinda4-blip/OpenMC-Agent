@@ -1,0 +1,1 @@
+{"case_id":"unsafe-density-repair","operation":{"op":"replace","path":"/materials/0/density","value":10.0},"expected_status":"unsafe"}

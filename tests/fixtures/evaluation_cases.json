@@ -133,7 +133,11 @@
     "metadata": {
       "mode": "plan_only",
       "run_openmc": false
-    }
+    },
+    "forbidden_audit_finding_codes": [
+      "audit.geometry.spacer_overlay_conflict"
+    ],
+    "expected_audit_max_finding_count": 0
   },
   {
     "case_id": "quarter-core-or-quarter-assembly",
@@ -181,7 +185,11 @@
     "metadata": {
       "mode": "plan_only",
       "run_openmc": false
-    }
+    },
+    "expected_audit_finding_codes": [
+      "audit.fact_gap.unresolved_fact_hidden"
+    ],
+    "expected_audit_requires_human_confirmation": true
   },
   {
     "case_id": "unsupported-hex-or-depletion",
@@ -207,5 +215,72 @@
       "mode": "plan_only",
       "run_openmc": false
     }
+  },
+  {
+    "case_id": "vera3-3b-axial-loading-conflict",
+    "category": "assembly",
+    "user_request": "Build a 3D assembly with finite axial poison/Pyrex rods; do not use reference fixtures.",
+    "expected_renderability": "skeleton",
+    "expected_audit_finding_codes": [
+      "audit.axial.partial_insert_in_base_lattice"
+    ],
+    "expected_audit_min_finding_count": 1,
+    "metadata": {
+      "semantic_audit_fixture": "tests/fixtures/semantic_audit/vera3_3b_axial_loading_conflict.json"
+    }
+  },
+  {
+    "case_id": "reference-policy-violation",
+    "category": "assembly",
+    "user_request": "Build an unseen assembly with reference patch policy off but reference fixture patches were used.",
+    "expected_renderability": "skeleton",
+    "expected_audit_finding_codes": [
+      "audit.reference.unexpected_reference_usage"
+    ]
+  },
+  {
+    "case_id": "repair-safe-metadata",
+    "category": "repair",
+    "user_request": "Fake repair benchmark: nominal composition is marked confirmed.",
+    "expected_renderability": "skeleton",
+    "expected_repair_status": "accepted",
+    "expected_repair_source_issue_codes": [
+      "audit.material.nominal_reported_as_confirmed"
+    ],
+    "expected_repair_resolved_issue_codes": [
+      "audit.material.nominal_reported_as_confirmed"
+    ],
+    "expected_repair_applied_to_clone": true,
+    "expected_repair_applied_to_workflow_plan": false,
+    "expected_repair_allowed_paths": [
+      "/metadata/repair_requests/0"
+    ]
+  },
+  {
+    "case_id": "repair-unsafe-density",
+    "category": "repair",
+    "user_request": "Fake repair benchmark: proposed density change must be unsafe.",
+    "expected_renderability": "skeleton",
+    "expected_repair_status": "unsafe",
+    "expected_repair_source_issue_codes": [
+      "audit.material.nominal_reported_as_confirmed"
+    ],
+    "expected_repair_applied_to_clone": false,
+    "expected_repair_applied_to_workflow_plan": false,
+    "metadata": {
+      "expected_unsafe_path": "/materials/0/density"
+    }
+  },
+  {
+    "case_id": "repair-target-not-improved",
+    "category": "repair",
+    "user_request": "Fake repair benchmark: patch does not improve target issue.",
+    "expected_renderability": "skeleton",
+    "expected_repair_status": "rejected",
+    "expected_repair_source_issue_codes": [
+      "audit.material.nominal_reported_as_confirmed"
+    ],
+    "expected_repair_applied_to_clone": false,
+    "expected_repair_applied_to_workflow_plan": false
   }
 ]

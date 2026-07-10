@@ -395,6 +395,35 @@ def fake_case_runner(case: EvaluationCase, ablation: AblationConfig) -> Workflow
     }
     p0_metadata = {k: v for k, v in p0_metadata.items() if v not in (None, [], {})}
 
+    if case.expected_repair_status:
+        repair_meta = {
+            "proposal_id": f"fake_repair_{case.case_id}",
+            "status": case.expected_repair_status,
+            "source_issue_codes": list(case.expected_repair_source_issue_codes),
+            "source_audit_finding_codes": list(case.expected_audit_finding_codes),
+            "operation_count": 1 if case.expected_repair_status != "proposed" else 0,
+            "allowed_operation_count": 1 if case.expected_repair_status == "accepted" else 0,
+            "rejected_operation_count": 1 if case.expected_repair_status in {"rejected", "unsafe"} else 0,
+            "unsafe_operation_count": 1 if case.expected_repair_status == "unsafe" else 0,
+            "resolved_issue_codes": list(case.expected_repair_resolved_issue_codes),
+            "remaining_issue_codes": [],
+            "new_issue_codes": [],
+            "applied_to_clone": bool(case.expected_repair_applied_to_clone),
+            "applied_to_workflow_plan": bool(case.expected_repair_applied_to_workflow_plan),
+            "fallback_used": bool(case.expected_repair_fallback_used),
+            "requires_human_confirmation": bool(case.expected_repair_requires_human_confirmation),
+            "operation_evaluations": [
+                {
+                    "path": (case.expected_repair_allowed_paths or ["/metadata/repair_requests/0"])[0],
+                    "allowed": case.expected_repair_status == "accepted",
+                    "rejection_codes": [] if case.expected_repair_status == "accepted" else ["repair.protected_path"],
+                }
+            ],
+        }
+        recorder.add_event("llm_repair_proposal_generated", metadata=repair_meta)
+        if case.expected_repair_status in {"accepted", "rejected", "unsafe", "failed"}:
+            recorder.add_event(f"llm_repair_proposal_{case.expected_repair_status}", metadata=repair_meta)
+
     if case.expected_renderability:
         recorder.add_event(
             "capability_assessed",

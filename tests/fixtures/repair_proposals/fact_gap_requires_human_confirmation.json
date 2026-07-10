@@ -1,0 +1,1 @@
+{"case_id":"fact-gap-requires-human-confirmation","issue_codes":["audit.fact_gap.unresolved_fact_hidden"],"expected_status":"rejected","requires_human_confirmation":true}

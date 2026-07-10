@@ -37,6 +37,10 @@ from openmc_agent.plan_builder import (
 from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
+from openmc_agent.repair_proposal import (
+    RepairProposalMode,
+    run_repair_proposal_flow,
+)
 from openmc_agent.retrieval import (
     RetrievalOutcome,
     ToolSpec,
@@ -72,6 +76,11 @@ from openmc_agent.validator import (
     validate_openmc_script,
     validate_simulation_plan,
     validate_simulation_spec,
+)
+from openmc_agent.semantic_audit import (
+    SemanticAuditMode,
+    build_semantic_audit_input,
+    run_semantic_plan_audit,
 )
 from openmc_agent.workflow_trace import (
     TraceConfig,
@@ -153,6 +162,15 @@ class GraphState(TypedDict, total=False):
     use_incremental_executor: bool
     allow_monolithic_fallback_for_incremental_failure: bool
     requirement_resolution: dict[str, Any]
+    semantic_audit_input_summary: dict[str, Any]
+    semantic_audit_result: dict[str, Any]
+    semantic_audit_findings: list[dict[str, Any]]
+    repair_proposal_input_summary: dict[str, Any]
+    repair_proposal_result: dict[str, Any]
+    repair_proposal_status: str
+    repair_resolved_issue_codes: list[str]
+    repair_remaining_issue_codes: list[str]
+    repair_new_issue_codes: list[str]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -228,6 +246,17 @@ def build_plan_graph(
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    enable_semantic_audit: bool = False,
+    semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
+    semantic_audit_client: Any | None = None,
+    semantic_audit_model: str | None = None,
+    semantic_audit_allow_fallback: bool = True,
+    enable_llm_repair_proposer: bool = False,
+    llm_repair_mode: Literal["off", "proposal_only", "validate_only", "apply_if_safe"] = "proposal_only",
+    llm_repair_client: Any | None = None,
+    llm_repair_model: str | None = None,
+    llm_repair_allow_fallback: bool = True,
+    llm_repair_max_proposals: int = 1,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -271,6 +300,21 @@ def build_plan_graph(
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
     graph.add_node("repair_plan_format", _make_repair_plan_format_node(generate_plan, max_retries))
     graph.add_node("assess_capability", _make_assess_plan_capability_node(max_retries))
+    graph.add_node("semantic_audit", _make_semantic_audit_node(
+        enabled=enable_semantic_audit,
+        mode=semantic_audit_mode,
+        client=semantic_audit_client,
+        model_name=semantic_audit_model,
+        allow_fallback=semantic_audit_allow_fallback,
+    ))
+    graph.add_node("llm_repair_proposal", _make_llm_repair_proposal_node(
+        enabled=enable_llm_repair_proposer,
+        mode=llm_repair_mode,
+        client=llm_repair_client,
+        model_name=llm_repair_model,
+        allow_fallback=llm_repair_allow_fallback,
+        max_proposals=llm_repair_max_proposals,
+    ))
     graph.add_node("ask_expert", _ask_expert)
     graph.add_node("classify_expert_feedback", _classify_expert_feedback)
     graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
@@ -316,8 +360,10 @@ def build_plan_graph(
     )
     graph.add_edge("repair_plan_format", "validate_plan")
     graph.add_edge("reflect_plan", "validate_plan")
+    graph.add_edge("assess_capability", "semantic_audit")
+    graph.add_edge("semantic_audit", "llm_repair_proposal")
     graph.add_conditional_edges(
-        "assess_capability",
+        "llm_repair_proposal",
         _make_plan_capability_assessment_router(),
         {
             "reflect": "reflect_plan",
@@ -363,6 +409,217 @@ def build_plan_graph(
     )
     graph.add_edge("save_record", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+
+def _make_llm_repair_proposal_node(
+    *,
+    enabled: bool,
+    mode: str,
+    client: Any | None,
+    model_name: str | None,
+    allow_fallback: bool,
+    max_proposals: int,
+):
+    def _llm_repair_proposal(state: GraphState) -> GraphState:
+        if not enabled or mode == "off" or max_proposals <= 0:
+            return {}
+        plan = state.get("simulation_plan")
+        if plan is None:
+            return {}
+        validation_report = state.get("validation_report")
+        repair_mode = RepairProposalMode(mode)
+        context = {
+            "requirement": state.get("requirement", ""),
+            "metadata": {"workflow": "plan_graph"},
+            "repair_artifact_dir": str(Path(state.get("output_dir", "data/runs")) / "repair_proposals"),
+        }
+        start = _trace_event_update(
+            state,
+            "llm_repair_proposal_started",
+            summary="LLM repair proposal started",
+            metadata={"mode": repair_mode.value, "model": model_name},
+        )
+        working_state = {**state, **start}
+        result = run_repair_proposal_flow(
+            plan=plan,
+            validation_result=validation_report,
+            audit_result=state.get("semantic_audit_result"),
+            mode=repair_mode,
+            client=client,
+            model_name=model_name,
+            allow_fallback=allow_fallback,
+            context=context,
+        )
+        operation_count = len(result.proposal.operations) if result.proposal else 0
+        allowed_count = sum(1 for ev in result.operation_evaluations if ev.allowed)
+        rejected_count = sum(1 for ev in result.operation_evaluations if not ev.allowed)
+        unsafe_count = sum(1 for ev in result.operation_evaluations if ev.risk_level.value == "forbidden")
+        meta = {
+            "proposal_id": result.proposal_id,
+            "mode": result.mode.value,
+            "model": model_name,
+            "source_issue_codes": result.proposal.source_issue_codes if result.proposal else [],
+            "source_audit_finding_codes": result.proposal.source_audit_finding_codes if result.proposal else [],
+            "operation_count": operation_count,
+            "allowed_operation_count": allowed_count,
+            "rejected_operation_count": rejected_count,
+            "unsafe_operation_count": unsafe_count,
+            "status": result.status,
+            "resolved_issue_codes": result.resolved_issue_codes,
+            "remaining_issue_codes": result.remaining_issue_codes,
+            "new_issue_codes": result.new_issue_codes,
+            "applied_to_clone": result.applied_to_clone,
+            "applied_to_workflow_plan": result.applied_to_workflow_plan,
+            "duration_ms": result.duration_ms,
+            "fallback_used": result.fallback_used,
+            "operation_evaluations": [ev.model_dump(mode="json") for ev in result.operation_evaluations],
+        }
+        generated = _trace_event_update(
+            working_state,
+            "llm_repair_proposal_generated",
+            summary="LLM repair proposal generated",
+            metadata=meta,
+        )
+        status_event = {
+            "accepted": "llm_repair_proposal_accepted",
+            "rejected": "llm_repair_proposal_rejected",
+            "unsafe": "llm_repair_proposal_unsafe",
+            "failed": "llm_repair_proposal_failed",
+            "proposed": "llm_repair_proposal_generated",
+        }.get(result.status, "llm_repair_proposal_generated")
+        status_update = {} if status_event == "llm_repair_proposal_generated" else _trace_event_update(
+            {**working_state, **generated},
+            status_event,
+            summary=f"LLM repair proposal {result.status}",
+            metadata=meta,
+        )
+        fallback_update = {}
+        if result.fallback_used:
+            fallback_update = _trace_event_update(
+                {**working_state, **generated, **status_update},
+                "llm_repair_fallback_used",
+                summary="LLM repair proposal used fallback",
+                metadata=meta,
+            )
+        return {
+            **start,
+            **generated,
+            **status_update,
+            **fallback_update,
+            "repair_proposal_input_summary": {
+                "proposal_id": result.proposal_id,
+                "mode": result.mode.value,
+                "operation_count": operation_count,
+            },
+            "repair_proposal_result": result.model_dump(mode="json"),
+            "repair_proposal_status": result.status,
+            "repair_resolved_issue_codes": result.resolved_issue_codes,
+            "repair_remaining_issue_codes": result.remaining_issue_codes,
+            "repair_new_issue_codes": result.new_issue_codes,
+        }
+    return _llm_repair_proposal
+
+
+def _make_semantic_audit_node(
+    *,
+    enabled: bool,
+    mode: str,
+    client: Any | None,
+    model_name: str | None,
+    allow_fallback: bool,
+):
+    def _semantic_audit(state: GraphState) -> GraphState:
+        if not enabled or mode == "off":
+            return {}
+        audit_input = build_semantic_audit_input(
+            requirement=state.get("requirement", ""),
+            resolved_requirement=(state.get("requirement_resolution") or {}).get("summary"),
+            workflow_state=state,
+        )
+        start_update = _trace_event_update(
+            state,
+            "semantic_audit_started",
+            summary="semantic plan audit started",
+            metadata={"audit_id": audit_input.audit_id, "model": model_name},
+        )
+        working_state = {**state, **start_update}
+        result = run_semantic_plan_audit(
+            audit_input,
+            mode=SemanticAuditMode(mode),
+            client=client,
+            model_name=model_name,
+            allow_fallback=allow_fallback,
+        )
+        artifacts = _write_semantic_audit_artifacts(working_state, audit_input, result)
+        finding_codes = [finding.finding_code for finding in result.findings]
+        severity_counts: dict[str, int] = {}
+        for finding in result.findings:
+            severity_counts[str(finding.severity.value)] = severity_counts.get(str(finding.severity.value), 0) + 1
+        meta = {
+            "audit_id": result.audit_id,
+            "auditor": result.auditor,
+            "model": result.model,
+            "finding_count": len(result.findings),
+            "finding_codes": finding_codes,
+            "severity_counts": severity_counts,
+            "fallback_used": result.fallback_used,
+            "duration_ms": result.duration_ms,
+            "artifact_paths": artifacts,
+            "findings": [f.model_dump(mode="json") for f in result.findings],
+            "mode": result.mode.value,
+        }
+        completed = _trace_event_update(
+            working_state,
+            "semantic_audit_completed",
+            summary="semantic plan audit completed",
+            metadata=meta,
+        )
+        fallback_update = {}
+        if result.fallback_used:
+            fallback_update = _trace_event_update(
+                {**working_state, **completed},
+                "semantic_audit_fallback_used",
+                summary="semantic plan audit used deterministic fallback",
+                metadata=meta,
+            )
+        return {
+            **start_update,
+            **completed,
+            **fallback_update,
+            "semantic_audit_input_summary": result.input_summary,
+            "semantic_audit_result": result.model_dump(mode="json"),
+            "semantic_audit_findings": [f.model_dump(mode="json") for f in result.findings],
+            "plan_artifacts": _append_many_plan_artifacts(state.get("plan_artifacts", []), artifacts),
+        }
+    return _semantic_audit
+
+
+def _write_semantic_audit_artifacts(
+    state: GraphState,
+    audit_input: Any,
+    result: Any,
+) -> list[str]:
+    try:
+        output_dir = Path(state.get("output_dir", "data/runs")) / "semantic_audit"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        input_path = output_dir / "audit_input.json"
+        result_path = output_dir / "audit_result.json"
+        findings_path = output_dir / "findings.json"
+        _write_json_file(input_path, audit_input.model_dump(mode="json"))
+        _write_json_file(result_path, result.model_dump(mode="json"))
+        _write_json_file(findings_path, [f.model_dump(mode="json") for f in result.findings])
+        return [str(input_path), str(result_path), str(findings_path)]
+    except Exception:
+        return []
+
+
+def _append_many_plan_artifacts(paths: list[str], new_paths: list[str]) -> list[str]:
+    updated = list(paths or [])
+    for path in new_paths:
+        if path not in updated:
+            updated.append(path)
+    return updated
 
 
 def _build_sqlite_checkpointer(path: str | Path) -> SqliteSaver:
@@ -940,6 +1197,17 @@ def _make_generate_plan_node(
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    enable_semantic_audit: bool = False,
+    semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
+    semantic_audit_client: Any | None = None,
+    semantic_audit_model: str | None = None,
+    semantic_audit_allow_fallback: bool = True,
+    enable_llm_repair_proposer: bool = False,
+    llm_repair_mode: Literal["off", "proposal_only", "validate_only", "apply_if_safe"] = "proposal_only",
+    llm_repair_client: Any | None = None,
+    llm_repair_model: str | None = None,
+    llm_repair_allow_fallback: bool = True,
+    llm_repair_max_proposals: int = 1,
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):

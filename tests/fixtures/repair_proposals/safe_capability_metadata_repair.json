@@ -1,0 +1,1 @@
+{"case_id":"safe-capability-metadata-repair","issue_codes":["audit.capability.renderer_claim_conflict"],"expected_status":"accepted"}

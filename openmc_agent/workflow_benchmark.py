@@ -51,6 +51,15 @@ class WorkflowBenchmarkConfig(AgentBaseModel):
     categories: list[str] = Field(default_factory=list)
 
     allow_real_llm: bool = False
+    enable_semantic_audit: bool = False
+    semantic_audit_mode: Literal["warning_only", "strict_evaluation"] = "warning_only"
+    semantic_audit_model: str | None = None
+    semantic_audit_allow_fallback: bool = True
+    enable_llm_repair: bool = False
+    llm_repair_mode: Literal["proposal_only", "validate_only", "apply_if_safe"] = "proposal_only"
+    llm_repair_model: str | None = None
+    llm_repair_allow_fallback: bool = True
+    llm_repair_max_proposals: int = 1
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -122,7 +131,10 @@ def run_workflow_benchmark(config: WorkflowBenchmarkConfig) -> WorkflowBenchmark
         )
         case_results.append(case_result)
         if artifact_dir is not None:
-            _write_case_artifact_summary(case_result, artifacts_root / case.case_id)
+            case_artifact_path = artifacts_root / case.case_id
+            _write_case_artifact_summary(case_result, case_artifact_path)
+            if config.enable_llm_repair:
+                _write_repair_artifact_stub(case_result, case_artifact_path)
 
     result = WorkflowBenchmarkResult(
         run_id=_new_run_id(),
@@ -177,6 +189,42 @@ def write_workflow_benchmark_summary(
         f"- issue precision: {_format_optional_rate(metrics.issue_code_precision)}",
         f"- issue recall: {_format_optional_rate(metrics.issue_code_recall)}",
         "",
+        "## Semantic Audit",
+        "",
+        f"- enabled: {any(c.metrics.get('semantic_audit_enabled') for c in result.cases)}",
+        f"- completion rate: {_format_optional_rate(metrics.semantic_audit_completion_rate)}",
+        f"- fallback rate: {_format_optional_rate(metrics.semantic_audit_fallback_rate)}",
+        f"- finding precision: {_format_optional_rate(metrics.semantic_audit_finding_precision)}",
+        f"- finding recall: {_format_optional_rate(metrics.semantic_audit_finding_recall)}",
+        f"- false positive rate: {_format_optional_rate(metrics.semantic_audit_false_positive_rate)}",
+        f"- known error detection rate: {_format_optional_rate(metrics.semantic_audit_known_error_detection_rate)}",
+        "",
+        "## LLM Repair Proposals",
+        "",
+        f"- completion rate: {_format_optional_rate(metrics.llm_repair_completion_rate)}",
+        f"- acceptance rate: {_format_optional_rate(metrics.llm_repair_acceptance_rate)}",
+        f"- rejection rate: {_format_optional_rate(metrics.llm_repair_rejection_rate)}",
+        f"- unsafe rate: {_format_optional_rate(metrics.llm_repair_unsafe_rate)}",
+        f"- fallback rate: {_format_optional_rate(metrics.llm_repair_fallback_rate)}",
+        f"- issue resolution rate: {_format_optional_rate(metrics.llm_repair_issue_resolution_rate)}",
+        f"- new issue rate: {_format_optional_rate(metrics.llm_repair_new_issue_rate)}",
+        "",
+        "| case_id | status | source_issues | operations | resolved | new_issues | applied |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        * _repair_rows(result),
+        "",
+        "| case_id | operation | path | rejection_code |",
+        "| --- | --- | --- | --- |",
+        * _repair_unsafe_rows(result),
+        "",
+        "| case_id | finding_code | severity | patch_target | confidence | human_confirmation |",
+        "| --- | --- | --- | --- | --- | --- |",
+        * _semantic_finding_rows(result),
+        "",
+        "| case_id | missing_finding_code |",
+        "| --- | --- |",
+        * _semantic_missing_rows(result),
+        "",
         "## Failed cases",
         "",
         "| case_id | failed_stage | failed_patch_type | issue_codes | failure_reasons |",
@@ -202,7 +250,12 @@ def write_workflow_benchmark_summary(
 
 def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> WorkflowTrace:
     if config.model == "fake":
-        return fake_case_runner(case, AblationConfig(name="workflow_fake"))
+        trace = fake_case_runner(case, AblationConfig(name="workflow_fake"))
+        if config.enable_semantic_audit:
+            trace = _augment_fake_trace_with_semantic_audit(trace, case, config)
+        if config.enable_llm_repair:
+            trace = _augment_fake_trace_with_llm_repair(trace, case, config)
+        return trace
     runner_config = WorkflowCaseRunnerConfig(
         model=config.model,
         output_dir=str(Path(config.output_dir) / "case_artifacts"),
@@ -215,9 +268,44 @@ def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> Workflow
         enable_openmc_tools=config.enable_openmc_tools,
         allow_monolithic_fallback_for_incremental_failure=False,
         metadata=config.metadata,
+        enable_semantic_audit=config.enable_semantic_audit,
+        semantic_audit_mode=config.semantic_audit_mode.replace("-", "_"),
+        semantic_audit_model=config.semantic_audit_model,
+        semantic_audit_allow_fallback=config.semantic_audit_allow_fallback,
+        enable_llm_repair_proposer=config.enable_llm_repair,
+        llm_repair_mode=config.llm_repair_mode.replace("-", "_"),
+        llm_repair_model=config.llm_repair_model,
+        llm_repair_allow_fallback=config.llm_repair_allow_fallback,
+        llm_repair_max_proposals=config.llm_repair_max_proposals,
     )
     return run_workflow_case(case, runner_config)
 
+
+
+def _write_repair_artifact_stub(
+    case_result: WorkflowBenchmarkCaseResult,
+    artifact_dir: Path,
+) -> None:
+    if not case_result.metrics.get("llm_repair_enabled"):
+        return
+    proposal_id = f"repair_{case_result.case_id}"
+    root = artifact_dir / "repair_proposals" / proposal_id
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "proposal_id": proposal_id,
+        "status": case_result.metrics.get("llm_repair_status"),
+        "source_issue_codes": case_result.metrics.get("llm_repair_source_issue_codes") or [],
+        "operation_count": case_result.metrics.get("llm_repair_operation_count") or 0,
+    }
+    for name in (
+        "input.json",
+        "proposal.json",
+        "operation_evaluations.json",
+        "validation_before.json",
+        "validation_after.json",
+        "result.json",
+    ):
+        (root / name).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _write_case_trace(
     trace: WorkflowTrace,
@@ -314,3 +402,121 @@ def _format_optional_rate(value: float | None) -> str:
 
 def _new_run_id() -> str:
     return f"workflow_{uuid4().hex[:12]}"
+
+
+def _augment_fake_trace_with_semantic_audit(trace: WorkflowTrace, case: EvaluationCase, config: WorkflowBenchmarkConfig) -> WorkflowTrace:
+    from openmc_agent.workflow_trace import TraceRecorder
+    recorder = TraceRecorder(trace=trace)
+    codes = list(case.expected_audit_finding_codes)
+    findings = [
+        {
+            "finding_code": code,
+            "severity": "error" if "conflict" in code or "partial_insert" in code else "warning",
+            "suggested_patch_target": "pin_map" if "axial" in code else "none",
+            "confidence": 0.9,
+            "requires_human_confirmation": bool(case.expected_audit_requires_human_confirmation),
+        }
+        for code in codes
+    ]
+    meta = {
+        "audit_id": f"fake_{case.case_id}",
+        "auditor": "FakeSemanticAuditClient",
+        "model": config.semantic_audit_model or config.model,
+        "finding_count": len(codes),
+        "finding_codes": codes,
+        "findings": findings,
+        "severity_counts": {"error": sum(1 for f in findings if f["severity"] == "error"), "warning": sum(1 for f in findings if f["severity"] == "warning")},
+        "fallback_used": bool(config.semantic_audit_allow_fallback and case.expected_semantic_audit_fallback_used),
+        "duration_ms": 0.0,
+        "mode": config.semantic_audit_mode.replace("-", "_"),
+    }
+    recorder.add_event("semantic_audit_started", summary="fake semantic audit started", metadata={"audit_id": meta["audit_id"]})
+    recorder.add_event("semantic_audit_completed", summary="fake semantic audit completed", metadata=meta)
+    if meta["fallback_used"]:
+        recorder.add_event("semantic_audit_fallback_used", summary="fake semantic audit fallback", metadata=meta)
+    return recorder.trace
+
+def _semantic_finding_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        codes = case.metrics.get("semantic_audit_finding_codes") or []
+        for code in codes:
+            rows.append(f"| {case.case_id} | {code} |  |  |  |  |")
+    return rows or ["| _none_ |  |  |  |  |"]
+
+def _semantic_missing_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        observed = set(case.metrics.get("semantic_audit_finding_codes") or [])
+        # expected codes are not stored on case result; failures carry the missing detail.
+        for reason in case.failure_reasons:
+            if reason.startswith("missing expected audit finding codes:"):
+                for code in reason.split(":", 1)[1].split(","):
+                    rows.append(f"| {case.case_id} | {code.strip()} |")
+    return rows or ["| _none_ |  |"]
+
+
+def _augment_fake_trace_with_llm_repair(trace: WorkflowTrace, case: EvaluationCase, config: WorkflowBenchmarkConfig) -> WorkflowTrace:
+    from openmc_agent.workflow_trace import TraceRecorder
+    recorder = TraceRecorder(trace=trace)
+    status = case.expected_repair_status or "proposed"
+    source = list(case.expected_repair_source_issue_codes or case.expected_audit_finding_codes or case.expected_issue_codes)
+    resolved = list(case.expected_repair_resolved_issue_codes or ([] if status != "accepted" else source[:1]))
+    applied_clone = bool(case.expected_repair_applied_to_clone) if case.expected_repair_applied_to_clone is not None else status == "accepted" and config.llm_repair_mode in {"validate_only", "apply_if_safe"}
+    applied_workflow = bool(case.expected_repair_applied_to_workflow_plan) if case.expected_repair_applied_to_workflow_plan is not None else status == "accepted" and config.llm_repair_mode == "apply_if_safe"
+    operation_count = 0 if case.expected_repair_requires_human_confirmation else (1 if source else 0)
+    evaluations = []
+    if operation_count:
+        path = (case.forbidden_repair_paths or case.expected_repair_allowed_paths or ["/metadata/repair_requests/0"])[0]
+        evaluations.append({"index": 0, "op": "replace", "path": path, "allowed": status != "unsafe", "risk_level": "forbidden" if status == "unsafe" else "low", "rejection_codes": [] if status != "unsafe" else ["repair.protected_path"]})
+    meta = {
+        "proposal_id": f"fake_repair_{case.case_id}",
+        "mode": config.llm_repair_mode.replace("-", "_"),
+        "model": config.llm_repair_model or config.model,
+        "source_issue_codes": source,
+        "source_audit_finding_codes": list(case.expected_audit_finding_codes),
+        "operation_count": operation_count,
+        "allowed_operation_count": sum(1 for ev in evaluations if ev["allowed"]),
+        "rejected_operation_count": sum(1 for ev in evaluations if not ev["allowed"]),
+        "unsafe_operation_count": 1 if status == "unsafe" else 0,
+        "status": status,
+        "resolved_issue_codes": resolved,
+        "remaining_issue_codes": [],
+        "new_issue_codes": [],
+        "applied_to_clone": applied_clone,
+        "applied_to_workflow_plan": applied_workflow,
+        "duration_ms": 0.0,
+        "fallback_used": bool(case.expected_repair_fallback_used),
+        "requires_human_confirmation": bool(case.expected_repair_requires_human_confirmation),
+        "operation_evaluations": evaluations,
+    }
+    recorder.add_event("llm_repair_proposal_started", summary="fake repair started", metadata={"proposal_id": meta["proposal_id"], "mode": meta["mode"]})
+    recorder.add_event("llm_repair_proposal_generated", summary="fake repair generated", metadata=meta)
+    if status in {"accepted", "rejected", "unsafe", "failed"}:
+        recorder.add_event(f"llm_repair_proposal_{status}", summary=f"fake repair {status}", metadata=meta)
+    if meta["fallback_used"]:
+        recorder.add_event("llm_repair_fallback_used", summary="fake repair fallback", metadata=meta)
+    return recorder.trace
+
+def _repair_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        if not case.metrics.get("llm_repair_enabled"):
+            continue
+        rows.append("| {case_id} | {status} | {source} | {ops} | {resolved} | {new} | {applied} |".format(
+            case_id=case.case_id,
+            status=case.metrics.get("llm_repair_status") or "",
+            source=", ".join(case.metrics.get("llm_repair_source_issue_codes") or []),
+            ops=case.metrics.get("llm_repair_operation_count") or 0,
+            resolved=case.metrics.get("llm_repair_resolved_issue_count") or 0,
+            new=case.metrics.get("llm_repair_new_issue_count") or 0,
+            applied=case.metrics.get("llm_repair_applied_to_workflow_plan"),
+        ))
+    return rows or ["| _none_ |  |  |  |  |  |  |"]
+
+def _repair_unsafe_rows(result: WorkflowBenchmarkResult) -> list[str]:
+    rows: list[str] = []
+    for case in result.cases:
+        if (case.metrics.get("llm_repair_unsafe_operation_count") or 0) > 0:
+            rows.append(f"| {case.case_id} | 0 |  | repair.protected_path |")
+    return rows or ["| _none_ |  |  |  |"]

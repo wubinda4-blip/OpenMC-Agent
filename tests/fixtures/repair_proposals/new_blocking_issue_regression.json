@@ -1,0 +1,1 @@
+{"case_id":"new-blocking-issue-regression","issue_codes":["audit.material.nominal_reported_as_confirmed"],"expected_status":"rejected","expected_rejection":"repair.new_blocking_issue"}

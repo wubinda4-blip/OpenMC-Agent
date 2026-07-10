@@ -46,6 +46,17 @@ class WorkflowCaseRunnerConfig(AgentBaseModel):
     allow_monolithic_fallback_for_incremental_failure: bool = False
 
     timeout_s: float | None = None
+    enable_semantic_audit: bool = False
+    semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only"
+    semantic_audit_client: Any | None = None
+    semantic_audit_model: str | None = None
+    semantic_audit_allow_fallback: bool = True
+    enable_llm_repair_proposer: bool = False
+    llm_repair_mode: Literal["off", "proposal_only", "validate_only", "apply_if_safe"] = "proposal_only"
+    llm_repair_client: Any | None = None
+    llm_repair_model: str | None = None
+    llm_repair_allow_fallback: bool = True
+    llm_repair_max_proposals: int = 1
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -78,6 +89,17 @@ def run_workflow_case(
                 config.allow_monolithic_fallback_for_incremental_failure
             ),
             reference_patch_policy=config.reference_patch_policy,
+            enable_semantic_audit=config.enable_semantic_audit,
+            semantic_audit_mode=config.semantic_audit_mode,
+            semantic_audit_client=config.semantic_audit_client,
+            semantic_audit_model=config.semantic_audit_model,
+            semantic_audit_allow_fallback=config.semantic_audit_allow_fallback,
+            enable_llm_repair_proposer=config.enable_llm_repair_proposer,
+            llm_repair_mode=config.llm_repair_mode,
+            llm_repair_client=config.llm_repair_client,
+            llm_repair_model=config.llm_repair_model,
+            llm_repair_allow_fallback=config.llm_repair_allow_fallback,
+            llm_repair_max_proposals=config.llm_repair_max_proposals,
         )
         state = graph.invoke(
             {
@@ -237,6 +259,10 @@ def _state_trace_metadata(
         "runner_config": _safe_model_dump(config),
         "error": state.get("error", ""),
         "requirement_resolution": state.get("requirement_resolution") or {},
+        "semantic_audit_result": state.get("semantic_audit_result") or {},
+        "semantic_audit_findings": state.get("semantic_audit_findings") or [],
+        "repair_proposal_result": state.get("repair_proposal_result") or {},
+        "repair_proposal_status": state.get("repair_proposal_status"),
     }
     return metadata
 

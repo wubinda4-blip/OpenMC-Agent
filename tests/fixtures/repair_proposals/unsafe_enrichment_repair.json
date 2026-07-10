@@ -1,0 +1,1 @@
+{"case_id":"unsafe-enrichment-repair","operation":{"op":"replace","path":"/materials/0/enrichment_percent","value":4.0},"expected_status":"unsafe"}
