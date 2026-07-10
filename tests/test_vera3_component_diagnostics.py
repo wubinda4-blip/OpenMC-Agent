@@ -55,7 +55,22 @@ def test_3b_fixture_diagnoses_remaining_issues() -> None:
 def test_3b_base_lattice_and_finite_pyrex_loading_are_separate() -> None:
     plan = _assembled("3b")
     assert collect_base_lattice_counts(plan) == {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}
-    assert collect_loading_override_counts(plan, "pyrex_active_loading") == {"pyrex_rod": 16}
+    # Pyrex is now a nested_component_override, not legacy overrides
+    model = plan.complex_model
+    pyrex_loading = next(l for l in model.lattice_loadings if l.id == "pyrex_active_loading")
+    nested_ops = [t for t in pyrex_loading.transformations if t.operation_kind == "nested_component_override"]
+    assert len(nested_ops) == 1
+    assert nested_ops[0].replacement_universe_id == "pyrex_inner_profile"
+    assert len(nested_ops[0].target_coordinates) == 16
+    # Thimble loading also present with 8 coordinates
+    thimble_loading = next(l for l in model.lattice_loadings if l.id == "thimble_plug_loading")
+    thimble_ops = [t for t in thimble_loading.transformations if t.operation_kind == "nested_component_override"]
+    assert len(thimble_ops) == 1
+    assert len(thimble_ops[0].target_coordinates) == 8
+    # Pyrex and thimble coordinates must not overlap
+    pyrex_coords = set(tuple(c) for c in nested_ops[0].target_coordinates)
+    thimble_coords = set(tuple(c) for c in thimble_ops[0].target_coordinates)
+    assert pyrex_coords & thimble_coords == set()
 
 
 def test_active_fuel_split_layers_cover_the_complete_active_region() -> None:

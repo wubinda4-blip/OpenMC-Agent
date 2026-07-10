@@ -144,6 +144,31 @@ def collect_loading_override_counts(
     return counts
 
 
+def collect_nested_operation_coord_counts(
+    plan: SimulationPlan | dict[str, Any], loading_id: str | None = None
+) -> dict[str, int]:
+    """Count target_coordinates in nested_component_override operations.
+
+    Maps replacement_universe_id → total coordinate count.
+    """
+    model = plan.complex_model if isinstance(plan, SimulationPlan) else plan.get("complex_model", plan)
+    loadings = model.lattice_loadings if isinstance(model, ComplexModelSpec) else model.get("lattice_loadings", [])
+    counts: dict[str, int] = {}
+    for loading in loadings:
+        current_id = loading.id if isinstance(loading, LatticeLoadingSpec) else loading.get("id")
+        if loading_id is not None and current_id != loading_id:
+            continue
+        transforms = loading.transformations if isinstance(loading, LatticeLoadingSpec) else loading.get("transformations", [])
+        for t in transforms:
+            kind = t.operation_kind if hasattr(t, "operation_kind") else t.get("operation_kind")
+            if kind != "nested_component_override":
+                continue
+            repl = t.replacement_universe_id if hasattr(t, "replacement_universe_id") else t.get("replacement_universe_id")
+            coords = t.target_coordinates if hasattr(t, "target_coordinates") else t.get("target_coordinates", [])
+            counts[repl] = counts.get(repl, 0) + len(coords)
+    return counts
+
+
 def collect_active_lattice_union(plan: SimulationPlan) -> tuple[float, float] | None:
     """Return the contiguous union of all active-fuel lattice layer bounds."""
     model = plan.complex_model
@@ -235,24 +260,48 @@ def diagnose_vera3_component_geometry(
                 universe.get("id"): {"cells": [cells.get(cell_id, {}) for cell_id in universe.get("cell_ids", [])]}
                 for universe in model.get("universes", [])
             }
-        pyrex = universes.get("pyrex_rod") or universes.get("pyrex_pin")
+        pyrex = universes.get("pyrex_rod") or universes.get("pyrex_pin") or universes.get("pyrex_inner_profile")
         if pyrex:
-            expected = {item["id"]: item["material"] for item in contract["component_profiles"]["pyrex_rod"]["radial_layers"]}
-            cells = pyrex.get("cells", [])
-            actual = {cell.get("id"): cell.get("material_id", cell.get("fill_id")) for cell in cells}
-            if any(actual.get(key) != material for key, material in expected.items() if key in {"gap_1", "gap_2"}):
-                issues.append(BenchmarkIssue("vera3.pyrex_gap_material_mismatch", "error", "Pyrex internal gaps do not match the helium contract"))
-            expected_ids = set(expected)
-            actual_ids = set(actual)
-            radii = [(cell.get("r_min_cm", 0.0), cell.get("r_max_cm")) for cell in cells if cell.get("r_max_cm") is not None]
-            if expected_ids - actual_ids or (radii and any(right <= left for left, right in radii)):
-                issues.append(BenchmarkIssue("vera3.pyrex_radial_stack_mismatch", "error", "Pyrex radial stack omits or invalidates contract layers"))
+            if "pyrex_inner_profile" in universes:
+                # New inner-profile universe: check only that it contains
+                # a poison layer and gas gaps with helium.
+                cells = pyrex.get("cells", [])
+                roles = {c.get("role") or c.get("component_role") for c in cells}
+                if "poison" not in roles:
+                    issues.append(BenchmarkIssue("vera3.pyrex_radial_stack_mismatch", "error", "Pyrex inner profile omits the poison layer"))
+                gas_gap_mats = {
+                    c.get("material_id", c.get("fill_id"))
+                    for c in cells
+                    if (c.get("role") or c.get("component_role")) == "gas_gap"
+                }
+                if gas_gap_mats and gas_gap_mats != {"helium"}:
+                    issues.append(BenchmarkIssue("vera3.pyrex_gap_material_mismatch", "error", "Pyrex gas gaps must be helium"))
+            else:
+                expected = {item["id"]: item["material"] for item in contract["component_profiles"]["pyrex_rod"]["radial_layers"]}
+                cells = pyrex.get("cells", [])
+                actual = {cell.get("id"): cell.get("material_id", cell.get("fill_id")) for cell in cells}
+                if any(actual.get(key) != material for key, material in expected.items() if key in {"gap_1", "gap_2"}):
+                    issues.append(BenchmarkIssue("vera3.pyrex_gap_material_mismatch", "error", "Pyrex internal gaps do not match the helium contract"))
+                expected_ids = set(expected)
+                actual_ids = set(actual)
+                radii = [(cell.get("r_min_cm", 0.0), cell.get("r_max_cm")) for cell in cells if cell.get("r_max_cm") is not None]
+                if expected_ids - actual_ids or (radii and any(right <= left for left, right in radii)):
+                    issues.append(BenchmarkIssue("vera3.pyrex_radial_stack_mismatch", "error", "Pyrex radial stack omits or invalidates contract layers"))
 
         base_counts = collect_base_lattice_counts(raw)
-        if base_counts.get("pyrex_rod", 0) or base_counts.get("pyrex_pin", 0) or base_counts.get("thimble_plug", 0) or base_counts.get("plug_pin", 0):
+        if base_counts.get("pyrex_rod", 0) or base_counts.get("pyrex_pin", 0) or base_counts.get("pyrex_inner_profile", 0) or base_counts.get("thimble_plug", 0) or base_counts.get("thimble_inner_profile", 0) or base_counts.get("plug_pin", 0):
             issues.append(BenchmarkIssue("vera3.base_lattice_contains_finite_insert", "error", "finite Pyrex or thimble insert appears in base lattice"))
+
+        # Check thimble loading via both legacy overrides and nested operations
         loading_counts = collect_loading_override_counts(raw)
-        if loading_counts.get("thimble_plug", 0) + loading_counts.get("plug_pin", 0) != 8:
+        nested_counts = collect_nested_operation_coord_counts(raw)
+        thimble_total = (
+            loading_counts.get("thimble_plug", 0)
+            + loading_counts.get("plug_pin", 0)
+            + nested_counts.get("thimble_inner_profile", 0)
+            + nested_counts.get("thimble_plug", 0)
+        )
+        if thimble_total != 8:
             issues.append(BenchmarkIssue("vera3.thimble_loading_missing", "error", "3B requires an 8-coordinate finite thimble loading"))
         pyrex_profile = contract["component_profiles"]["pyrex_rod"]["axial_profile"]
         nominal_top = pyrex_profile["nominal_plenum_top_cm"]["value"]
@@ -446,16 +495,45 @@ def validate_vera3_plan_structure(
         if variant == "3B":
             for pos in pm["guide_tube_positions_1based"]:
                 _check_coord("G", pos, "base guide tube", "vera3.guide_tube_coordinate_mismatch")
+            # Pyrex loading: check both legacy overrides and nested operations
             loading_counts = collect_loading_override_counts(plan)
-            if loading_counts.get("pyrex_rod", 0) + loading_counts.get("pyrex_pin", 0) != 16:
-                issues.append(BenchmarkIssue("vera3.pyrex_loading_count_mismatch", "error", "Pyrex loading must override 16 coordinates", expected=16, actual=loading_counts))
-            if loading_counts.get("thimble_plug", 0) + loading_counts.get("plug_pin", 0) != 8:
-                issues.append(BenchmarkIssue("vera3.thimble_loading_missing", "error", "thimble loading must override 8 coordinates", expected=8, actual=loading_counts))
-            loading = next((item for item in model.lattice_loadings if item.id == "pyrex_active_loading"), None)
-            actual_coords = set((loading.overrides.get("pyrex_pin") or loading.overrides.get("pyrex_rod") or []) if loading else [])
-            expected_coords = {to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]}
-            if actual_coords != expected_coords:
-                issues.append(BenchmarkIssue("vera3.pyrex_coordinate_mismatch", "error", "Pyrex loading coordinates mismatch", expected=sorted(expected_coords), actual=sorted(actual_coords)))
+            nested_counts = collect_nested_operation_coord_counts(plan)
+            pyrex_total = (
+                loading_counts.get("pyrex_rod", 0)
+                + loading_counts.get("pyrex_pin", 0)
+                + nested_counts.get("pyrex_inner_profile", 0)
+            )
+            if pyrex_total != 16:
+                issues.append(BenchmarkIssue("vera3.pyrex_loading_count_mismatch", "error", "Pyrex loading must cover 16 coordinates", expected=16, actual=pyrex_total))
+            thimble_total = (
+                loading_counts.get("thimble_plug", 0)
+                + loading_counts.get("plug_pin", 0)
+                + nested_counts.get("thimble_inner_profile", 0)
+                + nested_counts.get("thimble_plug", 0)
+            )
+            if thimble_total != 8:
+                issues.append(BenchmarkIssue("vera3.thimble_loading_missing", "error", "thimble loading must cover 8 coordinates", expected=8, actual=thimble_total))
+
+            # Pyrex operation kind check
+            pyrex_loading = next((item for item in model.lattice_loadings if item.id == "pyrex_active_loading"), None)
+            if pyrex_loading is not None:
+                has_nested = any(t.operation_kind == "nested_component_override" for t in pyrex_loading.transformations)
+                if not has_nested and not pyrex_loading.overrides:
+                    issues.append(BenchmarkIssue("vera3.pyrex_not_nested_in_guide", "error", "Pyrex loading should use nested_component_override"))
+                # Coordinate check
+                nested_op = next((t for t in pyrex_loading.transformations if t.operation_kind == "nested_component_override"), None)
+                if nested_op is not None:
+                    actual_coords = set(tuple(c) for c in nested_op.target_coordinates)
+                    expected_coords = {to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]}
+                    if actual_coords != expected_coords:
+                        issues.append(BenchmarkIssue("vera3.pyrex_coordinate_mismatch", "error", "Pyrex loading coordinates mismatch", expected=sorted(expected_coords), actual=sorted(actual_coords)))
+                elif pyrex_loading.overrides:
+                    actual_coords = set(
+                        tuple(c) for c in (pyrex_loading.overrides.get("pyrex_pin") or pyrex_loading.overrides.get("pyrex_rod") or [])
+                    )
+                    expected_coords = {to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]}
+                    if actual_coords != expected_coords:
+                        issues.append(BenchmarkIssue("vera3.pyrex_coordinate_mismatch", "error", "Pyrex loading coordinates mismatch", expected=sorted(expected_coords), actual=sorted(actual_coords)))
 
     # 4. material references resolve
     cell_material_ids = {c.fill_id for c in model.cells if c.fill_type == "material"}
@@ -494,6 +572,13 @@ def validate_vera3_plan_structure(
                                          f"guide tube universe {u.id!r} has no Zircaloy/clad "
                                          "wall cell (only coolant); the tube wall must be preserved",
                                          path=f"complex_model.universes.{u.id}"))
+
+    # 4c. Tube radii checks (guide tube 0.561/0.602, instrument tube 0.559/0.605).
+    _check_tube_radii(model, issues)
+
+    # 4d. Nested operation and finite-insert geometry checks for 3B.
+    if variant == "3B":
+        _check_3b_nested_geometry(model, issues)
 
     # 5. renderer compatibility -- no blocking generic assembly3d.* errors
     generic = validate_assembly3d_plan(plan, requirement="VERA 3D HZP assembly with spacer grids")
@@ -542,6 +627,34 @@ def validate_vera3_plan_structure(
 # ---------------------------------------------------------------------------
 # Deterministic VERA3-like plan builder (test fixture, no LLM)
 # ---------------------------------------------------------------------------
+
+
+def _inner_profile_universes(variant: str) -> tuple[list[CellSpec], list[UniverseSpec]]:
+    """Build pyrex_inner_profile and thimble_inner_profile universes for 3B tests."""
+    cells: list[CellSpec] = []
+    universes: list[UniverseSpec] = []
+    if variant == "3B":
+        cells.extend([
+            CellSpec(id="pyrex_inner_solid", name="pyrex poison",
+                     fill_type="material", fill_id="pyrex", component_role="poison"),
+            CellSpec(id="pyrex_inner_bg", name="pyrex background water",
+                     fill_type="material", fill_id="water", component_role="inner_flow_background"),
+        ])
+        universes.append(UniverseSpec(
+            id="pyrex_inner_profile", name="pyrex inner profile",
+            cell_ids=["pyrex_inner_solid", "pyrex_inner_bg"],
+        ))
+        cells.extend([
+            CellSpec(id="thimble_plug_solid", name="thimble plug",
+                     fill_type="material", fill_id="ss304", component_role="plug"),
+            CellSpec(id="thimble_plug_bg", name="thimble plug water gap",
+                     fill_type="material", fill_id="water", component_role="inner_flow_background"),
+        ])
+        universes.append(UniverseSpec(
+            id="thimble_inner_profile", name="thimble inner profile",
+            cell_ids=["thimble_plug_solid", "thimble_plug_bg"],
+        ))
+    return cells, universes
 
 
 def _material(mid: str, name: str, density: float, nuclide: str = "U235") -> ComplexMaterialSpec:
@@ -600,7 +713,22 @@ def _vera3_pin_universes(variant: str, *, pure_water_guide: bool = False) -> tup
                               fill_type="material", fill_id="water", region_id="coolant_region"))
         universes.append(UniverseSpec(id="guide_tube", name="guide tube", cell_ids=["guide_water"]))
     else:
-        _pin("guide_tube", "guide tube", "guide_tube_wall", "clad")
+        # Guide tube with component roles and regions for nested override
+        cells.extend([
+            CellSpec(id="gt_inner_water", name="guide inner water",
+                     fill_type="material", fill_id="water", region_id="gt_inner_region",
+                     component_role="inner_flow"),
+            CellSpec(id="gt_wall", name="guide tube wall",
+                     fill_type="material", fill_id="clad", region_id="gt_wall_region",
+                     component_role="tube_wall", protected_through_path=True),
+            CellSpec(id="gt_outer_water", name="guide outer moderator",
+                     fill_type="material", fill_id="water", region_id="gt_outer_region",
+                     component_role="outer_moderator"),
+        ])
+        universes.append(UniverseSpec(
+            id="guide_tube", name="guide tube",
+            cell_ids=["gt_inner_water", "gt_wall", "gt_outer_water"],
+        ))
     _pin("instrument_tube", "instrument tube", "inst_tube_wall", "clad")
     if variant == "3B":
         _pin("pyrex_pin", "pyrex burnable absorber rod", "pyrex_solid", "pyrex")
@@ -698,13 +826,33 @@ def build_vera3_like_plan(
         lattice_loadings.extend([
             LatticeLoadingSpec(
                 id="pyrex_active_loading", base_lattice_id="assembly_lattice",
-                overrides={"pyrex_pin": pyrex_coords},
+                transformations=[LatticeTransformationOperation(
+                    operation_id="insert_pyrex_inside_guide",
+                    operation_kind="nested_component_override",
+                    replacement_universe_id="pyrex_inner_profile",
+                    target_coordinates=pyrex_coords,
+                    component_role="inner_flow",
+                    preserve_component_roles=["tube_wall", "outer_moderator"],
+                    purpose="Insert Pyrex inner profile inside guide tubes",
+                )],
             ),
             LatticeLoadingSpec(
                 id="thimble_plug_loading", base_lattice_id="assembly_lattice",
-                overrides={"plug_pin": [to_0_indexed(pos) for pos in pm["plug_positions_1based"]]},
+                transformations=[LatticeTransformationOperation(
+                    operation_id="insert_thimble_inside_guide",
+                    operation_kind="nested_component_override",
+                    replacement_universe_id="thimble_inner_profile",
+                    target_coordinates=[to_0_indexed(pos) for pos in pm["plug_positions_1based"]],
+                    component_role="inner_flow",
+                    preserve_component_roles=["tube_wall", "outer_moderator"],
+                    purpose="Insert thimble plug inside guide tubes",
+                )],
             ),
         ])
+        # Add inner-profile universes for the test plan
+        cells_inner, univs_inner = _inner_profile_universes(variant)
+        cells.extend(cells_inner)
+        universes.extend(univs_inner)
 
     # Axial layers: component-profile segments (end-plug, plenum) use lattice
     # fill with family replacement; only homogenized regions use material fill.
@@ -765,11 +913,18 @@ def build_vera3_like_plan(
                         parameters={"x0": 0.0, "y0": 0.0, "r": 0.4}),
             SurfaceSpec(id="pin_box", kind="rectangular_prism",
                         parameters={"xmin": -0.63, "xmax": 0.63, "ymin": -0.63, "ymax": 0.63}),
+            SurfaceSpec(id="gt_inner_r", kind="zcylinder", parameters={"r": 0.561}),
+            SurfaceSpec(id="gt_wall_r", kind="zcylinder", parameters={"r": 0.602}),
         ],
         regions=[
             RegionSpec(id="solid_region", expression="-solid_r", surface_ids=["solid_r"]),
             RegionSpec(id="coolant_region", expression="+solid_r & pin_box",
                        surface_ids=["solid_r", "pin_box"]),
+            RegionSpec(id="gt_inner_region", expression="-gt_inner_r", surface_ids=["gt_inner_r"]),
+            RegionSpec(id="gt_wall_region", expression="+gt_inner_r -gt_wall_r",
+                       surface_ids=["gt_inner_r", "gt_wall_r"]),
+            RegionSpec(id="gt_outer_region", expression="+gt_wall_r & pin_box",
+                       surface_ids=["gt_wall_r", "pin_box"]),
         ],
         core=CoreSpec(
             id="vera3_core", name="VERA3 core", lattice_id="assembly_lattice",
@@ -788,6 +943,101 @@ def build_vera3_like_plan(
     )
 
 
+def _check_tube_radii(model: ComplexModelSpec, issues: list[BenchmarkIssue]) -> None:
+    """Check guide/instrument tube outer radii against the contract.
+
+    Only the outermost cylinder surface radius is checked; the inner radius
+    is a different geometric boundary and is not an error.
+    """
+    expected = {
+        "guide": 0.602,
+        "instrument": 0.605,
+    }
+    for u in model.universes:
+        uid_lower = u.id.lower()
+        tube_type = None
+        if "guide" in uid_lower or "gt" in uid_lower:
+            tube_type = "guide"
+        elif "instrument" in uid_lower or "inst" in uid_lower:
+            tube_type = "instrument"
+        if tube_type is None:
+            continue
+        u_cells = [c for c in model.cells if c.id in u.cell_ids]
+        for cell in u_cells:
+            if cell.component_role not in ("tube_wall", "cladding"):
+                continue
+            region = next((r for r in model.regions if r.id == cell.region_id), None) if cell.region_id else None
+            if region is None:
+                continue
+            # Find the maximum cylinder radius in this wall region = outer radius
+            outer_r = None
+            for sid in region.surface_ids:
+                surf = next((s for s in model.surfaces if s.id == sid), None)
+                if surf and surf.kind == "zcylinder":
+                    r = surf.parameters.get("r")
+                    if r is not None:
+                        if outer_r is None or r > outer_r:
+                            outer_r = r
+            if outer_r is not None and abs(outer_r - expected[tube_type]) > 0.001:
+                code = "vera3.guide_tube_radius_mismatch" if tube_type == "guide" else "vera3.instrument_tube_radius_mismatch"
+                issues.append(BenchmarkIssue(
+                    code, "error",
+                    f"{tube_type} tube outer radius should be {expected[tube_type]}, got {outer_r}",
+                    expected=expected[tube_type], actual=outer_r,
+                    path=f"complex_model.universes.{u.id}",
+                ))
+
+
+def _check_3b_nested_geometry(model: ComplexModelSpec, issues: list[BenchmarkIssue]) -> None:
+    """Check 3B-specific nested geometry: operation kinds, coordinate counts,
+    guide wall preservation, upper plenum multi-loading."""
+    loadings_by_id = {l.id: l for l in model.lattice_loadings}
+
+    # Pyrex must use nested_component_override
+    pyrex_loading = loadings_by_id.get("pyrex_active_loading")
+    if pyrex_loading is not None:
+        nested_ops = [t for t in pyrex_loading.transformations if t.operation_kind == "nested_component_override"]
+        if not nested_ops:
+            issues.append(BenchmarkIssue(
+                "vera3.pyrex_not_nested_in_guide", "error",
+                "Pyrex loading should use nested_component_override operation kind",
+            ))
+
+    # Thimble must use nested_component_override with 8 coordinates
+    thimble_loading = loadings_by_id.get("thimble_plug_loading")
+    if thimble_loading is None:
+        issues.append(BenchmarkIssue(
+            "vera3.thimble_loading_missing", "error",
+            "3B requires a thimble_plug_loading",
+        ))
+    else:
+        nested_ops = [t for t in thimble_loading.transformations if t.operation_kind == "nested_component_override"]
+        if not nested_ops:
+            issues.append(BenchmarkIssue(
+                "vera3.thimble_loading_missing", "error",
+                "Thimble loading should use nested_component_override operation kind",
+            ))
+        elif len(nested_ops[0].target_coordinates) != 8:
+            issues.append(BenchmarkIssue(
+                "vera3.thimble_loading_missing", "error",
+                "Thimble nested operation must target 8 coordinates",
+                expected=8, actual=len(nested_ops[0].target_coordinates),
+            ))
+
+    # Upper plenum middle layer must have loading_ids = [plenum, thimble]
+    if model.core is not None:
+        for layer in model.core.axial_layers:
+            if "upper_plenum_middle" in layer.id or "thimble" in layer.id.lower():
+                if layer.loading_ids and len(layer.loading_ids) >= 2:
+                    has_plenum = "plenum_loading" in layer.loading_ids
+                    has_thimble = any("thimble" in lid for lid in layer.loading_ids)
+                    if not (has_plenum and has_thimble):
+                        issues.append(BenchmarkIssue(
+                            "vera3.upper_plenum_loading_composition_mismatch", "error",
+                            f"Upper plenum middle layer loading_ids must include plenum + thimble, got {layer.loading_ids}",
+                            expected=["plenum_loading", "thimble_plug_loading"], actual=layer.loading_ids,
+                        ))
+
 __all__ = [
     "BenchmarkIssue",
     "CONTRACT_PATH",
@@ -796,6 +1046,7 @@ __all__ = [
     "collect_active_lattice_union",
     "collect_base_lattice_counts",
     "collect_loading_override_counts",
+    "collect_nested_operation_coord_counts",
     "diagnose_vera3_component_geometry",
     "load_vera3_geometry_contract",
     "load_vera3_reference",

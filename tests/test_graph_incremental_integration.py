@@ -482,9 +482,11 @@ def test_vera3_3b_graph_end_to_end(tmp_path: Path) -> None:
             assert base_counts == {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}
             assert base_counts.get("pyrex_rod", 0) == 0
             assert base_counts.get("thimble_plug", 0) == 0
-            loading_counts = collect_loading_override_counts(assembled, "pyrex_active_loading")
-            assert loading_counts == {"pyrex_rod": 16}
             loading = next(item for item in cm.get("lattice_loadings", []) if item["id"] == "pyrex_active_loading")
+            # Pyrex is now a nested_component_override, not legacy overrides
+            nested_ops = [t for t in loading.get("transformations", []) if t["operation_kind"] == "nested_component_override"]
+            assert len(nested_ops) == 1
+            assert len(nested_ops[0]["target_coordinates"]) == 16
             assert loading["base_lattice_id"] == "assembly_lattice"
         core = cm.get("core", {})
         layers = core.get("axial_layers", [])

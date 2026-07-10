@@ -109,21 +109,21 @@
           "universe_id": "guide_tube",
           "kind": "guide_tube",
           "cells": [
-            {"id": "inner_water", "role": "coolant", "material_id": "borated_water", "region_kind": "cylinder", "r_max_cm": 0.5610},
-            {"id": "wall", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.5610, "r_max_cm": 0.6120, "protected_through_path": true},
-            {"id": "outer_water", "role": "background", "material_id": "borated_water", "region_kind": "background"}
+            {"id": "inner_water", "role": "inner_flow", "material_id": "borated_water", "region_kind": "cylinder", "r_max_cm": 0.561},
+            {"id": "wall", "role": "tube_wall", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.561, "r_max_cm": 0.602, "protected_through_path": true},
+            {"id": "outer_water", "role": "outer_moderator", "material_id": "borated_water", "region_kind": "background"}
           ],
-          "source_note": "VERA3 guide tube: hollow Zircaloy-4 tube with water inside"
+          "source_note": "VERA3 guide tube: inner water (r<0.561), Zircaloy-4 wall (0.561-0.602), outer moderator"
         },
         {
           "universe_id": "instrument_tube",
           "kind": "instrument_tube",
           "cells": [
-            {"id": "inner_water", "role": "coolant", "material_id": "borated_water", "region_kind": "cylinder", "r_max_cm": 0.5610},
-            {"id": "wall", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.5610, "r_max_cm": 0.6120, "protected_through_path": true},
-            {"id": "outer_water", "role": "background", "material_id": "borated_water", "region_kind": "background"}
+            {"id": "inner_water", "role": "inner_flow", "material_id": "borated_water", "region_kind": "cylinder", "r_max_cm": 0.559},
+            {"id": "wall", "role": "tube_wall", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.559, "r_max_cm": 0.605, "protected_through_path": true},
+            {"id": "outer_water", "role": "outer_moderator", "material_id": "borated_water", "region_kind": "background"}
           ],
-          "source_note": "VERA3 instrument tube: same geometry as guide tube"
+          "source_note": "VERA3 instrument tube: inner water (r<0.559), Zircaloy-4 wall (0.559-0.605), outer moderator"
         },
         {
           "universe_id": "fuel_pin_end_plug",
@@ -188,12 +188,12 @@
         {"layer_id": "lower_moderator_buffer", "role": "reflector", "z_min_cm": -55.0, "z_max_cm": -5.0, "fill_type": "material", "fill_id": "borated_water"},
         {"layer_id": "lower_core_plate", "role": "core_plate", "z_min_cm": -5.0, "z_max_cm": 0.0, "fill_type": "material", "fill_id": "ss304"},
         {"layer_id": "lower_nozzle", "role": "lower_nozzle", "z_min_cm": 0.0, "z_max_cm": 6.053, "fill_type": "material", "fill_id": "ss304"},
-        {"layer_id": "lower_shoulder_gap", "role": "gas_gap", "z_min_cm": 6.053, "z_max_cm": 10.281, "fill_type": "material", "fill_id": "borated_water"},
+        {"layer_id": "lower_shoulder_gap", "role": "custom", "z_min_cm": 6.053, "z_max_cm": 10.281, "fill_type": "material", "fill_id": "borated_water"},
         {"layer_id": "lower_end_plug", "role": "lower_end_plug", "z_min_cm": 10.281, "z_max_cm": 11.951, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "end_plug_loading"},
         {"layer_id": "active_fuel", "role": "active_fuel", "z_min_cm": 11.951, "z_max_cm": 377.711, "fill_type": "lattice", "fill_id": "assembly_lattice"},
         {"layer_id": "upper_end_plug", "role": "upper_end_plug", "z_min_cm": 377.711, "z_max_cm": 379.381, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "end_plug_loading"},
         {"layer_id": "upper_plenum", "role": "upper_plenum", "z_min_cm": 379.381, "z_max_cm": 395.381, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "plenum_loading"},
-        {"layer_id": "upper_shoulder_gap", "role": "gas_gap", "z_min_cm": 395.381, "z_max_cm": 397.51, "fill_type": "material", "fill_id": "borated_water"},
+        {"layer_id": "upper_shoulder_gap", "role": "custom", "z_min_cm": 395.381, "z_max_cm": 397.51, "fill_type": "material", "fill_id": "borated_water"},
         {"layer_id": "upper_nozzle", "role": "upper_nozzle", "z_min_cm": 397.51, "z_max_cm": 406.337, "fill_type": "material", "fill_id": "ss304"},
         {"layer_id": "upper_core_plate", "role": "core_plate", "z_min_cm": 406.337, "z_max_cm": 413.937, "fill_type": "material", "fill_id": "ss304"},
         {"layer_id": "upper_moderator_buffer", "role": "reflector", "z_min_cm": 413.937, "z_max_cm": 463.937, "fill_type": "material", "fill_id": "borated_water"}

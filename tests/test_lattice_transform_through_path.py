@@ -36,17 +36,20 @@ def _guide_tube_universe() -> tuple[list[CellSpec], UniverseSpec]:
         CellSpec(
             id="gt_inner_water", name="inner water",
             fill_type="material", fill_id="water",
+            region_id="reg_inner",
             component_role="inner_flow",
         ),
         CellSpec(
             id="gt_wall", name="guide tube wall",
             fill_type="material", fill_id="zr4",
+            region_id="reg_wall",
             component_role="tube_wall",
             protected_through_path=True,
         ),
         CellSpec(
             id="gt_outer_water", name="outer moderator",
             fill_type="material", fill_id="water",
+            region_id="reg_outer",
             component_role="outer_moderator",
         ),
     ]
@@ -130,13 +133,20 @@ class TestNestedOverride:
         # A derived universe was created
         assert len(result.derived_universes) == 1
         derived = result.derived_universes[0]
-        # Wall cell preserved
+        # Wall cell preserved (unchanged)
         assert "gt_wall" in derived.cell_ids
-        # Inner water removed, insert added
-        assert "gt_inner_water" not in derived.cell_ids
-        assert "insert_solid" in derived.cell_ids
         # Outer moderator preserved
         assert "gt_outer_water" in derived.cell_ids
+        # Inner water cell replaced by a cloned nested-fill cell
+        assert "gt_inner_water" not in derived.cell_ids
+        nested_cell_ids = [cid for cid in derived.cell_ids if "nested" in cid]
+        assert len(nested_cell_ids) == 1
+        # The cloned cell is returned in derived_cells with universe fill
+        assert len(result.derived_cells) == 1
+        cloned = result.derived_cells[0]
+        assert cloned.fill_type == "universe"
+        assert cloned.fill_id == "poison_insert"
+        assert cloned.region_id == "reg_inner"  # bounding region preserved
         # Lattice position points to derived universe
         pattern = result.derived_lattice.universe_pattern
         assert pattern[1][1].startswith("guide_tube__nested_")

@@ -69,11 +69,18 @@ def test_vera3_3b_fake_eval_report(tmp_path: Path) -> None:
     assert report.assembly.lattice_size == [17, 17]
     assert report.assembly.pyrex_count == 0
     assert report.assembly.thimble_plug_count == 0
-    assert report.assembly.axial_layer_count == 14
+    assert report.assembly.axial_layer_count == 16  # upper plenum split into 3 segments
     assert report.assembly.overlay_count == 8
     plan = state.assembled_plan["complex_model"]
     pyrex_loading = next(l for l in plan["lattice_loadings"] if l["id"] == "pyrex_active_loading")
-    assert len(pyrex_loading["overrides"]["pyrex_rod"]) == 16
+    # Pyrex is now a nested_component_override, not legacy overrides
+    pyrex_nested = [t for t in pyrex_loading["transformations"] if t["operation_kind"] == "nested_component_override"]
+    assert len(pyrex_nested) == 1
+    assert len(pyrex_nested[0]["target_coordinates"]) == 16
+    thimble_loading = next(l for l in plan["lattice_loadings"] if l["id"] == "thimble_plug_loading")
+    thimble_nested = [t for t in thimble_loading["transformations"] if t["operation_kind"] == "nested_component_override"]
+    assert len(thimble_nested) == 1
+    assert len(thimble_nested[0]["target_coordinates"]) == 8
 
     # Guard check.
     assert report.guard.blocking_issue_count == 0

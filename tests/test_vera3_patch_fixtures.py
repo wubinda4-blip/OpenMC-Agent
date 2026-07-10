@@ -141,7 +141,11 @@ class TestVERA3BAssembly:
     def test_pyrex_count(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         loading = next(l for l in result.plan.complex_model.lattice_loadings if l.id == "pyrex_active_loading")
-        assert len(loading.overrides["pyrex_rod"]) == 16
+        # Pyrex is now a nested_component_override
+        nested_ops = [t for t in loading.transformations if t.operation_kind == "nested_component_override"]
+        assert len(nested_ops) == 1
+        assert len(nested_ops[0].target_coordinates) == 16
+        assert nested_ops[0].replacement_universe_id == "pyrex_inner_profile"
 
     def test_thimble_plug_count(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
@@ -181,10 +185,10 @@ class TestVERA3BAssembly:
         total = sum(len(row) for row in lattice.universe_pattern)
         assert total == 289
 
-    def test_axial_layers_14(self, vera3_3b_patches: list) -> None:
+    def test_axial_layers_16(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         layers = result.plan.complex_model.core.axial_layers
-        assert len(layers) == 14
+        assert len(layers) == 16  # upper plenum split into 3 segments
         loaded = next(l for l in layers if l.id == "active_fuel_pyrex_span")
         assert loaded.loading_id == "pyrex_active_loading"
 
@@ -214,8 +218,8 @@ class TestVERA3BAssembly:
             "pyrex_rod": 0,
             "thimble_plug": 0,
         }
-        # end_plug + plenum + pyrex = 3 loadings
-        assert result.summary["lattice_loading_count"] == 3
+        # end_plug + plenum + pyrex + thimble = 4 loadings
+        assert result.summary["lattice_loading_count"] == 4
 
     def test_bad_facts_guide_count_does_not_pollute_lattice_expected_counts(
         self,

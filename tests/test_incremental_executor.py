@@ -561,10 +561,15 @@ def test_vera3_3b_full_incremental_execution() -> None:
     assert pattern[5][5] == "guide_tube"  # 1-based (6,6)
     assert pattern[8][2] == "guide_tube"  # 1-based (9,3)
     loading = next(l for l in cm["lattice_loadings"] if l["id"] == "pyrex_active_loading")
-    assert len(loading["overrides"]["pyrex_rod"]) == 16
+    # Pyrex is now a nested_component_override (not legacy overrides)
+    transforms = loading.get("transformations", [])
+    nested_ops = [t for t in transforms if t["operation_kind"] == "nested_component_override"]
+    assert len(nested_ops) == 1
+    assert nested_ops[0]["replacement_universe_id"] == "pyrex_inner_profile"
+    assert len(nested_ops[0]["target_coordinates"]) == 16
 
     # Axial layers + overlays.
-    assert len(cm["core"]["axial_layers"]) == 14
+    assert len(cm["core"]["axial_layers"]) == 16  # upper plenum split into 3
     assert len(cm["core"]["axial_overlays"]) == 8
 
     # assembly3d guard.
@@ -604,7 +609,7 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
         "pyrex_rod": 0,
         "thimble_plug": 0,
     }
-    assert result.summary["lattice_loading_count"] == 3  # end_plug + plenum + pyrex
+    assert result.summary["lattice_loading_count"] == 4  # end_plug + plenum + pyrex + thimble
     assert result.summary["material_aliases_applied"] == {
         "grid_zircaloy4": "zircaloy4"
     }

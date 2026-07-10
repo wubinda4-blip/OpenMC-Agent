@@ -200,58 +200,58 @@
           "cells": [
             {
               "id": "inner_water",
-              "role": "coolant",
+              "role": "inner_flow",
               "material_id": "borated_water",
               "region_kind": "cylinder",
               "r_max_cm": 0.561
             },
             {
               "id": "wall",
-              "role": "cladding",
+              "role": "tube_wall",
               "material_id": "zircaloy4",
               "region_kind": "annulus",
               "r_min_cm": 0.561,
-              "r_max_cm": 0.612,
+              "r_max_cm": 0.602,
               "protected_through_path": true
             },
             {
               "id": "outer_water",
-              "role": "background",
+              "role": "outer_moderator",
               "material_id": "borated_water",
               "region_kind": "background"
             }
           ],
-          "source_note": "VERA3 guide tube: Zircaloy-4 tube with borated water inside and outside"
+          "source_note": "VERA3 guide tube: inner water (r<0.561), Zircaloy-4 wall (0.561-0.602), outer moderator"
         },
         {
-          "universe_id": "pyrex_rod",
-          "kind": "pyrex_rod",
+          "universe_id": "pyrex_inner_profile",
+          "kind": "custom",
           "cells": [
             {
-              "id": "inner_water",
-              "role": "coolant",
+              "id": "inner_gas",
+              "role": "inner_gas",
               "material_id": "helium",
               "region_kind": "cylinder",
               "r_max_cm": 0.214
             },
             {
               "id": "inner_tube",
-              "role": "cladding",
+              "role": "inner_tube",
               "material_id": "ss304",
               "region_kind": "annulus",
               "r_min_cm": 0.214,
               "r_max_cm": 0.231
             },
             {
-              "id": "gap_1",
-              "role": "coolant",
+              "id": "gas_gap_1",
+              "role": "gas_gap",
               "material_id": "helium",
               "region_kind": "annulus",
               "r_min_cm": 0.231,
               "r_max_cm": 0.241
             },
             {
-              "id": "pyrex",
+              "id": "poison",
               "role": "poison",
               "material_id": "pyrex",
               "region_kind": "annulus",
@@ -259,8 +259,8 @@
               "r_max_cm": 0.427
             },
             {
-              "id": "gap_2",
-              "role": "coolant",
+              "id": "gas_gap_2",
+              "role": "gas_gap",
               "material_id": "helium",
               "region_kind": "annulus",
               "r_min_cm": 0.427,
@@ -268,58 +268,40 @@
             },
             {
               "id": "outer_clad",
-              "role": "cladding",
+              "role": "outer_clad",
               "material_id": "ss304",
               "region_kind": "annulus",
               "r_min_cm": 0.437,
-              "r_max_cm": 0.484,
-              "protected_through_path": true
+              "r_max_cm": 0.484
             },
             {
-              "id": "outer_water",
-              "role": "background",
+              "id": "inner_flow_background",
+              "role": "inner_flow_background",
               "material_id": "borated_water",
               "region_kind": "background"
             }
           ],
-          "source_note": "VERA3 3B Pyrex rod: SS304 inner tube, water gaps, borosilicate glass, SS304 outer clad"
+          "source_note": "VERA3 3B Pyrex inner-flow profile (r < 0.561): helium gas gaps (not water), SS304 tubes, Pyrex poison, borated water gap to guide-tube inner radius. Guide wall (0.561-0.602) is NOT part of this universe."
         },
         {
-          "universe_id": "thimble_plug",
-          "kind": "thimble_plug",
+          "universe_id": "thimble_inner_profile",
+          "kind": "custom",
           "cells": [
             {
               "id": "plug",
               "role": "plug",
               "material_id": "ss304",
               "region_kind": "cylinder",
-              "r_max_cm": 0.386
+              "r_max_cm": 0.538
             },
             {
-              "id": "inner_water",
-              "role": "coolant",
-              "material_id": "borated_water",
-              "region_kind": "annulus",
-              "r_min_cm": 0.386,
-              "r_max_cm": 0.561
-            },
-            {
-              "id": "wall",
-              "role": "cladding",
-              "material_id": "zircaloy4",
-              "region_kind": "annulus",
-              "r_min_cm": 0.561,
-              "r_max_cm": 0.612,
-              "protected_through_path": true
-            },
-            {
-              "id": "outer_water",
-              "role": "background",
+              "id": "plug_water_gap",
+              "role": "inner_flow_background",
               "material_id": "borated_water",
               "region_kind": "background"
             }
           ],
-          "source_note": "VERA3 3B thimble plug: SS-304 plug inside guide tube"
+          "source_note": "VERA3 3B thimble plug inner-flow profile (r < 0.561): SS304 plug (r < 0.538), borated water gap (0.538-0.561). Guide wall (0.561-0.602) is NOT part of this universe."
         },
         {
           "universe_id": "instrument_tube",
@@ -327,28 +309,28 @@
           "cells": [
             {
               "id": "inner_water",
-              "role": "coolant",
+              "role": "inner_flow",
               "material_id": "borated_water",
               "region_kind": "cylinder",
-              "r_max_cm": 0.561
+              "r_max_cm": 0.559
             },
             {
               "id": "wall",
-              "role": "cladding",
+              "role": "tube_wall",
               "material_id": "zircaloy4",
               "region_kind": "annulus",
-              "r_min_cm": 0.561,
-              "r_max_cm": 0.612,
+              "r_min_cm": 0.559,
+              "r_max_cm": 0.605,
               "protected_through_path": true
             },
             {
               "id": "outer_water",
-              "role": "background",
+              "role": "outer_moderator",
               "material_id": "borated_water",
               "region_kind": "background"
             }
           ],
-          "source_note": "VERA3 instrument tube: same geometry as guide tube"
+          "source_note": "VERA3 instrument tube: inner water (r<0.559), Zircaloy-4 wall (0.559-0.605), outer moderator"
         },
         {
           "universe_id": "fuel_pin_end_plug",
@@ -526,76 +508,36 @@
         {
           "loading_id": "pyrex_active_loading",
           "base_lattice_id": "assembly_lattice",
-          "derived_lattice_id": "assembly_lattice_pyrex_active",
-          "overrides": {
-            "pyrex_rod": [
-              [
-                2,
-                5
-              ],
-              [
-                3,
-                3
-              ],
-              [
-                5,
-                2
-              ],
-              [
-                2,
-                11
-              ],
-              [
-                3,
-                13
-              ],
-              [
-                5,
-                14
-              ],
-              [
-                11,
-                2
-              ],
-              [
-                13,
-                3
-              ],
-              [
-                14,
-                5
-              ],
-              [
-                11,
-                14
-              ],
-              [
-                13,
-                13
-              ],
-              [
-                14,
-                11
-              ],
-              [
-                8,
-                5
-              ],
-              [
-                8,
-                11
-              ],
-              [
-                5,
-                8
-              ],
-              [
-                11,
-                8
-              ]
-            ]
-          },
-          "purpose": "Apply 3B Pyrex rods only over the stated poison axial span."
+          "derived_lattice_id": "assembly_lattice_pyrex_nested",
+          "transformations": [
+            {
+              "operation_id": "insert_pyrex_inside_guide",
+              "operation_kind": "nested_component_override",
+              "replacement_universe_id": "pyrex_inner_profile",
+              "target_coordinates": [[2,5],[3,3],[5,2],[2,11],[3,13],[5,14],[11,2],[13,3],[14,5],[11,14],[13,13],[14,11],[8,5],[8,11],[5,8],[11,8]],
+              "component_role": "inner_flow",
+              "preserve_component_roles": ["tube_wall", "outer_moderator"],
+              "purpose": "Insert finite-height poison profile inside guide tubes; guide wall and outer moderator preserved"
+            }
+          ],
+          "purpose": "Apply 3B Pyrex rods only over the stated poison axial span via bounded nested fill."
+        },
+        {
+          "loading_id": "thimble_plug_loading",
+          "base_lattice_id": "assembly_lattice",
+          "derived_lattice_id": "assembly_lattice_thimble_nested",
+          "transformations": [
+            {
+              "operation_id": "insert_thimble_inside_guide",
+              "operation_kind": "nested_component_override",
+              "replacement_universe_id": "thimble_inner_profile",
+              "target_coordinates": [[2,8],[5,5],[5,11],[8,2],[8,14],[11,5],[11,11],[14,8]],
+              "component_role": "inner_flow",
+              "preserve_component_roles": ["tube_wall", "outer_moderator"],
+              "purpose": "Insert thimble plug inside guide tubes over 383.31-394.31 cm; guide wall and outer moderator preserved"
+            }
+          ],
+          "purpose": "Apply 3B thimble plugs only over 383.31-394.31 cm via bounded nested fill."
         }
       ],
       "layers": [
@@ -625,7 +567,7 @@
         },
         {
           "layer_id": "lower_shoulder_gap",
-          "role": "gas_gap",
+          "role": "custom",
           "z_min_cm": 6.053,
           "z_max_cm": 10.281,
           "fill_type": "material",
@@ -675,9 +617,27 @@
           "loading_id": "end_plug_loading"
         },
         {
-          "layer_id": "upper_plenum",
+          "layer_id": "upper_plenum_lower",
           "role": "upper_plenum",
           "z_min_cm": 379.381,
+          "z_max_cm": 383.31,
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_id": "plenum_loading"
+        },
+        {
+          "layer_id": "upper_plenum_middle_thimble",
+          "role": "upper_plenum",
+          "z_min_cm": 383.31,
+          "z_max_cm": 394.31,
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_ids": ["plenum_loading", "thimble_plug_loading"]
+        },
+        {
+          "layer_id": "upper_plenum_upper",
+          "role": "upper_plenum",
+          "z_min_cm": 394.31,
           "z_max_cm": 395.381,
           "fill_type": "lattice",
           "fill_id": "assembly_lattice",
@@ -685,7 +645,7 @@
         },
         {
           "layer_id": "upper_shoulder_gap",
-          "role": "gas_gap",
+          "role": "custom",
           "z_min_cm": 395.381,
           "z_max_cm": 397.51,
           "fill_type": "material",

@@ -107,8 +107,8 @@ def test_build_axial_layers_from_reference() -> None:
     ref = load_benchmark_reference(benchmark_id="VERA3", variant="3B")
     patch = build_reference_patch(patch_type="axial_layers", reference=ref, variant="3B")
     assert patch is not None
-    assert len(patch.layers) == 14
-    assert len(patch.lattice_loadings) == 3  # end_plug + plenum + pyrex
+    assert len(patch.layers) == 16  # upper plenum split into 3 segments
+    assert len(patch.lattice_loadings) == 4  # end_plug + plenum + pyrex + thimble
     has_fuel = any(l.role == "active_fuel" for l in patch.layers)
     assert has_fuel
 
