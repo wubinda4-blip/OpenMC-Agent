@@ -17,6 +17,14 @@ ENABLE_SMOKE=0
 JSON_OUTPUT=1
 INTERACTIVE_FEEDBACK="auto"
 MAX_EXPERT_ROUNDS=2
+BENCHMARK=0
+BENCHMARK_CASES="tests/fixtures/evaluation_cases.json"
+BENCHMARK_MAX_CASES=""
+BENCHMARK_MODE="plan-only"
+SUPERVISOR_MODE="advisory"
+DISABLE_AUDIT=0
+DISABLE_REPAIR=0
+DISABLE_SUPERVISOR=0
 
 usage() {
   cat <<'EOF'
@@ -48,6 +56,18 @@ Options:
                           slow (reasoning) generations do not hit the read
                           timeout and you can see token-level progress.
   --text                  Print human-readable transcript instead of JSON.
+  --benchmark             Run workflow benchmark instead of single-model inspect.
+                          All LLM intelligence (audit+repair+supervisor) is on
+                          by default in advisory mode.
+  --cases PATH            Evaluation cases JSON for --benchmark.
+                          Default: tests/fixtures/evaluation_cases.json
+  --max-cases N           Limit benchmark to first N cases.
+  --benchmark-mode MODE   Benchmark mode: plan-only (default), render-only, smoke-test.
+  --controlled-route      Run supervisor in controlled_route mode (overrides advisory).
+                          WARNING: supervisor decisions will affect real routing.
+  --disable-audit         Disable semantic audit.
+  --disable-repair        Disable LLM repair proposer.
+  --disable-supervisor    Disable run supervisor.
   -h, --help              Show this help.
 
 Providers:
@@ -131,6 +151,38 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
+    --benchmark)
+      BENCHMARK=1
+      shift
+      ;;
+    --cases)
+      BENCHMARK_CASES="${2:-}"
+      shift 2
+      ;;
+    --max-cases)
+      BENCHMARK_MAX_CASES="${2:-}"
+      shift 2
+      ;;
+    --benchmark-mode)
+      BENCHMARK_MODE="${2:-}"
+      shift 2
+      ;;
+    --controlled-route)
+      SUPERVISOR_MODE="controlled_route"
+      shift
+      ;;
+    --disable-audit)
+      DISABLE_AUDIT=1
+      shift
+      ;;
+    --disable-repair)
+      DISABLE_REPAIR=1
+      shift
+      ;;
+    --disable-supervisor)
+      DISABLE_SUPERVISOR=1
+      shift
+      ;;
     *)
       echo "Unknown option: $1" >&2
       usage >&2
@@ -198,7 +250,39 @@ export OPENMC_AGENT_STREAM="$STREAM"
 export "$TIMEOUT_ENV=$TIMEOUT_SECONDS"
 export "$RETRIES_ENV=$MAX_RETRIES"
 
-cmd=(python -m openmc_agent.inspect --plan --verbose --model "$MODEL" --output-dir "$OUTPUT_DIR")
+# ---------------------------------------------------------------------------
+# Benchmark mode: run workflow benchmark with all LLM intelligence
+# ---------------------------------------------------------------------------
+if [[ "$BENCHMARK" -eq 1 ]]; then
+  cmd=(python scripts/run_workflow_benchmark.py
+       --cases "$BENCHMARK_CASES"
+       --model "$MODEL"
+       --mode "$BENCHMARK_MODE"
+       --allow-real-llm
+       --run-supervisor-mode "$SUPERVISOR_MODE"
+       --output-dir "$OUTPUT_DIR")
+
+  [[ -n "$BENCHMARK_MAX_CASES" ]] && cmd+=(--max-cases "$BENCHMARK_MAX_CASES")
+  [[ "$DISABLE_AUDIT" -eq 1 ]] && cmd+=(--disable-semantic-audit)
+  [[ "$DISABLE_REPAIR" -eq 1 ]] && cmd+=(--disable-llm-repair)
+  [[ "$DISABLE_SUPERVISOR" -eq 1 ]] && cmd+=(--disable-run-supervisor)
+
+  echo "[2/5] Conda environment activated: $CONDA_ENV" >&2
+  echo "[3/5] Benchmark model: $MODEL (provider: $PROVIDER)" >&2
+  echo "      Supervisor: $SUPERVISOR_MODE | Audit: $([[ $DISABLE_AUDIT -eq 0 ]] && echo on || echo off) | Repair: $([[ $DISABLE_REPAIR -eq 0 ]] && echo on || echo off)" >&2
+  [[ -n "$BENCHMARK_MAX_CASES" ]] && echo "      Max cases: $BENCHMARK_MAX_CASES" >&2
+  echo "[4/5] Cases: $BENCHMARK_CASES" >&2
+  echo "[5/5] Output: $OUTPUT_DIR" >&2
+  echo "Benchmark is starting. LLM calls may take a while..." >&2
+  exec "${cmd[@]}"
+fi
+
+# ---------------------------------------------------------------------------
+# Single-model inspect mode (default)
+# ---------------------------------------------------------------------------
+cmd=(python -m openmc_agent.inspect --plan --verbose --model "$MODEL"
+     --reference-patch-policy off
+     --output-dir "$OUTPUT_DIR")
 
 if [[ "$JSON_OUTPUT" -eq 1 ]]; then
   cmd+=(--json)
