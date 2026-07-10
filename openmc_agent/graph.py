@@ -73,6 +73,11 @@ from openmc_agent.validator import (
     validate_simulation_plan,
     validate_simulation_spec,
 )
+from openmc_agent.semantic_audit import (
+    SemanticAuditMode,
+    build_semantic_audit_input,
+    run_semantic_plan_audit,
+)
 from openmc_agent.workflow_trace import (
     TraceConfig,
     TraceRecorder,
@@ -153,6 +158,9 @@ class GraphState(TypedDict, total=False):
     use_incremental_executor: bool
     allow_monolithic_fallback_for_incremental_failure: bool
     requirement_resolution: dict[str, Any]
+    semantic_audit_input_summary: dict[str, Any]
+    semantic_audit_result: dict[str, Any]
+    semantic_audit_findings: list[dict[str, Any]]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -228,6 +236,11 @@ def build_plan_graph(
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    enable_semantic_audit: bool = False,
+    semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
+    semantic_audit_client: Any | None = None,
+    semantic_audit_model: str | None = None,
+    semantic_audit_allow_fallback: bool = True,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -271,6 +284,13 @@ def build_plan_graph(
     graph.add_node("validate_plan", _make_validate_plan_node(max_retries))
     graph.add_node("repair_plan_format", _make_repair_plan_format_node(generate_plan, max_retries))
     graph.add_node("assess_capability", _make_assess_plan_capability_node(max_retries))
+    graph.add_node("semantic_audit", _make_semantic_audit_node(
+        enabled=enable_semantic_audit,
+        mode=semantic_audit_mode,
+        client=semantic_audit_client,
+        model_name=semantic_audit_model,
+        allow_fallback=semantic_audit_allow_fallback,
+    ))
     graph.add_node("ask_expert", _ask_expert)
     graph.add_node("classify_expert_feedback", _classify_expert_feedback)
     graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
@@ -316,8 +336,9 @@ def build_plan_graph(
     )
     graph.add_edge("repair_plan_format", "validate_plan")
     graph.add_edge("reflect_plan", "validate_plan")
+    graph.add_edge("assess_capability", "semantic_audit")
     graph.add_conditional_edges(
-        "assess_capability",
+        "semantic_audit",
         _make_plan_capability_assessment_router(),
         {
             "reflect": "reflect_plan",
@@ -363,6 +384,108 @@ def build_plan_graph(
     )
     graph.add_edge("save_record", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+
+def _make_semantic_audit_node(
+    *,
+    enabled: bool,
+    mode: str,
+    client: Any | None,
+    model_name: str | None,
+    allow_fallback: bool,
+):
+    def _semantic_audit(state: GraphState) -> GraphState:
+        if not enabled or mode == "off":
+            return {}
+        audit_input = build_semantic_audit_input(
+            requirement=state.get("requirement", ""),
+            resolved_requirement=(state.get("requirement_resolution") or {}).get("summary"),
+            workflow_state=state,
+        )
+        start_update = _trace_event_update(
+            state,
+            "semantic_audit_started",
+            summary="semantic plan audit started",
+            metadata={"audit_id": audit_input.audit_id, "model": model_name},
+        )
+        working_state = {**state, **start_update}
+        result = run_semantic_plan_audit(
+            audit_input,
+            mode=SemanticAuditMode(mode),
+            client=client,
+            model_name=model_name,
+            allow_fallback=allow_fallback,
+        )
+        artifacts = _write_semantic_audit_artifacts(working_state, audit_input, result)
+        finding_codes = [finding.finding_code for finding in result.findings]
+        severity_counts: dict[str, int] = {}
+        for finding in result.findings:
+            severity_counts[str(finding.severity.value)] = severity_counts.get(str(finding.severity.value), 0) + 1
+        meta = {
+            "audit_id": result.audit_id,
+            "auditor": result.auditor,
+            "model": result.model,
+            "finding_count": len(result.findings),
+            "finding_codes": finding_codes,
+            "severity_counts": severity_counts,
+            "fallback_used": result.fallback_used,
+            "duration_ms": result.duration_ms,
+            "artifact_paths": artifacts,
+            "findings": [f.model_dump(mode="json") for f in result.findings],
+            "mode": result.mode.value,
+        }
+        completed = _trace_event_update(
+            working_state,
+            "semantic_audit_completed",
+            summary="semantic plan audit completed",
+            metadata=meta,
+        )
+        fallback_update = {}
+        if result.fallback_used:
+            fallback_update = _trace_event_update(
+                {**working_state, **completed},
+                "semantic_audit_fallback_used",
+                summary="semantic plan audit used deterministic fallback",
+                metadata=meta,
+            )
+        return {
+            **start_update,
+            **completed,
+            **fallback_update,
+            "semantic_audit_input_summary": result.input_summary,
+            "semantic_audit_result": result.model_dump(mode="json"),
+            "semantic_audit_findings": [f.model_dump(mode="json") for f in result.findings],
+            "plan_artifacts": _append_many_plan_artifacts(state.get("plan_artifacts", []), artifacts),
+        }
+    return _semantic_audit
+
+
+def _write_semantic_audit_artifacts(
+    state: GraphState,
+    audit_input: Any,
+    result: Any,
+) -> list[str]:
+    try:
+        output_dir = Path(state.get("output_dir", "data/runs")) / "semantic_audit"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        input_path = output_dir / "audit_input.json"
+        result_path = output_dir / "audit_result.json"
+        findings_path = output_dir / "findings.json"
+        _write_json_file(input_path, audit_input.model_dump(mode="json"))
+        _write_json_file(result_path, result.model_dump(mode="json"))
+        _write_json_file(findings_path, [f.model_dump(mode="json") for f in result.findings])
+        return [str(input_path), str(result_path), str(findings_path)]
+    except Exception:
+        return []
+
+
+def _append_many_plan_artifacts(paths: list[str], new_paths: list[str]) -> list[str]:
+    updated = list(paths or [])
+    for path in new_paths:
+        if path not in updated:
+            updated.append(path)
+    return updated
 
 
 def _build_sqlite_checkpointer(path: str | Path) -> SqliteSaver:
@@ -940,6 +1063,11 @@ def _make_generate_plan_node(
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    enable_semantic_audit: bool = False,
+    semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
+    semantic_audit_client: Any | None = None,
+    semantic_audit_model: str | None = None,
+    semantic_audit_allow_fallback: bool = True,
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):

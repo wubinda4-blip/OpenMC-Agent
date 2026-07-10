@@ -39,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
         enable_retrieval=args.enable_retrieval,
         enable_graph_retrieval=args.enable_graph_retrieval,
         allow_real_llm=args.allow_real_llm,
+        enable_semantic_audit=args.enable_semantic_audit,
+        semantic_audit_mode=args.semantic_audit_mode.replace("-", "_"),
+        semantic_audit_model=args.semantic_audit_model,
+        semantic_audit_allow_fallback=args.semantic_audit_allow_fallback,
     )
     try:
         result = run_workflow_benchmark(config)
@@ -97,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
     )
     parser.add_argument("--allow-real-llm", action="store_true")
+    parser.add_argument("--enable-semantic-audit", action="store_true")
+    parser.add_argument("--semantic-audit-mode", default="warning-only", choices=["warning-only", "strict-evaluation"])
+    parser.add_argument("--semantic-audit-model", default=None)
+    parser.add_argument("--allow-semantic-audit-fallback", dest="semantic_audit_allow_fallback", action="store_true", default=True)
+    parser.add_argument("--disable-semantic-audit-fallback", dest="semantic_audit_allow_fallback", action="store_false")
     return parser
 
 
