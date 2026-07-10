@@ -51,16 +51,16 @@ class WorkflowBenchmarkConfig(AgentBaseModel):
     categories: list[str] = Field(default_factory=list)
 
     allow_real_llm: bool = False
-    enable_semantic_audit: bool = False
+    enable_semantic_audit: bool = True
     semantic_audit_mode: Literal["warning_only", "strict_evaluation"] = "warning_only"
     semantic_audit_model: str | None = None
     semantic_audit_allow_fallback: bool = True
-    enable_llm_repair: bool = False
+    enable_llm_repair: bool = True
     llm_repair_mode: Literal["proposal_only", "validate_only", "apply_if_safe"] = "proposal_only"
     llm_repair_model: str | None = None
     llm_repair_allow_fallback: bool = True
     llm_repair_max_proposals: int = 1
-    enable_run_supervisor: bool = False
+    enable_run_supervisor: bool = True
     run_supervisor_mode: Literal["advisory", "controlled_route"] = "advisory"
     run_supervisor_model: str | None = None
     run_supervisor_allow_fallback: bool = True
@@ -279,6 +279,37 @@ def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> Workflow
         if config.enable_run_supervisor:
             trace = _augment_fake_trace_with_supervisor(trace, case, config)
         return trace
+    # Auto-create LLM clients from model names for real model runs.
+    patch_llm_client = None
+    semantic_audit_client = None
+    llm_repair_client = None
+    run_supervisor_client = None
+    if config.model != "fake":
+        from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
+        from openmc_agent.semantic_audit import make_semantic_audit_client
+        from openmc_agent.repair_proposal import make_repair_proposal_client
+        from openmc_agent.run_supervisor import make_run_supervisor_client
+
+        patch_llm_client = make_patch_llm_client(model_name=config.model)
+        if config.enable_semantic_audit:
+            sa_model = config.semantic_audit_model or config.model
+            semantic_audit_client = make_semantic_audit_client(
+                llm=make_patch_llm_client(model_name=sa_model),
+                model_name=sa_model,
+            )
+        if config.enable_llm_repair:
+            lr_model = config.llm_repair_model or config.model
+            llm_repair_client = make_repair_proposal_client(
+                llm=make_patch_llm_client(model_name=lr_model),
+                model_name=lr_model,
+            )
+        if config.enable_run_supervisor:
+            rs_model = config.run_supervisor_model or config.model
+            run_supervisor_client = make_run_supervisor_client(
+                llm=make_patch_llm_client(model_name=rs_model),
+                model_name=rs_model,
+            )
+
     runner_config = WorkflowCaseRunnerConfig(
         model=config.model,
         output_dir=str(Path(config.output_dir) / "case_artifacts"),
@@ -291,17 +322,21 @@ def _run_case(case: EvaluationCase, config: WorkflowBenchmarkConfig) -> Workflow
         enable_openmc_tools=config.enable_openmc_tools,
         allow_monolithic_fallback_for_incremental_failure=False,
         metadata=config.metadata,
+        patch_llm_client=patch_llm_client,
         enable_semantic_audit=config.enable_semantic_audit,
         semantic_audit_mode=config.semantic_audit_mode.replace("-", "_"),
+        semantic_audit_client=semantic_audit_client,
         semantic_audit_model=config.semantic_audit_model,
         semantic_audit_allow_fallback=config.semantic_audit_allow_fallback,
         enable_llm_repair_proposer=config.enable_llm_repair,
         llm_repair_mode=config.llm_repair_mode.replace("-", "_"),
+        llm_repair_client=llm_repair_client,
         llm_repair_model=config.llm_repair_model,
         llm_repair_allow_fallback=config.llm_repair_allow_fallback,
         llm_repair_max_proposals=config.llm_repair_max_proposals,
         enable_run_supervisor=config.enable_run_supervisor,
         run_supervisor_mode=config.run_supervisor_mode.replace("-", "_"),
+        run_supervisor_client=run_supervisor_client,
         run_supervisor_model=config.run_supervisor_model,
         run_supervisor_allow_fallback=config.run_supervisor_allow_fallback,
         run_supervisor_max_decisions=config.run_supervisor_max_decisions,
