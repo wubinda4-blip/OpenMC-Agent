@@ -1,0 +1,109 @@
+name: One-time VERA3 input contract update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/update-vera3-input.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch VERA3 input contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('Input/VERA3_problem.md')
+          text = path.read_text(encoding='utf-8')
+
+          insertion = '''### 6.4 canonical axial breakpoints 与组合规则
+
+轴向层数不是固定的 12 层或 14 层。生产模型必须取以下所有边界的有序并集，并据此生成连续、无重叠的轴向段：
+
+```text
+-55.000, -5.000, 0.000, 6.053, 10.281, 11.951,
+15.761, 15.817,
+73.295, 77.105,
+125.495, 129.305,
+177.695, 181.505,
+229.895, 233.705,
+282.095, 285.905,
+334.295, 338.105,
+376.441, 377.711, 379.381,
+383.310, 386.267, 390.133, 394.310,
+395.381, 397.510, 406.337, 413.937, 463.937
+```
+
+其中 3A 不使用 Pyrex/thimble 专属边界时，可以合并材料与 loading 完全相同的相邻段；3B 必须保留所有有关边界。
+
+每个 detailed-lattice 轴向段应按下列顺序组合，而不是重新生成一个沿全高拉伸的完整 pin map：
+
+```text
+base lattice
++ fuel-path family profile
++ Pyrex-path profile（3B，16 个坐标）
++ thimble-path profile（3B，8 个坐标）
++ spacer-grid outer-frame overlay（若该 z 段位于格架内）
+```
+
+组合规则：
+
+1. base lattice 始终提供 264 个燃料位置、24 个导向管位置和 1 个仪表管位置；
+2. fuel-path profile 只替换燃料棒 family，不得改变导向管或仪表管；
+3. Pyrex/thimble 只替换选定导向管的 `inner_flow`，必须保留导向管壁和 outer moderator；
+4. grid overlay 最后叠加，只能占据 outer moderator 区域；
+5. nozzle/core-plate slab 取代整个 detailed lattice，不能与上述对象双重填充。
+
+### 6.5 3B 上部区间的强制 loading 组合
+
+| z 范围 (cm) | 燃料棒路径 | 16 个 P 路径 | 8 个 T 路径 | 格架 |
+|---|---|---|---|---|
+| 376.441–377.711 | active fuel | Pyrex upper-gas profile | 普通导向管 | 无 |
+| 377.711–379.381 | upper end plug | Pyrex upper-gas profile | 普通导向管 | 无 |
+| 379.381–383.310 | fuel upper plenum | Pyrex upper-gas profile | 普通导向管 | 无 |
+| 383.310–386.267 | fuel upper plenum | Pyrex upper-gas profile | thimble plug | 无 |
+| 386.267–390.133 | fuel upper plenum | Pyrex upper-gas profile | thimble plug | upper end grid |
+| 390.133–394.310 | fuel upper plenum | Pyrex upper-gas profile | thimble plug | 无 |
+| 394.310–395.381 | fuel upper plenum | Pyrex upper-gas profile | 普通导向管 | 无 |
+| 395.381–397.510 | fuel positions become water-only | Pyrex upper-gas profile | 普通导向管 | 无 |
+
+该表是下一阶段 fixture、geometry contract、renderer point-probe 和 XZ plot 的共同验收 oracle。任何实现若在 `376.441 cm` 后直接把 P 路径恢复为普通水导向管，或在 top-grid 区丢失 Pyrex/thimble/管壁，均应判定为 blocking geometry regression。
+
+'''
+
+          marker = '| 轴向 z-min / z-max | 真空 |\n\n---\n\n## 7. 燃料棒几何'
+          if '### 6.4 canonical axial breakpoints 与组合规则' not in text:
+              if marker not in text:
+                  raise SystemExit('Could not locate section 6 insertion marker')
+              text = text.replace(
+                  marker,
+                  '| 轴向 z-min / z-max | 真空 |\n\n' + insertion + '---\n\n## 7. 燃料棒几何',
+                  1,
+              )
+
+          text = text.replace(
+              '本文件采用参考模型的均匀化边界，在 `z=397.510 cm` 截断所有详细 lattice/插入件，避免与上 nozzle 双重占据。',
+              '本文件为避免 detailed lattice 与 upper-nozzle homogenized slab 双重计数，采用明确的 `modeling_convention`：在 `z=397.510 cm` 截断所有详细 lattice/插入件。',
+          )
+
+          source_note = '''\n---\n\n## 25. 来源、推导与同步要求\n\n主要原始来源为 CASL-U-2012-0131-004 Revision 4：\n\n- §1.1 / Table 1：燃料棒尺寸；\n- §1.2 / Table 2：17×17 layout、guide/instrument tube 半径；\n- §1.3 / Table 3：spacer-grid 数量、材料、质量、高度与轴向中心；\n- §1.4 / Tables 4–5：组件、nozzle、core plate；\n- §1.5 / Tables 6–7：Pyrex；\n- §1.7 / Table 9：thimble plug；\n- §2 / Tables 17 与 P3-2/P3-3：材料与 reference mixing；\n- Problem 3 / Tables P3-1、P3-4：工况与 reference results。\n\n以下内容属于确定性推导或明确建模约定，必须在 provenance 中单独标记：\n\n- 所有由中心位置与高度计算得到的 axial surface；\n- nozzle SS304 体积分数；\n- Pyrex poison top 与 nominal plenum top；\n- detailed lattice 在 `397.510 cm` 截断 Pyrex nominal plenum；\n- 未显式建模 Pyrex upper/lower end plug 的处理。\n\n后续修改本文件时，必须同步检查并更新：\n\n```text\ntests/fixtures/vera3_geometry_contract.json\ntests/fixtures/vera3_patches/vera3_3a_patches.json\ntests/fixtures/vera3_patches/vera3_3b_patches.json\ntests/helpers/vera3_acceptance.py\nrendered geometry point probes\nTODO.md\n```\n\n不得只修改输入说明而保留过时 fixture，也不得只修改 fixture 而不更新事实状态和来源。\n'''
+          if '## 25. 来源、推导与同步要求' not in text:
+              text = text.rstrip() + source_note + '\n'
+
+          path.write_text('\n'.join(line.rstrip() for line in text.splitlines()) + '\n', encoding='utf-8')
+          PY
+          rm -f .github/workflows/update-vera3-input.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Input/VERA3_problem.md .github/workflows/update-vera3-input.yml
+          git commit -m "Update VERA3 input contract for gold-model phase"
+          git push origin HEAD:main
