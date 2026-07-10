@@ -519,8 +519,6 @@ def _make_llm_repair_proposal_node(
             "repair_new_issue_codes": result.new_issue_codes,
         }
     return _llm_repair_proposal
-
-
 def _make_semantic_audit_node(
     *,
     enabled: bool,
