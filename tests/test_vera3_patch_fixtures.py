@@ -140,8 +140,7 @@ class TestVERA3BAssembly:
 
     def test_pyrex_count(self, vera3_3b_patches: list) -> None:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
-        loading = result.plan.complex_model.lattice_loadings[0]
-        assert loading.id == "pyrex_active_loading"
+        loading = next(l for l in result.plan.complex_model.lattice_loadings if l.id == "pyrex_active_loading")
         assert len(loading.overrides["pyrex_rod"]) == 16
 
     def test_thimble_plug_count(self, vera3_3b_patches: list) -> None:
@@ -215,7 +214,8 @@ class TestVERA3BAssembly:
             "pyrex_rod": 0,
             "thimble_plug": 0,
         }
-        assert result.summary["lattice_loading_count"] == 1
+        # end_plug + plenum + pyrex = 3 loadings
+        assert result.summary["lattice_loading_count"] == 3
 
     def test_bad_facts_guide_count_does_not_pollute_lattice_expected_counts(
         self,

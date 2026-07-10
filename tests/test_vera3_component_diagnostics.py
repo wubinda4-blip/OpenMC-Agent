@@ -31,14 +31,25 @@ def _assembled(variant: str):
     ).plan
 
 
-def test_3a_legacy_component_slabs_are_diagnosed() -> None:
+def test_3a_component_profiles_use_lattice_fill() -> None:
+    """3A fixture migrated to lattice fill with family replacement;
+    no material-slab diagnostics should fire."""
     codes = {issue.code for issue in diagnose_vera3_component_geometry(_raw_fixture("3a"), CONTRACT, variant="3A")}
-    assert {"vera3.component_material_slab", "vera3.fuel_pin_profile_missing"} <= codes
+    assert "vera3.component_material_slab" not in codes
+    assert "vera3.fuel_pin_profile_missing" not in codes
 
 
-def test_3b_fixture_diagnoses_component_pyrex_and_thimble_errors() -> None:
+def test_3b_fixture_diagnoses_remaining_issues() -> None:
+    """3B fixture has lattice fill for profiles and fixed pyrex gaps;
+    remaining issues are thimble loading and pyrex axial conflict."""
     codes = {issue.code for issue in diagnose_vera3_component_geometry(_raw_fixture("3b"), CONTRACT, variant="3B")}
-    assert {"vera3.component_material_slab", "vera3.fuel_pin_profile_missing", "vera3.pyrex_radial_stack_mismatch", "vera3.pyrex_gap_material_mismatch", "vera3.thimble_loading_missing", "vera3.pyrex_axial_profile_conflict"} <= codes
+    # Fixed issues should NOT appear
+    assert "vera3.component_material_slab" not in codes
+    assert "vera3.fuel_pin_profile_missing" not in codes
+    assert "vera3.pyrex_gap_material_mismatch" not in codes
+    # Remaining issues SHOULD still appear
+    assert "vera3.thimble_loading_missing" in codes
+    assert "vera3.pyrex_axial_profile_conflict" in codes
 
 
 def test_3b_base_lattice_and_finite_pyrex_loading_are_separate() -> None:

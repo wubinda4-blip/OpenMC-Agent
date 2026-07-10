@@ -230,7 +230,7 @@
             {
               "id": "inner_water",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "helium",
               "region_kind": "cylinder",
               "r_max_cm": 0.214
             },
@@ -245,7 +245,7 @@
             {
               "id": "gap_1",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "helium",
               "region_kind": "annulus",
               "r_min_cm": 0.231,
               "r_max_cm": 0.241
@@ -261,7 +261,7 @@
             {
               "id": "gap_2",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "helium",
               "region_kind": "annulus",
               "r_min_cm": 0.427,
               "r_max_cm": 0.437
@@ -349,6 +349,26 @@
             }
           ],
           "source_note": "VERA3 instrument tube: same geometry as guide tube"
+        },
+        {
+          "universe_id": "fuel_pin_end_plug",
+          "kind": "custom",
+          "cells": [
+            {"id": "end_plug_solid", "role": "fuel", "material_id": "zircaloy4", "region_kind": "cylinder", "r_max_cm": 0.4096},
+            {"id": "clad", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.4096, "r_max_cm": 0.475, "protected_through_path": true},
+            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+          ],
+          "source_note": "Fuel-pin end-plug profile: Zircaloy-4 internal"
+        },
+        {
+          "universe_id": "fuel_pin_plenum",
+          "kind": "custom",
+          "cells": [
+            {"id": "plenum_gas", "role": "fuel", "material_id": "helium", "region_kind": "cylinder", "r_max_cm": 0.4096},
+            {"id": "clad", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.4096, "r_max_cm": 0.475, "protected_through_path": true},
+            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+          ],
+          "source_note": "Fuel-pin plenum profile: helium internal"
         }
       ]
     },
@@ -486,6 +506,24 @@
       ],
       "lattice_loadings": [
         {
+          "loading_id": "end_plug_loading",
+          "base_lattice_id": "assembly_lattice",
+          "derived_lattice_id": "assembly_lattice_end_plug",
+          "transformations": [
+            {"operation_id": "family_end_plug", "operation_kind": "replace_universe_family", "replacement_universe_id": "fuel_pin_end_plug", "source_universe_id": "fuel_pin", "purpose": "Fuel-pin end-plug profile"}
+          ],
+          "purpose": "Fuel-pin end-plug component profile"
+        },
+        {
+          "loading_id": "plenum_loading",
+          "base_lattice_id": "assembly_lattice",
+          "derived_lattice_id": "assembly_lattice_plenum",
+          "transformations": [
+            {"operation_id": "family_plenum", "operation_kind": "replace_universe_family", "replacement_universe_id": "fuel_pin_plenum", "source_universe_id": "fuel_pin", "purpose": "Fuel-pin plenum profile"}
+          ],
+          "purpose": "Fuel-pin plenum component profile"
+        },
+        {
           "loading_id": "pyrex_active_loading",
           "base_lattice_id": "assembly_lattice",
           "derived_lattice_id": "assembly_lattice_pyrex_active",
@@ -598,8 +636,9 @@
           "role": "lower_end_plug",
           "z_min_cm": 10.281,
           "z_max_cm": 11.951,
-          "fill_type": "material",
-          "fill_id": "zircaloy4"
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_id": "end_plug_loading"
         },
         {
           "layer_id": "active_fuel_lower_water_guides",
@@ -631,16 +670,18 @@
           "role": "upper_end_plug",
           "z_min_cm": 377.711,
           "z_max_cm": 379.381,
-          "fill_type": "material",
-          "fill_id": "zircaloy4"
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_id": "end_plug_loading"
         },
         {
           "layer_id": "upper_plenum",
           "role": "upper_plenum",
           "z_min_cm": 379.381,
           "z_max_cm": 395.381,
-          "fill_type": "material",
-          "fill_id": "helium"
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_id": "plenum_loading"
         },
         {
           "layer_id": "upper_shoulder_gap",

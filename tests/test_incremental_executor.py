@@ -560,8 +560,7 @@ def test_vera3_3b_full_incremental_execution() -> None:
     assert pattern[2][8] == "guide_tube"  # 1-based (3,9)
     assert pattern[5][5] == "guide_tube"  # 1-based (6,6)
     assert pattern[8][2] == "guide_tube"  # 1-based (9,3)
-    loading = cm["lattice_loadings"][0]
-    assert loading["id"] == "pyrex_active_loading"
+    loading = next(l for l in cm["lattice_loadings"] if l["id"] == "pyrex_active_loading")
     assert len(loading["overrides"]["pyrex_rod"]) == 16
 
     # Axial layers + overlays.
@@ -605,7 +604,7 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
         "pyrex_rod": 0,
         "thimble_plug": 0,
     }
-    assert result.summary["lattice_loading_count"] == 1
+    assert result.summary["lattice_loading_count"] == 3  # end_plug + plenum + pyrex
     assert result.summary["material_aliases_applied"] == {
         "grid_zircaloy4": "zircaloy4"
     }

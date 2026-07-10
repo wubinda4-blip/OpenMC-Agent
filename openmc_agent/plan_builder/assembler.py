@@ -394,6 +394,8 @@ def _assemble_universes(
                     fill_type=fill_type,
                     fill_id=fill_id,
                     region_id=region_id,
+                    component_role=cell_patch.role,
+                    protected_through_path=cell_patch.protected_through_path,
                     purpose=cell_patch.role,
                 )
                 all_cells.append(cell)

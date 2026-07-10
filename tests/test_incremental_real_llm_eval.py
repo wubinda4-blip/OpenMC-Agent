@@ -72,8 +72,8 @@ def test_vera3_3b_fake_eval_report(tmp_path: Path) -> None:
     assert report.assembly.axial_layer_count == 14
     assert report.assembly.overlay_count == 8
     plan = state.assembled_plan["complex_model"]
-    assert plan["lattice_loadings"][0]["id"] == "pyrex_active_loading"
-    assert len(plan["lattice_loadings"][0]["overrides"]["pyrex_rod"]) == 16
+    pyrex_loading = next(l for l in plan["lattice_loadings"] if l["id"] == "pyrex_active_loading")
+    assert len(pyrex_loading["overrides"]["pyrex_rod"]) == 16
 
     # Guard check.
     assert report.guard.blocking_issue_count == 0

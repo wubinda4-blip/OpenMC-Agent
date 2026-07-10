@@ -65,9 +65,19 @@ class SourceBounds:
 
 
 def _layer_is_active_fuel(layer: Any) -> bool:
-    """A layer that contributes the pin lattice (the active fuel region)."""
+    """A layer that contributes the pin lattice with fissionable fuel.
+
+    Component-profile layers (end-plug, plenum, gas gap) are lattice-filled
+    but their fuel-pin internals are replaced by non-fissionable material
+    (Zircaloy, helium). They are excluded so the neutron source overlaps
+    only the actual active fuel region.
+    """
     fill = getattr(layer, "fill", None)
-    return fill is not None and getattr(fill, "type", None) == "lattice"
+    if fill is None or getattr(fill, "type", None) != "lattice":
+        return False
+    name = (getattr(layer, "name", "") or "").lower()
+    _component_profile_roles = {"lower_end_plug", "upper_end_plug", "lower_plenum", "upper_plenum", "gas_gap"}
+    return name not in _component_profile_roles
 
 
 def active_fuel_z_bounds(model: ComplexModelSpec) -> tuple[float, float] | None:
