@@ -27,9 +27,15 @@ from openmc_agent.plan_builder.state import (
     PlanPatchEnvelope,
     initialize_plan_build_state,
 )
+from openmc_agent.graph import (
+    _incremental_plan_repair_patch_targets,
+    _incremental_targeted_repair_requirement,
+    _plan_build_state_with_repair_request,
+)
 from openmc_agent.plan_builder.validators import validate_patch
 from openmc_agent.assembly3d_guard import validate_assembly3d_plan
 from openmc_agent.schemas import SimulationPlan
+from openmc_agent.validator import validate_simulation_plan
 
 
 _FIXTURE_DIR = Path(__file__).parent / "fixtures" / "vera3_patches"
@@ -225,6 +231,111 @@ def test_context_propagation_facts_to_pin_map() -> None:
     assert ctx.selected_variant == "3B"
     assert ctx.expected_counts.get("expected_pyrex_count") == 16
     assert ctx.expected_counts.get("expected_thimble_plug_count") == 8
+
+
+def test_plan_validation_repair_regenerates_targeted_patches_only() -> None:
+    state = _init_3b_state()
+    common_prefix = [
+        json.dumps({"patch_type": "facts", "benchmark_id": "TEST",
+                     "lattice_size": [17, 17], "pin_pitch_cm": 1.26,
+                     "has_axial_geometry": True, "has_spacer_grids": True,
+                     "has_special_pin_map": True}),
+        json.dumps({"patch_type": "materials", "materials": [
+            {"material_id": "fuel", "name": "UO2", "role": "fuel", "density_g_cm3": 10.0},
+            {"material_id": "water", "name": "Water", "role": "coolant", "density_g_cm3": 0.74},
+            {"material_id": "clad", "name": "Zircaloy-4", "role": "cladding",
+             "density_g_cm3": 6.56, "composition": {"Zr": 1.0},
+             "composition_status": "approximate",
+             "warnings": ["approximated as pure Zr"]},
+        ]}),
+    ]
+    bad_universes = json.dumps({"patch_type": "universes", "universes": [
+        {"universe_id": "fuel_pin", "kind": "fuel_pin", "cells": [
+            {"id": "fuel", "role": "fuel", "material_id": "fuel"},
+        ]},
+        {"universe_id": "gt", "kind": "guide_tube", "cells": [
+            {"id": "iw", "role": "coolant", "material_id": "water"},
+            {"id": "wall", "role": "cladding", "material_id": "clad"},
+            {"id": "ow", "role": "background", "material_id": "water"},
+        ]},
+    ]})
+    fixed_universes = json.dumps({"patch_type": "universes", "universes": [
+        {"universe_id": "fuel_pin", "kind": "fuel_pin", "cells": [
+            {"id": "fuel", "role": "fuel", "material_id": "fuel"},
+            {"id": "clad", "role": "cladding", "material_id": "clad"},
+            {"id": "water", "role": "coolant", "material_id": "water"},
+        ]},
+        {"universe_id": "gt", "kind": "guide_tube", "cells": [
+            {"id": "iw", "role": "coolant", "material_id": "water"},
+            {"id": "wall", "role": "cladding", "material_id": "clad"},
+            {"id": "ow", "role": "background", "material_id": "water"},
+        ]},
+    ]})
+    downstream = [
+        json.dumps({"patch_type": "pin_map", "lattice_size": [17, 17],
+                     "default_universe_id": "fuel_pin",
+                     "coordinate_convention": {"index_base": 0},
+                     "guide_tube_coords": [[2, 2]]}),
+        json.dumps({"patch_type": "axial_layers", "layers": [
+            {"layer_id": "fuel", "role": "active_fuel", "z_min_cm": 0.0, "z_max_cm": 100.0,
+             "fill_type": "lattice", "fill_id": "assembly_lattice"},
+        ]}),
+        json.dumps({"patch_type": "axial_overlays", "overlays": [
+            {"overlay_id": "g1", "overlay_kind": "spacer_grid",
+             "z_min_cm": 10.0, "z_max_cm": 12.0,
+             "target_lattice_id": "assembly_lattice", "material_id": "clad",
+             "geometry_mode": "homogenized_open_region", "through_path_preserved": True},
+        ]}),
+    ]
+
+    first = run_incremental_planning(
+        requirement=_VERA3_3B_REQ,
+        state=state,
+        llm_client=FakePatchLLM(common_prefix + [bad_universes] + downstream),
+        max_patch_attempts=1,
+    )
+    assert first.ok is True
+    assert first.assembled_plan is not None
+
+    report = validate_simulation_plan(
+        SimulationPlan.model_validate(first.assembled_plan),
+        requirement=_VERA3_3B_REQ,
+    )
+    assert any(i.code == "lattice.universe_missing_coolant" for i in report.issues)
+    target_patch_types = _incremental_plan_repair_patch_targets(report)
+    assert target_patch_types == ["universes"]
+
+    repaired_payload = _plan_build_state_with_repair_request(
+        state.model_dump(mode="json"),
+        report=report,
+        target_patch_types=target_patch_types,
+    )
+    assert repaired_payload is not None
+    repaired_state = PlanBuildState.model_validate(repaired_payload)
+    repair_llm = FakePatchLLM([fixed_universes] + downstream)
+    second = run_incremental_planning(
+        requirement=_incremental_targeted_repair_requirement(
+            _VERA3_3B_REQ, report, target_patch_types
+        ),
+        state=repaired_state,
+        llm_client=repair_llm,
+        max_patch_attempts=1,
+    )
+    assert second.ok is True
+    assert second.assembled_plan is not None
+    repaired_report = validate_simulation_plan(
+        SimulationPlan.model_validate(second.assembled_plan),
+        requirement=_VERA3_3B_REQ,
+    )
+    assert not any(i.code == "lattice.universe_missing_coolant" for i in repaired_report.issues)
+    assert repair_llm.prompts
+    assert "patch_type=\"universes\"" in repair_llm.prompts[0]
+    assert all("patch_type=\"facts\"" not in prompt for prompt in repair_llm.prompts)
+    assert all("patch_type=\"materials\"" not in prompt for prompt in repair_llm.prompts)
+    assert any(
+        event.event_type == "planning.patch_invalidated_for_plan_repair"
+        for event in repaired_state.build_log
+    )
 
 
 def test_context_carries_few_shot_case_ids() -> None:

@@ -69,6 +69,40 @@ EVENT_REFERENCE_PATCH_GENERATED: str = "reference_patch.generated"
 EVENT_REFERENCE_PATCH_FALLBACK: str = "reference_patch.fallback_after_llm_failure"
 EVENT_REFERENCE_PATCH_VALIDATION_FAILED: str = "reference_patch.validation_failed"
 EVENT_REFERENCE_COUNTS_APPLIED: str = "patch.pin_map.reference_counts_applied"
+EVENT_PATCH_PLAN_VALIDATION_REPAIR_STARTED: str = "planning.plan_validation_repair_started"
+
+
+_PATCH_DEPENDENTS: dict[str, tuple[str, ...]] = {
+    "facts": (
+        "materials",
+        "universes",
+        "pin_map",
+        "axial_layers",
+        "axial_overlays",
+        "settings",
+    ),
+    "materials": ("universes", "pin_map", "axial_layers", "axial_overlays"),
+    "universes": ("pin_map", "axial_layers", "axial_overlays"),
+    "pin_map": ("axial_layers", "axial_overlays"),
+    "axial_layers": ("axial_overlays",),
+    "axial_overlays": (),
+    "settings": (),
+}
+
+
+def _expand_patch_repair_targets(patch_types: list[str]) -> list[str]:
+    """Return patch types plus downstream dependents in canonical order."""
+    targets = set(patch_types)
+    changed = True
+    while changed:
+        changed = False
+        for patch_type, dependents in _PATCH_DEPENDENTS.items():
+            if patch_type in targets:
+                before = len(targets)
+                targets.update(dependents)
+                changed = changed or len(targets) != before
+    canonical_order = list(_PATCH_DEPENDENTS)
+    return [patch_type for patch_type in canonical_order if patch_type in targets]
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +606,43 @@ def run_incremental_planning(
 
     order = task_order or default_patch_task_order(state)
     required = required_patch_types_for_state(state)
+
+    repair_request = state.metadata.pop("plan_validation_repair", None)
+    if isinstance(repair_request, dict):
+        requested_targets = [
+            str(patch_type)
+            for patch_type in repair_request.get("target_patch_types", [])
+            if isinstance(patch_type, str)
+        ]
+        repair_targets = [
+            patch_type for patch_type in _expand_patch_repair_targets(requested_targets)
+            if patch_type in order
+        ]
+        repair_issues = [
+            issue for issue in repair_request.get("issues", [])
+            if isinstance(issue, dict)
+        ]
+        if repair_targets:
+            state.add_event(
+                event_type=EVENT_PATCH_PLAN_VALIDATION_REPAIR_STARTED,
+                message=(
+                    "plan-level validation repair requested for patch type(s): "
+                    f"{repair_targets}"
+                ),
+                data={
+                    "requested_patch_types": requested_targets,
+                    "expanded_patch_types": repair_targets,
+                    "issue_codes": [
+                        issue.get("code") for issue in repair_issues if issue.get("code")
+                    ],
+                },
+            )
+            state.invalidate_patch_types(
+                repair_targets,
+                reason="plan-level validation failure",
+                issues=repair_issues,
+            )
+            required = sorted(set(required) | set(repair_targets), key=order.index)
 
     def _sync_benchmark_from_facts() -> None:
         """Extract benchmark_id/variant from the valid FactsPatch content.

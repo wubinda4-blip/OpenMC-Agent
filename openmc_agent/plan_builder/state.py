@@ -189,6 +189,48 @@ class PlanBuildState(AgentBaseModel):
             result = [p for p in result if p.patch_type == patch_type]
         return result
 
+    def invalidate_patch_types(
+        self,
+        patch_types: list[str],
+        *,
+        reason: str = "",
+        issues: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        """Mark valid patches of the given types invalid and clear stale assembly."""
+        target_types = set(patch_types)
+        invalidated: list[str] = []
+        issue_payload = list(issues or [])
+        for patch_id, patch in self.patches.items():
+            if patch.patch_type not in target_types or patch.status != "valid":
+                continue
+            patch.status = "invalid"  # type: ignore[assignment]
+            patch.issues = issue_payload
+            patch.metadata["invalidated_reason"] = reason
+            self.patch_status[patch_id] = "invalid"
+            invalidated.append(patch_id)
+
+        if invalidated:
+            for task in self.component_tasks:
+                if task.patch_type in target_types:
+                    task.status = "pending"  # type: ignore[assignment]
+                    task.issues = issue_payload
+            self.assembled_plan = None
+            self.material_composition_report = None
+            self.validation_issues = []
+            self.add_event(
+                event_type="planning.patch_invalidated_for_plan_repair",
+                message=(
+                    "invalidated patch type(s) for plan-level validation repair: "
+                    f"{sorted(target_types)}"
+                ),
+                data={
+                    "patch_types": sorted(target_types),
+                    "patch_ids": invalidated,
+                    "reason": reason,
+                },
+            )
+        return invalidated
+
     def to_summary(self) -> dict[str, Any]:
         """Return a compact summary suitable for transcript / debug output."""
         return {

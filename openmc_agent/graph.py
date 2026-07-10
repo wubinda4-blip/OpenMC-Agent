@@ -1887,6 +1887,51 @@ def _make_validate_plan_node(max_retries: int):
                 and _incremental_reflect_plan_disabled(state)
                 and retry_count < max_retries
             ):
+                target_patch_types = _incremental_plan_repair_patch_targets(report)
+                repair_build_state = _plan_build_state_with_repair_request(
+                    state.get("plan_build_state"),
+                    report=report,
+                    target_patch_types=target_patch_types,
+                )
+                if target_patch_types and repair_build_state is not None:
+                    _progress(
+                        state,
+                        "validate_plan",
+                        "incremental plan needs targeted patch repair: "
+                        f"{target_patch_types}",
+                    )
+                    return {
+                        "simulation_plan": None,
+                        "simulation_spec": None,
+                        "validation_report": report,
+                        "retry_history": history,
+                        "retry_count": retry_count + 1,
+                        "error": "",
+                        "incremental_regeneration_pending": True,
+                        "plan_build_state": repair_build_state,
+                        "requirement": _incremental_targeted_repair_requirement(
+                            state.get("requirement", ""), report, target_patch_types
+                        ),
+                        "pin_count_mismatch_context": _pin_count_mismatch_context(
+                            {**state, "validation_report": report}
+                        ),
+                        **_trace_event_update(
+                            state,
+                            "incremental_regeneration_scheduled",
+                            summary=(
+                                "incremental plan validation failed; scheduling "
+                                "targeted patch repair with validator diagnostics"
+                            ),
+                            report=report,
+                            plan=plan,
+                            metadata={
+                                "retry_count": retry_count + 1,
+                                "issue_codes": [issue.code for issue in report.issues],
+                                "target_patch_types": target_patch_types,
+                                "repair_mode": "targeted_patch_regeneration",
+                            },
+                        ),
+                    }
                 _progress(
                     state,
                     "validate_plan",
@@ -1994,6 +2039,7 @@ def _incremental_regeneration_requirement(
     report: ValidationReport,
 ) -> str:
     """Return a fresh incremental-planning request with actionable diagnostics."""
+    requirement = _strip_incremental_repair_suffix(requirement)
     errors = "\n".join(f"- {error}" for error in report.errors)
     hints = "\n".join(f"- {hint}" for hint in report.suggestions)
     return (
@@ -2006,6 +2052,123 @@ def _incremental_regeneration_requirement(
         f"Validation errors:\n{errors}\n"
         f"Repair guidance:\n{hints or '- Reconcile the generated patch fields with the errors above.'}"
     )
+
+
+def _incremental_targeted_repair_requirement(
+    requirement: str,
+    report: ValidationReport,
+    patch_types: list[str],
+) -> str:
+    """Return a targeted patch-repair prompt suffix for incremental regeneration."""
+    requirement = _strip_incremental_repair_suffix(requirement)
+    errors = "\n".join(f"- {error}" for error in report.errors)
+    issue_details = "\n".join(
+        "- "
+        + "; ".join(
+            part for part in (
+                f"code={issue.code}",
+                f"path={issue.schema_path}" if issue.schema_path else "",
+                issue.message,
+            )
+            if part
+        )
+        for issue in report.issues
+        if issue.severity == "error"
+        or issue.route_hint in {"auto_repair", "reflect_plan"}
+    )
+    return (
+        f"{requirement}\n\n"
+        "=== Incremental planner correction required ===\n"
+        "The previous patch sequence assembled an invalid SimulationPlan. Regenerate "
+        "only the affected patch type(s) requested by the executor, preserving valid "
+        "upstream patches and facts supported by the input.\n"
+        f"Target patch roots: {', '.join(patch_types)}\n"
+        f"Validation errors:\n{errors}\n"
+        f"Structured issue details:\n{issue_details or '- unavailable'}"
+    )
+
+
+def _strip_incremental_repair_suffix(requirement: str) -> str:
+    marker = "=== Incremental planner correction required ==="
+    if marker not in requirement:
+        return requirement
+    return requirement.split(marker, 1)[0].rstrip()
+
+
+def _incremental_plan_repair_patch_targets(report: ValidationReport) -> list[str]:
+    """Map plan-level validation issues back to likely incremental patch roots."""
+    targets: set[str] = set()
+    for issue in report.issues:
+        if issue.severity != "error" and issue.route_hint not in {
+            "auto_repair",
+            "reflect_plan",
+        }:
+            continue
+        code = issue.code.lower()
+        path = (issue.schema_path or "").lower()
+        text = f"{code} {path} {issue.message.lower()}"
+
+        if "axial_overlays" in text:
+            targets.add("axial_overlays")
+        elif "lattice_loadings" in text or "axial_layers" in text:
+            targets.add("axial_layers")
+        elif (
+            "pin_count" in text
+            or "universe_pattern" in text
+            or "complex_model.lattices" in text
+            or "outer_universe" in text
+        ):
+            targets.add("pin_map")
+        elif "complex_model.universes" in text or "complex_model.cells" in text:
+            targets.add("universes")
+        elif "complex_model.regions" in text or "complex_model.surfaces" in text:
+            targets.add("universes")
+        elif "material" in text or "complex_model.materials" in text:
+            targets.add("materials")
+        elif "settings" in text or "source" in text or "plot_specs" in text:
+            targets.add("settings")
+        elif "model_spec" in text or code.startswith("plan.model"):
+            targets.add("facts")
+
+    canonical_order = [
+        "facts",
+        "materials",
+        "universes",
+        "pin_map",
+        "axial_layers",
+        "axial_overlays",
+        "settings",
+    ]
+    return [patch_type for patch_type in canonical_order if patch_type in targets]
+
+
+def _plan_build_state_with_repair_request(
+    build_state: Any,
+    *,
+    report: ValidationReport,
+    target_patch_types: list[str],
+) -> dict[str, Any] | None:
+    if not build_state:
+        return None
+    if hasattr(build_state, "model_dump"):
+        payload = build_state.model_dump(mode="json")
+    elif isinstance(build_state, dict):
+        payload = dict(build_state)
+    else:
+        return None
+    metadata = dict(payload.get("metadata") or {})
+    metadata["plan_validation_repair"] = {
+        "target_patch_types": list(target_patch_types),
+        "issues": [
+            issue.model_dump(mode="json")
+            for issue in report.issues
+            if issue.severity == "error"
+            or issue.route_hint in {"auto_repair", "reflect_plan"}
+        ],
+        "errors": list(report.errors),
+    }
+    payload["metadata"] = metadata
+    return payload
 
 
 def _plan_generation_expert_questions(

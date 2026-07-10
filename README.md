@@ -33,6 +33,7 @@ receive_requirement
    → generate_plan              # LLM 产出 SimulationPlan（带 normalization 容错）
    → validate_plan              # Pydantic 校验
    → repair_plan_format ─坏 JSON/坏 schema 重试──▶ validate_plan
+   → generate_plan ──incremental 定点 patch 修复──▶ validate_plan
    → reflect_plan ──验证失败重试───────────────▶ validate_plan
    → assess_capability          # 本地重算 capability_report（覆盖 LLM 草稿）
    → semantic_audit             # P0-A: LLM 只读语义审查（warning_only / strict）
@@ -45,7 +46,7 @@ receive_requirement
    → save_record
 ```
 
-关键容错点：`generate_structured_output` 支持传入 `normalizer`，默认对 plan 启用 `normalize_capability_report`——LLM 若给出"非可执行却带具体 renderer"的矛盾 capability_report，会在 Pydantic 校验前被修正为 `supported_renderer="none"`，避免整个 plan 坍缩为 null。若模型返回坏 JSON 或 schema 不合格，Plan 工作流会先尝试格式修复；若已生成 plan 但验证失败，会进入 reflection 修复，而不是直接终止。
+关键容错点：`generate_structured_output` 支持传入 `normalizer`，默认对 plan 启用 `normalize_capability_report`——LLM 若给出"非可执行却带具体 renderer"的矛盾 capability_report，会在 Pydantic 校验前被修正为 `supported_renderer="none"`，避免整个 plan 坍缩为 null。若模型返回坏 JSON 或 schema 不合格，Plan 工作流会先尝试格式修复；incremental assembled plan 校验失败时优先按 validator issue 定位并重做相关 patch，无法定位时再退回整轮 regeneration / reflection。
 
 ### 渲染能力分级
 
