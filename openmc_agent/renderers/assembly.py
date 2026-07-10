@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from openmc_agent.assembly3d_guard import (
+    assembly3d_component_profile_slab_issues,
     assembly3d_grid_layer_issues,
     assembly3d_overlay_issues,
 )
@@ -446,6 +447,7 @@ def _axial_assembly_modeling_errors(model: ComplexModelSpec) -> list[ValidationI
     assert model.core is not None
     issues = assembly3d_grid_layer_issues(model)
     issues.extend(assembly3d_overlay_issues(model))
+    issues.extend(assembly3d_component_profile_slab_issues(model))
     return issues
 
 

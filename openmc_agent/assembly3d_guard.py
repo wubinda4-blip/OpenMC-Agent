@@ -267,6 +267,7 @@ def detect_assembly_3d_features(requirement: Any) -> Assembly3DFeatureFlags:
 
 __all__ = [
     "Assembly3DFeatureFlags",
+    "assembly3d_component_profile_slab_issues",
     "assembly3d_grid_layer_issues",
     "assembly3d_overlay_issues",
     "axial_overlay_issues",
@@ -470,6 +471,64 @@ def assembly3d_grid_layer_issues(model: ComplexModelSpec) -> list[ValidationIssu
                     schema_path=schema_path,
                 )
             )
+    return issues
+
+
+# Roles that represent fuel-pin *internal* component profiles. These must be
+# modeled as lattice layers with family replacement (e.g. replace_universe_family),
+# NOT as a whole-layer material slab. A material slab here replaces the entire
+# cross-section and truncates every pin/tube.
+_COMPONENT_PROFILE_ROLES: frozenset[str] = frozenset({
+    "lower_end_plug",
+    "upper_end_plug",
+    "lower_plenum",
+    "upper_plenum",
+    "gas_gap",
+})
+
+
+def assembly3d_component_profile_slab_issues(
+    model: ComplexModelSpec,
+) -> list[ValidationIssue]:
+    """Guard against component-profile axial layers modeled as material slabs.
+
+    A layer whose role is a pin-internal component profile (end plug, plenum,
+    gas gap) but whose fill is a single material is physically wrong: it
+    replaces the entire assembly cross section with e.g. helium or Zircaloy,
+    truncating fuel pins, cladding, guide tubes and instrument tubes.
+
+    The correct representation is a lattice fill with a ``replace_universe_family``
+    transformation that swaps only the fuel-pin universe family while guide/
+    instrument tubes continue through.
+
+    This check is generic and reactor-type-agnostic: it keys on the layer
+    ``role`` field, not on any benchmark constant.
+    """
+    issues: list[ValidationIssue] = []
+    if model.core is None:
+        return issues
+    for layer in model.core.axial_layers:
+        if layer.name not in _COMPONENT_PROFILE_ROLES:
+            continue
+        if layer.fill.type != "material":
+            continue
+        schema_path = f"complex_model.core.axial_layers.{layer.id}.fill"
+        issues.append(
+            _issue(
+                "assembly3d.component_profile_as_material_slab",
+                (
+                    f"axial layer {layer.id!r} (role={layer.name!r}) is a "
+                    f"component-profile segment but its fill is a single material "
+                    f"({layer.fill.id!r}). This replaces the whole cross section "
+                    "and truncates fuel pins, cladding, guide tubes and "
+                    "instrument tubes. Use a lattice fill with a "
+                    "replace_universe_family transformation so guide/instrument "
+                    "tubes continue through while only the pin-internal content "
+                    "changes."
+                ),
+                schema_path=schema_path,
+            )
+        )
     return issues
 
 

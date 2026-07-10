@@ -248,6 +248,8 @@ def compose_lattice_loadings(
     universe_ids = {u.id for u in universes}
     cells_list = list(cells)
     universes_list = list(universes)
+    _cells_by_id: dict[str, CellSpec] = {c.id: c for c in cells_list}
+    _universe_by_id: dict[str, UniverseSpec] = {u.id: u for u in universes_list}
     derived_cells: list[CellSpec] = []
     derived_surfaces: list[SurfaceSpec] = []
     derived_regions: list[RegionSpec] = []
@@ -410,11 +412,6 @@ def compose_lattice_loadings(
             applied.append(op.operation_id)
 
         elif op.operation_kind == "nested_component_override":
-            # Nested component override is validated but the actual derived
-            # universe creation is handled in Commit 3. For now, coordinate
-            # positions still point to the replacement universe so the derived
-            # lattice is valid. The through-path preservation check is added
-            # in the through-path validator module.
             for coord in op.target_coordinates:
                 r, c = coord[0], coord[1]
                 if not (0 <= r < rows and 0 <= c < cols):
@@ -428,8 +425,114 @@ def compose_lattice_loadings(
                         schema_path=f"transformations[{op.operation_id}].target_coordinates",
                     ))
                     continue
-                derived_pattern[r][c] = op.replacement_universe_id
-                coord_assignments[coord] = op.replacement_universe_id
+
+                base_uid = derived_pattern[r][c]
+                base_universe = _universe_by_id.get(base_uid)
+                repl_universe = _universe_by_id.get(op.replacement_universe_id)
+
+                if base_universe is None or repl_universe is None:
+                    issues.append(ValidationIssue(
+                        severity="error",
+                        code="lattice_transform.component_target_missing",
+                        message=(
+                            f"nested override at ({r},{c}): base universe "
+                            f"{base_uid!r} or replacement {op.replacement_universe_id!r} not found"
+                        ),
+                        schema_path=f"transformations[{op.operation_id}]",
+                    ))
+                    continue
+
+                base_cells = [_cells_by_id[cid] for cid in base_universe.cell_ids if cid in _cells_by_id]
+                repl_cells = [_cells_by_id[cid] for cid in repl_universe.cell_ids if cid in _cells_by_id]
+
+                # Find target component cells in base universe
+                target_cells = [
+                    cell for cell in base_cells
+                    if _cell_matches_component(cell, op.component_role, op.component_path_id)
+                ]
+                if not target_cells:
+                    issues.append(ValidationIssue(
+                        severity="error",
+                        code="lattice_transform.component_target_missing",
+                        message=(
+                            f"nested override at ({r},{c}): no cell with "
+                            f"component_role={op.component_role!r} in universe {base_uid!r}"
+                        ),
+                        schema_path=f"transformations[{op.operation_id}]",
+                    ))
+                    continue
+                if len(target_cells) > 1:
+                    issues.append(ValidationIssue(
+                        severity="error",
+                        code="lattice_transform.component_target_ambiguous",
+                        message=(
+                            f"nested override at ({r},{c}): {len(target_cells)} cells match "
+                            f"component_role={op.component_role!r} in universe {base_uid!r}; "
+                            "add component_path_id to disambiguate"
+                        ),
+                        schema_path=f"transformations[{op.operation_id}]",
+                    ))
+                    continue
+
+                # Check that protected cells survive
+                protected_cells = [
+                    cell for cell in base_cells if cell.protected_through_path
+                ]
+                preserve_roles = set(op.preserve_component_roles)
+                preserve_paths = set(op.preserve_path_ids)
+                for pcell in protected_cells:
+                    if _cell_matches_any(pcell, preserve_roles, preserve_paths):
+                        continue
+                    issues.append(ValidationIssue(
+                        severity="error",
+                        code="lattice_transform.protected_path_removed",
+                        message=(
+                            f"nested override at ({r},{c}): protected cell "
+                            f"{pcell.id!r} (role={pcell.component_role!r}) in "
+                            f"universe {base_uid!r} is not in preserve_component_roles"
+                        ),
+                        schema_path=f"transformations[{op.operation_id}].preserve_component_roles",
+                    ))
+
+                # Check preserved components exist
+                for role in op.preserve_component_roles:
+                    if not any(cell.component_role == role for cell in base_cells):
+                        issues.append(ValidationIssue(
+                            severity="warning",
+                            code="lattice_transform.preserved_component_missing",
+                            message=(
+                                f"nested override at ({r},{c}): preserve role "
+                                f"{role!r} not found in base universe {base_uid!r}"
+                            ),
+                            schema_path=f"transformations[{op.operation_id}].preserve_component_roles",
+                        ))
+
+                if any(i.severity == "error" and i.code.startswith("lattice_transform.protected") for i in issues[-3:]):
+                    continue
+
+                # Build derived composite universe (Method A)
+                target_cell_id = target_cells[0].id
+                derived_cell_ids: list[str] = []
+                # Keep all base cells except the target
+                for bcell in base_cells:
+                    if bcell.id == target_cell_id:
+                        continue
+                    derived_cell_ids.append(bcell.id)
+                # Add replacement cells
+                for rcell in repl_cells:
+                    derived_cell_ids.append(rcell.id)
+
+                derived_uid = f"{base_uid}__nested_{op.operation_id}"
+                if derived_uid not in {u.id for u in derived_universes}:
+                    derived_universes.append(UniverseSpec(
+                        id=derived_uid,
+                        name=f"nested override: {base_uid} + {op.replacement_universe_id}",
+                        cell_ids=derived_cell_ids,
+                        purpose=f"Nested component override preserving {sorted(preserve_roles)}",
+                    ))
+
+                derived_pattern[r][c] = derived_uid
+                coord_assignments[coord] = derived_uid
             applied.append(op.operation_id)
 
     if any(i.severity == "error" for i in issues):
@@ -464,6 +567,121 @@ def compose_lattice_loadings(
     )
 
 
+# ---------------------------------------------------------------------------
+# Component matching helpers
+# ---------------------------------------------------------------------------
+
+
+def _cell_matches_component(
+    cell: CellSpec,
+    role: str | None,
+    path_id: str | None,
+) -> bool:
+    """True when a cell matches the given component_role and/or component_path_id."""
+    if role is not None and path_id is not None:
+        return cell.component_role == role and cell.component_path_id == path_id
+    if role is not None:
+        return cell.component_role == role
+    if path_id is not None:
+        return cell.component_path_id == path_id
+    return False
+
+
+def _cell_matches_any(
+    cell: CellSpec,
+    roles: set[str],
+    path_ids: set[str],
+) -> bool:
+    """True when a cell matches any of the given roles or path ids."""
+    if cell.component_role and cell.component_role in roles:
+        return True
+    if cell.component_path_id and cell.component_path_id in path_ids:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Through-path preservation validator
+# ---------------------------------------------------------------------------
+
+
+def validate_through_path_preservation(
+    *,
+    base_universe: UniverseSpec,
+    derived_universe: UniverseSpec,
+    preserve_component_roles: Sequence[str],
+    preserve_path_ids: Sequence[str],
+    cells_by_id: Mapping[str, CellSpec],
+) -> list[ValidationIssue]:
+    """Check that all declared preserve roles/paths survive in the derived universe.
+
+    Issues raised:
+
+    - ``lattice_transform.protected_path_removed``: a ``protected_through_path``
+      cell is absent from the derived universe.
+    - ``lattice_transform.preserved_component_missing``: a declared preserve
+      role/path has no matching cell in the derived universe.
+    - ``lattice_transform.component_target_missing``: the derived universe is
+      empty or has no cells at all.
+    """
+    issues: list[ValidationIssue] = []
+    derived_cell_ids = set(derived_universe.cell_ids)
+
+    # Check protected cells
+    for cid in base_universe.cell_ids:
+        cell = cells_by_id.get(cid)
+        if cell is None:
+            continue
+        if cell.protected_through_path and cid not in derived_cell_ids:
+            issues.append(ValidationIssue(
+                severity="error",
+                code="lattice_transform.protected_path_removed",
+                message=(
+                    f"protected cell {cid!r} (role={cell.component_role!r}) "
+                    f"from universe {base_universe.id!r} is absent from "
+                    f"derived universe {derived_universe.id!r}"
+                ),
+                schema_path=f"universes.{derived_universe.id}",
+            ))
+
+    # Check preserved roles
+    derived_cells = [cells_by_id[cid] for cid in derived_cell_ids if cid in cells_by_id]
+    for role in preserve_component_roles:
+        if not any(c.component_role == role for c in derived_cells):
+            issues.append(ValidationIssue(
+                severity="error",
+                code="lattice_transform.preserved_component_missing",
+                message=(
+                    f"preserved component_role {role!r} not found in "
+                    f"derived universe {derived_universe.id!r}"
+                ),
+                schema_path=f"universes.{derived_universe.id}",
+            ))
+
+    for path_id in preserve_path_ids:
+        if not any(c.component_path_id == path_id for c in derived_cells):
+            issues.append(ValidationIssue(
+                severity="error",
+                code="lattice_transform.preserved_component_missing",
+                message=(
+                    f"preserved component_path_id {path_id!r} not found in "
+                    f"derived universe {derived_universe.id!r}"
+                ),
+                schema_path=f"universes.{derived_universe.id}",
+            ))
+
+    # Check derived universe is non-empty
+    if not derived_cell_ids:
+        issues.append(ValidationIssue(
+            severity="error",
+            code="lattice_transform.component_target_missing",
+            message=f"derived universe {derived_universe.id!r} has no cells",
+            schema_path=f"universes.{derived_universe.id}",
+        ))
+
+    return issues
+
+
 __all__ = [
     "NormalizedLatticeLoading",
     "LatticeTransformationResult",
@@ -472,4 +690,5 @@ __all__ = [
     "compute_cache_key",
     "normalized_layer_loading_ids",
     "layer_loading_id_conflict",
+    "validate_through_path_preservation",
 ]

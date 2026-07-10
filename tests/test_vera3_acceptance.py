@@ -162,11 +162,10 @@ def test_deterministic_3a_renders_level1_overlay(tmp_path: Path) -> None:
     assert result.renderability in {"exportable", "runnable"}
     script = result.script
     compile(script, "model.py", "exec")  # syntactically valid
-    # 7 fuel-region spacer grids render as derived overlay segments. The 8th
-    # grid (top end grid, z=388.2) lives in the helium plenum, not the pin
-    # lattice, so it is declared in the IR (count checked above) but does not
-    # produce a lattice overlay segment in this simplified fixture.
-    assert script.count("fill=overlay_lattice_spacer_grid_") == 7
+    # All 8 spacer grids render as derived overlay segments now that the
+    # plenum is a lattice fill (not a material slab). Previously the 8th grid
+    # was in a helium material slab and produced no overlay segment.
+    assert script.count("fill=overlay_lattice_spacer_grid_") == 8
     # Pin/tube solids preserved: fuel pellet cells reused in derived universes.
     assert "cells['fuel_pellet']" in script
 
@@ -177,8 +176,8 @@ def test_deterministic_3b_renders_level1_overlay(tmp_path: Path) -> None:
     assert capability.renderability in {"exportable", "runnable"}
     result = RectAssemblyRenderer().render(plan, tmp_path)
     compile(result.script, "model.py", "exec")
-    # 7 fuel-region grids render (top end grid is in the helium plenum; see 3A test).
-    assert result.script.count("fill=overlay_lattice_spacer_grid_") == 7
+    # All 8 spacer grids render (plenum is now lattice fill; see 3A test).
+    assert result.script.count("fill=overlay_lattice_spacer_grid_") == 8
 
 
 # -- 10. stale artifacts not reported as success on validation failure ------

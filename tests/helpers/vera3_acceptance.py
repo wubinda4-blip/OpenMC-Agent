@@ -575,6 +575,9 @@ def _vera3_pin_universes(variant: str, *, pure_water_guide: bool = False) -> tup
     lattice position while the solid (fuel/clad/pyrex/plug) is preserved.
     Set ``pure_water_guide=True`` to build a (broken) guide tube with no
     Zircaloy wall -- only coolant -- for the guide-tube-wall acceptance test.
+
+    Fuel-pin variant universes (end-plug, plenum) are added so component-
+    profile layers can use replace_universe_family instead of material slabs.
     """
     cells: list[CellSpec] = []
     universes: list[UniverseSpec] = []
@@ -588,6 +591,10 @@ def _vera3_pin_universes(variant: str, *, pure_water_guide: bool = False) -> tup
         universes.append(UniverseSpec(id=uid, name=uname, cell_ids=[solid_cell_id, coolant_id]))
 
     _pin("fuel_pin", "fuel pin", "fuel_pellet", "fuel")
+    # Fuel-pin component-profile variants for axial segments where only the
+    # pin-internal material changes (end plug = Zircaloy, plenum = helium).
+    _pin("fuel_pin_end_plug", "fuel pin end plug", "end_plug_solid", "clad")
+    _pin("fuel_pin_plenum", "fuel pin plenum", "plenum_solid", "helium")
     if pure_water_guide:
         cells.append(CellSpec(id="guide_water", name="guide water",
                               fill_type="material", fill_id="water", region_id="coolant_region"))
@@ -658,11 +665,37 @@ def build_vera3_like_plan(
     )]
 
     lattice_loadings: list[LatticeLoadingSpec] = []
+    # Component-profile loadings: replace fuel-pin family with variant universe
+    # so end-plug/plenum layers are lattice fills, not material slabs.
+    from openmc_agent.schemas import LatticeTransformationOperation
+    lattice_loadings.append(LatticeLoadingSpec(
+        id="end_plug_loading", base_lattice_id="assembly_lattice",
+        derived_lattice_id="assembly_lattice_end_plug",
+        transformations=[LatticeTransformationOperation(
+            operation_id="family_end_plug",
+            operation_kind="replace_universe_family",
+            replacement_universe_id="fuel_pin_end_plug",
+            source_universe_id="fuel_pin",
+            purpose="Fuel-pin end-plug profile",
+        )],
+    ))
+    lattice_loadings.append(LatticeLoadingSpec(
+        id="plenum_loading", base_lattice_id="assembly_lattice",
+        derived_lattice_id="assembly_lattice_plenum",
+        transformations=[LatticeTransformationOperation(
+            operation_id="family_plenum",
+            operation_kind="replace_universe_family",
+            replacement_universe_id="fuel_pin_plenum",
+            source_universe_id="fuel_pin",
+            purpose="Fuel-pin plenum profile",
+        )],
+    ))
+
     if variant == "3B":
         pyrex_coords = [to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]]
         if wrong_pyrex is not None:
             pyrex_coords[0] = wrong_pyrex
-        lattice_loadings = [
+        lattice_loadings.extend([
             LatticeLoadingSpec(
                 id="pyrex_active_loading", base_lattice_id="assembly_lattice",
                 overrides={"pyrex_pin": pyrex_coords},
@@ -671,31 +704,44 @@ def build_vera3_like_plan(
                 id="thimble_plug_loading", base_lattice_id="assembly_lattice",
                 overrides={"plug_pin": [to_0_indexed(pos) for pos in pm["plug_positions_1based"]]},
             ),
-        ]
+        ])
 
-    # Axial layers retain the legacy slab fixture for acceptance regressions;
-    # component diagnostics intentionally flag its end-plug/plenum slabs.
+    # Axial layers: component-profile segments (end-plug, plenum) use lattice
+    # fill with family replacement; only homogenized regions use material fill.
     ref_layers = reference["axial_layers"]
+    _component_profile_loading = {
+        "lower_end_plug": "end_plug_loading",
+        "upper_end_plug": "end_plug_loading",
+        "upper_plenum": "plenum_loading",
+    }
     if default_z:
         layers = [AxialLayerSpec(id="fuel", name="fuel", z_min_cm=-1.0, z_max_cm=1.0,
                                  fill={"type": "lattice", "id": "assembly_lattice"})]
     else:
         layers = []
         for rl in ref_layers:
-            if use_material_slab_grid and rl["id"] == "active_fuel":
+            layer_id = rl["id"]
+            loading_id_for_profile = _component_profile_loading.get(layer_id)
+            if use_material_slab_grid and layer_id == "active_fuel":
                 fill = {"type": "material", "id": "grid_inconel"}
-            elif rl["id"] == "active_fuel":
+            elif layer_id == "active_fuel":
+                fill = {"type": "lattice", "id": "assembly_lattice"}
+            elif loading_id_for_profile is not None:
                 fill = {"type": "lattice", "id": "assembly_lattice"}
             else:
                 mat_map = {"borated_water": "water", "zircaloy4": "clad", "helium": "helium",
                            "ss304_coolant_50_50": "ss304", "ss304_coolant_nozzle": "ss304",
                            "uo2_fuel_lattice": "assembly_lattice"}
                 fill = {"type": "material", "id": mat_map.get(rl["material"], "water")}
-            layers.append(AxialLayerSpec(
-                id=rl["id"], name=rl["id"], z_min_cm=rl["z_min_cm"], z_max_cm=rl["z_max_cm"],
-                fill=fill,
-                purpose=("Active fuel with spacer grid sub-layers" if rl["id"] == "active_fuel" else ""),
-            ))
+            layer_kwargs: dict[str, Any] = {
+                "id": layer_id, "name": layer_id,
+                "z_min_cm": rl["z_min_cm"], "z_max_cm": rl["z_max_cm"],
+                "fill": fill,
+                "purpose": ("Active fuel with spacer grid sub-layers" if layer_id == "active_fuel" else ""),
+            }
+            if loading_id_for_profile is not None:
+                layer_kwargs["loading_id"] = loading_id_for_profile
+            layers.append(AxialLayerSpec(**layer_kwargs))
 
     # overlays
     overlays: list[AxialOverlaySpec] = []
