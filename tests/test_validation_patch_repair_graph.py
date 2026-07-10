@@ -15,3 +15,105 @@ def test_accepted_repair_does_not_require_graph_retry_increment(monkeypatch) -> 
     updates = _make_validate_plan_node(2)({"simulation_plan": _complex_plan_with_pin_count_mismatch(), "requirement": "assembly", "retry_count": 0, "plan_build_state": {"patches": {"x": {}}}, "incremental_execution_result": {"planning_mode": "incremental", "monolithic_reflect_plan_allowed": False}})
     assert updates["retry_count"] == 0
     assert updates["incremental_patch_repair_accepted"] is True
+
+
+def test_real_model_path_lazily_constructs_repair_client(monkeypatch) -> None:
+    """A real model must not skip repair merely because no client was injected."""
+    pytest.importorskip("openmc")
+    from openmc_agent.graph import _make_validate_plan_node
+    from tests.test_workflow_trace import _complex_plan_with_pin_count_mismatch
+
+    sentinel = object()
+    captured = {}
+    monkeypatch.setattr(
+        "openmc_agent.plan_builder.llm_adapter.make_patch_llm_client",
+        lambda *, model_name: sentinel if model_name == "deepseek:deepseek-chat" else None,
+    )
+
+    def fake_repair(**kwargs):
+        captured["client"] = kwargs["llm_client"]
+        return None, None, {"status": "unavailable"}
+
+    monkeypatch.setattr("openmc_agent.graph._try_incremental_validation_patch_repair", fake_repair)
+    _make_validate_plan_node(2)({
+        "simulation_plan": _complex_plan_with_pin_count_mismatch(),
+        "requirement": "assembly",
+        "model": "deepseek:deepseek-chat",
+        "retry_count": 0,
+        "plan_build_state": {"patches": {"pin_map": {}}},
+        "incremental_execution_result": {
+            "planning_mode": "incremental",
+            "monolithic_reflect_plan_allowed": False,
+        },
+    })
+    assert captured["client"] is sentinel
+
+
+def test_repair_invocation_prefers_structured_patch_adapter() -> None:
+    from openmc_agent.graph import _invoke_patch_repair_llm
+    from openmc_agent.plan_builder.validation_repair import PatchRepairRequest
+
+    class StructuredClient:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        def generate_patch_json(self, **kwargs):
+            self.kwargs = kwargs
+            return {"repair_id": "r", "target_patch_type": "pin_map", "operations": [], "rationale": "x", "confidence": 0.1}
+
+    request = PatchRepairRequest(
+        repair_id="r",
+        issue_fingerprint="f",
+        target_patch_type="pin_map",
+        issues=[],
+        previous_patch_content={},
+        previous_patch_hash="h",
+        relevant_plan_fragment={},
+        valid_upstream_patch_summaries={},
+        allowed_path_patterns=[],
+        forbidden_path_patterns=[],
+    )
+    client = StructuredClient()
+    assert _invoke_patch_repair_llm(client, request, "prompt")["repair_id"] == "r"
+    assert client.kwargs["patch_type"] == "pin_map"
+    assert client.kwargs["json_schema"]["title"] == "PatchRepairProposal"
+
+
+def test_schema_invalid_real_model_like_proposal_writes_rejection_artifacts(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("openmc")
+    from openmc_agent.graph import _try_incremental_validation_patch_repair
+    from openmc_agent.plan_builder.state import PlanBuildState
+    from openmc_agent.schemas import ValidationIssue, ValidationReport
+    from tests.test_workflow_trace import _complex_plan_with_pin_count_mismatch
+
+    plan = _complex_plan_with_pin_count_mismatch()
+    state = PlanBuildState(
+        state_id="repair-schema-test",
+        requirement_text="assembly",
+        planning_mode="incremental",
+    )
+    state.assembled_plan = plan.model_dump(mode="json")
+    state.patches = {}
+    # Reuse the focused evaluator setup rather than a full executor run.
+    from openmc_agent.plan_builder.state import PlanPatchEnvelope
+    state.patches["pin"] = PlanPatchEnvelope(
+        patch_id="pin", patch_type="pin_map", status="valid",
+        content={"default_universe_id": "fuel_pin", "guide_tube_coords": [], "instrument_tube_coords": [], "water_cell_coords": []},
+    )
+    report = ValidationReport(is_valid=False, issues=[ValidationIssue(code="lattice.pin_count_mismatch", severity="error", schema_path="complex_model.lattices.assembly_lattice.universe_pattern", message="mismatch")])
+
+    class MissingMetadataClient:
+        def generate_patch_json(self, **_kwargs):
+            return {"repair_id": "not-used", "target_patch_type": "pin_map", "operations": []}
+
+    repaired, evaluation, meta = _try_incremental_validation_patch_repair(
+        state={"plan_build_state": state.model_dump(mode="json"), "output_dir": str(tmp_path), "requirement": "assembly"},
+        report=report,
+        target_patch_types=["pin_map"],
+        llm_client=MissingMetadataClient(),
+    )
+    assert repaired is not None
+    assert evaluation is not None and evaluation.status == "rejected_schema"
+    assert meta["status"] == "rejected_schema"
+    saved = (tmp_path / "validation_repair" / "evaluation_0.json").read_text()
+    assert "rejected_schema" in saved

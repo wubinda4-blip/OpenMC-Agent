@@ -37,6 +37,7 @@ from openmc_agent.plan_builder import (
 )
 from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.plan_builder.validation_repair import (
+    PatchRepairEvaluation,
     PatchRepairProposal,
     build_patch_repair_request,
     commit_accepted_patch_repair,
@@ -1889,9 +1890,40 @@ def _invoke_patch_repair_llm(client: Any, request: Any, prompt: str) -> str | di
     schema = PatchRepairProposal.model_json_schema()
     if hasattr(client, "propose_patch_repair"):
         return client.propose_patch_repair(request, prompt=prompt, json_schema=schema)
+    # The normal real-model patch adapter exposes JSON mode under this method.
+    # Prefer it over its backwards-compatible plain callable interface so a
+    # real repair proposal is constrained to the proposal object as well as by
+    # the prompt.  Plain fake clients remain supported below.
+    if hasattr(client, "generate_patch_json"):
+        return client.generate_patch_json(
+            prompt=prompt,
+            patch_type=request.target_patch_type,
+            json_schema=schema,
+        )
     if callable(client):
         return client(prompt)
     raise TypeError("patch repair LLM client is unavailable")
+
+
+def _resolve_validation_patch_repair_llm_client(
+    state: GraphState,
+    configured_client: Any | None,
+) -> Any | None:
+    """Use the configured repair client or construct the normal patch adapter lazily.
+
+    Incremental patch generation constructs its adapter from ``state['model']``
+    inside ``generate_plan``.  Validation happens later, so a graph created
+    without an injected test client must repeat that construction here rather
+    than silently skipping P0-D repair and going straight to regeneration.
+    """
+    if configured_client is not None:
+        return configured_client
+    try:
+        from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
+
+        return make_patch_llm_client(model_name=state.get("model", "openai:gpt-4o"))
+    except Exception:
+        return None
 
 
 def _try_incremental_validation_patch_repair(
@@ -1943,12 +1975,46 @@ def _try_incremental_validation_patch_repair(
             "validation-driven patch repair started",
             {"target_patch_type": target_patch_type, "issue_fingerprint": fingerprint, "policy_source": policy_source},
         )
+        raw: str | dict[str, Any] | None = None
         try:
             raw = _invoke_patch_repair_llm(llm_client, request, build_patch_repair_prompt(request))
+        except Exception as exc:
+            build_state.validation_repair_attempts_by_fingerprint[fingerprint] = attempts + 1
+            evaluation = PatchRepairEvaluation(
+                accepted=False,
+                status="failed",
+                issues_before=sorted({issue.code for issue in eligible}),
+                issues_after=sorted({issue.code for issue in eligible}),
+                resolved_issue_codes=[],
+                introduced_issue_codes=[],
+                issue_fingerprint_before=fingerprint,
+                reasons=[f"repair LLM invocation failed: {exc}"],
+            )
+            _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
+            build_state.add_event("planning.validation_patch_repair_rejected", "patch repair LLM invocation failed", evaluation.model_dump(mode="json"))
+            return build_state, evaluation, {"status": "failed", "reason": str(exc), "request_path": request_path}
+        try:
             proposal = PatchRepairProposal.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
         except Exception as exc:
             build_state.validation_repair_attempts_by_fingerprint[fingerprint] = attempts + 1
-            return build_state, None, {"status": "failed", "reason": str(exc), "request_path": request_path}
+            _write_validation_repair_artifact(
+                state.get("output_dir"),
+                f"proposal_{attempts}.json",
+                {"raw_response": raw, "schema_error": str(exc)},
+            )
+            evaluation = PatchRepairEvaluation(
+                accepted=False,
+                status="rejected_schema",
+                issues_before=sorted({issue.code for issue in eligible}),
+                issues_after=sorted({issue.code for issue in eligible}),
+                resolved_issue_codes=[],
+                introduced_issue_codes=[],
+                issue_fingerprint_before=fingerprint,
+                reasons=[f"repair proposal schema validation failed: {exc}"],
+            )
+            _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
+            build_state.add_event("planning.validation_patch_repair_rejected", "patch repair proposal schema rejected", evaluation.model_dump(mode="json"))
+            return build_state, evaluation, {"status": "rejected_schema", "reason": str(exc), "request_path": request_path}
         _write_validation_repair_artifact(state.get("output_dir"), f"proposal_{attempts}.json", proposal)
         build_state.add_event(
             "planning.validation_patch_repair_proposed", "patch repair proposal received",
@@ -2027,11 +2093,15 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                 and retry_count < max_retries
             ):
                 target_patch_types = _incremental_plan_repair_patch_targets(report)
+                repair_llm_client = _resolve_validation_patch_repair_llm_client(
+                    state,
+                    patch_repair_llm_client,
+                )
                 repaired_build_state, repair_evaluation, repair_meta = _try_incremental_validation_patch_repair(
                     state=state,
                     report=report,
                     target_patch_types=target_patch_types,
-                    llm_client=patch_repair_llm_client,
+                    llm_client=repair_llm_client,
                 )
                 if repair_evaluation is not None and repair_evaluation.accepted and repair_evaluation.repaired_plan:
                     repaired_plan = SimulationPlan.model_validate(repair_evaluation.repaired_plan)
