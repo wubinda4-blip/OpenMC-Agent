@@ -156,8 +156,12 @@ Minimal example (only special positions, NOT 289 entries):
 Requested patch type: axial_layers
 Schema: {{"patch_type": "axial_layers", "axial_domain_cm": [float,float],
   "layers": [{{"layer_id", "role", "z_min_cm", "z_max_cm", "fill_type", "fill_id",
-  "loading_id", "requires_human_confirmation", "assumptions": [], "source_note"}}],
+  "loading_id", "loading_ids", "requires_human_confirmation", "assumptions": [], "source_note"}}],
   "lattice_loadings": [{{"loading_id", "base_lattice_id", "derived_lattice_id",
+  "transformations": [{{"operation_id", "operation_kind", "replacement_universe_id",
+  "source_universe_id", "source_universe_ids", "target_coordinates",
+  "component_role", "component_path_id", "preserve_component_roles",
+  "preserve_path_ids", "priority", "purpose"}}],
   "overrides": {{"universe_id": [[int,int]]}}, "purpose"}}]}}
 
 Rules:
@@ -167,23 +171,38 @@ Rules:
 - Do NOT use default z=-1..1 for an explicit 3D benchmark.
 - If z values are unknown, set requires_human_confirmation=true; do NOT fabricate.
 - Do NOT represent spacer grids as axial layer material slabs.
-- If a finite axial insert changes only some lattice positions over a known
-  z span, split the lattice-filled z layers at the insert boundaries, add a
-  lattice_loadings entry with overrides={insert_universe_id: [[row,col], ...]},
-  and set loading_id only on the affected lattice-filled layer(s).
-- lattice_loadings.overrides coordinates are 0-based row/col positions for the
-  renderer. If the pin_map uses 1-based document coordinates, convert them
-  before writing overrides.
-- Do NOT create empty lattice_loadings such as a "base_loading" placeholder.
-  If a lattice-filled layer uses the unmodified base lattice, leave loading_id null.
-- Do not encode finite axial inserts by changing the base pin_map; the base
-  pin_map should remain the through-path geometry such as guide tubes.
+- Do NOT enumerate every default fuel-pin coordinate. Use replace_universe_family
+  for component profiles shared by all pins of a universe family.
+- Use sparse coordinate_override only for localized positions.
+- Use nested_component_override when an insert occupies the inside of an existing
+  tube and the tube wall must remain.
+- Use loading_ids when an axial layer requires more than one localized loading.
+- Spacer grids remain axial_overlays, not lattice transformations.
+- Component-profile layers (end_plug, plenum, gas_gap) must use lattice fill
+  with a replace_universe_family transformation, NOT a whole-layer material slab.
 
-Minimal example (2 layers only, adapt to requirement):
-{{"patch_type": "axial_layers", "axial_domain_cm": [0.0, 400.0], "layers": [
-  {{"layer_id": "active_fuel", "role": "active_fuel", "z_min_cm": 10.0, "z_max_cm": 375.0,
-    "fill_type": "lattice", "fill_id": "assembly_lattice"}}
-]}}""",
+Transformation operation_kind values:
+- "replace_universe_family": source_universe_id -> replacement_universe_id for all positions.
+- "coordinate_override": specific target_coordinates -> replacement_universe_id.
+- "nested_component_override": specific target_coordinates, component_role identifies the
+  cell to replace; preserve_component_roles lists cells that must survive.
+
+Minimal example (family replacement for a plenum layer):
+{{"patch_type": "axial_layers", "axial_domain_cm": [0.0, 400.0],
+  "lattice_loadings": [
+    {{"loading_id": "plenum_loading", "base_lattice_id": "assembly_lattice",
+      "derived_lattice_id": "assembly_lattice_plenum",
+      "transformations": [
+        {{"operation_id": "family_plenum", "operation_kind": "replace_universe_family",
+          "replacement_universe_id": "fuel_pin_plenum", "source_universe_id": "fuel_pin"}}
+      ]}}
+  ],
+  "layers": [
+    {{"layer_id": "active_fuel", "role": "active_fuel", "z_min_cm": 10.0, "z_max_cm": 375.0,
+      "fill_type": "lattice", "fill_id": "assembly_lattice"}},
+    {{"layer_id": "upper_plenum", "role": "upper_plenum", "z_min_cm": 379.0, "z_max_cm": 395.0,
+      "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "plenum_loading"}}
+  ]}}""",
 
     "axial_overlays": """\
 Requested patch type: axial_overlays

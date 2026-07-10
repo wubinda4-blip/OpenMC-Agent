@@ -42,6 +42,7 @@ from openmc_agent.schemas import (
     FillRefSpec,
     LatticeLoadingSpec,
     LatticeSpec,
+    LatticeTransformationOperation,
     NuclideSpec,
     PlotSpec,
     RegionSpec,
@@ -901,11 +902,29 @@ def _assemble_axial_layers(
     aliases_applied: dict[str, str] = {}
 
     for item in patch.lattice_loadings:
+        transformations = [
+            LatticeTransformationOperation(
+                operation_id=t.operation_id,
+                operation_kind=t.operation_kind,
+                replacement_universe_id=t.replacement_universe_id,
+                source_universe_id=t.source_universe_id,
+                source_universe_ids=list(t.source_universe_ids),
+                target_coordinates=[tuple(c) for c in t.target_coordinates],
+                component_role=t.component_role,
+                component_path_id=t.component_path_id,
+                preserve_component_roles=list(t.preserve_component_roles),
+                preserve_path_ids=list(t.preserve_path_ids),
+                priority=t.priority,
+                purpose=t.purpose,
+            )
+            for t in item.transformations
+        ]
         try:
             loadings.append(LatticeLoadingSpec(
                 id=item.loading_id,
                 base_lattice_id=item.base_lattice_id or lattice_id,
                 derived_lattice_id=item.derived_lattice_id,
+                transformations=transformations,
                 overrides=item.overrides,
                 purpose=item.purpose,
             ))
@@ -941,6 +960,7 @@ def _assemble_axial_layers(
                 z_max_cm=item.z_max_cm if item.z_max_cm is not None else 0.0,
                 fill=fill,
                 loading_id=item.loading_id,
+                loading_ids=list(item.loading_ids) if item.loading_ids else [],
                 purpose=item.role,
             )
             layers.append(layer)
@@ -1341,6 +1361,29 @@ def assemble_simulation_plan_from_patches(
             "universe_count": len(plan_universes),
             "lattice_present": lattice is not None,
             "lattice_loading_count": len(lattice_loadings),
+            "lattice_transformation_count": sum(len(l.transformations) for l in lattice_loadings),
+            "family_replacement_count": sum(
+                1 for l in lattice_loadings
+                for t in l.transformations
+                if t.operation_kind == "replace_universe_family"
+            ),
+            "coordinate_override_count": sum(
+                1 for l in lattice_loadings
+                for t in l.transformations
+                if t.operation_kind == "coordinate_override"
+            ),
+            "nested_component_override_count": sum(
+                1 for l in lattice_loadings
+                for t in l.transformations
+                if t.operation_kind == "nested_component_override"
+            ),
+            "multi_loading_layer_count": sum(
+                1 for layer in axial_layers
+                if len(layer.loading_ids) > 1 or (layer.loading_ids and layer.loading_id)
+            ),
+            "derived_lattice_count": sum(
+                1 for l in lattice_loadings if l.derived_lattice_id
+            ),
             "axial_layer_count": len(axial_layers),
             "axial_overlay_count": len(axial_overlays),
             "actual_pin_counts": actual_pin_counts,

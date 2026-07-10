@@ -944,15 +944,28 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
         if fill.type == "universe" and fill.id not in universe_ids:
             raise ValueError(f"axial layer {layer.id!r} references missing universe {fill.id!r}")
         if fill.type == "lattice" and fill.id not in lattice_ids:
-            if layer.loading_id is None:
+            # fill.id may be a derived lattice id from a loading
+            _all_layer_loading_ids = list(layer.loading_ids) if layer.loading_ids else (
+                [layer.loading_id] if layer.loading_id else []
+            )
+            if not _all_layer_loading_ids:
                 raise ValueError(f"axial layer {layer.id!r} references missing lattice {fill.id!r}")
-            loading = _loading_by_id(spec, layer.loading_id)
-            if fill.id != _loading_derived_lattice_id(loading):
+            resolved = False
+            for lid in _all_layer_loading_ids:
+                loading = _loading_by_id(spec, lid)
+                if fill.id == _loading_derived_lattice_id(loading) or fill.id == loading.base_lattice_id:
+                    resolved = True
+                    break
+            if not resolved:
                 raise ValueError(f"axial layer {layer.id!r} references missing lattice {fill.id!r} at {fill_schema}")
-        if layer.loading_id is not None:
+        # Validate all loading references (loading_id and loading_ids)
+        _all_layer_loading_ids = list(layer.loading_ids) if layer.loading_ids else (
+            [layer.loading_id] if layer.loading_id else []
+        )
+        for lid in _all_layer_loading_ids:
             if fill.type != "lattice":
-                raise ValueError(f"axial layer {layer.id!r} uses loading_id with non-lattice fill")
-            loading = _loading_by_id(spec, layer.loading_id)
+                raise ValueError(f"axial layer {layer.id!r} uses loading_id {lid!r} with non-lattice fill")
+            loading = _loading_by_id(spec, lid)
             if loading.base_lattice_id not in lattice_ids:
                 raise ValueError(f"lattice loading {loading.id!r} references missing base lattice {loading.base_lattice_id!r}")
             base_lattice = _lattice_by_id(spec, loading.base_lattice_id)
@@ -960,6 +973,9 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
                 if universe_id not in universe_ids:
                     raise ValueError(f"lattice loading {loading.id!r} override references missing universe {universe_id!r}")
                 _check_loading_positions_in_bounds(loading.id, base_lattice, universe_id, positions)
+            for t in loading.transformations:
+                if t.replacement_universe_id not in universe_ids:
+                    raise ValueError(f"lattice loading {loading.id!r} transformation {t.operation_id!r} references missing replacement universe {t.replacement_universe_id!r}")
     for reflector in spec.reflectors:
         if reflector.material_id not in material_ids:
             raise ValueError(f"core reflector {reflector.id!r} references missing material")
