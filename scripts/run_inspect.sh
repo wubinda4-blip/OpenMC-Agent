@@ -14,7 +14,8 @@ REQUIREMENT=""
 OPERATING_STATE=""
 ENABLE_PLOT=0
 ENABLE_SMOKE=0
-JSON_OUTPUT=1
+COMPACT_OUTPUT=1
+JSON_OUTPUT=0
 INTERACTIVE_FEEDBACK="auto"
 MAX_EXPERT_ROUNDS=2
 BENCHMARK=0
@@ -55,7 +56,10 @@ Options:
   --no-stream             Disable SSE streaming. Streaming is on by default so
                           slow (reasoning) generations do not hit the read
                           timeout and you can see token-level progress.
-  --text                  Print human-readable transcript instead of JSON.
+  --text                  Print the full human-readable transcript to the terminal.
+  --raw-output            Print the JSON result to the terminal.
+                           By default, terminal output is compact; full JSON is
+                           saved as transcript.json in the output directory.
   --benchmark             Run workflow benchmark instead of single-model inspect.
                           All LLM intelligence (audit+repair+supervisor) is on
                           by default in advisory mode.
@@ -144,7 +148,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --text)
-      JSON_OUTPUT=0
+      COMPACT_OUTPUT=0
+      shift
+      ;;
+    --raw-output)
+      COMPACT_OUTPUT=0
+      JSON_OUTPUT=1
       shift
       ;;
     -h|--help)
@@ -235,6 +244,7 @@ fi
 source "$CONDA_SH"
 conda activate "$CONDA_ENV"
 cd "$PROJECT_DIR"
+mkdir -p "$OUTPUT_DIR"
 
 if [[ -z "${!API_KEY_ENV:-}" ]]; then
   echo "[1/5] Waiting for $API_KEY_ENV input..." >&2
@@ -281,10 +291,19 @@ fi
 # Single-model inspect mode (default)
 # ---------------------------------------------------------------------------
 cmd=(python -m openmc_agent.inspect --plan --verbose --model "$MODEL"
-     --output-dir "$OUTPUT_DIR")
+      --output-dir "$OUTPUT_DIR")
 
-if [[ "$JSON_OUTPUT" -eq 1 ]]; then
+if [[ "$COMPACT_OUTPUT" -eq 1 ]]; then
+  cmd+=(--compact)
+elif [[ "$JSON_OUTPUT" -eq 1 ]]; then
   cmd+=(--json)
+fi
+
+[[ "$DISABLE_AUDIT" -eq 0 ]] && cmd+=(--enable-semantic-audit)
+[[ "$DISABLE_REPAIR" -eq 0 ]] && cmd+=(--enable-llm-repair)
+if [[ "$DISABLE_SUPERVISOR" -eq 0 ]]; then
+  cmd+=(--enable-run-supervisor)
+  [[ "$SUPERVISOR_MODE" == "controlled_route" ]] && cmd+=(--controlled-route)
 fi
 
 if [[ "$ENABLE_PLOT" -eq 1 ]]; then
@@ -327,5 +346,7 @@ else
   echo "[4/5] Input requirement: $REQUIREMENT" >&2
 fi
 echo "[5/5] Output directory: $OUTPUT_DIR" >&2
+echo "      Terminal: compact status | Full report: $OUTPUT_DIR/transcript.json" >&2
+echo "      Node/error log: $OUTPUT_DIR/cli.log" >&2
 echo "Agent is starting. LLM calls may take a while..." >&2
-"${cmd[@]}"
+"${cmd[@]}" 2>&1 | tee "$OUTPUT_DIR/cli.log"

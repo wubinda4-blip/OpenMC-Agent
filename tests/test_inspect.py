@@ -554,3 +554,64 @@ def test_inspect_cli_can_disable_tty_interactive_feedback(
     )
 
     assert exit_code == 0
+
+
+def test_inspect_cli_compact_prints_summary_without_requirement_echo(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    def fake_inspect_requirement(requirement, **kwargs):
+        assert kwargs["enable_semantic_audit"] is True
+        assert kwargs["enable_llm_repair_proposer"] is True
+        assert kwargs["enable_run_supervisor"] is True
+        assert kwargs["run_supervisor_mode"] == "advisory"
+        return InspectResult(
+            ok=True,
+            transcript="full transcript",
+            transcript_data={
+                "ok": True,
+                "requirement": requirement,
+                "validation_report": {"is_valid": True},
+                "capability_report": {
+                    "renderability": "runnable",
+                    "supported_renderer": "pin_cell",
+                },
+                "render_outcome": {"lines": ["Generated model.py"]},
+                "retry_count": 0,
+                "semantic_audit_result": {"finding_count": 0},
+                "repair_proposal_result": {"status": "proposed"},
+                "run_supervisor_result": {"final_action": "continue_to_render"},
+                "model_path": str(tmp_path / "model.py"),
+            },
+        )
+
+    monkeypatch.setattr("openmc_agent.inspect.inspect_requirement", fake_inspect_requirement)
+
+    exit_code = main(
+        [
+            "large requirement that must not be echoed",
+            "--compact",
+            "--enable-semantic-audit",
+            "--enable-llm-repair",
+            "--enable-run-supervisor",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "OpenMC Agent Run Summary" in output
+    assert "semantic_audit: completed" in output
+    assert "llm_repair: proposed" in output
+    assert "run_supervisor: continue_to_render" in output
+    assert "large requirement" not in output
+    assert str(tmp_path / "transcript.json") in output
+
+
+def test_inspect_cli_compact_rejects_json_combination() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["a requirement", "--compact", "--json"])
+
+    assert exc_info.value.code == 2

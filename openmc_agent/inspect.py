@@ -30,7 +30,11 @@ from openmc_agent.llm import (
     repair_structured_output,
     set_llm_progress,
 )
+from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
+from openmc_agent.repair_proposal import make_repair_proposal_client
 from openmc_agent.retrieval import make_default_investigation_llm
+from openmc_agent.run_supervisor import make_run_supervisor_client
+from openmc_agent.semantic_audit import make_semantic_audit_client
 from openmc_agent.tools import export_xml, run_geometry_plots, run_smoke_test
 
 
@@ -68,6 +72,10 @@ def inspect_requirement(
     investigation_max_iterations: int = 4,
     enable_openmc_source_root: bool = False,
     knowledge_graph_path: str | None = None,
+    enable_semantic_audit: bool = False,
+    enable_llm_repair_proposer: bool = False,
+    enable_run_supervisor: bool = False,
+    run_supervisor_mode: str = "advisory",
     verbose: bool = False,
 ) -> InspectResult:
     set_llm_progress(verbose)
@@ -95,6 +103,10 @@ def inspect_requirement(
             investigation_max_iterations=investigation_max_iterations,
             enable_openmc_source_root=enable_openmc_source_root,
             knowledge_graph_path=knowledge_graph_path,
+            enable_semantic_audit=enable_semantic_audit,
+            enable_llm_repair_proposer=enable_llm_repair_proposer,
+            enable_run_supervisor=enable_run_supervisor,
+            run_supervisor_mode=run_supervisor_mode,
             verbose=verbose,
         )
 
@@ -285,6 +297,10 @@ def _inspect_plan_requirement(
     investigation_max_iterations: int,
     enable_openmc_source_root: bool,
     knowledge_graph_path: str | None,
+    enable_semantic_audit: bool,
+    enable_llm_repair_proposer: bool,
+    enable_run_supervisor: bool,
+    run_supervisor_mode: str,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -297,6 +313,25 @@ def _inspect_plan_requirement(
             "capability -> render/tools or structured-only -> reflection.",
             file=sys.stderr,
         )
+
+    semantic_audit_client = None
+    llm_repair_client = None
+    run_supervisor_client = None
+    if enable_semantic_audit or enable_llm_repair_proposer or enable_run_supervisor:
+        if verbose:
+            print("[agent] Initializing LLM intelligence modules...", file=sys.stderr)
+        if enable_semantic_audit:
+            semantic_audit_client = make_semantic_audit_client(
+                llm=make_patch_llm_client(model_name=model), model_name=model
+            )
+        if enable_llm_repair_proposer:
+            llm_repair_client = make_repair_proposal_client(
+                llm=make_patch_llm_client(model_name=model), model_name=model
+            )
+        if enable_run_supervisor:
+            run_supervisor_client = make_run_supervisor_client(
+                llm=make_patch_llm_client(model_name=model), model_name=model
+            )
 
     graph = build_plan_graph(
         generate_plan=generate_plan,
@@ -312,6 +347,16 @@ def _inspect_plan_requirement(
         enable_openmc_source_root=enable_openmc_source_root,
         checkpoint_path=(output_path / "checkpoints.sqlite") if interactive_feedback else None,
         knowledge_graph_path=knowledge_graph_path,
+        enable_semantic_audit=enable_semantic_audit,
+        semantic_audit_client=semantic_audit_client,
+        semantic_audit_model=model,
+        enable_llm_repair_proposer=enable_llm_repair_proposer,
+        llm_repair_client=llm_repair_client,
+        llm_repair_model=model,
+        enable_run_supervisor=enable_run_supervisor,
+        run_supervisor_mode=run_supervisor_mode,
+        run_supervisor_client=run_supervisor_client,
+        run_supervisor_model=model,
     )
     if verbose:
         print("[agent] Invoking LLM. This can take 30-120 seconds on remote models...", file=sys.stderr)
@@ -630,6 +675,9 @@ def _plan_transcript_data(
         "tool_results": tool_results,
         "investigation_trace": state.get("investigation_trace", []),
         "investigation_findings": state.get("investigation_findings", ""),
+        "semantic_audit_result": state.get("semantic_audit_result"),
+        "repair_proposal_result": state.get("repair_proposal_result"),
+        "run_supervisor_result": state.get("run_supervisor_result"),
         "raw_llm_outputs": state.get("raw_llm_outputs", []),
         "plan_artifacts": state.get("plan_artifacts", []),
         "model_path": str(model_path) if model_path is not None else None,
@@ -838,6 +886,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--show-raw-llm", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Print a concise terminal run summary; write full JSON to transcript.json.",
+    )
+    parser.add_argument(
+        "--enable-semantic-audit",
+        action="store_true",
+        help="Run the semantic audit LLM module after capability assessment.",
+    )
+    parser.add_argument(
+        "--enable-llm-repair",
+        action="store_true",
+        help="Run the proposal-only LLM repair module after semantic audit.",
+    )
+    parser.add_argument(
+        "--enable-run-supervisor",
+        action="store_true",
+        help="Run the advisory run-supervisor LLM module before routing.",
+    )
+    parser.add_argument(
+        "--controlled-route",
+        action="store_true",
+        help="Let the run-supervisor override routing after policy validation.",
+    )
+    parser.add_argument(
         "--investigate",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -864,6 +937,8 @@ def main(argv: list[str] | None = None) -> int:
         "the OPENMC_AGENT_KNOWLEDGE_DIR environment variable.",
     )
     args = parser.parse_args(argv)
+    if args.compact and args.json_output:
+        parser.error("Use either --compact or --json, not both")
 
     expert_feedback = list(args.expert_feedback)
     interactive_feedback = (
@@ -899,6 +974,10 @@ def main(argv: list[str] | None = None) -> int:
             investigation_max_iterations=args.investigate_iterations,
             enable_openmc_source_root=args.investigate_openmc_source,
             knowledge_graph_path=args.knowledge_dir,
+            enable_semantic_audit=args.enable_semantic_audit,
+            enable_llm_repair_proposer=args.enable_llm_repair,
+            enable_run_supervisor=args.enable_run_supervisor or args.controlled_route,
+            run_supervisor_mode="controlled_route" if args.controlled_route else "advisory",
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -918,11 +997,17 @@ def main(argv: list[str] | None = None) -> int:
             investigation_max_iterations=args.investigate_iterations,
             enable_openmc_source_root=args.investigate_openmc_source,
             knowledge_graph_path=args.knowledge_dir,
+            enable_semantic_audit=args.enable_semantic_audit,
+            enable_llm_repair_proposer=args.enable_llm_repair,
+            enable_run_supervisor=args.enable_run_supervisor or args.controlled_route,
+            run_supervisor_mode="controlled_route" if args.controlled_route else "advisory",
         )
     else:
         parser.error("Provide a requirement or --md-file")
 
-    if args.json_output:
+    if args.compact:
+        print(_format_compact_summary(result, Path(args.output_dir)))
+    elif args.json_output:
         payload = dict(result.transcript_data or {"transcript": result.transcript})
         if not args.show_raw_llm:
             payload.pop("raw_llm_outputs", None)
@@ -930,6 +1015,44 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(result.transcript)
     return 0 if result.ok else 1
+
+
+def _format_compact_summary(result: InspectResult, output_path: Path) -> str:
+    """Render the terminal-facing result without echoing the full plan or input."""
+    data = result.transcript_data or {}
+    report = data.get("validation_report") or {}
+    capability = data.get("capability_report") or {}
+    render = data.get("render_outcome") or {}
+    lines = [
+        "\nOpenMC Agent Run Summary",
+        f"  status: {'PASS' if result.ok else 'FAIL'}",
+        f"  validation: {'valid' if report.get('is_valid') else 'invalid'}",
+        f"  capability: {capability.get('renderability', 'unknown')} / "
+        f"{capability.get('supported_renderer', 'unknown')}",
+        f"  retry_count: {data.get('retry_count', 0)}",
+    ]
+    for name, key in (
+        ("semantic_audit", "semantic_audit_result"),
+        ("llm_repair", "repair_proposal_result"),
+        ("run_supervisor", "run_supervisor_result"),
+    ):
+        value = data.get(key)
+        if isinstance(value, dict):
+            status = value.get("status") or value.get("final_action") or "completed"
+            suffix = " fallback" if value.get("fallback_used") else ""
+            lines.append(f"  {name}: {status}{suffix}")
+    for line in render.get("lines", [])[:3]:
+        lines.append(f"  output: {line}")
+    if data.get("error"):
+        lines.append(f"  error: {data['error']}")
+    lines.extend(
+        [
+            f"  model.py: {data.get('model_path') or '(not generated)'}",
+            f"  full report: {output_path / 'transcript.json'}",
+            f"  node log: {output_path / 'cli.log'}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

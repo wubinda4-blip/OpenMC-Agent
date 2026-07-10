@@ -462,6 +462,7 @@ def _make_llm_repair_proposal_node(
             return {}
         validation_report = state.get("validation_report")
         repair_mode = RepairProposalMode(mode)
+        _progress(state, "llm_repair_proposal", f"starting mode={repair_mode.value}")
         context = {
             "requirement": state.get("requirement", ""),
             "metadata": {"workflow": "plan_graph"},
@@ -483,6 +484,11 @@ def _make_llm_repair_proposal_node(
             model_name=model_name,
             allow_fallback=allow_fallback,
             context=context,
+        )
+        _progress(
+            state,
+            "llm_repair_proposal",
+            f"completed status={result.status} fallback={result.fallback_used}",
         )
         operation_count = len(result.proposal.operations) if result.proposal else 0
         allowed_count = sum(1 for ev in result.operation_evaluations if ev.allowed)
@@ -563,6 +569,7 @@ def _make_semantic_audit_node(
     def _semantic_audit(state: GraphState) -> GraphState:
         if not enabled or mode == "off":
             return {}
+        _progress(state, "semantic_audit", f"starting mode={mode}")
         audit_input = build_semantic_audit_input(
             requirement=state.get("requirement", ""),
             resolved_requirement=(state.get("requirement_resolution") or {}).get("summary"),
@@ -581,6 +588,11 @@ def _make_semantic_audit_node(
             client=client,
             model_name=model_name,
             allow_fallback=allow_fallback,
+        )
+        _progress(
+            state,
+            "semantic_audit",
+            f"completed findings={len(result.findings)} fallback={result.fallback_used}",
         )
         artifacts = _write_semantic_audit_artifacts(working_state, audit_input, result)
         finding_codes = [finding.finding_code for finding in result.findings]
@@ -695,6 +707,11 @@ def _make_run_supervisor_node(
         from openmc_agent.run_supervisor_prompts import build_run_supervisor_prompt
 
         decision_count = state.get("supervisor_decision_count", 0)
+        _progress(
+            state,
+            "run_supervisor",
+            f"starting mode={mode} decision={decision_count + 1}/{max_decisions}",
+        )
         if decision_count >= max_decisions:
             return _trace_event_update(
                 state,
@@ -762,6 +779,13 @@ def _make_run_supervisor_node(
             client=client,
             model_name=model_name,
             allow_fallback=allow_fallback,
+        )
+        _progress(
+            state,
+            "run_supervisor",
+            "completed "
+            f"action={result.final_action.value if result.final_action else 'none'} "
+            f"vetoed={result.vetoed} fallback={result.fallback_used}",
         )
 
         # Update retry tracking.

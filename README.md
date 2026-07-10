@@ -150,7 +150,9 @@ scripts/run_inspect.sh --model deepseek:deepseek-chat --md-file Input/case2.md -
 python -m openmc_agent.inspect "建立一个 2x2 组件模型" --plan --plot --smoke-test --json
 ```
 
-常用参数：`--plan`（强制 plan 工作流）、`--plot` / `--smoke-test` / `--full`、`--output-dir`、`--json` / `--text`（输出格式）、`--expert-feedback`、`--interactive-feedback`、`--max-expert-rounds`、`--verbose`。
+`run_inspect.sh` 默认使用紧凑终端视图：显示当前 graph node、LLM 心跳、semantic audit / repair proposer / run supervisor 状态、报错和最终摘要，而不会回显整个输入或 SimulationPlan。完整 `transcript.json`、节点/报错日志 `cli.log`、以及模块 artifact 会保存在 `--output-dir`。需要在终端展开全部内容时使用 `--text`；需要 JSON stdout 时使用 `--raw-output`。
+
+常用参数：`--plan`（强制 plan 工作流）、`--plot` / `--smoke-test` / `--full`、`--output-dir`、`--compact` / `--json` / `--text`（输出格式）、`--enable-semantic-audit`、`--enable-llm-repair`、`--enable-run-supervisor`、`--controlled-route`、`--expert-feedback`、`--interactive-feedback`、`--max-expert-rounds`、`--verbose`。
 
 交互式专家反馈：
 
