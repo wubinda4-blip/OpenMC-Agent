@@ -159,6 +159,7 @@ class GraphState(TypedDict, total=False):
     planning_mode_decision: dict[str, Any]
     plan_build_state: dict[str, Any]
     incremental_execution_result: dict[str, Any]
+    incremental_regeneration_pending: bool
     use_incremental_executor: bool
     allow_monolithic_fallback_for_incremental_failure: bool
     requirement_resolution: dict[str, Any]
@@ -380,6 +381,7 @@ def build_plan_graph(
         {
             "assess": "assess_capability",
             "reflect": "reflect_plan",
+            "generate": "generate_plan",
             "repair_format": "repair_plan_format",
             "stop": "save_record",
         },
@@ -1331,6 +1333,7 @@ def _run_incremental_plan_generation(
             "reference_patch_policy": reference_patch_policy,
             "monolithic_reflect_plan_allowed": bool(allow_fallback),
         },
+        "incremental_regeneration_pending": False,
         "plan_artifacts": list(state.get("plan_artifacts", [])) + inc_artifact_paths,
     }
 
@@ -1866,6 +1869,48 @@ def _make_validate_plan_node(max_retries: int):
 
         if not report.is_valid:
             _progress(state, "validate_plan", f"failed with {len(report.errors)} error(s)")
+            if (
+                plan is not None
+                and _incremental_reflect_plan_disabled(state)
+                and retry_count < max_retries
+            ):
+                _progress(
+                    state,
+                    "validate_plan",
+                    "incremental plan needs regeneration; returning validation diagnostics to patch planner",
+                )
+                return {
+                    "simulation_plan": None,
+                    "simulation_spec": None,
+                    "validation_report": report,
+                    "retry_history": history,
+                    "retry_count": retry_count + 1,
+                    "error": "",
+                    "incremental_regeneration_pending": True,
+                    # A completed incremental state caches valid patches. Start a
+                    # fresh patch sequence so the LLM can correct this plan.
+                    "plan_build_state": {},
+                    "requirement": _incremental_regeneration_requirement(
+                        state.get("requirement", ""), report
+                    ),
+                    "pin_count_mismatch_context": _pin_count_mismatch_context(
+                        {**state, "validation_report": report}
+                    ),
+                    **_trace_event_update(
+                        state,
+                        "incremental_regeneration_scheduled",
+                        summary=(
+                            "incremental plan validation failed; scheduling a fresh "
+                            "patch-planner pass with validator diagnostics"
+                        ),
+                        report=report,
+                        plan=plan,
+                        metadata={
+                            "retry_count": retry_count + 1,
+                            "issue_codes": [issue.code for issue in report.issues],
+                        },
+                    ),
+                }
             invalid_plan = _plan_with_validation_failure_capability(plan, report)
             state_plan = (
                 invalid_plan
@@ -1931,6 +1976,25 @@ def _plan_generation_needs_expert_question(errors: list[str]) -> bool:
     return "could not parse model response" in text or "could not validate model response" in text
 
 
+def _incremental_regeneration_requirement(
+    requirement: str,
+    report: ValidationReport,
+) -> str:
+    """Return a fresh incremental-planning request with actionable diagnostics."""
+    errors = "\n".join(f"- {error}" for error in report.errors)
+    hints = "\n".join(f"- {hint}" for hint in report.suggestions)
+    return (
+        f"{requirement}\n\n"
+        "=== Incremental planner correction required ===\n"
+        "The previous patch sequence assembled an invalid SimulationPlan. Rebuild "
+        "all patches from the source requirement and correct the following validator "
+        "findings. Preserve only facts supported by the input; do not merely change "
+        "expected_counts to hide a wrong universe pattern.\n"
+        f"Validation errors:\n{errors}\n"
+        f"Repair guidance:\n{hints or '- Reconcile the generated patch fields with the errors above.'}"
+    )
+
+
 def _plan_generation_expert_questions(
     errors: list[str],
     raw_outputs: list[str],
@@ -1969,6 +2033,8 @@ def _make_plan_validation_router(max_retries: int):
             return "assess"
         if state.get("retry_count", 0) >= max_retries:
             return "stop"
+        if state.get("incremental_regeneration_pending"):
+            return "generate"
         if _incremental_reflect_plan_disabled(state):
             return "stop"
         if _coerce_simulation_plan(state.get("simulation_plan")) is not None:

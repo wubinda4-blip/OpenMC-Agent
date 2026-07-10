@@ -139,6 +139,48 @@ def _complex_plan_with_bad_universe() -> SimulationPlan:
     )
 
 
+def _complex_plan_with_pin_count_mismatch() -> SimulationPlan:
+    model = ComplexModelSpec(
+        name="assembly",
+        kind="assembly",
+        materials=[
+            ComplexMaterialSpec(
+                id="fuel",
+                name="fuel",
+                density_unit="g/cm3",
+                density_value=10.4,
+                composition=[NuclideSpec(name="U235", percent=1.0)],
+            )
+        ],
+        cells=[CellSpec(id="fuel_cell", name="fuel", fill_type="material", fill_id="fuel")],
+        universes=[
+            UniverseSpec(id="fuel_pin", name="fuel pin", cell_ids=["fuel_cell"]),
+            UniverseSpec(id="plenum_pin", name="plenum pin", cell_ids=["fuel_cell"]),
+        ],
+        lattices=[
+            LatticeSpec(
+                id="assembly_lattice",
+                name="assembly lattice",
+                kind="rect",
+                pitch_cm=(1.26, 1.26),
+                universe_pattern=[["plenum_pin", "plenum_pin"]],
+                expected_counts={"fuel_pin": 2, "plenum_pin": 0},
+            )
+        ],
+        assemblies=[AssemblySpec(id="assembly", name="assembly", lattice_id="assembly_lattice")],
+    )
+    return SimulationPlan(
+        schema_version="simulation_plan.v2",
+        model_spec=None,
+        complex_model=model,
+        capability_report=RenderCapabilityReport(
+            renderability="skeleton",
+            supported_renderer="none",
+        ),
+        plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 1.26), filename="assembly.png")],
+    )
+
+
 def _event_types(raw_trace: dict) -> list[str]:
     return [event["event_type"] for event in raw_trace["events"]]
 
@@ -231,6 +273,34 @@ def test_validate_plan_node_records_validation_completed() -> None:
 
     trace = trace_from_raw(updates["trace"])
     assert "validation_completed" in [event.event_type for event in trace.events]
+
+
+@pytest.mark.openmc
+def test_incremental_validation_failure_schedules_fresh_patch_generation() -> None:
+    pytest.importorskip("openmc", reason="OpenMC is required for graph import")
+    from openmc_agent.graph import _make_plan_validation_router, _make_validate_plan_node
+
+    node = _make_validate_plan_node(max_retries=2)
+    updates = node(
+        {
+            "simulation_plan": _complex_plan_with_pin_count_mismatch(),
+            "requirement": "Build an assembly from the source input.",
+            "retry_count": 0,
+            "plan_build_state": {"stale": "cached patches"},
+            "incremental_execution_result": {
+                "planning_mode": "incremental",
+                "monolithic_reflect_plan_allowed": False,
+            },
+        }
+    )
+
+    assert updates["simulation_plan"] is None
+    assert updates["retry_count"] == 1
+    assert updates["error"] == ""
+    assert updates["plan_build_state"] == {}
+    assert "Incremental planner correction required" in updates["requirement"]
+    assert "fuel_pin" in updates["requirement"]
+    assert _make_plan_validation_router(max_retries=2)(updates) == "generate"
 
 
 @pytest.mark.openmc
