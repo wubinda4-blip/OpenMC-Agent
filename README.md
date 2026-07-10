@@ -35,6 +35,9 @@ receive_requirement
    → repair_plan_format ─坏 JSON/坏 schema 重试──▶ validate_plan
    → reflect_plan ──验证失败重试───────────────▶ validate_plan
    → assess_capability          # 本地重算 capability_report（覆盖 LLM 草稿）
+   → semantic_audit             # P0-A: LLM 只读语义审查（warning_only / strict）
+   → llm_repair_proposal        # P0-B: LLM 在 allowlist 内生成 RFC6902 补丁
+   → run_supervisor             # P0-C: LLM 路由决策建议（advisory / controlled_route）
    → ask_expert                 # 可选：LangGraph interrupt/resume 专家反馈
    → render_plan_script         # choose_renderer 选渲染器 → model.py（或骨架）
    → execute_tools              # export_xml / 几何绘图 / smoke test
@@ -213,7 +216,7 @@ make gate-workflow-regression BASE_REPORT=... HEAD_REPORT=...
 | `MODEL` | `deepseek:deepseek-chat` | LLM 模型（`provider:model` 格式） |
 | `ALLOW_REAL_LLM` | （空 = 不允许） | 设 `=1` 才允许真实 LLM 调用 |
 | `SMOKE` | （空 = 不跑） | 设 `=1` 跑 OpenMC smoke test |
-| `REF_POLICY` | `reference_only_for_structural` | reference patch 策略 |
+| `REF_POLICY` | `off` | reference patch 策略（`off` = 纯 LLM，`reference_only_for_structural` = 参考优先） |
 | `MAT_POLICY` | `apply_alloy_library` | 材料成分策略 |
 | `OUT` | `data/runs/<BENCHMARK>_<VARIANT>` | 输出目录 |
 | `CASES` | `tests/fixtures/evaluation_cases.json` | benchmark 用例清单 |
@@ -221,7 +224,79 @@ make gate-workflow-regression BASE_REPORT=... HEAD_REPORT=...
 
 ---
 
-## 组件建模示例
+## LLM 智能化闭环（P0-A / P0-B / P0-C）
+
+在确定性校验之后，三个 LLM 环节依次运行，形成"审查 → 修复 → 决策"的闭环：
+
+| 环节 | 节点 | 能做什么 | 不能做什么 |
+|---|---|---|---|
+| **P0-A 语义审查** | `semantic_audit` | 只读检查 plan 语义一致性（轴向、材料、几何、边界） | 不修改 plan |
+| **P0-B 补丁修复** | `llm_repair_proposal` | 在 path allowlist 内生成 RFC6902 补丁 | 不触碰材料密度、核数据、loading map |
+| **P0-C 路由监督** | `run_supervisor` | 从 Python 计算的 `allowed_actions` 中选一个 | 不直接执行工具、不生成代码 |
+
+### 安全机制
+
+- **Python 先算 allowed actions**，LLM 只能从中选择
+- **Python 可以 veto** LLM 的决策（13 种 veto code）
+- **deterministic fallback** 在 LLM 不可用时自动接管
+- **loop detection** 防止相同状态重复动作
+- **retry budget** 限制每个 patch 的重试次数
+- **protected paths** 阻止修改材料密度、核数据路径、benchmark 常数
+
+### 三种模式
+
+| 模式 | 行为 |
+|---|---|
+| `off` | 完全关闭 supervisor |
+| `advisory`（默认） | 运行 supervisor，记录决策到 trace/artifact，**不改变真实路由** |
+| `controlled_route` | supervisor 决策经 Python 验证后可影响路由，映射到已有安全节点 |
+
+### 通过 `run_inspect.sh` 运行
+
+```bash
+# 单文件建模（默认开启全部 LLM 智能化，advisory 模式）
+scripts/run_inspect.sh --md-file Input/VERA3_problem.md --state 3A --model deepseek:deepseek-chat --full
+
+# Workflow benchmark（默认全部开启，6 个 case）
+scripts/run_inspect.sh --benchmark --model deepseek:deepseek-chat --max-cases 6
+
+# Benchmark + controlled-route（supervisor 决策影响真实路由）
+scripts/run_inspect.sh --benchmark --model deepseek:deepseek-chat --controlled-route --max-cases 6
+
+# 关闭某个环节
+scripts/run_inspect.sh --benchmark --model deepseek:deepseek-chat --disable-supervisor
+scripts/run_inspect.sh --benchmark --model deepseek:deepseek-chat --disable-audit --disable-repair
+```
+
+### 通过 Makefile 运行
+
+```bash
+# 单文件建模
+make model INPUT=Input/VERA3_problem.md VARIANT=3A ALLOW_REAL_LLM=1
+
+# Workflow benchmark（fake，不调用 LLM/OpenMC）
+make benchmark-fake
+
+# Workflow benchmark（真实 LLM）
+make benchmark-real
+
+# 跑 + 对比 baseline + regression gate（一键验证）
+make benchmark-check
+```
+
+### 输出检查
+
+运行完成后，查看 `benchmark_summary.md` 中的 **## Run Supervisor** 部分：
+
+```
+- completion rate: 100.0%
+- action accuracy: 100.0%
+- veto rate: 0.0%
+- fallback rate: 0.0%
+- human escalation accuracy: 100.0%
+```
+
+---
 
 `Input/case2.md` 是一个 15x15 PWR 组件用例：默认组件包含燃料棒和导向管，另有一个候选 burnable poison universe，但默认不插入 lattice。完整流程会让 LLM 生成 `SimulationPlan`，本地 `RectAssemblyRenderer` 再做可达性分析，只渲染默认 lattice 实际使用的材料、cell、universe。
 
