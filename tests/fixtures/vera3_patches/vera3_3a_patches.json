@@ -144,6 +144,14 @@
             {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
           ],
           "source_note": "Fuel-pin plenum profile: helium internal, same clad/coolant"
+        },
+        {
+          "universe_id": "moderator_only_pin",
+          "kind": "custom",
+          "cells": [
+            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+          ],
+          "source_note": "Moderator-only pitch cell for shoulder regions: borated water fills entire cell, no fuel pellet or cladding"
         }
       ]
     },
@@ -182,18 +190,27 @@
             {"operation_id": "family_plenum", "operation_kind": "replace_universe_family", "replacement_universe_id": "fuel_pin_plenum", "source_universe_id": "fuel_pin", "purpose": "Fuel-pin plenum profile"}
           ],
           "purpose": "Fuel-pin plenum component profile"
+        },
+        {
+          "loading_id": "shoulder_water_loading",
+          "base_lattice_id": "assembly_lattice",
+          "derived_lattice_id": "assembly_lattice_shoulder_water",
+          "transformations": [
+            {"operation_id": "replace_fuel_with_water", "operation_kind": "replace_universe_family", "replacement_universe_id": "moderator_only_pin", "source_universe_id": "fuel_pin", "purpose": "Replace fuel positions with water-only cells in shoulder regions; guide tubes and instrument tube preserved"}
+          ],
+          "purpose": "Shoulder gap loading: fuel positions become water, guide/instrument tube through-paths preserved"
         }
       ],
       "layers": [
         {"layer_id": "lower_moderator_buffer", "role": "reflector", "z_min_cm": -55.0, "z_max_cm": -5.0, "fill_type": "material", "fill_id": "borated_water"},
         {"layer_id": "lower_core_plate", "role": "core_plate", "z_min_cm": -5.0, "z_max_cm": 0.0, "fill_type": "material", "fill_id": "ss304"},
         {"layer_id": "lower_nozzle", "role": "lower_nozzle", "z_min_cm": 0.0, "z_max_cm": 6.053, "fill_type": "material", "fill_id": "ss304"},
-        {"layer_id": "lower_shoulder_gap", "role": "custom", "z_min_cm": 6.053, "z_max_cm": 10.281, "fill_type": "material", "fill_id": "borated_water"},
+        {"layer_id": "lower_shoulder_gap", "role": "custom", "z_min_cm": 6.053, "z_max_cm": 10.281, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "shoulder_water_loading"},
         {"layer_id": "lower_end_plug", "role": "lower_end_plug", "z_min_cm": 10.281, "z_max_cm": 11.951, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "end_plug_loading"},
         {"layer_id": "active_fuel", "role": "active_fuel", "z_min_cm": 11.951, "z_max_cm": 377.711, "fill_type": "lattice", "fill_id": "assembly_lattice"},
         {"layer_id": "upper_end_plug", "role": "upper_end_plug", "z_min_cm": 377.711, "z_max_cm": 379.381, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "end_plug_loading"},
         {"layer_id": "upper_plenum", "role": "upper_plenum", "z_min_cm": 379.381, "z_max_cm": 395.381, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "plenum_loading"},
-        {"layer_id": "upper_shoulder_gap", "role": "custom", "z_min_cm": 395.381, "z_max_cm": 397.51, "fill_type": "material", "fill_id": "borated_water"},
+        {"layer_id": "upper_shoulder_gap", "role": "custom", "z_min_cm": 395.381, "z_max_cm": 397.51, "fill_type": "lattice", "fill_id": "assembly_lattice", "loading_id": "shoulder_water_loading"},
         {"layer_id": "upper_nozzle", "role": "upper_nozzle", "z_min_cm": 397.51, "z_max_cm": 406.337, "fill_type": "material", "fill_id": "ss304"},
         {"layer_id": "upper_core_plate", "role": "core_plate", "z_min_cm": 406.337, "z_max_cm": 413.937, "fill_type": "material", "fill_id": "ss304"},
         {"layer_id": "upper_moderator_buffer", "role": "reflector", "z_min_cm": 413.937, "z_max_cm": 463.937, "fill_type": "material", "fill_id": "borated_water"}

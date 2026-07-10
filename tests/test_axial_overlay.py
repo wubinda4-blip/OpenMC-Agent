@@ -230,7 +230,7 @@ def test_derived_overlay_lattice_preserves_shape_and_pin_counts() -> None:
     # guide_tube (2 open cells) is reused unchanged at its original positions.
     assert "universes['guide_tube']" in script
     # Pitch / lower_left inherited from the base lattice.
-    assert "overlay_lattice_grid1.pitch = (1.26, 1.26)" in script
+    assert "overlay_lattice_grid1__assembly_lattice.pitch = (1.26, 1.26)" in script
 
 
 def test_derived_overlay_universe_preserves_protected_cells() -> None:

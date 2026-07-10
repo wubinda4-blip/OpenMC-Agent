@@ -468,6 +468,67 @@ def test_plan_graph_executes_export_plot_and_smoke_tools(tmp_path: Path) -> None
     assert "plot_0_cell.basis = 'xy'" in model_text
 
 
+def test_plan_graph_generates_renderer_auto_plots_without_llm_plot_specs(tmp_path: Path) -> None:
+    """Production plot artifacts include renderer auto-verification plots."""
+    calls: list[str] = []
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        plan = make_simulation_plan()
+        plan.plot_specs = []
+        return StructuredOutputResult(ok=True, value=plan)
+
+    def fake_export_xml(model_path: str | Path):
+        calls.append("export_xml")
+        return ToolResult(name="export_xml", ok=True, returncode=0)
+
+    def fake_plot(run_dir: str | Path):
+        calls.append("run_geometry_plots")
+        return ToolResult(name="run_geometry_plots", ok=True, returncode=0)
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=fake_export_xml,
+        plot_tool=fake_plot,
+        enable_plots=True,
+        enable_smoke_test=False,
+    )
+    graph.invoke({
+        "requirement": "Build a pin cell.",
+        "model": "test:model",
+        "output_dir": str(tmp_path),
+        "records_path": str(tmp_path / "runs.jsonl"),
+    })
+    assert calls == ["export_xml", "run_geometry_plots"]
+
+
+def test_plan_graph_can_disable_automatic_plot_artifacts(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fake_generate_plan(*, requirement: str, schema, model: str):
+        return StructuredOutputResult(ok=True, value=make_simulation_plan())
+
+    def fake_export_xml(model_path: str | Path):
+        calls.append("export_xml")
+        return ToolResult(name="export_xml", ok=True, returncode=0)
+
+    graph = build_plan_graph(
+        generate_plan=fake_generate_plan,
+        export_xml_tool=fake_export_xml,
+        plot_tool=lambda _: calls.append("run_geometry_plots") or ToolResult(
+            name="run_geometry_plots", ok=True,
+        ),
+        enable_plots=False,
+        enable_smoke_test=False,
+    )
+    graph.invoke({
+        "requirement": "Build a pin cell.",
+        "model": "test:model",
+        "output_dir": str(tmp_path),
+        "records_path": str(tmp_path / "runs.jsonl"),
+    })
+    assert calls == ["export_xml"]
+
+
 def test_plan_graph_reflects_after_smoke_test_failure(tmp_path: Path) -> None:
     calls = {"repair": 0, "smoke": 0}
 

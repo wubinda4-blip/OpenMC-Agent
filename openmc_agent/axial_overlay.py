@@ -248,6 +248,32 @@ def _layer_effective_lattice_id(layer: AxialLayerSpec) -> str | None:
     return None
 
 
+def _layer_matches_overlay_target(
+    layer: AxialLayerSpec,
+    overlay: AxialOverlaySpec,
+    model: ComplexModelSpec,
+) -> bool:
+    """Whether an overlay targets a layer's effective or loading-base lattice.
+
+    Axial lattice transformations materialize a layer to a derived lattice while
+    retaining its loading metadata for provenance. An overlay authored against
+    the loading's base lattice must continue to cover that transformed layer.
+    """
+    if _layer_effective_lattice_id(layer) == overlay.target_lattice_id:
+        return True
+    if overlay.target_lattice_id is None:
+        return False
+    loading_ids = list(layer.loading_ids) or (
+        [layer.loading_id] if layer.loading_id is not None else []
+    )
+    loading_by_id = {loading.id: loading for loading in model.lattice_loadings}
+    return any(
+        (loading := loading_by_id.get(loading_id)) is not None
+        and loading.base_lattice_id == overlay.target_lattice_id
+        for loading_id in loading_ids
+    )
+
+
 def overlay_targets_any_layer(overlay: AxialOverlaySpec, model: ComplexModelSpec) -> bool:
     """True when the overlay's target lattice is the fill lattice of at least
     one axial layer (i.e. the overlay has somewhere to apply)."""
@@ -257,7 +283,7 @@ def overlay_targets_any_layer(overlay: AxialOverlaySpec, model: ComplexModelSpec
     if target is None:
         return False
     return any(
-        _layer_effective_lattice_id(layer) == target
+        _layer_matches_overlay_target(layer, overlay, model)
         for layer in model.core.axial_layers
     )
 
@@ -414,13 +440,12 @@ def compute_axial_segments(
         if layer is None:
             continue  # gap between layers (non-tiling axial stack)
         # Find a renderable overlay covering this segment whose target matches
-        # the layer's fill lattice.
-        layer_lat = _layer_effective_lattice_id(layer)
+        # the layer's effective lattice or its loading's base lattice.
         covering = next(
             (
                 o
                 for o in renderable_overlays
-                if o.target_lattice_id == layer_lat
+                if _layer_matches_overlay_target(layer, o, model)
                 and o.z_min_cm - _Z_TOLERANCE_CM <= z0
                 and z1 <= o.z_max_cm + _Z_TOLERANCE_CM
             ),

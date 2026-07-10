@@ -108,7 +108,7 @@ def test_build_axial_layers_from_reference() -> None:
     patch = build_reference_patch(patch_type="axial_layers", reference=ref, variant="3B")
     assert patch is not None
     assert len(patch.layers) == 16  # upper plenum split into 3 segments
-    assert len(patch.lattice_loadings) == 4  # end_plug + plenum + pyrex + thimble
+    assert len(patch.lattice_loadings) == 5  # end_plug + plenum + pyrex + thimble + shoulder water
     has_fuel = any(l.role == "active_fuel" for l in patch.layers)
     assert has_fuel
 

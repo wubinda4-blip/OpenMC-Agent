@@ -218,8 +218,8 @@ class TestVERA3BAssembly:
             "pyrex_rod": 0,
             "thimble_plug": 0,
         }
-        # end_plug + plenum + pyrex + thimble = 4 loadings
-        assert result.summary["lattice_loading_count"] == 4
+        # end_plug + plenum + pyrex + thimble + shoulder water = 5 loadings
+        assert result.summary["lattice_loading_count"] == 5
 
     def test_bad_facts_guide_count_does_not_pollute_lattice_expected_counts(
         self,

@@ -609,7 +609,7 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
         "pyrex_rod": 0,
         "thimble_plug": 0,
     }
-    assert result.summary["lattice_loading_count"] == 4  # end_plug + plenum + pyrex + thimble
+    assert result.summary["lattice_loading_count"] == 5  # end_plug + plenum + pyrex + thimble + shoulder_water
     assert result.summary["material_aliases_applied"] == {
         "grid_zircaloy4": "zircaloy4"
     }

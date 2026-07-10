@@ -26,6 +26,9 @@ from openmc_agent.schemas import (
     AgentBaseModel,
     AxialLayerSpec,
     CellSpec,
+    ComplexModelSpec,
+    CoreSpec,
+    FillRefSpec,
     LatticeLoadingSpec,
     LatticeSpec,
     LatticeTransformationOperation,
@@ -611,13 +614,24 @@ def compose_lattice_loadings(
                     purpose=f"Bounded nested fill of {op.replacement_universe_id} into {target_cell.id}",
                 )
 
-                # Build derived universe cell list: replace target with clone
+                # Build derived universe cell list: replace target with clone,
+                # and clone all preserved cells so each OpenMC Cell belongs to
+                # exactly one Universe (OpenMC constraint).
                 derived_cell_ids: list[str] = []
                 for bcell in base_cells:
                     if bcell.id == target_cell.id:
                         derived_cell_ids.append(derived_cell_id)
                     else:
-                        derived_cell_ids.append(bcell.id)
+                        preserved_clone_id = f"{bcell.id}__nested_{op.operation_id}"
+                        if sig:
+                            preserved_clone_id = f"{preserved_clone_id}__{sig}"
+                        # Only clone once
+                        if preserved_clone_id not in {dc.id for dc in derived_cells}:
+                            preserved_clone = bcell.model_copy(deep=True)
+                            object.__setattr__(preserved_clone, "id", preserved_clone_id)
+                            preserved_clone.name = f"{bcell.name} (nested clone)"
+                            derived_cells.append(preserved_clone)
+                        derived_cell_ids.append(preserved_clone_id)
 
                 # Add cloned cell to derived objects (once per unique id)
                 if derived_cell_id not in {dc.id for dc in derived_cells}:
@@ -846,6 +860,184 @@ def validate_through_path_preservation(
     return issues
 
 
+# ---------------------------------------------------------------------------
+# Production materialization: wire axial-layer loading_ids into derived
+# lattices and inject derived cells/universes into the spec.
+# ---------------------------------------------------------------------------
+
+
+def materialize_axial_lattice_transformations(
+    spec: ComplexModelSpec,
+) -> tuple[ComplexModelSpec, list[ValidationIssue], dict[str, Any]]:
+    """Apply axial-layer lattice loadings and inject derived objects.
+
+    Walks every axial layer that carries ``loading_id`` / ``loading_ids``,
+    composes the referenced loadings onto the base lattice, then adds the
+    resulting derived cells / universes / lattices to the spec and rewrites
+    the layer's ``fill.id`` to point at the derived lattice.
+
+    The input is **never modified** — a deep copy is returned.
+
+    Returns ``(new_spec, issues, metadata)`` where *metadata* has keys::
+
+        materialized_layer_count, derived_lattice_ids,
+        derived_universe_ids, derived_cell_ids,
+        cache_hits, layer_to_derived_lattice
+    """
+    import copy as _copy
+
+    issues: list[ValidationIssue] = []
+    metadata: dict[str, Any] = {
+        "materialized_layer_count": 0,
+        "derived_lattice_ids": [],
+        "derived_universe_ids": [],
+        "derived_cell_ids": [],
+        "cache_hits": 0,
+        "layer_to_derived_lattice": {},
+    }
+
+    new_spec = spec.model_copy(deep=True)
+    core = new_spec.core
+    if core is None:
+        return new_spec, issues, metadata
+
+    layers = core.axial_layers
+    if not layers:
+        return new_spec, issues, metadata
+
+    lattice_by_id: dict[str, LatticeSpec] = {l.id: l for l in new_spec.lattices}
+    loading_by_id: dict[str, LatticeLoadingSpec] = {
+        l.id: l for l in (new_spec.lattice_loadings or [])
+    }
+
+    # Cache: (base_lattice_id, tuple(loading_ids)) → (derived_lattice, derived_cells, ...)
+    cache: dict[str, dict[str, Any]] = {}
+
+    for layer in layers:
+        lids = normalized_layer_loading_ids(layer)
+        if not lids:
+            continue
+        if layer.fill.type != "lattice":
+            issues.append(ValidationIssue(
+                severity="error",
+                code="renderer.axial_loading_wrong_fill_type",
+                message=(
+                    f"layer {layer.id!r} has loading_ids {lids} but "
+                    f"fill.type={layer.fill.type!r} (expected 'lattice')"
+                ),
+                schema_path=f"core.axial_layers[{layer.id}].fill",
+            ))
+            continue
+
+        declared_bases: set[str] = set()
+        missing_loading_ids: list[str] = []
+        for loading_id in lids:
+            loading = loading_by_id.get(loading_id)
+            if loading is None:
+                missing_loading_ids.append(loading_id)
+            else:
+                declared_bases.add(loading.base_lattice_id)
+        if missing_loading_ids:
+            issues.append(ValidationIssue(
+                severity="error",
+                code="renderer.axial_loading_materialization_failed",
+                message=(
+                    f"layer {layer.id!r}: referenced loadings are missing: "
+                    f"{missing_loading_ids}"
+                ),
+                schema_path=f"core.axial_layers[{layer.id}].loading_ids",
+            ))
+            continue
+        if len(declared_bases) != 1:
+            issues.append(ValidationIssue(
+                severity="error",
+                code="renderer.axial_loading_base_lattice_mismatch",
+                message=(
+                    f"layer {layer.id!r}: loadings {lids} do not declare one "
+                    f"common base lattice: {sorted(declared_bases)}"
+                ),
+                schema_path=f"core.axial_layers[{layer.id}].loading_ids",
+            ))
+            continue
+
+        # The layer may already name a declared derived lattice (legacy IR).
+        # The loading declaration remains the authoritative base for composition.
+        base_lattice_id = next(iter(declared_bases))
+        base_lattice = lattice_by_id.get(base_lattice_id)
+        if base_lattice is None:
+            issues.append(ValidationIssue(
+                severity="error",
+                code="renderer.axial_loading_base_lattice_missing",
+                message=(
+                    f"layer {layer.id!r}: base lattice {base_lattice_id!r} "
+                    "not found"
+                ),
+                schema_path=f"core.axial_layers[{layer.id}].fill",
+            ))
+            continue
+
+        cache_key = f"{base_lattice_id}|{'|'.join(lids)}"
+        if cache_key in cache:
+            entry = cache[cache_key]
+            metadata["cache_hits"] += 1
+        else:
+            result = compose_lattice_loadings(
+                base_lattice=base_lattice,
+                loading_ids=lids,
+                loading_by_id=loading_by_id,
+                universes=new_spec.universes,
+                cells=new_spec.cells,
+            )
+            if not result.ok:
+                issues.append(ValidationIssue(
+                    severity="error",
+                    code="renderer.axial_loading_materialization_failed",
+                    message=(
+                        f"layer {layer.id!r}: compose_lattice_loadings failed: "
+                        + "; ".join(i.message for i in result.issues if i.severity == "error")
+                    ),
+                    schema_path=f"core.axial_layers[{layer.id}].loading_ids",
+                ))
+                issues.extend(result.issues)
+                continue
+
+            derived_lattice = result.derived_lattice
+            assert derived_lattice is not None
+            new_spec.lattices.append(derived_lattice)
+            new_spec.cells.extend(result.derived_cells)
+            new_spec.universes.extend(result.derived_universes)
+            new_spec.surfaces.extend(result.derived_surfaces)
+            new_spec.regions.extend(result.derived_regions)
+
+            entry = {
+                "lattice": derived_lattice,
+                "derived_lattice_id": derived_lattice.id,
+            }
+            cache[cache_key] = entry
+            metadata["derived_lattice_ids"].append(derived_lattice.id)
+            metadata["derived_universe_ids"].extend(
+                u.id for u in result.derived_universes
+            )
+            metadata["derived_cell_ids"].extend(
+                c.id for c in result.derived_cells
+            )
+
+        derived_lattice_id = entry["derived_lattice_id"]
+        layer.fill = FillRefSpec(
+            type="lattice",
+            id=derived_lattice_id,
+        )
+        metadata["materialized_layer_count"] += 1
+        metadata["layer_to_derived_lattice"][layer.id] = {
+            "loading_ids": lids,
+            "base_lattice_id": base_lattice_id,
+            "materialized_lattice_id": derived_lattice_id,
+            "cache_key": cache_key,
+        }
+
+    return new_spec, issues, metadata
+
+
 __all__ = [
     "NormalizedLatticeLoading",
     "LatticeTransformationResult",
@@ -855,4 +1047,5 @@ __all__ = [
     "normalized_layer_loading_ids",
     "layer_loading_id_conflict",
     "validate_through_path_preservation",
+    "materialize_axial_lattice_transformations",
 ]

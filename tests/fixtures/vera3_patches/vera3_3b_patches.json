@@ -351,6 +351,14 @@
             {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
           ],
           "source_note": "Fuel-pin plenum profile: helium internal"
+        },
+        {
+          "universe_id": "moderator_only_pin",
+          "kind": "custom",
+          "cells": [
+            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+          ],
+          "source_note": "Moderator-only pitch cell for shoulder regions: borated water fills entire cell, no fuel pellet or cladding"
         }
       ]
     },
@@ -538,6 +546,15 @@
             }
           ],
           "purpose": "Apply 3B thimble plugs only over 383.31-394.31 cm via bounded nested fill."
+        },
+        {
+          "loading_id": "shoulder_water_loading",
+          "base_lattice_id": "assembly_lattice",
+          "derived_lattice_id": "assembly_lattice_shoulder_water",
+          "transformations": [
+            {"operation_id": "replace_fuel_with_water", "operation_kind": "replace_universe_family", "replacement_universe_id": "moderator_only_pin", "source_universe_id": "fuel_pin", "purpose": "Replace fuel positions with water-only cells in shoulder regions; guide tubes and instrument tube preserved"}
+          ],
+          "purpose": "Shoulder gap loading: fuel positions become water, guide/instrument tube through-paths preserved"
         }
       ],
       "layers": [
@@ -570,8 +587,9 @@
           "role": "custom",
           "z_min_cm": 6.053,
           "z_max_cm": 10.281,
-          "fill_type": "material",
-          "fill_id": "borated_water"
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_id": "shoulder_water_loading"
         },
         {
           "layer_id": "lower_end_plug",
@@ -648,8 +666,9 @@
           "role": "custom",
           "z_min_cm": 395.381,
           "z_max_cm": 397.51,
-          "fill_type": "material",
-          "fill_id": "borated_water"
+          "fill_type": "lattice",
+          "fill_id": "assembly_lattice",
+          "loading_id": "shoulder_water_loading"
         },
         {
           "layer_id": "upper_nozzle",

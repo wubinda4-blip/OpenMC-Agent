@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from openmc_agent.assembly3d_guard import validate_assembly3d_plan
 from openmc_agent.axial_overlay import classify_material_role
@@ -182,6 +182,58 @@ def collect_active_lattice_union(plan: SimulationPlan) -> tuple[float, float] | 
     if not layers:
         return None
     return (layers[0].z_min_cm, layers[-1].z_max_cm)
+
+
+def validate_rendered_vera3_geometry(
+    xml_dir: Path,
+    *,
+    variant: str,
+    contract: Mapping[str, Any],
+) -> list[BenchmarkIssue]:
+    """Probe exported VERA3 OpenMC XML at semantically meaningful points."""
+    import numpy as np
+    import openmc
+
+    materials = openmc.Materials.from_xml(xml_dir / "materials.xml")
+    geometry = openmc.Geometry.from_xml(xml_dir / "geometry.xml", materials)
+
+    def point_material(x: float, y: float, z: float) -> str:
+        path = geometry.find(np.array((x, y, z)))
+        for item in reversed(path):
+            if isinstance(item, openmc.Cell) and isinstance(item.fill, openmc.Material):
+                return item.fill.name.lower()
+        return ""
+
+    def xy(row: int, col: int) -> tuple[float, float]:
+        return ((col + 0.5) * 1.26, (16 - row + 0.5) * 1.26)
+
+    issues: list[BenchmarkIssue] = []
+    fx, fy = xy(0, 0)
+    px, py = xy(2, 5)  # [3,6], canonical Pyrex position
+    tx, ty = xy(2, 8)  # [3,9], canonical thimble position
+
+    checks = [
+        ("vera3.rendered.fuel_active_missing", point_material(fx, fy, 100.0), ("uo2", "fuel")),
+        ("vera3.rendered.fuel_plenum_helium_missing", point_material(fx, fy, 382.0), ("helium",)),
+        ("vera3.rendered.guide_wall_missing", point_material(px + 0.58, py, 100.0), ("zircaloy", "zr")),
+        ("vera3.rendered.shoulder_guide_path_missing", point_material(px + 0.58, py, 7.0), ("zircaloy", "zr")),
+        ("vera3.rendered.shoulder_guide_path_missing", point_material(px + 0.58, py, 396.0), ("zircaloy", "zr")),
+    ]
+    if variant == "3B":
+        checks.extend([
+            ("vera3.rendered.pyrex_missing", point_material(px + 0.30, py, 100.0), ("pyrex", "borosilicate")),
+            ("vera3.rendered.thimble_missing", point_material(tx, ty, 384.0), ("ss-304", "ss304", "stainless")),
+            ("vera3.rendered.thimble_missing", point_material(tx, ty, 382.0), ("water",)),
+            ("vera3.rendered.thimble_missing", point_material(tx, ty, 394.5), ("water",)),
+        ])
+    for code, actual, expected_tokens in checks:
+        if not any(token in actual for token in expected_tokens):
+            issues.append(BenchmarkIssue(
+                code, "error",
+                f"Rendered point probe expected one of {expected_tokens}, got {actual or '<none>'}",
+                expected=expected_tokens, actual=actual,
+            ))
+    return issues
 
 
 def validate_axial_layer_continuity(

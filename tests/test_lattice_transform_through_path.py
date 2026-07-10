@@ -133,18 +133,20 @@ class TestNestedOverride:
         # A derived universe was created
         assert len(result.derived_universes) == 1
         derived = result.derived_universes[0]
-        # Wall cell preserved (unchanged)
-        assert "gt_wall" in derived.cell_ids
-        # Outer moderator preserved
-        assert "gt_outer_water" in derived.cell_ids
+        # Wall cell preserved (as a nested clone so each OpenMC Cell is unique per universe)
+        wall_clones = [cid for cid in derived.cell_ids if "gt_wall" in cid and "nested" in cid]
+        assert len(wall_clones) == 1
+        # Outer moderator preserved (as nested clone)
+        outer_clones = [cid for cid in derived.cell_ids if "gt_outer_water" in cid and "nested" in cid]
+        assert len(outer_clones) == 1
         # Inner water cell replaced by a cloned nested-fill cell
         assert "gt_inner_water" not in derived.cell_ids
         nested_cell_ids = [cid for cid in derived.cell_ids if "nested" in cid]
-        assert len(nested_cell_ids) == 1
-        # The cloned cell is returned in derived_cells with universe fill
-        assert len(result.derived_cells) == 1
-        cloned = result.derived_cells[0]
-        assert cloned.fill_type == "universe"
+        assert len(nested_cell_ids) == 3  # inner_water + wall + outer_water clones
+        # The cloned fill cell is returned in derived_cells
+        fill_cells = [c for c in result.derived_cells if c.fill_type == "universe"]
+        assert len(fill_cells) == 1
+        cloned = fill_cells[0]
         assert cloned.fill_id == "poison_insert"
         assert cloned.region_id == "reg_inner"  # bounding region preserved
         # Lattice position points to derived universe
@@ -169,8 +171,9 @@ class TestNestedOverride:
         )
         assert result.ok
         for du in result.derived_universes:
-            assert "gt_outer_water" in du.cell_ids
-            assert "gt_wall" in du.cell_ids
+            # Preserved cells are cloned with nested suffix (OpenMC one-cell-per-universe)
+            assert any("gt_outer_water" in cid for cid in du.cell_ids)
+            assert any("gt_wall" in cid for cid in du.cell_ids)
 
 
 class TestNestedOverrideValidation:

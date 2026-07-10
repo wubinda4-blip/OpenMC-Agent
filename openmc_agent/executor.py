@@ -19,10 +19,14 @@ from openmc_agent.schemas import (
     SurfaceSpec,
     TRISOSpec,
     UniverseSpec,
+    ValidationIssue,
 )
 from openmc_agent.reachability import (
     ActiveDependencies,
     collect_active_dependencies_from_model,
+)
+from openmc_agent.lattice_transform import (
+    materialize_axial_lattice_transformations,
 )
 
 import re
@@ -471,6 +475,8 @@ def render_openmc_core_script(
     plot_specs: list[PlotSpec] | None = None,
 ) -> str:
     spec = _normalize_core_spec_for_rendering(spec)
+    spec, mat_issues, mat_meta = materialize_axial_lattice_transformations(spec)
+    _block_on_materialization_issues(mat_issues)
     _validate_renderable_core(spec)
     settings = settings_override or spec.settings
     material_blocks = "\n\n".join(
@@ -845,6 +851,16 @@ def _validate_renderable_triso(spec: ComplexModelSpec) -> None:
         raise ValueError("TRISO fuel zone radius must not exceed container radius")
     if triso.layers[-1].outer_radius_cm >= fuel_zone_radius:
         raise ValueError("TRISO outer radius must be less than fuel zone radius")
+
+
+def _block_on_materialization_issues(
+    issues: list[ValidationIssue],
+) -> None:
+    """Raise if lattice-loading materialization produced any error."""
+    errors = [i for i in issues if i.severity == "error"]
+    if errors:
+        msgs = "; ".join(f"{i.code}: {i.message}" for i in errors[:5])
+        raise ValueError(f"axial lattice materialization failed ({len(errors)} errors): {msgs}")
 
 
 def _validate_renderable_core(spec: ComplexModelSpec) -> None:
@@ -2586,7 +2602,7 @@ def _render_source_block(spec: ComplexModelSpec) -> str:
     return "\n".join(lines)
 
 
-def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[str, str]]:
+def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[tuple[str, str], str]]:
     """Emit Level 1 ``homogenized_open_region`` overlay-derived cells, universes
     and lattices.
 
@@ -2594,7 +2610,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
     a single open/coolant cell gets a derived universe whose open cell fill is
     swapped for the grid material (fuel/clad/tube solids are reused untouched).
     Universes with ambiguous open regions are reused as-is to preserve through-
-    paths. Returns ``(script_block, {overlay_id: derived_lattice_variable})``.
+    paths. Returns ``(script_block, {(overlay_id, lattice_id): variable})``.
     """
     from openmc_agent.axial_overlay import (
         compute_axial_segments,
@@ -2606,17 +2622,30 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
         return "", {}
 
     lines: list[str] = []
-    overlay_lattice_vars: dict[str, str] = {}
+    overlay_lattice_vars: dict[tuple[str, str], str] = {}
     universes_by_id = {u.id: u for u in spec.universes}
     cells_by_id = {c.id: c for c in spec.cells}
 
-    for overlay in spec.core.axial_overlays:
+    # A materialized axial loading changes layer.fill.id to a derived lattice,
+    # while an overlay remains authored against its base lattice. Generate an
+    # overlay lattice for every effective lattice covered by an axial segment.
+    targets: dict[tuple[str, str], object] = {}
+    for segment in compute_axial_segments(spec):
+        if (
+            segment.overlay is not None
+            and segment.layer.fill.type == "lattice"
+            and segment.layer.fill.id is not None
+        ):
+            targets[(segment.overlay.id, segment.layer.fill.id)] = segment.overlay
+
+    for (_overlay_id, target_id), overlay in targets.items():
         if not overlay_is_structurally_renderable(overlay, spec):
             continue
-        target = _lattice_by_id(spec, overlay.target_lattice_id)
+        target = _lattice_by_id(spec, target_id)
         if target is None:
             continue
-        plans, _unresolved = derive_overlay_universe_plan(overlay, spec)
+        effective_overlay = overlay.model_copy(update={"target_lattice_id": target.id})
+        plans, _unresolved = derive_overlay_universe_plan(effective_overlay, spec)
 
         # Map base universe id -> id to fill the derived lattice with.
         derived_id_by_base: dict[str, str] = {}
@@ -2632,7 +2661,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
                     if open_cell is not None and open_cell.region_id is not None
                     else "None"
                 )
-                overlay_cell_var = _safe_name("overlay_cell", f"{plan.open_cell_id}__{overlay.id}")
+                overlay_cell_var = _safe_name("overlay_cell", f"{plan.open_cell_id}__{overlay.id}__{target.id}")
                 lines.append(
                     f"{overlay_cell_var} = openmc.Cell("
                     f"name={('overlay ' + plan.open_cell_id + ' ' + overlay.id)!r}, "
@@ -2653,7 +2682,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
                     if base_cell is None:
                         clone_vars.append(f"cells[{cid!r}]")
                         continue
-                    clone_var = _safe_name("overlay_cell", f"{cid}__{overlay.id}")
+                    clone_var = _safe_name("overlay_cell", f"{cid}__{overlay.id}__{target.id}")
                     clone_fill = _cell_fill_expression(base_cell)
                     clone_region = (
                         f"regions[{base_cell.region_id!r}]"
@@ -2670,7 +2699,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
                     clone_vars.append(clone_var)
                 cell_refs = ", ".join(clone_vars + [overlay_cell_var])
                 overlay_universe_var = _safe_name(
-                    "overlay_universe", f"{plan.base_universe_id}__{overlay.id}"
+                    "overlay_universe", f"{plan.base_universe_id}__{overlay.id}__{target.id}"
                 )
                 lines.append(
                     f"{overlay_universe_var} = openmc.Universe("
@@ -2689,7 +2718,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
             [derived_id_by_base.get(uid, uid) for uid in row]
             for row in target.universe_pattern
         ]
-        derived_lattice_var = _safe_name("overlay_lattice", overlay.id)
+        derived_lattice_var = _safe_name("overlay_lattice", f"{overlay.id}__{target.id}")
         derived_lattice_id = f"{target.id}__overlay_{overlay.id}"
         base_lower_left = target.lower_left_cm or _infer_rect_lattice_lower_left(target)
         lines.append(f"{derived_lattice_var} = openmc.RectLattice(name={derived_lattice_id!r})")
@@ -2703,7 +2732,7 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[st
                 f"{derived_lattice_var}.outer = universes[{target.outer_universe_id!r}]"
             )
         lines.append(f"lattices[{derived_lattice_id!r}] = {derived_lattice_var}")
-        overlay_lattice_vars[overlay.id] = derived_lattice_var
+        overlay_lattice_vars[(overlay.id, target.id)] = derived_lattice_var
 
     # Sanity: only emit when at least one overlay actually applied somewhere.
     if overlay_lattice_vars and not compute_axial_segments(spec):
@@ -2828,16 +2857,15 @@ def _render_axial_core_root(spec: ComplexModelSpec) -> str:
             f"{region_name} = +assembly_xmin & -assembly_xmax & "
             f"+assembly_ymin & -assembly_ymax & +{lower_plane} & -{upper_plane}"
         )
-        if seg.overlay is not None and seg.overlay.id in overlay_lattice_vars:
-            fill_expr = overlay_lattice_vars[seg.overlay.id]
+        overlay_key = (
+            (seg.overlay.id, layer.fill.id)
+            if seg.overlay is not None and layer.fill.id is not None
+            else None
+        )
+        if overlay_key is not None and overlay_key in overlay_lattice_vars:
+            fill_expr = overlay_lattice_vars[overlay_key]
         else:
             fill_expr = _axial_layer_fill_expression(layer)
-            if layer.loading_id is not None:
-                if layer.id not in loading_lattice_var_by_layer:
-                    loading_lattice_var_by_layer[layer.id] = _emit_loading_derived_lattice(
-                        spec, layer, lines
-                    )
-                fill_expr = loading_lattice_var_by_layer[layer.id]
         lines.append(
             f"{cell_name} = openmc.Cell("
             f"name={layer.name!r}, "

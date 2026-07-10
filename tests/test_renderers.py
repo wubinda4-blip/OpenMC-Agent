@@ -644,8 +644,8 @@ def test_rect_assembly_with_axial_layers_renders_3d_root(tmp_path: Path) -> None
     assert "assembly_z_max = 20.0" in script
     assert "assembly_zmin = openmc.ZPlane(z0=assembly_z_min, boundary_type='vacuum')" in script
     assert "assembly_xmin = openmc.XPlane(x0=assembly_x_min, boundary_type='reflective')" in script
-    assert "axial_lattice_spacer_grid = openmc.RectLattice(name='grid_lattice')" in script
-    assert "root_cell_spacer_grid = openmc.Cell(name='spacer grid', fill=axial_lattice_spacer_grid" in script
+    assert "lattice_grid_lattice = openmc.RectLattice(name='derived from active_lattice')" in script
+    assert "root_cell_spacer_grid = openmc.Cell(name='spacer grid', fill=lattices['grid_lattice']" in script
     assert "(-1.0)" not in script
 
 

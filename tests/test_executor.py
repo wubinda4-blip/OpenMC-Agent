@@ -1247,13 +1247,13 @@ def test_axial_layer_lattice_loading_emits_derived_lattice(tmp_path: Path) -> No
         plot_specs=[PlotSpec(basis="xy", width_cm=(2.52, 2.52), filename="core_xy.png")],
     )
     script = render_openmc_plan_script(plan)
-    # Derived lattice for the fuel layer (it carries lattice-loading overrides).
-    assert "axial_lattice_fuel = openmc.RectLattice" in script
+    # The renderer materializes the loading before rendering a standard lattice.
+    assert "lattice_rodded_loading_lattice = openmc.RectLattice" in script
     # Override applied: base [["assembly"]] with assembly2 at (0,0) -> [["assembly2"]].
-    assert "axial_lattice_fuel.universes = [[universes['assembly2']]]" in script
-    assert "lattices['rodded_loading_lattice'] = axial_lattice_fuel" in script
+    assert "lattice_rodded_loading_lattice.universes = [[universes['assembly2']]]" in script
+    assert "lattices['rodded_loading_lattice'] = lattice_rodded_loading_lattice" in script
     # Fuel root cell fills the derived lattice, not the base core_lattice directly.
-    assert "fill=axial_lattice_fuel" in script
+    assert "fill=lattices['rodded_loading_lattice']" in script
     # Layer without overrides keeps its material fill.
     assert "fill=materials_by_id['water']" in script
 
@@ -2707,4 +2707,3 @@ def test_core_effective_root_bounds_raises_on_boundary_clip() -> None:
     lattice = next(lat for lat in model.lattices if lat.id == "core_lattice")
     with pytest.raises(ValueError, match="boundary_surface_clip"):
         _core_effective_root_bounds(model, lattice)
-

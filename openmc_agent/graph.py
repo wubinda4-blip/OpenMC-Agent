@@ -2781,8 +2781,8 @@ def _make_execute_tools_node(
             },
         )
 
-        if enable_plots and export_result.ok and plan.plot_specs:
-            _progress(state, "execute_tools", f"running run_geometry_plots count={len(plan.plot_specs)}")
+        if enable_plots and export_result.ok:
+            _progress(state, "execute_tools", f"running run_geometry_plots requested_specs={len(plan.plot_specs)}")
             results.append(plot_tool(output_dir))
             _progress(state, "execute_tools", f"run_geometry_plots ok={results[-1].ok}")
         elif not enable_plots:

@@ -100,10 +100,9 @@ class TestNestedMethodB:
             cells=gt_cells + ins_cells,
         )
         assert result.ok
-        assert len(result.derived_cells) == 1
-        cloned = result.derived_cells[0]
-        assert cloned.fill_type == "universe"
-        assert cloned.fill_id == "poison_insert"
+        assert len(result.derived_cells) == 3
+        fill_cell = next(dc for dc in result.derived_cells if dc.fill_type == "universe")
+        assert fill_cell.fill_id == "poison_insert"
 
     def test_parent_region_preserved(self):
         gt_cells, gt_univ = _guide_tube_universe()
@@ -120,7 +119,7 @@ class TestNestedMethodB:
             cells=gt_cells + ins_cells,
         )
         assert result.ok
-        cloned = result.derived_cells[0]
+        cloned = next(dc for dc in result.derived_cells if dc.fill_type == "universe")
         assert cloned.region_id == "reg_gt_inner"
 
     def test_base_guide_wall_preserved(self):
@@ -139,7 +138,7 @@ class TestNestedMethodB:
         )
         assert result.ok
         derived = result.derived_universes[0]
-        assert "gt_wall" in derived.cell_ids
+        assert any("gt_wall" in cell_id for cell_id in derived.cell_ids)
 
     def test_base_outer_moderator_preserved(self):
         gt_cells, gt_univ = _guide_tube_universe()
@@ -157,7 +156,7 @@ class TestNestedMethodB:
         )
         assert result.ok
         derived = result.derived_universes[0]
-        assert "gt_outer_water" in derived.cell_ids
+        assert any("gt_outer_water" in cell_id for cell_id in derived.cell_ids)
 
     def test_base_objects_unchanged(self):
         gt_cells, gt_univ = _guide_tube_universe()
@@ -237,7 +236,7 @@ class TestNestedMethodB:
             base_lattice=lattice, loading_ids=["L2"],
             loading_by_id={"L2": loading2},
             universes=[gt_univ, ins_univ, result1.derived_universes[0]],
-            cells=gt_cells + ins_cells,
+            cells=gt_cells + ins_cells + result1.derived_cells,
         )
         codes = [i.code for i in result2.issues]
         assert "lattice_transform.nested_universe_cycle" in codes
