@@ -31,6 +31,8 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - 元素符号（He/Zr/Fe/Ni）自动路由到 add_element
 - 受控合金 composition policy 已接入：Zircaloy-4 / SS-304 / Inconel-718 的纯元素近似可替换为 nominal 合金成分，并产出 `material_composition_report.json`
 - workflow benchmark 基础版已可输出 `evaluation_report.json`、`benchmark_summary.md`、per-case trace 和 artifact summary
+- **P0-A LLM Semantic Plan Auditor 已完成**（2026-07-10）：只读语义审查接入 workflow，warning-only 不改 pass/fail，strict 仅 evaluation mismatch 失败；semantic fake benchmark 13/13。
+- **P0-B LLM Patch Repair Proposer 已完成**（2026-07-10）：受限 JSON Patch + path allowlist + protected path policy + clone executor + before/after validation；默认 proposal-only，不运行 OpenMC、不改科学事实；repair fake benchmark 16/16。
 
 优先级约定：
 
@@ -50,9 +52,11 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - 不把 benchmark facts、材料密度、真实 loading map、核数据库路径交给 LLM 自动确认。
 - 先做“只读审查/建议”再做“受控结构化 patch”，最后才考虑受限代码生成。
 
-### P0-A：LLM Semantic Plan Auditor
+### P0-A：LLM Semantic Plan Auditor ✅ 已完成（2026-07-10）
 
 目的：在 deterministic validator 之后增加一个只读语义审查环节，检查“输入文档事实、LLM patch、assembled plan、renderer 能力声明”之间是否一致。
+
+> 状态（2026-07-10）：已完成。已实现 `semantic_audit` schema / input builder / prompt / client / fake / fallback，接入 workflow trace/artifacts 与 benchmark audit metrics；warning-only 默认不改变 route/pass-fail，strict 仅在 evaluation expectation mismatch 时失败。新增 semantic regression fixture 与 8 个测试文件；semantic fake benchmark 13/13 pass_rate=100%。下方步骤保留为设计参考。
 
 优先覆盖：
 
@@ -74,9 +78,11 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - warning-only 模式不会降低现有 fake benchmark 通过率。
 - 至少覆盖 VERA3 3B、2D assembly、3D spacer grid、fact-gap 四类 case。
 
-### P0-B：LLM Patch Repair Proposer
+### P0-B：LLM Patch Repair Proposer ✅ 已完成（2026-07-10）
 
 目的：把当前 deterministic auto-repair 覆盖不到的问题交给 LLM 生成“受限 JSON Patch 候选”，再由本地 validator、schema path allowlist 和回归测试决定是否采纳。
+
+> 状态（2026-07-10）：已完成。新增 repair proposal schema、issue→path allowlist、protected path policy、JSON Patch clone executor、before/after deterministic validation、accept/reject/unsafe 判定、prompt/fake client/fallback，接入 workflow trace/artifacts 与 benchmark metrics/CLI。默认 proposal-only，不运行 OpenMC、不改科学事实；validate-only 只作用于 clone。repair proposal tests 19 passed，repair fake benchmark 16/16 pass_rate=100%。下方步骤保留为设计参考。
 
 实现步骤：
 
@@ -91,7 +97,7 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - 每次 repair 都能解释“修了什么、为什么允许、验证是否通过”。
 - benchmark report 统计 accepted/rejected/unsafe repair 数量。
 
-### P0-C：LLM Run Supervisor
+### P0-C：LLM Run Supervisor ⬜ 待做（下一步）
 
 目的：让 Agent 像成熟编码 agent 一样管理一次建模 run：根据 trace 决定下一步是继续生成 patch、局部重试、请求用户确认、降级 skeleton、运行 smoke test，还是停止并解释阻塞。
 
@@ -108,7 +114,7 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - 错误定位粒度至少到 patch type / issue code / renderer stage。
 - 不会绕过 fact-gap human confirmation。
 
-### P1-D：LLM Evidence Synthesizer
+### P1-D：LLM Evidence Synthesizer ⬜ 待做
 
 目的：把 grep/graph/GraphRAG/RAG 的多路证据压缩成“可用于下一步 prompt 或人工审查”的结构化 evidence brief，减少 prompt 噪声并提升修复质量。
 
@@ -123,7 +129,7 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - prompt evidence 更短、更可追踪。
 - unsafe fact evidence 不进入自动修复路径。
 
-### P1-E：LLM Task Decomposer For Unseen Models
+### P1-E：LLM Task Decomposer For Unseen Models ⬜ 待做
 
 目的：替代一部分硬编码 feature detection，让 LLM 根据输入文档提出“需要哪些 patch、哪些 renderer 能力、哪些事实缺口、哪些验证步骤”，再由本地 policy 约束。
 
@@ -139,7 +145,7 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - 对未知复杂模型能提出比纯规则更多的结构风险点。
 - 对简单 pin-cell 不引入额外复杂度。
 
-### P2-F：Accepted-Run Memory And Few-Shot Mining
+### P2-F：Accepted-Run Memory And Few-Shot Mining ⬜ 待做
 
 目的：从通过验证的真实 run 中自动抽取结构模式、失败修复和审查摘要，形成可审计的局部记忆，而不是手工维护越来越多 few-shot。
 
@@ -154,7 +160,7 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 - 自动挖掘不直接污染 production prompts。
 - 每个晋升 exemplar 都有 provenance 和适用边界。
 
-### P3-G：Agent-Authored Renderer PR Pipeline
+### P3-G：Agent-Authored Renderer PR Pipeline ⬜ 待做
 
 目的：保留“LLM 编写新 renderer”的长期能力，但只允许生成候选 PR，不允许在线执行未知 renderer。
 
@@ -182,7 +188,7 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 
 下一步：
 
-1. 将 semantic audit / LLM repair / run supervisor 指标接入 workflow benchmark。
+1. ✅ semantic audit / LLM repair 指标已接入 workflow benchmark（audit metrics + repair metrics/CLI）；run supervisor 指标待 P0-C 完成后接入。
 2. 建立真实 LLM opt-in baseline：deepseek / GLM / OpenAI-compatible 模型分别记录 patch success、audit findings、repair success 和 cost/latency。
 3. 增加 retrieval ablation 与 LLM-stage ablation：关闭 semantic audit、repair proposer、evidence synthesizer 后对比指标。
 4. 固化首批复杂评估集：pin-cell、2D assembly、3D assembly with overlays、quarter core、fact-gap case、unsupported hex/depletion case、VERA3 3B axial insert regression。
@@ -387,10 +393,10 @@ VERA3 3A 和 3B 均通过 incremental plan builder 端到端成功运行：
 
 VERA3 3A/3B 端到端成功后，重心从"能不能跑通"转向"更智能、更可审计、更不容易静默跑错"：
 
-1. **P0-A Semantic Plan Auditor**：先做 warning-only 语义审查，优先防 3B axial insert 这类“schema 合法但语义错”的问题。
-2. **P0-B Patch Repair Proposer**：在 allowlist 内生成结构化 repair patch，由本地 validator 决定是否采纳。
-3. **P0-C Run Supervisor**：先离线 replay trace，再以 feature flag 接入真实 workflow。
-4. **P0 评估闭环升级**：把 LLM auditor/repair/supervisor 的指标纳入 benchmark 和 regression diff。
+1. ✅ **P0-A Semantic Plan Auditor**（已完成 2026-07-10）：warning-only 语义审查已接入 workflow 与 benchmark。
+2. ✅ **P0-B Patch Repair Proposer**（已完成 2026-07-10）：allowlist 内结构化 repair patch + 本地 validator 采纳判定。
+3. **P0-C Run Supervisor**（下一步）：先离线 replay trace，再以 feature flag 接入真实 workflow。
+4. **P0 评估闭环升级**：auditor/repair 指标已纳入 benchmark；supervisor 指标待 P0-C；下一步建立真实 LLM opt-in baseline 与 regression diff。
 5. **P0 Fact-gap 安全边界**：防止检索、few-shot 和新增 LLM 环节带来错误"自动填事实"。
 6. **P1 Renderer fidelity**：
    - 边界条件验证（已加入 TODO）
