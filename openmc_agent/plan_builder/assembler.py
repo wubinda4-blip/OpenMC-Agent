@@ -168,7 +168,11 @@ def expand_pin_map(
         raise ValueError(f"invalid lattice_size ({nx}, {ny})")
 
     kind_map = universe_ids or {}
-    default_uid = kind_map.get("fuel_pin", pin_map.default_universe_id)
+    # PinMapPatch owns the base lattice universe explicitly.  A universe
+    # catalog can legitimately contain several ``kind=fuel_pin`` entries for
+    # axial profiles; catalog order must never turn one of those profiles into
+    # the base lattice fill.
+    default_uid = pin_map.default_universe_id
 
     # Initialize full grid with default universe.
     grid: list[list[str]] = [[default_uid for _ in range(ny)] for _ in range(nx)]
@@ -453,6 +457,18 @@ def _assemble_lattice(
 ) -> tuple[LatticeSpec | None, list[PlanAssemblyIssue], dict[str, int]]:
     issues: list[PlanAssemblyIssue] = []
 
+    if pin_map.default_universe_id not in universe_ids_on_plan:
+        issues.append(PlanAssemblyIssue(
+            code="assembly.pin_map.default_universe_missing",
+            severity="error",
+            message=(
+                f"PinMapPatch.default_universe_id {pin_map.default_universe_id!r} "
+                "does not exist in UniversesPatch"
+            ),
+            path="pin_map.default_universe_id",
+        ))
+        return None, issues, {}
+
     kind_map = _build_kind_to_universe_map(universes_patch, pin_map)
 
     try:
@@ -470,15 +486,6 @@ def _assemble_lattice(
     pitch = facts.pin_pitch_cm if facts and facts.pin_pitch_cm else 1.26
 
     outer_universe = pin_map.default_universe_id
-    if outer_universe not in universe_ids_on_plan:
-        issues.append(PlanAssemblyIssue(
-            code="assembly.unresolved_universe_reference",
-            severity="warning",
-            message=(
-                f"default_universe_id {outer_universe!r} not in assembled universes"
-            ),
-            path="pin_map.default_universe_id",
-        ))
 
     universe_kind_by_id = {
         univ.universe_id: univ.kind

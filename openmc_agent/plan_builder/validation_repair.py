@@ -47,6 +47,10 @@ class PatchRepairRequest(AgentBaseModel):
     forbidden_path_patterns: list[str]
     prior_candidate_hashes: list[str] = Field(default_factory=list)
     attempt_index: int = 0
+    # Preserve the complete baseline, including warnings, so issue deltas do
+    # not falsely call an already-present warning "introduced".
+    validation_issues_before: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class PatchRepairProposal(AgentBaseModel):
@@ -104,6 +108,11 @@ class PatchRepairEvaluation(AgentBaseModel):
     issues_after: list[str]
     resolved_issue_codes: list[str]
     introduced_issue_codes: list[str]
+    resolved_blockers: list[str] = Field(default_factory=list)
+    introduced_blockers: list[str] = Field(default_factory=list)
+    remaining_blockers: list[str] = Field(default_factory=list)
+    resolved_warnings: list[str] = Field(default_factory=list)
+    introduced_warnings: list[str] = Field(default_factory=list)
     candidate_hash: str | None = None
     issue_fingerprint_before: str
     issue_fingerprint_after: str | None = None
@@ -111,6 +120,7 @@ class PatchRepairEvaluation(AgentBaseModel):
     repaired_plan: dict[str, Any] | None = None
     repaired_patch: dict[str, Any] | None = None
     validation_report_after: dict[str, Any] | None = None
+    candidate_preview: dict[str, Any] | None = None
 
 
 class PatchRepairLLMClient(Protocol):
@@ -265,11 +275,24 @@ def build_patch_repair_request(
         allowed_path_patterns=allowed_path_patterns,
         forbidden_path_patterns=forbidden_path_patterns, prior_candidate_hashes=prior,
         attempt_index=attempt_index,
+        validation_issues_before=[issue.model_dump(mode="json") for issue in report.issues],
     )
 
 
 def _issue_codes(report: ValidationReport) -> list[str]:
     return sorted({issue.code for issue in report.issues})
+
+
+def _issue_identity(issue: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(issue.get("code", "")),
+        _normal_path(issue.get("schema_path")),
+        str(issue.get("severity", "error")),
+    )
+
+
+def _identity_labels(identities: set[tuple[str, str, str]]) -> list[str]:
+    return sorted(f"{code}|{path}|{severity}" for code, path, severity in identities)
 
 
 def _operation_is_safe(operation: PatchRepairOperation, request: PatchRepairRequest) -> bool:
@@ -294,7 +317,9 @@ def evaluate_patch_repair_proposal(
     *, state: PlanBuildState, request: PatchRepairRequest, proposal: PatchRepairProposal,
     requirement: str,
 ) -> PatchRepairEvaluation:
-    before_codes = sorted({str(issue.get("code")) for issue in request.issues if issue.get("code")})
+    before_issues = request.validation_issues_before or request.issues
+    before_identities = {_issue_identity(issue) for issue in before_issues if issue.get("code")}
+    before_codes = sorted({code for code, _, _ in before_identities})
     base = dict(
         accepted=False, issues_before=before_codes, issues_after=before_codes,
         resolved_issue_codes=[], introduced_issue_codes=[],
@@ -320,6 +345,26 @@ def evaluate_patch_repair_proposal(
     patch_result = validate_patch(parsed_candidate)
     if not patch_result.ok:
         return PatchRepairEvaluation(status="rejected_patch_invalid", candidate_hash=candidate_hash, reasons=[i.code for i in patch_result.issues if i.severity == "error"], **base)
+
+    # Cheap deterministic preview avoids a clone assembly when an edit cannot
+    # affect the expanded base lattice at all. It is deliberately advisory for
+    # other patch types.
+    if request.target_patch_type == "pin_map":
+        from .pin_map_repair import preview_pin_map_candidate_counts
+        preview = preview_pin_map_candidate_counts(state=state, candidate_patch=parsed_candidate)
+        before_actual = {}
+        if state.assembled_plan:
+            lattices = state.assembled_plan.get("complex_model", {}).get("lattices", [])
+            if lattices:
+                before_actual = {
+                    uid: sum(row.count(uid) for row in lattices[0].get("universe_pattern", []))
+                    for uid in {item for row in lattices[0].get("universe_pattern", []) for item in row}
+                }
+        if preview.get("ok") and preview.get("actual_counts") == before_actual:
+            return PatchRepairEvaluation(
+                status="rejected_no_improvement", candidate_hash=candidate_hash,
+                reasons=["candidate_preflight_no_effect"], candidate_preview=preview, **base,
+            )
     clone = state.model_copy(deep=True)
     target = next((p for p in clone.patches.values() if p.patch_type == request.target_patch_type and p.status == "valid"), None)
     if target is None:
@@ -335,9 +380,18 @@ def evaluate_patch_repair_proposal(
     after = validate_simulation_plan(assembly.plan, requirement=requirement)
     after_codes = _issue_codes(after)
     after_fingerprint = compute_validation_issue_fingerprint(after, target_patch_type=request.target_patch_type)
-    resolved = sorted(set(before_codes) - set(after_codes))
-    introduced = sorted(set(after_codes) - set(before_codes))
-    blocking = [i.code for i in after.issues if i.severity == "error" and i.code in introduced]
+    after_identities = {
+        _issue_identity(issue.model_dump(mode="json")) for issue in after.issues
+    }
+    resolved_identities = before_identities - after_identities
+    introduced_identities = after_identities - before_identities
+    resolved = sorted({code for code, _, _ in resolved_identities})
+    introduced = sorted({code for code, _, _ in introduced_identities})
+    resolved_blockers = _identity_labels({item for item in resolved_identities if item[2] == "error"})
+    introduced_blockers = _identity_labels({item for item in introduced_identities if item[2] == "error"})
+    remaining_blockers = _identity_labels({item for item in after_identities if item[2] == "error"})
+    resolved_warnings = _identity_labels({item for item in resolved_identities if item[2] == "warning"})
+    introduced_warnings = _identity_labels({item for item in introduced_identities if item[2] == "warning"})
     common = {
         **base,
         "issues_after": after_codes,
@@ -348,10 +402,16 @@ def evaluate_patch_repair_proposal(
         "repaired_plan": assembly.plan.model_dump(mode="json"),
         "repaired_patch": candidate,
         "validation_report_after": after.model_dump(mode="json"),
+        "candidate_preview": preview if request.target_patch_type == "pin_map" else None,
+        "resolved_blockers": resolved_blockers,
+        "introduced_blockers": introduced_blockers,
+        "remaining_blockers": remaining_blockers,
+        "resolved_warnings": resolved_warnings,
+        "introduced_warnings": introduced_warnings,
     }
-    if blocking:
-        return PatchRepairEvaluation(status="rejected_new_blocker", reasons=[f"new blocking issues: {blocking}"], **common)
-    if not resolved or after_codes == before_codes:
+    if introduced_blockers:
+        return PatchRepairEvaluation(status="rejected_new_blocker", reasons=[f"new blocking issues: {introduced_blockers}"], **common)
+    if not resolved_blockers:
         return PatchRepairEvaluation(status="rejected_no_improvement", reasons=["target issue was not eliminated"], **common)
     return PatchRepairEvaluation(
         status="accepted",

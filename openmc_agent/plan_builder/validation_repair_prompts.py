@@ -18,6 +18,9 @@ def build_patch_repair_prompt(request: PatchRepairRequest) -> str:
         "nuclear-data/environment paths.\n"
         "All five top-level keys are required. Do not omit rationale. Do not omit confidence. "
         "confidence must be a number between 0.0 and 1.0.\n\n"
+        "When semantic_context is present, use its count deltas and explicit usage "
+        "classification rather than guessing from universe names. Do not change expected_counts "
+        "and do not edit unrelated coordinate groups.\n\n"
         "Exact output template (replace placeholder values only):\n"
         "{\n"
         f'  "repair_id": {json.dumps(request.repair_id)},\n'

@@ -1,0 +1,15 @@
+{
+  "issue_code": "lattice.pin_count_mismatch",
+  "schema_path": "complex_model.lattices.assembly_lattice.universe_pattern",
+  "current_default_universe_id": "fuel_pin_endplug",
+  "default_position_count": 264,
+  "expected_counts": {"fuel_pin": 264, "fuel_pin_endplug": 0},
+  "actual_counts": {"fuel_pin": 0, "fuel_pin_endplug": 264},
+  "axial_profile_source_ids": ["fuel_pin"],
+  "axial_profile_replacement_ids": ["fuel_pin_endplug"],
+  "expected_operation": {
+    "op": "replace",
+    "path": "/default_universe_id",
+    "value": "fuel_pin"
+  }
+}

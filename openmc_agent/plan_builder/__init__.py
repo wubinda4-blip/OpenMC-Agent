@@ -113,6 +113,13 @@ from .validation_repair_policy import (
     ValidationIssueRepairPolicy,
     policy_for_issue_code,
 )
+from .pin_map_repair import (
+    PinCountDelta,
+    PinMapRepairDiagnosis,
+    UniverseUsageClassification,
+    diagnose_pin_map_count_mismatch,
+    preview_pin_map_candidate_counts,
+)
 
 __all__ = [
     # Phase 0
@@ -159,6 +166,11 @@ __all__ = [
     "evaluate_patch_repair_proposal",
     "ValidationIssueRepairPolicy",
     "policy_for_issue_code",
+    "PinCountDelta",
+    "PinMapRepairDiagnosis",
+    "UniverseUsageClassification",
+    "diagnose_pin_map_count_mismatch",
+    "preview_pin_map_candidate_counts",
     # Phase 3 -- assembler
     "PlanAssemblyIssue",
     "PlanAssemblyResult",

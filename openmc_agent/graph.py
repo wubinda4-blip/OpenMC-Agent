@@ -50,6 +50,8 @@ from openmc_agent.plan_builder.validation_repair_prompts import (
     build_patch_repair_prompt,
     build_patch_repair_schema_correction_prompt,
 )
+from openmc_agent.plan_builder.pin_map_repair import diagnose_pin_map_count_mismatch
+from openmc_agent.plan_builder.patches import parse_patch_content
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
 from openmc_agent.repair_proposal import (
@@ -1960,7 +1962,7 @@ def _try_incremental_validation_patch_repair(
 ) -> tuple[PlanBuildState | None, Any | None, dict[str, Any]]:
     """Evaluate at most two patch edits without mutating the workflow state."""
     build_state = _plan_build_state_for_validation_repair(state.get("plan_build_state"))
-    if build_state is None or llm_client is None:
+    if build_state is None:
         return build_state, None, {"status": "unavailable"}
     eligible = [i for i in report.issues if i.severity == "error"]
     if any(i.requires_human_confirmation or i.route_hint in {"ask_expert", "retrieval"} for i in eligible):
@@ -1983,6 +1985,99 @@ def _try_incremental_validation_patch_repair(
         )
         if request is None:
             continue
+        # The pin-map oracle is intentionally before any repair-model call. It
+        # is only allowed to edit a uniquely proven base default and still uses
+        # the ordinary clone-only acceptance gate below.
+        if target_patch_type == "pin_map" and any(i.code == "lattice.pin_count_mismatch" for i in eligible):
+            target = next(
+                (p for p in build_state.patches.values() if p.patch_type == "pin_map" and p.status == "valid"),
+                None,
+            )
+            plan_payload = build_state.assembled_plan or (
+                state.get("simulation_plan").model_dump(mode="json")
+                if hasattr(state.get("simulation_plan"), "model_dump") else state.get("simulation_plan")
+            )
+            if target is not None and isinstance(plan_payload, dict):
+                try:
+                    diagnosis = diagnose_pin_map_count_mismatch(
+                        state=build_state,
+                        plan=SimulationPlan.model_validate(plan_payload), report=report,
+                        target_patch=parse_patch_content("pin_map", target.content),
+                    )
+                except Exception as exc:
+                    diagnosis = None
+                    build_state.add_event(
+                        "planning.pin_map_repair_ambiguous", "pin-map repair diagnosis failed",
+                        {"reason": str(exc)},
+                    )
+                if diagnosis is not None:
+                    _write_validation_repair_artifact(
+                        state.get("output_dir"), f"pin_map_diagnosis_{attempts}.json", diagnosis,
+                    )
+                    build_state.add_event(
+                        "planning.pin_map_repair_diagnosed", "pin-map count mismatch diagnosed",
+                        diagnosis.model_dump(mode="json"),
+                    )
+                    semantic_context = diagnosis.model_dump(mode="json")
+                    # Keep only the semantic facts needed by a generic repair
+                    # model when the proof is not unique.
+                    request = request.model_copy(update={"semantic_context": semantic_context})
+                    if diagnosis.deterministic_repair_available:
+                        proposal = PatchRepairProposal(
+                            repair_id=request.repair_id,
+                            target_patch_type="pin_map",
+                            operations=diagnosis.deterministic_operations,
+                            rationale=(
+                                "The default lattice universe was an axial profile replacement; "
+                                "the expected base universe has an equal and opposite count delta "
+                                "matching all default positions."
+                            ),
+                            confidence=1.0,
+                        )
+                        _write_validation_repair_artifact(
+                            state.get("output_dir"), f"pin_map_deterministic_proposal_{attempts}.json", proposal,
+                        )
+                        build_state.add_event(
+                            "planning.pin_map_deterministic_repair_proposed",
+                            "deterministic pin-map repair proposed", proposal.model_dump(mode="json"),
+                        )
+                        evaluation = evaluate_patch_repair_proposal(
+                            state=build_state, request=request, proposal=proposal,
+                            requirement=state.get("requirement", ""),
+                        )
+                        if evaluation.candidate_hash:
+                            build_state.validation_repair_candidate_hashes.setdefault(fingerprint, []).append(evaluation.candidate_hash)
+                        _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
+                        if evaluation.candidate_preview is not None:
+                            _write_validation_repair_artifact(
+                                state.get("output_dir"), f"pin_map_candidate_preview_{attempts}.json", evaluation.candidate_preview,
+                            )
+                            build_state.add_event(
+                                "planning.pin_map_candidate_preflight", "pin-map candidate preview completed",
+                                evaluation.candidate_preview,
+                            )
+                        if evaluation.repaired_patch is not None:
+                            _write_validation_repair_artifact(state.get("output_dir"), f"patch_after_{attempts}.json", evaluation.repaired_patch)
+                        if evaluation.validation_report_after is not None:
+                            _write_validation_repair_artifact(state.get("output_dir"), f"plan_validation_after_{attempts}.json", evaluation.validation_report_after)
+                        if evaluation.accepted:
+                            commit_accepted_patch_repair(build_state, evaluation, request)
+                            build_state.add_event(
+                                "planning.pin_map_deterministic_repair_accepted",
+                                "deterministic pin-map repair accepted", evaluation.model_dump(mode="json"),
+                            )
+                            return build_state, evaluation, {"status": "accepted", "strategy": "deterministic_pin_map_count_repair"}
+                        build_state.add_event(
+                            "planning.pin_map_deterministic_repair_rejected",
+                            "deterministic pin-map repair rejected", evaluation.model_dump(mode="json"),
+                        )
+                        return build_state, evaluation, {"status": evaluation.status, "strategy": "deterministic_pin_map_count_repair"}
+                    build_state.add_event(
+                        "planning.pin_map_repair_ambiguous", "pin-map repair requires semantic LLM fallback",
+                        {"reasons": diagnosis.reasons},
+                    )
+        if llm_client is None:
+            return build_state, None, {"status": "unavailable"}
         _write_validation_repair_artifact(state.get("output_dir"), "diagnosis.json", {
             "target_patch_type": target_patch_type,
             "issue_fingerprint": fingerprint,
@@ -2103,6 +2198,14 @@ def _try_incremental_validation_patch_repair(
         if evaluation.candidate_hash:
             build_state.validation_repair_candidate_hashes.setdefault(fingerprint, []).append(evaluation.candidate_hash)
         _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
+        if evaluation.candidate_preview is not None:
+            _write_validation_repair_artifact(
+                state.get("output_dir"), f"pin_map_candidate_preview_{attempts}.json", evaluation.candidate_preview,
+            )
+            build_state.add_event(
+                "planning.pin_map_candidate_preflight", "pin-map candidate preview completed",
+                evaluation.candidate_preview,
+            )
         if evaluation.repaired_patch is not None:
             _write_validation_repair_artifact(state.get("output_dir"), f"patch_after_{attempts}.json", evaluation.repaired_patch)
         if evaluation.repaired_plan is not None:
