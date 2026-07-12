@@ -167,7 +167,7 @@ schema-valid → renderable → XML-exportable → geometry-accepted → physics
 
 需要重新生成 `data/evals/vera3_geometry/3A` 和 `3B`，检查 point probes（fuel→UO₂、z=382→helium、clad→Zircaloy-4、3B Pyrex annulus→Pyrex、thimble→SS304、shoulder guide wall→Zircaloy-4），geometry hashes 3A/3B 差异，plot manifest 无错误，geometry debug 无 overlap/lost particle。
 
-### P0-V1：燃料棒径向 gap 与 plenum 修正 🚧
+### P0-V1：燃料棒径向 gap 与 plenum 修正 ✅
 
 活性燃料棒正确径向结构：`0–0.4096 UO₂ / 0.4096–0.418 helium gap / 0.418–0.475 Zircaloy-4 clad / r≥0.475 coolant`。
 
@@ -338,8 +338,8 @@ audit → repair proposal → deterministic validation → targeted patch retry 
 
 ### Geometry
 
-- [ ] fuel active radial gap 正确
-- [ ] fuel upper plenum 半径正确
+- [x] fuel active radial gap 正确
+- [x] fuel upper plenum 半径正确
 - [ ] Pyrex poison / upper gas profile 正确
 - [ ] thimble finite profile 正确
 - [ ] guide / instrument through-path 正确
