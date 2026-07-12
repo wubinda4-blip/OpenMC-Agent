@@ -76,7 +76,10 @@ def _layer_is_active_fuel(layer: Any) -> bool:
     if fill is None or getattr(fill, "type", None) != "lattice":
         return False
     name = (getattr(layer, "name", "") or "").lower()
-    _component_profile_roles = {"lower_end_plug", "upper_end_plug", "lower_plenum", "upper_plenum", "gas_gap"}
+    _component_profile_roles = {
+        "lower_end_plug", "upper_end_plug", "lower_plenum", "upper_plenum",
+        "gas_gap", "shoulder_gap", "lower_shoulder_gap", "upper_shoulder_gap",
+    }
     return name not in _component_profile_roles
 
 

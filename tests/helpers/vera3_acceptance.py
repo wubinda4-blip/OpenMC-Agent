@@ -760,6 +760,11 @@ def _vera3_pin_universes(variant: str, *, pure_water_guide: bool = False) -> tup
     # pin-internal material changes (end plug = Zircaloy, plenum = helium).
     _pin("fuel_pin_end_plug", "fuel pin end plug", "end_plug_solid", "clad")
     _pin("fuel_pin_plenum", "fuel pin plenum", "plenum_solid", "helium")
+    # Moderator-only universe for shoulder-gap layers (no fuel structure).
+    cells.append(CellSpec(id="shoulder_water", name="shoulder gap water",
+                          fill_type="material", fill_id="water", region_id="coolant_region"))
+    universes.append(UniverseSpec(id="water_cell", name="water cell",
+                                  cell_ids=["shoulder_water"]))
     if pure_water_guide:
         cells.append(CellSpec(id="guide_water", name="guide water",
                               fill_type="material", fill_id="water", region_id="coolant_region"))
@@ -870,6 +875,17 @@ def build_vera3_like_plan(
             purpose="Fuel-pin plenum profile",
         )],
     ))
+    lattice_loadings.append(LatticeLoadingSpec(
+        id="shoulder_gap_loading", base_lattice_id="assembly_lattice",
+        derived_lattice_id="assembly_lattice_shoulder_gap",
+        transformations=[LatticeTransformationOperation(
+            operation_id="replace_fuel_with_water",
+            operation_kind="replace_universe_family",
+            replacement_universe_id="water_cell",
+            source_universe_id="fuel_pin",
+            purpose="Shoulder-gap moderator fill (guide/instrument tubes preserved)",
+        )],
+    ))
 
     if variant == "3B":
         pyrex_coords = [to_0_indexed(pos) for pos in pm["pyrex_positions_1based"]]
@@ -913,6 +929,8 @@ def build_vera3_like_plan(
         "lower_end_plug": "end_plug_loading",
         "upper_end_plug": "end_plug_loading",
         "upper_plenum": "plenum_loading",
+        "lower_shoulder_gap": "shoulder_gap_loading",
+        "upper_shoulder_gap": "shoulder_gap_loading",
     }
     if default_z:
         layers = [AxialLayerSpec(id="fuel", name="fuel", z_min_cm=-1.0, z_max_cm=1.0,

@@ -103,7 +103,10 @@ def _lattice_bounds(model: ComplexModelSpec) -> tuple[float, float, float, float
 def _active_fuel_z(model: ComplexModelSpec) -> tuple[float, float] | None:
     if model.core is None or not model.core.axial_layers:
         return None
-    _component_profile_roles = {"lower_end_plug", "upper_end_plug", "lower_plenum", "upper_plenum", "gas_gap"}
+    _component_profile_roles = {
+        "lower_end_plug", "upper_end_plug", "lower_plenum", "upper_plenum",
+        "gas_gap", "shoulder_gap", "lower_shoulder_gap", "upper_shoulder_gap",
+    }
     z_mins = [
         L.z_min_cm for L in model.core.axial_layers
         if L.fill.type == "lattice" and L.name.lower() not in _component_profile_roles
