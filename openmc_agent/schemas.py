@@ -1707,7 +1707,7 @@ class PlotSpec(AgentBaseModel):
         description="Plot width in centimeters: 2 values for a slice (in-plane), 3 values for a voxel plot (x,y,z).",
     )
     pixels: tuple[int, ...] = Field(
-        default=(500, 500),
+        default=(1200, 1200),
         description="Pixel/voxel resolution: 2 values for a slice, 3 values for a voxel plot.",
     )
     color_by: Literal["material", "cell"] = Field(

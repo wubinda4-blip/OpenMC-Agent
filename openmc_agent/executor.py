@@ -1685,16 +1685,16 @@ def _auto_verification_plots(spec: ComplexModelSpec) -> list[PlotSpec]:
             origin=(cx, cy, z_mid),
             width_cm=(gb.lattice_width[0], axial_height),
             pixels=_reconcile_pixel_aspect(
-                (gb.lattice_width[0], axial_height), (500, 500)
+                (gb.lattice_width[0], axial_height), (1200, 1200)
             ),
             filename="verification_xz.png",
             purpose="Auto xz cross-section: axial layering + spacer-grid bands.",
         ),
     ]
     # Voxel (3-D) for ParaView.
-    nx = max(60, min(220, int(gb.lattice_width[0] / 0.4)))
-    ny = max(60, min(220, int(gb.lattice_width[1] / 0.4)))
-    nz = max(60, min(220, int(axial_height / 2.0)))
+    nx = max(100, min(400, int(gb.lattice_width[0] / 0.2)))
+    ny = max(100, min(400, int(gb.lattice_width[1] / 0.2)))
+    nz = max(100, min(500, int(axial_height / 1.0)))
     plots.append(
         PlotSpec(
             kind="voxel",
@@ -1846,7 +1846,7 @@ def _reconcile_plot_origins(
                     )
                     origin[2] = fuel_z_mid
         # 3) Fix pixel aspect ratio for xz/yz slices where axial >> radial.
-        #    Square pixels (500x500) on a (21 cm x 520 cm) xz slice produce a
+        #    Square pixels (1200x1200) on a (21 cm x 520 cm) xz slice produce a
         #    distorted square image; scale pixels to match the physical width
         #    ratio so the image shows the true slender assembly shape. Applied
         #    silently (renderer optimization, not an LLM-error correction).
@@ -1874,7 +1874,7 @@ def _reconcile_pixel_aspect(
 ) -> tuple[int, ...]:
     """Scale pixel counts to match the physical width aspect ratio.
 
-    A slice plot with ``width=(21, 520)`` cm rendered at ``pixels=(500, 500)``
+    A slice plot with ``width=(21, 520)`` cm rendered at ``pixels=(1200, 1200)``
     looks square instead of showing a tall, slender assembly. This scales the
     pixel counts proportionally to the physical widths while preserving the
     total pixel area (so image file size stays reasonable).
