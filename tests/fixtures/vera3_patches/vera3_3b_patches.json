@@ -177,11 +177,19 @@
               "r_max_cm": 0.4096
             },
             {
+              "id": "helium_gap",
+              "role": "gap",
+              "material_id": "helium",
+              "region_kind": "annulus",
+              "r_min_cm": 0.4096,
+              "r_max_cm": 0.418
+            },
+            {
               "id": "clad",
               "role": "cladding",
               "material_id": "zircaloy4",
               "region_kind": "annulus",
-              "r_min_cm": 0.4096,
+              "r_min_cm": 0.418,
               "r_max_cm": 0.475,
               "protected_through_path": true
             },
@@ -192,7 +200,7 @@
               "region_kind": "background"
             }
           ],
-          "source_note": "VERA3 fuel pin: UO2 pellet, Zircaloy-4 clad, borated water"
+          "source_note": "VERA3 fuel pin: UO2 pellet (r<0.4096), helium gap (0.4096-0.418), Zircaloy-4 clad (0.418-0.475), borated water"
         },
         {
           "universe_id": "guide_tube",
@@ -336,9 +344,28 @@
           "universe_id": "fuel_pin_end_plug",
           "kind": "custom",
           "cells": [
-            {"id": "end_plug_solid", "role": "fuel", "material_id": "zircaloy4", "region_kind": "cylinder", "r_max_cm": 0.4096},
-            {"id": "clad", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.4096, "r_max_cm": 0.475, "protected_through_path": true},
-            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+            {
+              "id": "end_plug_solid",
+              "role": "fuel",
+              "material_id": "zircaloy4",
+              "region_kind": "cylinder",
+              "r_max_cm": 0.4096
+            },
+            {
+              "id": "clad",
+              "role": "cladding",
+              "material_id": "zircaloy4",
+              "region_kind": "annulus",
+              "r_min_cm": 0.4096,
+              "r_max_cm": 0.475,
+              "protected_through_path": true
+            },
+            {
+              "id": "water",
+              "role": "coolant",
+              "material_id": "borated_water",
+              "region_kind": "background"
+            }
           ],
           "source_note": "Fuel-pin end-plug profile: Zircaloy-4 internal"
         },
@@ -346,17 +373,41 @@
           "universe_id": "fuel_pin_plenum",
           "kind": "custom",
           "cells": [
-            {"id": "plenum_gas", "role": "fuel", "material_id": "helium", "region_kind": "cylinder", "r_max_cm": 0.4096},
-            {"id": "clad", "role": "cladding", "material_id": "zircaloy4", "region_kind": "annulus", "r_min_cm": 0.4096, "r_max_cm": 0.475, "protected_through_path": true},
-            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+            {
+              "id": "plenum_gas",
+              "role": "fuel",
+              "material_id": "helium",
+              "region_kind": "cylinder",
+              "r_max_cm": 0.418
+            },
+            {
+              "id": "clad",
+              "role": "cladding",
+              "material_id": "zircaloy4",
+              "region_kind": "annulus",
+              "r_min_cm": 0.418,
+              "r_max_cm": 0.475,
+              "protected_through_path": true
+            },
+            {
+              "id": "water",
+              "role": "coolant",
+              "material_id": "borated_water",
+              "region_kind": "background"
+            }
           ],
-          "source_note": "Fuel-pin plenum profile: helium internal"
+          "source_note": "Fuel-pin plenum profile: helium (r<0.418), Zircaloy-4 clad (0.418-0.475)"
         },
         {
           "universe_id": "moderator_only_pin",
           "kind": "custom",
           "cells": [
-            {"id": "water", "role": "coolant", "material_id": "borated_water", "region_kind": "background"}
+            {
+              "id": "water",
+              "role": "coolant",
+              "material_id": "borated_water",
+              "region_kind": "background"
+            }
           ],
           "source_note": "Moderator-only pitch cell for shoulder regions: borated water fills entire cell, no fuel pellet or cladding"
         }
@@ -500,7 +551,13 @@
           "base_lattice_id": "assembly_lattice",
           "derived_lattice_id": "assembly_lattice_end_plug",
           "transformations": [
-            {"operation_id": "family_end_plug", "operation_kind": "replace_universe_family", "replacement_universe_id": "fuel_pin_end_plug", "source_universe_id": "fuel_pin", "purpose": "Fuel-pin end-plug profile"}
+            {
+              "operation_id": "family_end_plug",
+              "operation_kind": "replace_universe_family",
+              "replacement_universe_id": "fuel_pin_end_plug",
+              "source_universe_id": "fuel_pin",
+              "purpose": "Fuel-pin end-plug profile"
+            }
           ],
           "purpose": "Fuel-pin end-plug component profile"
         },
@@ -509,7 +566,13 @@
           "base_lattice_id": "assembly_lattice",
           "derived_lattice_id": "assembly_lattice_plenum",
           "transformations": [
-            {"operation_id": "family_plenum", "operation_kind": "replace_universe_family", "replacement_universe_id": "fuel_pin_plenum", "source_universe_id": "fuel_pin", "purpose": "Fuel-pin plenum profile"}
+            {
+              "operation_id": "family_plenum",
+              "operation_kind": "replace_universe_family",
+              "replacement_universe_id": "fuel_pin_plenum",
+              "source_universe_id": "fuel_pin",
+              "purpose": "Fuel-pin plenum profile"
+            }
           ],
           "purpose": "Fuel-pin plenum component profile"
         },
@@ -522,9 +585,77 @@
               "operation_id": "insert_pyrex_inside_guide",
               "operation_kind": "nested_component_override",
               "replacement_universe_id": "pyrex_inner_profile",
-              "target_coordinates": [[2,5],[3,3],[5,2],[2,11],[3,13],[5,14],[11,2],[13,3],[14,5],[11,14],[13,13],[14,11],[8,5],[8,11],[5,8],[11,8]],
+              "target_coordinates": [
+                [
+                  2,
+                  5
+                ],
+                [
+                  3,
+                  3
+                ],
+                [
+                  5,
+                  2
+                ],
+                [
+                  2,
+                  11
+                ],
+                [
+                  3,
+                  13
+                ],
+                [
+                  5,
+                  14
+                ],
+                [
+                  11,
+                  2
+                ],
+                [
+                  13,
+                  3
+                ],
+                [
+                  14,
+                  5
+                ],
+                [
+                  11,
+                  14
+                ],
+                [
+                  13,
+                  13
+                ],
+                [
+                  14,
+                  11
+                ],
+                [
+                  8,
+                  5
+                ],
+                [
+                  8,
+                  11
+                ],
+                [
+                  5,
+                  8
+                ],
+                [
+                  11,
+                  8
+                ]
+              ],
               "component_role": "inner_flow",
-              "preserve_component_roles": ["tube_wall", "outer_moderator"],
+              "preserve_component_roles": [
+                "tube_wall",
+                "outer_moderator"
+              ],
               "purpose": "Insert finite-height poison profile inside guide tubes; guide wall and outer moderator preserved"
             }
           ],
@@ -539,9 +670,45 @@
               "operation_id": "insert_thimble_inside_guide",
               "operation_kind": "nested_component_override",
               "replacement_universe_id": "thimble_inner_profile",
-              "target_coordinates": [[2,8],[5,5],[5,11],[8,2],[8,14],[11,5],[11,11],[14,8]],
+              "target_coordinates": [
+                [
+                  2,
+                  8
+                ],
+                [
+                  5,
+                  5
+                ],
+                [
+                  5,
+                  11
+                ],
+                [
+                  8,
+                  2
+                ],
+                [
+                  8,
+                  14
+                ],
+                [
+                  11,
+                  5
+                ],
+                [
+                  11,
+                  11
+                ],
+                [
+                  14,
+                  8
+                ]
+              ],
               "component_role": "inner_flow",
-              "preserve_component_roles": ["tube_wall", "outer_moderator"],
+              "preserve_component_roles": [
+                "tube_wall",
+                "outer_moderator"
+              ],
               "purpose": "Insert thimble plug inside guide tubes over 383.31-394.31 cm; guide wall and outer moderator preserved"
             }
           ],
@@ -552,7 +719,13 @@
           "base_lattice_id": "assembly_lattice",
           "derived_lattice_id": "assembly_lattice_shoulder_water",
           "transformations": [
-            {"operation_id": "replace_fuel_with_water", "operation_kind": "replace_universe_family", "replacement_universe_id": "moderator_only_pin", "source_universe_id": "fuel_pin", "purpose": "Replace fuel positions with water-only cells in shoulder regions; guide tubes and instrument tube preserved"}
+            {
+              "operation_id": "replace_fuel_with_water",
+              "operation_kind": "replace_universe_family",
+              "replacement_universe_id": "moderator_only_pin",
+              "source_universe_id": "fuel_pin",
+              "purpose": "Replace fuel positions with water-only cells in shoulder regions; guide tubes and instrument tube preserved"
+            }
           ],
           "purpose": "Shoulder gap loading: fuel positions become water, guide/instrument tube through-paths preserved"
         }
@@ -650,7 +823,10 @@
           "z_max_cm": 394.31,
           "fill_type": "lattice",
           "fill_id": "assembly_lattice",
-          "loading_ids": ["plenum_loading", "thimble_plug_loading"]
+          "loading_ids": [
+            "plenum_loading",
+            "thimble_plug_loading"
+          ]
         },
         {
           "layer_id": "upper_plenum_upper",

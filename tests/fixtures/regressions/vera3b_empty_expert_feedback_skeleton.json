@@ -20,7 +20,7 @@
     "final_status_label": "BLOCKED_REVIEW_ONLY",
     "internal_ok": false,
     "openmc_execution_attempted": false,
-    "expert_question_group_count": 8,
+    "expert_question_group_count": 9,
     "material_assumption_count": 23,
     "no_duplicate_question_wall": true
   }

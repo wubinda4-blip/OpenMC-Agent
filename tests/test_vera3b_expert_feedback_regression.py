@@ -22,11 +22,18 @@ from openmc_agent.schemas import SimulationPlan
 
 FIXTURE = Path("tests/fixtures/regressions/vera3b_empty_expert_feedback_skeleton.json")
 DIAGNOSIS = Path("data/runs/VERA_3B/expert_feedback_failure_diagnosis.json")
+PLAN_FIXTURE = Path("tests/fixtures/regressions/vera3b_pre_grid_repair_plan.json")
 
 
 @pytest.fixture(scope="module")
 def vera3b_plan() -> SimulationPlan:
-    raw = json.loads(Path("data/runs/VERA_3B/simulation_plan.json").read_text())
+    """Load the frozen pre-repair VERA3B plan with the grid_cell loading issue.
+
+    The mutable ``data/runs/VERA_3B/simulation_plan.json`` was repaired by
+    P0-D5B grid migration.  This frozen fixture preserves the pre-repair
+    structural state so the regression tests remain stable.
+    """
+    raw = json.loads(PLAN_FIXTURE.read_text())
     normalize_capability_report(raw)
     return SimulationPlan.model_validate(raw)
 

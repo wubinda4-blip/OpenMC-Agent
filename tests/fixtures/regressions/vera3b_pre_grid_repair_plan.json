@@ -1,0 +1,2286 @@
+{
+  "schema_version": "simulation_plan.v2",
+  "model_spec": null,
+  "complex_model": {
+    "name": "assembled assembly",
+    "kind": "assembly",
+    "materials": [
+      {
+        "id": "uo2_fuel_3B",
+        "name": "UO2 Fuel 2.619% enriched",
+        "density_unit": "g/cm3",
+        "density_value": 10.257,
+        "composition": [
+          {
+            "name": "U234",
+            "percent": 0.0219,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U235",
+            "percent": 2.619,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U236",
+            "percent": 0.012,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "U238",
+            "percent": 97.3471,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 2.0,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "Table P3-2, §2.1; O16 added stoichiometrically",
+        "assumptions": [
+          "enrichment is approximate; exact composition needs nuclear library",
+          "material uo2_fuel_3B: composition_status=approximate",
+          "material uo2_fuel_3B: Table P3-2, §2.1; O16 added stoichiometrically"
+        ],
+        "requires_human_confirmation": []
+      },
+      {
+        "id": "borated_water_3B",
+        "name": "Borated Water 1066 ppm",
+        "density_unit": "g/cm3",
+        "density_value": 0.743,
+        "composition": [
+          {
+            "name": "B10",
+            "percent": 0.0002132,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          },
+          {
+            "name": "B11",
+            "percent": 0.0008528,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          },
+          {
+            "name": "H1",
+            "percent": 0.666,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 0.332934,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "§3, Table 18; boron concentration 1066 ppm; atom fractions approximate",
+        "assumptions": [
+          "boron concentration is approximate; exact composition needs nuclear library",
+          "material borated_water_3B: composition_status=approximate",
+          "material borated_water_3B: §3, Table 18; boron concentration 1066 ppm; atom fractions approximate"
+        ],
+        "requires_human_confirmation": []
+      },
+      {
+        "id": "zircaloy4",
+        "name": "Zircaloy-4",
+        "density_unit": "g/cm3",
+        "density_value": 6.56,
+        "composition": [
+          {
+            "name": "Sn",
+            "percent": 0.015,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Fe",
+            "percent": 0.0021,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Cr",
+            "percent": 0.001,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O",
+            "percent": 0.0012,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Zr",
+            "percent": 0.9807,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "§2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+        "assumptions": [
+          "Zircaloy-4 approximated as pure Zr; actual composition includes Sn, Fe, Cr, O",
+          "alloy_library: substituted nominal Zircaloy-4 composition (nominal)",
+          "material zircaloy4: composition_status=approximate",
+          "material zircaloy4: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable."
+        ],
+        "requires_human_confirmation": []
+      },
+      {
+        "id": "ss304",
+        "name": "SS304",
+        "density_unit": "g/cm3",
+        "density_value": 8.0,
+        "composition": [
+          {
+            "name": "Cr",
+            "percent": 0.18,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Ni",
+            "percent": 0.08,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Mn",
+            "percent": 0.02,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Si",
+            "percent": 0.01,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "C",
+            "percent": 0.0008,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "P",
+            "percent": 0.00045,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "S",
+            "percent": 0.0003,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Fe",
+            "percent": 0.70845,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "§2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+        "assumptions": [
+          "SS304 approximated as pure Fe; actual composition includes Cr, Ni, Mn, Si, C",
+          "alloy_library: substituted nominal Stainless Steel 304 composition (nominal)",
+          "material ss304: composition_status=approximate",
+          "material ss304: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable."
+        ],
+        "requires_human_confirmation": []
+      },
+      {
+        "id": "inconel718",
+        "name": "Inconel-718",
+        "density_unit": "g/cm3",
+        "density_value": 8.19,
+        "composition": [
+          {
+            "name": "Cr",
+            "percent": 0.19,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Fe",
+            "percent": 0.185,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Nb",
+            "percent": 0.051,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Mo",
+            "percent": 0.03,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Ti",
+            "percent": 0.009,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Al",
+            "percent": 0.005,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Co",
+            "percent": 0.005,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Ni",
+            "percent": 0.525,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "§2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+        "assumptions": [
+          "Inconel-718 approximated as pure Ni; actual composition includes Cr, Fe, Nb, Mo, Ti, Al",
+          "alloy_library: substituted nominal Inconel 718 composition (nominal)",
+          "material inconel718: composition_status=approximate",
+          "material inconel718: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable."
+        ],
+        "requires_human_confirmation": []
+      },
+      {
+        "id": "helium",
+        "name": "Helium",
+        "density_unit": "g/cm3",
+        "density_value": 0.0001785,
+        "composition": [
+          {
+            "name": "He4",
+            "percent": 1.0,
+            "percent_type": "ao",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "§2.2; nominal density at STP scaled to temperature? Using 0.0001785 g/cc as approximate",
+        "assumptions": [
+          "density approximate; exact density depends on pressure and temperature",
+          "material helium: §2.2; nominal density at STP scaled to temperature? Using 0.0001785 g/cc as approximate"
+        ],
+        "requires_human_confirmation": []
+      },
+      {
+        "id": "pyrex",
+        "name": "Pyrex (B2O3-SiO2)",
+        "density_unit": "g/cm3",
+        "density_value": 2.25,
+        "composition": [
+          {
+            "name": "B10",
+            "percent": 0.00712,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "B11",
+            "percent": 0.0317,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "O16",
+            "percent": 0.55217,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          },
+          {
+            "name": "Si",
+            "percent": 0.40901,
+            "percent_type": "wo",
+            "kind": "nuclide"
+          }
+        ],
+        "chemical_formula": null,
+        "macroscopic": null,
+        "enrichment_percent": null,
+        "enrichment_target": null,
+        "enrichment_type": null,
+        "temperature_k": 565.0,
+        "sab": [],
+        "depletable": false,
+        "volume_cm3": null,
+        "source": "§12.2, Table 7; 12.5 wt% B2O3",
+        "assumptions": [
+          "Pyrex composition approximate; exact isotopic fractions may vary",
+          "material pyrex: composition_status=approximate",
+          "material pyrex: §12.2, Table 7; 12.5 wt% B2O3"
+        ],
+        "requires_human_confirmation": []
+      }
+    ],
+    "surfaces": [
+      {
+        "id": "surf_fuel_pin_fuel",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.4096
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for fuel_pin_fuel"
+      },
+      {
+        "id": "surf_fuel_pin_helium_gap",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.418
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for fuel_pin_helium_gap"
+      },
+      {
+        "id": "surf_fuel_pin_clad",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.475
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for fuel_pin_clad"
+      },
+      {
+        "id": "surf_guide_tube_inner_water",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.561
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for guide_tube_inner_water"
+      },
+      {
+        "id": "surf_guide_tube_wall",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.602
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for guide_tube_wall"
+      },
+      {
+        "id": "surf_instrument_tube_inner_water",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.559
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for instrument_tube_inner_water"
+      },
+      {
+        "id": "surf_instrument_tube_wall",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.605
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for instrument_tube_wall"
+      },
+      {
+        "id": "surf_pyrex_rod_inner_helium",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.214
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_inner_helium"
+      },
+      {
+        "id": "surf_pyrex_rod_inner_tube",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.231
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_inner_tube"
+      },
+      {
+        "id": "surf_pyrex_rod_gap1",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.241
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_gap1"
+      },
+      {
+        "id": "surf_pyrex_rod_pyrex",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.427
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_pyrex"
+      },
+      {
+        "id": "surf_pyrex_rod_gap2",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.437
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_gap2"
+      },
+      {
+        "id": "surf_pyrex_rod_outer_clad",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.484
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_outer_clad"
+      },
+      {
+        "id": "surf_pyrex_rod_water_gap",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.561
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_water_gap"
+      },
+      {
+        "id": "surf_pyrex_rod_guide_wall",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.602
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for pyrex_rod_guide_wall"
+      },
+      {
+        "id": "surf_thimble_plug_plug",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.538
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for thimble_plug_plug"
+      },
+      {
+        "id": "surf_thimble_plug_water_gap",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.561
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for thimble_plug_water_gap"
+      },
+      {
+        "id": "surf_thimble_plug_wall",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.602
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for thimble_plug_wall"
+      },
+      {
+        "id": "surf_fuel_upper_plenum_helium_plenum",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.418
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for fuel_upper_plenum_helium_plenum"
+      },
+      {
+        "id": "surf_fuel_upper_plenum_clad",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.475
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for fuel_upper_plenum_clad"
+      },
+      {
+        "id": "surf_fuel_end_plug_end_plug",
+        "kind": "zcylinder",
+        "parameters": {
+          "r": 0.475
+        },
+        "boundary_type": null,
+        "purpose": "Auto-generated pin cylinder for fuel_end_plug_end_plug"
+      }
+    ],
+    "regions": [
+      {
+        "id": "reg_fuel_pin_fuel_in",
+        "expression": "-surf_fuel_pin_fuel",
+        "surface_ids": [
+          "surf_fuel_pin_fuel"
+        ],
+        "purpose": "Inside cylinder for fuel_pin_fuel"
+      },
+      {
+        "id": "reg_fuel_pin_helium_gap_annulus",
+        "expression": "+surf_fuel_pin_fuel -surf_fuel_pin_helium_gap",
+        "surface_ids": [
+          "surf_fuel_pin_fuel",
+          "surf_fuel_pin_helium_gap"
+        ],
+        "purpose": "Annulus for fuel_pin_helium_gap"
+      },
+      {
+        "id": "reg_fuel_pin_clad_annulus",
+        "expression": "+surf_fuel_pin_helium_gap -surf_fuel_pin_clad",
+        "surface_ids": [
+          "surf_fuel_pin_helium_gap",
+          "surf_fuel_pin_clad"
+        ],
+        "purpose": "Annulus for fuel_pin_clad"
+      },
+      {
+        "id": "reg_fuel_pin_coolant_out",
+        "expression": "+surf_fuel_pin_clad",
+        "surface_ids": [
+          "surf_fuel_pin_clad"
+        ],
+        "purpose": "Outside region for fuel_pin_coolant"
+      },
+      {
+        "id": "reg_guide_tube_inner_water_in",
+        "expression": "-surf_guide_tube_inner_water",
+        "surface_ids": [
+          "surf_guide_tube_inner_water"
+        ],
+        "purpose": "Inside cylinder for guide_tube_inner_water"
+      },
+      {
+        "id": "reg_guide_tube_wall_annulus",
+        "expression": "+surf_guide_tube_inner_water -surf_guide_tube_wall",
+        "surface_ids": [
+          "surf_guide_tube_inner_water",
+          "surf_guide_tube_wall"
+        ],
+        "purpose": "Annulus for guide_tube_wall"
+      },
+      {
+        "id": "reg_guide_tube_outer_water_out",
+        "expression": "+surf_guide_tube_wall",
+        "surface_ids": [
+          "surf_guide_tube_wall"
+        ],
+        "purpose": "Outside region for guide_tube_outer_water"
+      },
+      {
+        "id": "reg_instrument_tube_inner_water_in",
+        "expression": "-surf_instrument_tube_inner_water",
+        "surface_ids": [
+          "surf_instrument_tube_inner_water"
+        ],
+        "purpose": "Inside cylinder for instrument_tube_inner_water"
+      },
+      {
+        "id": "reg_instrument_tube_wall_annulus",
+        "expression": "+surf_instrument_tube_inner_water -surf_instrument_tube_wall",
+        "surface_ids": [
+          "surf_instrument_tube_inner_water",
+          "surf_instrument_tube_wall"
+        ],
+        "purpose": "Annulus for instrument_tube_wall"
+      },
+      {
+        "id": "reg_instrument_tube_outer_water_out",
+        "expression": "+surf_instrument_tube_wall",
+        "surface_ids": [
+          "surf_instrument_tube_wall"
+        ],
+        "purpose": "Outside region for instrument_tube_outer_water"
+      },
+      {
+        "id": "reg_pyrex_rod_inner_helium_in",
+        "expression": "-surf_pyrex_rod_inner_helium",
+        "surface_ids": [
+          "surf_pyrex_rod_inner_helium"
+        ],
+        "purpose": "Inside cylinder for pyrex_rod_inner_helium"
+      },
+      {
+        "id": "reg_pyrex_rod_inner_tube_annulus",
+        "expression": "+surf_pyrex_rod_inner_helium -surf_pyrex_rod_inner_tube",
+        "surface_ids": [
+          "surf_pyrex_rod_inner_helium",
+          "surf_pyrex_rod_inner_tube"
+        ],
+        "purpose": "Annulus for pyrex_rod_inner_tube"
+      },
+      {
+        "id": "reg_pyrex_rod_gap1_annulus",
+        "expression": "+surf_pyrex_rod_inner_tube -surf_pyrex_rod_gap1",
+        "surface_ids": [
+          "surf_pyrex_rod_inner_tube",
+          "surf_pyrex_rod_gap1"
+        ],
+        "purpose": "Annulus for pyrex_rod_gap1"
+      },
+      {
+        "id": "reg_pyrex_rod_pyrex_annulus",
+        "expression": "+surf_pyrex_rod_gap1 -surf_pyrex_rod_pyrex",
+        "surface_ids": [
+          "surf_pyrex_rod_gap1",
+          "surf_pyrex_rod_pyrex"
+        ],
+        "purpose": "Annulus for pyrex_rod_pyrex"
+      },
+      {
+        "id": "reg_pyrex_rod_gap2_annulus",
+        "expression": "+surf_pyrex_rod_pyrex -surf_pyrex_rod_gap2",
+        "surface_ids": [
+          "surf_pyrex_rod_pyrex",
+          "surf_pyrex_rod_gap2"
+        ],
+        "purpose": "Annulus for pyrex_rod_gap2"
+      },
+      {
+        "id": "reg_pyrex_rod_outer_clad_annulus",
+        "expression": "+surf_pyrex_rod_gap2 -surf_pyrex_rod_outer_clad",
+        "surface_ids": [
+          "surf_pyrex_rod_gap2",
+          "surf_pyrex_rod_outer_clad"
+        ],
+        "purpose": "Annulus for pyrex_rod_outer_clad"
+      },
+      {
+        "id": "reg_pyrex_rod_water_gap_annulus",
+        "expression": "+surf_pyrex_rod_outer_clad -surf_pyrex_rod_water_gap",
+        "surface_ids": [
+          "surf_pyrex_rod_outer_clad",
+          "surf_pyrex_rod_water_gap"
+        ],
+        "purpose": "Annulus for pyrex_rod_water_gap"
+      },
+      {
+        "id": "reg_pyrex_rod_guide_wall_annulus",
+        "expression": "+surf_pyrex_rod_water_gap -surf_pyrex_rod_guide_wall",
+        "surface_ids": [
+          "surf_pyrex_rod_water_gap",
+          "surf_pyrex_rod_guide_wall"
+        ],
+        "purpose": "Annulus for pyrex_rod_guide_wall"
+      },
+      {
+        "id": "reg_pyrex_rod_outer_coolant_out",
+        "expression": "+surf_pyrex_rod_guide_wall",
+        "surface_ids": [
+          "surf_pyrex_rod_guide_wall"
+        ],
+        "purpose": "Outside region for pyrex_rod_outer_coolant"
+      },
+      {
+        "id": "reg_thimble_plug_plug_in",
+        "expression": "-surf_thimble_plug_plug",
+        "surface_ids": [
+          "surf_thimble_plug_plug"
+        ],
+        "purpose": "Inside cylinder for thimble_plug_plug"
+      },
+      {
+        "id": "reg_thimble_plug_water_gap_annulus",
+        "expression": "+surf_thimble_plug_plug -surf_thimble_plug_water_gap",
+        "surface_ids": [
+          "surf_thimble_plug_plug",
+          "surf_thimble_plug_water_gap"
+        ],
+        "purpose": "Annulus for thimble_plug_water_gap"
+      },
+      {
+        "id": "reg_thimble_plug_wall_annulus",
+        "expression": "+surf_thimble_plug_water_gap -surf_thimble_plug_wall",
+        "surface_ids": [
+          "surf_thimble_plug_water_gap",
+          "surf_thimble_plug_wall"
+        ],
+        "purpose": "Annulus for thimble_plug_wall"
+      },
+      {
+        "id": "reg_thimble_plug_outer_coolant_out",
+        "expression": "+surf_thimble_plug_wall",
+        "surface_ids": [
+          "surf_thimble_plug_wall"
+        ],
+        "purpose": "Outside region for thimble_plug_outer_coolant"
+      },
+      {
+        "id": "reg_fuel_upper_plenum_helium_plenum_in",
+        "expression": "-surf_fuel_upper_plenum_helium_plenum",
+        "surface_ids": [
+          "surf_fuel_upper_plenum_helium_plenum"
+        ],
+        "purpose": "Inside cylinder for fuel_upper_plenum_helium_plenum"
+      },
+      {
+        "id": "reg_fuel_upper_plenum_clad_annulus",
+        "expression": "+surf_fuel_upper_plenum_helium_plenum -surf_fuel_upper_plenum_clad",
+        "surface_ids": [
+          "surf_fuel_upper_plenum_helium_plenum",
+          "surf_fuel_upper_plenum_clad"
+        ],
+        "purpose": "Annulus for fuel_upper_plenum_clad"
+      },
+      {
+        "id": "reg_fuel_upper_plenum_coolant_out",
+        "expression": "+surf_fuel_upper_plenum_clad",
+        "surface_ids": [
+          "surf_fuel_upper_plenum_clad"
+        ],
+        "purpose": "Outside region for fuel_upper_plenum_coolant"
+      },
+      {
+        "id": "reg_fuel_end_plug_end_plug_in",
+        "expression": "-surf_fuel_end_plug_end_plug",
+        "surface_ids": [
+          "surf_fuel_end_plug_end_plug"
+        ],
+        "purpose": "Inside cylinder for fuel_end_plug_end_plug"
+      },
+      {
+        "id": "reg_fuel_end_plug_coolant_out",
+        "expression": "+surf_fuel_end_plug_end_plug",
+        "surface_ids": [
+          "surf_fuel_end_plug_end_plug"
+        ],
+        "purpose": "Outside region for fuel_end_plug_coolant"
+      }
+    ],
+    "cells": [
+      {
+        "id": "fuel_pin_fuel",
+        "name": "fuel",
+        "region_id": "reg_fuel_pin_fuel_in",
+        "fill_type": "material",
+        "fill_id": "uo2_fuel_3B",
+        "component_role": "fuel",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "fuel"
+      },
+      {
+        "id": "fuel_pin_helium_gap",
+        "name": "helium_gap",
+        "region_id": "reg_fuel_pin_helium_gap_annulus",
+        "fill_type": "material",
+        "fill_id": "helium",
+        "component_role": "gap",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "gap"
+      },
+      {
+        "id": "fuel_pin_clad",
+        "name": "clad",
+        "region_id": "reg_fuel_pin_clad_annulus",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": true,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "fuel_pin_coolant",
+        "name": "coolant",
+        "region_id": "reg_fuel_pin_coolant_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "guide_tube_inner_water",
+        "name": "inner_water",
+        "region_id": "reg_guide_tube_inner_water_in",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "guide_tube_wall",
+        "name": "wall",
+        "region_id": "reg_guide_tube_wall_annulus",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": true,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "guide_tube_outer_water",
+        "name": "outer_water",
+        "region_id": "reg_guide_tube_outer_water_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "background",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "background"
+      },
+      {
+        "id": "instrument_tube_inner_water",
+        "name": "inner_water",
+        "region_id": "reg_instrument_tube_inner_water_in",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "instrument_tube_wall",
+        "name": "wall",
+        "region_id": "reg_instrument_tube_wall_annulus",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": true,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "instrument_tube_outer_water",
+        "name": "outer_water",
+        "region_id": "reg_instrument_tube_outer_water_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "background",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "background"
+      },
+      {
+        "id": "pyrex_rod_inner_helium",
+        "name": "inner_helium",
+        "region_id": "reg_pyrex_rod_inner_helium_in",
+        "fill_type": "material",
+        "fill_id": "helium",
+        "component_role": "gap",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "gap"
+      },
+      {
+        "id": "pyrex_rod_inner_tube",
+        "name": "inner_tube",
+        "region_id": "reg_pyrex_rod_inner_tube_annulus",
+        "fill_type": "material",
+        "fill_id": "ss304",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "pyrex_rod_gap1",
+        "name": "gap1",
+        "region_id": "reg_pyrex_rod_gap1_annulus",
+        "fill_type": "material",
+        "fill_id": "helium",
+        "component_role": "gap",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "gap"
+      },
+      {
+        "id": "pyrex_rod_pyrex",
+        "name": "pyrex",
+        "region_id": "reg_pyrex_rod_pyrex_annulus",
+        "fill_type": "material",
+        "fill_id": "pyrex",
+        "component_role": "poison",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "poison"
+      },
+      {
+        "id": "pyrex_rod_gap2",
+        "name": "gap2",
+        "region_id": "reg_pyrex_rod_gap2_annulus",
+        "fill_type": "material",
+        "fill_id": "helium",
+        "component_role": "gap",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "gap"
+      },
+      {
+        "id": "pyrex_rod_outer_clad",
+        "name": "outer_clad",
+        "region_id": "reg_pyrex_rod_outer_clad_annulus",
+        "fill_type": "material",
+        "fill_id": "ss304",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "pyrex_rod_water_gap",
+        "name": "water_gap",
+        "region_id": "reg_pyrex_rod_water_gap_annulus",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "pyrex_rod_guide_wall",
+        "name": "guide_wall",
+        "region_id": "reg_pyrex_rod_guide_wall_annulus",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": true,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "pyrex_rod_outer_coolant",
+        "name": "outer_coolant",
+        "region_id": "reg_pyrex_rod_outer_coolant_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "background",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "background"
+      },
+      {
+        "id": "thimble_plug_plug",
+        "name": "plug",
+        "region_id": "reg_thimble_plug_plug_in",
+        "fill_type": "material",
+        "fill_id": "ss304",
+        "component_role": "plug",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "plug"
+      },
+      {
+        "id": "thimble_plug_water_gap",
+        "name": "water_gap",
+        "region_id": "reg_thimble_plug_water_gap_annulus",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "thimble_plug_wall",
+        "name": "wall",
+        "region_id": "reg_thimble_plug_wall_annulus",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": true,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "thimble_plug_outer_coolant",
+        "name": "outer_coolant",
+        "region_id": "reg_thimble_plug_outer_coolant_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "background",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "background"
+      },
+      {
+        "id": "fuel_upper_plenum_helium_plenum",
+        "name": "helium_plenum",
+        "region_id": "reg_fuel_upper_plenum_helium_plenum_in",
+        "fill_type": "material",
+        "fill_id": "helium",
+        "component_role": "gap",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "gap"
+      },
+      {
+        "id": "fuel_upper_plenum_clad",
+        "name": "clad",
+        "region_id": "reg_fuel_upper_plenum_clad_annulus",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "cladding",
+        "component_path_id": null,
+        "protected_through_path": true,
+        "temperature_k": null,
+        "purpose": "cladding"
+      },
+      {
+        "id": "fuel_upper_plenum_coolant",
+        "name": "coolant",
+        "region_id": "reg_fuel_upper_plenum_coolant_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "fuel_end_plug_end_plug",
+        "name": "end_plug",
+        "region_id": "reg_fuel_end_plug_end_plug_in",
+        "fill_type": "material",
+        "fill_id": "zircaloy4",
+        "component_role": "plug",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "plug"
+      },
+      {
+        "id": "fuel_end_plug_coolant",
+        "name": "coolant",
+        "region_id": "reg_fuel_end_plug_coolant_out",
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      },
+      {
+        "id": "water_cell_water",
+        "name": "water",
+        "region_id": null,
+        "fill_type": "material",
+        "fill_id": "borated_water_3B",
+        "component_role": "coolant",
+        "component_path_id": null,
+        "protected_through_path": false,
+        "temperature_k": null,
+        "purpose": "coolant"
+      }
+    ],
+    "universes": [
+      {
+        "id": "fuel_pin",
+        "name": "fuel_pin",
+        "cell_ids": [
+          "fuel_pin_fuel",
+          "fuel_pin_helium_gap",
+          "fuel_pin_clad",
+          "fuel_pin_coolant"
+        ],
+        "purpose": "fuel_pin"
+      },
+      {
+        "id": "guide_tube",
+        "name": "guide_tube",
+        "cell_ids": [
+          "guide_tube_inner_water",
+          "guide_tube_wall",
+          "guide_tube_outer_water"
+        ],
+        "purpose": "guide_tube"
+      },
+      {
+        "id": "instrument_tube",
+        "name": "instrument_tube",
+        "cell_ids": [
+          "instrument_tube_inner_water",
+          "instrument_tube_wall",
+          "instrument_tube_outer_water"
+        ],
+        "purpose": "instrument_tube"
+      },
+      {
+        "id": "pyrex_rod",
+        "name": "pyrex_rod",
+        "cell_ids": [
+          "pyrex_rod_inner_helium",
+          "pyrex_rod_inner_tube",
+          "pyrex_rod_gap1",
+          "pyrex_rod_pyrex",
+          "pyrex_rod_gap2",
+          "pyrex_rod_outer_clad",
+          "pyrex_rod_water_gap",
+          "pyrex_rod_guide_wall",
+          "pyrex_rod_outer_coolant"
+        ],
+        "purpose": "pyrex_rod"
+      },
+      {
+        "id": "thimble_plug",
+        "name": "thimble_plug",
+        "cell_ids": [
+          "thimble_plug_plug",
+          "thimble_plug_water_gap",
+          "thimble_plug_wall",
+          "thimble_plug_outer_coolant"
+        ],
+        "purpose": "thimble_plug"
+      },
+      {
+        "id": "fuel_upper_plenum",
+        "name": "fuel_pin",
+        "cell_ids": [
+          "fuel_upper_plenum_helium_plenum",
+          "fuel_upper_plenum_clad",
+          "fuel_upper_plenum_coolant"
+        ],
+        "purpose": "fuel_pin"
+      },
+      {
+        "id": "fuel_end_plug",
+        "name": "fuel_pin",
+        "cell_ids": [
+          "fuel_end_plug_end_plug",
+          "fuel_end_plug_coolant"
+        ],
+        "purpose": "fuel_pin"
+      },
+      {
+        "id": "water_cell",
+        "name": "water_cell",
+        "cell_ids": [
+          "water_cell_water"
+        ],
+        "purpose": "water_cell"
+      }
+    ],
+    "lattices": [
+      {
+        "id": "assembly_lattice",
+        "name": "assembly lattice",
+        "kind": "rect",
+        "pitch_cm": [
+          1.26,
+          1.26
+        ],
+        "lower_left_cm": null,
+        "center_cm": null,
+        "shape": [
+          17,
+          17
+        ],
+        "outer_universe_id": "fuel_pin",
+        "universe_pattern": [
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "instrument_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "guide_tube",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ],
+          [
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin",
+            "fuel_pin"
+          ]
+        ],
+        "rings": [],
+        "fill_universe": null,
+        "overrides": {},
+        "expected_counts": {
+          "fuel_pin": 264,
+          "guide_tube": 24,
+          "instrument_tube": 1,
+          "pyrex_rod": 0,
+          "thimble_plug": 0
+        },
+        "requires_human_confirmation": [],
+        "purpose": "Expanded from PinMapPatch by deterministic assembler"
+      }
+    ],
+    "lattice_loadings": [
+      {
+        "id": "shoulder_gap_loading",
+        "base_lattice_id": "assembly_lattice",
+        "derived_lattice_id": "assembly_lattice_shoulder_gap",
+        "transformations": [
+          {
+            "operation_id": "replace_fuel_pin_with_water",
+            "operation_kind": "replace_universe_family",
+            "replacement_universe_id": "water_cell",
+            "source_universe_id": "fuel_pin",
+            "source_universe_ids": [],
+            "target_coordinates": [],
+            "component_role": null,
+            "component_path_id": null,
+            "preserve_component_roles": [],
+            "preserve_path_ids": [],
+            "priority": 0,
+            "purpose": ""
+          }
+        ],
+        "overrides": {},
+        "purpose": "Replace fuel pins with water in shoulder gap regions"
+      },
+      {
+        "id": "end_plug_loading",
+        "base_lattice_id": "assembly_lattice",
+        "derived_lattice_id": "assembly_lattice_end_plug",
+        "transformations": [
+          {
+            "operation_id": "replace_fuel_pin_with_end_plug",
+            "operation_kind": "replace_universe_family",
+            "replacement_universe_id": "fuel_end_plug",
+            "source_universe_id": "fuel_pin",
+            "source_universe_ids": [],
+            "target_coordinates": [],
+            "component_role": null,
+            "component_path_id": null,
+            "preserve_component_roles": [],
+            "preserve_path_ids": [],
+            "priority": 0,
+            "purpose": ""
+          }
+        ],
+        "overrides": {},
+        "purpose": "Replace fuel pins with end plug universe"
+      },
+      {
+        "id": "plenum_loading",
+        "base_lattice_id": "assembly_lattice",
+        "derived_lattice_id": "assembly_lattice_plenum",
+        "transformations": [
+          {
+            "operation_id": "replace_fuel_pin_with_plenum",
+            "operation_kind": "replace_universe_family",
+            "replacement_universe_id": "fuel_upper_plenum",
+            "source_universe_id": "fuel_pin",
+            "source_universe_ids": [],
+            "target_coordinates": [],
+            "component_role": null,
+            "component_path_id": null,
+            "preserve_component_roles": [],
+            "preserve_path_ids": [],
+            "priority": 0,
+            "purpose": ""
+          }
+        ],
+        "overrides": {},
+        "purpose": "Replace fuel pins with plenum universe"
+      },
+      {
+        "id": "pyrex_rod_loading",
+        "base_lattice_id": "assembly_lattice",
+        "derived_lattice_id": "assembly_lattice_pyrex_rod_loading",
+        "transformations": [],
+        "overrides": {
+          "pyrex_rod": [
+            [
+              2,
+              5
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              5,
+              2
+            ],
+            [
+              2,
+              11
+            ],
+            [
+              3,
+              13
+            ],
+            [
+              5,
+              14
+            ],
+            [
+              11,
+              2
+            ],
+            [
+              13,
+              3
+            ],
+            [
+              14,
+              5
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              11
+            ],
+            [
+              8,
+              5
+            ],
+            [
+              8,
+              11
+            ],
+            [
+              5,
+              8
+            ],
+            [
+              11,
+              8
+            ]
+          ]
+        },
+        "purpose": "axial insert loading derived from finite insert coordinates"
+      },
+      {
+        "id": "spacer_grid_loadings",
+        "base_lattice_id": "assembly_lattice",
+        "transformations": [
+          {
+            "operation_id": "replace_water_with_grid",
+            "operation_kind": "replace_universe_family",
+            "replacement_universe_id": "grid_cell",
+            "source_universe_id": "water_cell"
+          }
+        ]
+      },
+      {
+        "id": "top_grid_loading",
+        "base_lattice_id": "assembly_lattice",
+        "transformations": [
+          {
+            "operation_id": "replace_water_with_top_grid",
+            "operation_kind": "replace_universe_family",
+            "replacement_universe_id": "grid_cell",
+            "source_universe_id": "water_cell"
+          }
+        ]
+      }
+    ],
+    "assemblies": [
+      {
+        "id": "assembly_1",
+        "name": "assembled assembly",
+        "lattice_id": "assembly_lattice",
+        "pitch_cm": 21.5,
+        "boundary": "reflective",
+        "purpose": "Assembled from incremental patches"
+      }
+    ],
+    "core": {
+      "id": "core_1",
+      "name": "assembled core",
+      "lattice_id": "assembly_lattice",
+      "assembly_ids": [
+        "assembly_1"
+      ],
+      "reflector_ids": [],
+      "control_rod_ids": [],
+      "boundary": "vacuum",
+      "boundary_conditions": null,
+      "axial_layers": [
+        {
+          "id": "lower_moderator_buffer",
+          "name": "reflector",
+          "z_min_cm": -55.0,
+          "z_max_cm": -5.0,
+          "fill": {
+            "type": "material",
+            "id": "borated_water_3B"
+          },
+          "loading_id": null,
+          "loading_ids": [],
+          "purpose": "reflector"
+        },
+        {
+          "id": "lower_core_plate",
+          "name": "core_plate",
+          "z_min_cm": -5.0,
+          "z_max_cm": 0.0,
+          "fill": {
+            "type": "material",
+            "id": "ss304"
+          },
+          "loading_id": null,
+          "loading_ids": [],
+          "purpose": "core_plate"
+        },
+        {
+          "id": "lower_nozzle",
+          "name": "lower_nozzle",
+          "z_min_cm": 0.0,
+          "z_max_cm": 6.053,
+          "fill": {
+            "type": "material",
+            "id": "ss304"
+          },
+          "loading_id": null,
+          "loading_ids": [],
+          "purpose": "lower_nozzle"
+        },
+        {
+          "id": "lower_shoulder_gap",
+          "name": "lower_shoulder_gap",
+          "z_min_cm": 6.053,
+          "z_max_cm": 10.281,
+          "fill": {
+            "type": "lattice",
+            "id": "assembly_lattice"
+          },
+          "loading_id": "shoulder_gap_loading",
+          "loading_ids": [],
+          "purpose": "lower_shoulder_gap"
+        },
+        {
+          "id": "lower_end_plug",
+          "name": "lower_end_plug",
+          "z_min_cm": 10.281,
+          "z_max_cm": 11.951,
+          "fill": {
+            "type": "lattice",
+            "id": "assembly_lattice"
+          },
+          "loading_id": "end_plug_loading",
+          "loading_ids": [],
+          "purpose": "lower_end_plug"
+        },
+        {
+          "id": "active_fuel",
+          "name": "active_fuel",
+          "z_min_cm": 11.951,
+          "z_max_cm": 377.711,
+          "fill": {
+            "type": "lattice",
+            "id": "assembly_lattice"
+          },
+          "loading_ids": [
+            "pyrex_rod_loading",
+            "spacer_grid_loadings"
+          ],
+          "purpose": "active_fuel"
+        },
+        {
+          "id": "upper_end_plug",
+          "name": "upper_end_plug",
+          "z_min_cm": 377.711,
+          "z_max_cm": 379.381,
+          "fill": {
+            "type": "lattice",
+            "id": "assembly_lattice"
+          },
+          "loading_id": "end_plug_loading",
+          "loading_ids": [],
+          "purpose": "upper_end_plug"
+        },
+        {
+          "id": "upper_plenum",
+          "name": "upper_plenum",
+          "z_min_cm": 379.381,
+          "z_max_cm": 395.381,
+          "fill": {
+            "type": "lattice",
+            "id": "assembly_lattice"
+          },
+          "loading_ids": [
+            "plenum_loading",
+            "top_grid_loading"
+          ],
+          "purpose": "upper_plenum"
+        },
+        {
+          "id": "upper_shoulder_gap",
+          "name": "upper_shoulder_gap",
+          "z_min_cm": 395.381,
+          "z_max_cm": 397.51,
+          "fill": {
+            "type": "lattice",
+            "id": "assembly_lattice"
+          },
+          "loading_id": "shoulder_gap_loading",
+          "loading_ids": [],
+          "purpose": "upper_shoulder_gap"
+        },
+        {
+          "id": "upper_nozzle",
+          "name": "upper_nozzle",
+          "z_min_cm": 397.51,
+          "z_max_cm": 406.337,
+          "fill": {
+            "type": "material",
+            "id": "ss304"
+          },
+          "loading_id": null,
+          "loading_ids": [],
+          "purpose": "upper_nozzle"
+        },
+        {
+          "id": "upper_core_plate",
+          "name": "core_plate",
+          "z_min_cm": 406.337,
+          "z_max_cm": 413.937,
+          "fill": {
+            "type": "material",
+            "id": "ss304"
+          },
+          "loading_id": null,
+          "loading_ids": [],
+          "purpose": "core_plate"
+        },
+        {
+          "id": "upper_moderator_buffer",
+          "name": "reflector",
+          "z_min_cm": 413.937,
+          "z_max_cm": 463.937,
+          "fill": {
+            "type": "material",
+            "id": "borated_water_3B"
+          },
+          "loading_id": null,
+          "loading_ids": [],
+          "purpose": "reflector"
+        }
+      ],
+      "axial_overlays": [
+        {
+          "id": "grid_0_end_bottom",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 11.951,
+          "z_max_cm": 15.817,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "inconel718",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_1_mid",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 73.295,
+          "z_max_cm": 77.105,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "zircaloy4",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_2_mid",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 125.495,
+          "z_max_cm": 129.305,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "zircaloy4",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_3_mid",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 177.695,
+          "z_max_cm": 181.505,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "zircaloy4",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_4_mid",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 229.895,
+          "z_max_cm": 233.705,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "zircaloy4",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_5_mid",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 282.095,
+          "z_max_cm": 285.905,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "zircaloy4",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_6_mid",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 334.295,
+          "z_max_cm": 338.105,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "zircaloy4",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        },
+        {
+          "id": "grid_7_end_top",
+          "overlay_kind": "spacer_grid",
+          "z_min_cm": 386.267,
+          "z_max_cm": 390.133,
+          "target_lattice_id": "assembly_lattice",
+          "material_id": "inconel718",
+          "geometry_mode": "homogenized_open_region",
+          "through_path_preserved": true,
+          "through_universe_ids": [],
+          "blocked_universe_ids": [],
+          "volume_fraction": null,
+          "effective_density_g_cm3": null,
+          "requires_human_confirmation": false,
+          "assumptions": [],
+          "source_note": null
+        }
+      ],
+      "symmetry": null,
+      "purpose": "Assembled from incremental patches"
+    },
+    "reflectors": [],
+    "control_rods": [],
+    "trisos": [],
+    "packed_spheres": [],
+    "pebbles": [],
+    "settings": {
+      "run_mode": "eigenvalue",
+      "batches": 50,
+      "inactive": 10,
+      "particles": 1000,
+      "energy_mode": null,
+      "temperature_interpolation": true,
+      "seed": null
+    },
+    "mg_cross_sections_file": null,
+    "assumptions": [
+      "enrichment is approximate; exact composition needs nuclear library",
+      "material uo2_fuel_3B: composition_status=approximate",
+      "material uo2_fuel_3B: Table P3-2, §2.1; O16 added stoichiometrically",
+      "boron concentration is approximate; exact composition needs nuclear library",
+      "material borated_water_3B: composition_status=approximate",
+      "material borated_water_3B: §3, Table 18; boron concentration 1066 ppm; atom fractions approximate",
+      "Zircaloy-4 approximated as pure Zr; actual composition includes Sn, Fe, Cr, O",
+      "alloy_library: substituted nominal Zircaloy-4 composition (nominal)",
+      "material zircaloy4: composition_status=approximate",
+      "material zircaloy4: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+      "SS304 approximated as pure Fe; actual composition includes Cr, Ni, Mn, Si, C",
+      "alloy_library: substituted nominal Stainless Steel 304 composition (nominal)",
+      "material ss304: composition_status=approximate",
+      "material ss304: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+      "Inconel-718 approximated as pure Ni; actual composition includes Cr, Fe, Nb, Mo, Ti, Al",
+      "alloy_library: substituted nominal Inconel 718 composition (nominal)",
+      "material inconel718: composition_status=approximate",
+      "material inconel718: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+      "density approximate; exact density depends on pressure and temperature",
+      "material helium: §2.2; nominal density at STP scaled to temperature? Using 0.0001785 g/cc as approximate",
+      "Pyrex composition approximate; exact isotopic fractions may vary",
+      "material pyrex: composition_status=approximate",
+      "material pyrex: §12.2, Table 7; 12.5 wt% B2O3",
+      "Pyrex end plug coordinates not explicitly given; lower end plug approximated as SS304 from 13.221 to 15.761 cm, upper end plug omitted as it lies in homogenized upper nozzle.",
+      "Spacer grid equivalent square frame thickness calculated from mass conservation.",
+      "Nozzle and core plate homogenized as SS304/coolant mixture using volume fractions derived from given masses.",
+      "Instrument tube does not contain SS304 thimble; filled with borated water.",
+      "Helium density not specified; use nominal density from cross-section library or void approximation."
+    ],
+    "requires_human_confirmation": []
+  },
+  "capability_report": {
+    "renderability": "skeleton",
+    "is_executable": false,
+    "supported_renderer": "assembly",
+    "executable_subsystems": [],
+    "unsupported_subsystems": [],
+    "reasons": [
+      "Active fuel layer failed: replacement universe 'grid_cell' not defined",
+      "Upper plenum layer failed: replacement universe 'grid_cell' not defined"
+    ],
+    "warnings": [
+      "universe 'fuel_end_plug' is not inserted in the default lattice (candidate only)",
+      "universe 'fuel_upper_plenum' is not inserted in the default lattice (candidate only)",
+      "universe 'pyrex_rod' is not inserted in the default lattice (candidate only)",
+      "universe 'thimble_plug' is not inserted in the default lattice (candidate only)",
+      "universe 'water_cell' is not inserted in the default lattice (candidate only)",
+      "Spacer/support grids rendered as Level 1 homogenized open-region overlays: pin/tube through-paths preserved; grid straps and mixing vanes not explicitly modeled; volume fraction not calibrated."
+    ],
+    "required_human_confirmations": [],
+    "issues": [
+      {
+        "severity": "error",
+        "code": "lattice_transform.replacement_universe_missing",
+        "message": "operation 'replace_water_with_grid': replacement universe 'grid_cell' not defined",
+        "schema_path": "core.axial_layers[active_fuel].loading_ids"
+      },
+      {
+        "severity": "error",
+        "code": "renderer.axial_loading_materialization_failed",
+        "message": "layer 'active_fuel': compose_lattice_loadings failed",
+        "schema_path": "core.axial_layers[active_fuel]"
+      },
+      {
+        "severity": "error",
+        "code": "lattice_transform.replacement_universe_missing",
+        "message": "operation 'replace_water_with_top_grid': replacement universe 'grid_cell' not defined",
+        "schema_path": "core.axial_layers[upper_plenum].loading_ids"
+      },
+      {
+        "severity": "error",
+        "code": "renderer.axial_loading_materialization_failed",
+        "message": "layer 'upper_plenum': compose_lattice_loadings failed",
+        "schema_path": "core.axial_layers[upper_plenum]"
+      }
+    ]
+  },
+  "plot_specs": [
+    {
+      "kind": "slice",
+      "basis": "xy",
+      "origin": [
+        10.75,
+        10.75,
+        204.4685
+      ],
+      "width_cm": [
+        21.5,
+        21.5
+      ],
+      "pixels": [
+        1200,
+        1200
+      ],
+      "color_by": "material",
+      "filename": "assembly_xy.png",
+      "purpose": "Check the generated geometry definition."
+    },
+    {
+      "kind": "slice",
+      "basis": "xz",
+      "origin": [
+        10.75,
+        0.0,
+        204.4685
+      ],
+      "width_cm": [
+        21.5,
+        518.937
+      ],
+      "pixels": [
+        1200,
+        1200
+      ],
+      "color_by": "material",
+      "filename": "assembly_xz.png",
+      "purpose": "Check the generated geometry definition."
+    }
+  ],
+  "execution_check": {
+    "enabled": true,
+    "settings": {
+      "run_mode": "eigenvalue",
+      "batches": 5,
+      "inactive": 1,
+      "particles": 100,
+      "energy_mode": null,
+      "temperature_interpolation": true,
+      "seed": null
+    },
+    "expected_checks": [],
+    "purpose": "Run a low-particle OpenMC smoke test to catch model definition errors."
+  },
+  "expert_assumptions": [
+    "enrichment is approximate; exact composition needs nuclear library",
+    "material uo2_fuel_3B: composition_status=approximate",
+    "material uo2_fuel_3B: Table P3-2, §2.1; O16 added stoichiometrically",
+    "boron concentration is approximate; exact composition needs nuclear library",
+    "material borated_water_3B: composition_status=approximate",
+    "material borated_water_3B: §3, Table 18; boron concentration 1066 ppm; atom fractions approximate",
+    "Zircaloy-4 approximated as pure Zr; actual composition includes Sn, Fe, Cr, O",
+    "alloy_library: substituted nominal Zircaloy-4 composition (nominal)",
+    "material zircaloy4: composition_status=approximate",
+    "material zircaloy4: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+    "SS304 approximated as pure Fe; actual composition includes Cr, Ni, Mn, Si, C",
+    "alloy_library: substituted nominal Stainless Steel 304 composition (nominal)",
+    "material ss304: composition_status=approximate",
+    "material ss304: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+    "Inconel-718 approximated as pure Ni; actual composition includes Cr, Fe, Nb, Mo, Ti, Al",
+    "alloy_library: substituted nominal Inconel 718 composition (nominal)",
+    "material inconel718: composition_status=approximate",
+    "material inconel718: §2.2, Table P3-3 | Nominal engineering approximation (publicly available handbook midpoints); NOT the official VERA benchmark material specification. Replaceable.",
+    "density approximate; exact density depends on pressure and temperature",
+    "material helium: §2.2; nominal density at STP scaled to temperature? Using 0.0001785 g/cc as approximate",
+    "Pyrex composition approximate; exact isotopic fractions may vary",
+    "material pyrex: composition_status=approximate",
+    "material pyrex: §12.2, Table 7; 12.5 wt% B2O3",
+    "Pyrex end plug coordinates not explicitly given; lower end plug approximated as SS304 from 13.221 to 15.761 cm, upper end plug omitted as it lies in homogenized upper nozzle.",
+    "Spacer grid equivalent square frame thickness calculated from mass conservation.",
+    "Nozzle and core plate homogenized as SS304/coolant mixture using volume fractions derived from given masses.",
+    "Instrument tube does not contain SS304 thimble; filled with borated water.",
+    "Helium density not specified; use nominal density from cross-section library or void approximation."
+  ],
+  "expert_feedback": []
+}

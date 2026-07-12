@@ -13,11 +13,19 @@
           "r_max_cm": 0.4096
         },
         {
+          "id": "helium_gap",
+          "role": "gap",
+          "material_id": "helium",
+          "region_kind": "annulus",
+          "r_min_cm": 0.4096,
+          "r_max_cm": 0.418
+        },
+        {
           "id": "clad",
           "role": "cladding",
           "material_id": "zircaloy4",
           "region_kind": "annulus",
-          "r_min_cm": 0.4096,
+          "r_min_cm": 0.418,
           "r_max_cm": 0.475,
           "protected_through_path": true
         },

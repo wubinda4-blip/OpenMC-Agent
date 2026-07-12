@@ -157,11 +157,19 @@
               "r_max_cm": 0.4096
             },
             {
+              "id": "helium_gap",
+              "role": "gap",
+              "material_id": "helium",
+              "region_kind": "annulus",
+              "r_min_cm": 0.4096,
+              "r_max_cm": 0.418
+            },
+            {
               "id": "clad",
               "role": "cladding",
               "material_id": "zircaloy4",
               "region_kind": "annulus",
-              "r_min_cm": 0.4096,
+              "r_min_cm": 0.418,
               "r_max_cm": 0.475,
               "protected_through_path": true
             },
@@ -172,7 +180,7 @@
               "region_kind": "background"
             }
           ],
-          "source_note": "VERA3 fuel pin: UO2 pellet, Zircaloy-4 clad, borated water"
+          "source_note": "VERA3 fuel pin: UO2 pellet (r<0.4096), helium gap (0.4096-0.418), Zircaloy-4 clad (0.418-0.475), borated water"
         },
         {
           "universe_id": "guide_tube",
@@ -270,14 +278,14 @@
               "role": "fuel",
               "material_id": "helium",
               "region_kind": "cylinder",
-              "r_max_cm": 0.4096
+              "r_max_cm": 0.418
             },
             {
               "id": "clad",
               "role": "cladding",
               "material_id": "zircaloy4",
               "region_kind": "annulus",
-              "r_min_cm": 0.4096,
+              "r_min_cm": 0.418,
               "r_max_cm": 0.475,
               "protected_through_path": true
             },
@@ -288,7 +296,7 @@
               "region_kind": "background"
             }
           ],
-          "source_note": "Fuel-pin plenum profile: helium internal, same clad/coolant"
+          "source_note": "Fuel-pin plenum profile: helium (r<0.418), Zircaloy-4 clad (0.418-0.475)"
         },
         {
           "universe_id": "moderator_only_pin",

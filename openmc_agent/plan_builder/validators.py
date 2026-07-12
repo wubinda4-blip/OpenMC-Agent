@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from openmc_agent.schemas import AgentBaseModel
+from openmc_agent.radial_profile_validation import validate_concentric_radial_profile
 
 from .material_resolution import resolve_material_id
 from .patches import (
@@ -515,6 +516,17 @@ def _validate_universes(
                     ),
                     path=f"universes[{univ.universe_id}].cells",
                 ))
+
+        # Radial continuity check (reactor-neutral).
+        radial_issues = validate_concentric_radial_profile(univ.universe_id, univ.cells)
+        for ri in radial_issues:
+            issues.append(PatchValidationIssue(
+                code=ri.code,
+                severity=ri.severity,
+                message=ri.message,
+                path=ri.path,
+                actual=ri.details,
+            ))
 
     return issues
 
