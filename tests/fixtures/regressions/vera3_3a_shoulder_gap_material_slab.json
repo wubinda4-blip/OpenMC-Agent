@@ -1,0 +1,52 @@
+{
+  "issue_code": "assembly3d.component_profile_as_material_slab",
+  "schema_path_template": "complex_model.core.axial_layers.{layer_id}.fill",
+  "issue_origin_node_before_fix": "RectAssemblyRenderer.can_render",
+  "expected_origin_node_after_fix": "validate_simulation_plan",
+  "offending_layers": [
+    {
+      "layer_id": "lower_shoulder_gap",
+      "role": "gas_gap",
+      "z_min_cm": 6.053,
+      "z_max_cm": 10.281,
+      "fill_type": "material",
+      "fill_id": "borated_water",
+      "loading_id": null,
+      "loading_ids": []
+    },
+    {
+      "layer_id": "upper_shoulder_gap",
+      "role": "gas_gap",
+      "z_min_cm": 395.381,
+      "z_max_cm": 397.51,
+      "fill_type": "material",
+      "fill_id": "borated_water",
+      "loading_id": null,
+      "loading_ids": []
+    }
+  ],
+  "base_lattice": {
+    "lattice_id": "assembly_lattice",
+    "default_universe_id": "fuel_pin",
+    "guide_tube_count": 24,
+    "instrument_tube_count": 1
+  },
+  "moderator_material_id": "borated_water",
+  "existing_moderator_only_universe_id": "water_cell",
+  "expected_repair": {
+    "strategy": "deterministic_shoulder_gap_bundle",
+    "layer_fill_after": {
+      "fill_type": "lattice",
+      "fill_id": "assembly_lattice",
+      "loading_id_prefix": "derived_shoulder_gap_loading"
+    },
+    "loading_transformation": {
+      "operation_kind": "replace_universe_family",
+      "source_universe_id": "fuel_pin",
+      "replacement_universe_id": "water_cell"
+    },
+    "through_path_preserved": true,
+    "llm_required": false,
+    "global_retry_delta": 0
+  }
+}

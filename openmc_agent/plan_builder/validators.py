@@ -91,6 +91,22 @@ class PatchValidationContext(AgentBaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Component-profile roles (mirror of assembly3d_guard._COMPONENT_PROFILE_ROLES)
+# ---------------------------------------------------------------------------
+
+_PATCH_COMPONENT_PROFILE_ROLES: frozenset[str] = frozenset({
+    "lower_end_plug",
+    "upper_end_plug",
+    "lower_plenum",
+    "upper_plenum",
+    "gas_gap",
+    "shoulder_gap",
+    "lower_shoulder_gap",
+    "upper_shoulder_gap",
+})
+
+
+# ---------------------------------------------------------------------------
 # Alloy detection helpers
 # ---------------------------------------------------------------------------
 
@@ -748,6 +764,29 @@ def _validate_axial_layers(
                     "but fill_id is missing"
                 ),
                 path=f"layers[{layer.layer_id}].fill_id",
+            ))
+
+        # Early component-profile slab detection: a layer whose role is a
+        # fuel-pin internal component profile (end plug, plenum, gas gap,
+        # shoulder gap) must NOT use fill_type=material.  A material slab
+        # replaces the entire cross section and truncates every pin/tube.
+        # Catching this at patch-validation time avoids deferring the error
+        # to the renderer capability stage.
+        if layer.fill_type == "material" and layer.role in _PATCH_COMPONENT_PROFILE_ROLES:
+            issues.append(PatchValidationIssue(
+                code="assembly3d.component_profile_as_material_slab",
+                severity="error",
+                message=(
+                    f"layer {layer.layer_id!r} (role={layer.role!r}) is a "
+                    "component-profile segment but its fill is a single material "
+                    f"({layer.fill_id!r}). This replaces the whole cross section "
+                    "and truncates fuel pins, cladding, guide tubes and "
+                    "instrument tubes. Use a lattice fill with a "
+                    "replace_universe_family transformation so guide/instrument "
+                    "tubes continue through while only the pin-internal content "
+                    "changes."
+                ),
+                path=f"layers[{layer.layer_id}].fill_type",
             ))
 
     # Overlap detection

@@ -28,7 +28,17 @@ VALIDATION_ISSUE_REPAIR_POLICIES: dict[str, ValidationIssueRepairPolicy] = {
     "assembly3d.component_profile_as_material_slab": ValidationIssueRepairPolicy(
         issue_code="assembly3d.component_profile_as_material_slab",
         owner_patch_type="axial_layers",
-        allowed_path_patterns=["/layers/*/fill_type", "/layers/*/fill_id", "/layers/*/role"],
+        allowed_path_patterns=[
+            "/layers/*/fill_type",
+            "/layers/*/fill_id",
+            "/layers/*/loading_id",
+            "/layers/*/loading_ids",
+            "/layers/*/loading_ids/**",
+            "/lattice_loadings",
+            "/lattice_loadings/**",
+        ],
+        forbidden_path_patterns=["/layers/*/role"],
+        preferred_strategy="deterministic",
     ),
     "lattice.universe_missing_coolant": ValidationIssueRepairPolicy(
         issue_code="lattice.universe_missing_coolant",

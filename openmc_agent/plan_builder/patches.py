@@ -224,6 +224,9 @@ class AxialLayerPatchItem(_PatchBase):
         "upper_nozzle",
         "core_plate",
         "reflector",
+        "shoulder_gap",
+        "lower_shoulder_gap",
+        "upper_shoulder_gap",
         "custom",
     ] = "custom"
     z_min_cm: float | None = None

@@ -265,11 +265,64 @@ def detect_assembly_3d_features(requirement: Any) -> Assembly3DFeatureFlags:
     )
 
 
+def _deduplicate_issues(issues: list[ValidationIssue]) -> list[ValidationIssue]:
+    """Remove issues with the same (code, normalized_schema_path, severity).
+
+    The identity deliberately excludes the free-text ``message`` so the
+    validator and renderer never emit two different entries for the same
+    underlying defect.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[ValidationIssue] = []
+    for issue in issues:
+        normalized_path = ".".join(
+            part for part in (issue.schema_path or "").replace("[", ".").replace("]", "").split(".")
+            if part and not part.isdigit()
+        )
+        identity = (issue.code, normalized_path, issue.severity)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(issue)
+    return deduped
+
+
+def assembly3d_structural_issues(
+    model: ComplexModelSpec,
+    *,
+    requirement_flags: Assembly3DFeatureFlags | None = None,
+) -> list[ValidationIssue]:
+    """Single source of truth for plan-level + renderer-level assembly3d issues.
+
+    Combines grid-layer slab guards, component-profile slab guards, and axial
+    overlay validation.  When ``requirement_flags`` is supplied, the
+    requirement-aware overlay checks (:func:`axial_overlay_issues`) are used;
+    otherwise the requirement-agnostic variant
+    (:func:`assembly3d_overlay_issues`) is used so this function can be called
+    from the renderer without the original requirement text.
+
+    Both :func:`validate_simulation_plan` and
+    :meth:`RectAssemblyRenderer.can_render` call this function so they never
+    diverge on which ``assembly3d.*`` codes are emitted.
+    """
+    issues: list[ValidationIssue] = []
+    if model is None or model.core is None:
+        return issues
+    issues.extend(assembly3d_grid_layer_issues(model))
+    issues.extend(assembly3d_component_profile_slab_issues(model))
+    if requirement_flags is not None:
+        issues.extend(axial_overlay_issues(model, requirement_flags))
+    else:
+        issues.extend(assembly3d_overlay_issues(model))
+    return _deduplicate_issues(issues)
+
+
 __all__ = [
     "Assembly3DFeatureFlags",
     "assembly3d_component_profile_slab_issues",
     "assembly3d_grid_layer_issues",
     "assembly3d_overlay_issues",
+    "assembly3d_structural_issues",
     "axial_overlay_issues",
     "detect_assembly_3d_features",
     "layer_is_spacer_grid_slab_candidate",
@@ -484,6 +537,9 @@ _COMPONENT_PROFILE_ROLES: frozenset[str] = frozenset({
     "lower_plenum",
     "upper_plenum",
     "gas_gap",
+    "shoulder_gap",
+    "lower_shoulder_gap",
+    "upper_shoulder_gap",
 })
 
 
@@ -892,11 +948,10 @@ def validate_assembly3d_plan(
                 )
             )
 
-    # Plan-level grid-layer slab guards (slab + through-path). Requirement-agnostic
-    # so the renderer can re-run the same checks from can_render.
-    issues.extend(assembly3d_grid_layer_issues(model))
+    # Shared structural issues: grid-layer slab, component-profile slab, and
+    # overlay validation.  This is the same source called by the renderer so a
+    # component_profile_as_material_slab defect is caught at validate_plan time,
+    # not deferred to capability assessment.
+    issues.extend(assembly3d_structural_issues(model, requirement_flags=flags))
 
-    # Axial overlay validation (spacer grids as overlays, not slabs).
-    issues.extend(axial_overlay_issues(model, flags))
-
-    return issues
+    return _deduplicate_issues(issues)

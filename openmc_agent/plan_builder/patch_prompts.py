@@ -178,8 +178,15 @@ Rules:
   tube and the tube wall must remain.
 - Use loading_ids when an axial layer requires more than one localized loading.
 - Spacer grids remain axial_overlays, not lattice transformations.
-- Component-profile layers (end_plug, plenum, gas_gap) must use lattice fill
+- Component-profile layers (end_plug, plenum, gas_gap, shoulder_gap) must use lattice fill
   with a replace_universe_family transformation, NOT a whole-layer material slab.
+- shoulder_gap is the moderator region between the fuel stack and the nozzle/end structure.
+  Guide tubes and instrument tubes continue through it. Use role "shoulder_gap"
+  (or "lower_shoulder_gap" / "upper_shoulder_gap" for positional clarity).
+  fill_type must be "lattice" with fill_id "assembly_lattice" and a loading_id that
+  replaces only the fuel-pin family with a moderator-only universe.
+  Do NOT use fill_type=material for shoulder_gap.
+  Do NOT label shoulder_gap as lower_plenum/upper_plenum.
 
 Transformation operation_kind values:
 - "replace_universe_family": source_universe_id -> replacement_universe_id for all positions.

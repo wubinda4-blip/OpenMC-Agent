@@ -35,6 +35,7 @@ from openmc_agent.plan_builder import (
     should_use_incremental_planning,
     initialize_plan_build_state,
 )
+from openmc_agent.plan_builder.assembler import assemble_simulation_plan_from_patches
 from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.plan_builder.validation_repair import (
     PatchRepairEvaluation,
@@ -51,6 +52,12 @@ from openmc_agent.plan_builder.validation_repair_prompts import (
     build_patch_repair_schema_correction_prompt,
 )
 from openmc_agent.plan_builder.pin_map_repair import diagnose_pin_map_count_mismatch
+from openmc_agent.plan_builder.component_profile_repair import (
+    diagnose_component_profile_slab,
+    propose_shoulder_gap_repair_bundle,
+    evaluate_shoulder_gap_repair_bundle,
+    commit_accepted_repair_bundle,
+)
 from openmc_agent.plan_builder.patches import parse_patch_content
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
@@ -2076,6 +2083,204 @@ def _try_incremental_validation_patch_repair(
                         "planning.pin_map_repair_ambiguous", "pin-map repair requires semantic LLM fallback",
                         {"reasons": diagnosis.reasons},
                     )
+        # The component-profile / shoulder-gap oracle is also before any
+        # repair-model call.  It produces a deterministic multi-patch bundle
+        # (universes + axial_layers) when the defect is uniquely provable.
+        if (
+            target_patch_type == "axial_layers"
+            and any(i.code == "assembly3d.component_profile_as_material_slab" for i in eligible)
+        ):
+            plan_payload = build_state.assembled_plan or (
+                state.get("simulation_plan").model_dump(mode="json")
+                if hasattr(state.get("simulation_plan"), "model_dump") else state.get("simulation_plan")
+            )
+            if isinstance(plan_payload, dict):
+                try:
+                    assembled_plan = SimulationPlan.model_validate(plan_payload)
+                except Exception:
+                    assembled_plan = None
+                if assembled_plan is not None:
+                    slab_issues = [
+                        i for i in eligible
+                        if i.code == "assembly3d.component_profile_as_material_slab"
+                    ]
+                    last_bundle_eval = None
+                    any_bundle_accepted = False
+                    layer_idx = 0
+                    for slab_issue in slab_issues:
+                        layer_idx += 1
+                        # Extract layer_id from schema_path
+                        parts = (slab_issue.schema_path or "").split(".")
+                        layer_id = next(
+                            (p for p in reversed(parts) if p not in ("fill", "fill_type", "")),
+                            None,
+                        )
+                        if layer_id is None or layer_id == "axial_layers":
+                            continue
+                        # Re-assemble the plan from current patches for each
+                        # iteration, since a prior bundle may have committed.
+                        try:
+                            _parsed_current = [
+                                parse_patch_content(e.patch_type, e.content)
+                                for e in build_state.patches.values() if e.status == "valid"
+                            ]
+                            _assembly_current = assemble_simulation_plan_from_patches(_parsed_current, strict=True)
+                            if _assembly_current.ok and _assembly_current.plan is not None:
+                                assembled_plan = _assembly_current.plan
+                        except Exception:
+                            pass
+                        try:
+                            cp_diagnosis = diagnose_component_profile_slab(
+                                state=build_state, plan=assembled_plan, layer_id=layer_id,
+                            )
+                        except Exception as exc:
+                            cp_diagnosis = None
+                            build_state.add_event(
+                                "planning.component_profile_slab_diagnosed",
+                                "component-profile slab diagnosis failed",
+                                {"layer_id": layer_id, "reason": str(exc)},
+                            )
+                        if cp_diagnosis is None:
+                            continue
+                        _write_validation_repair_artifact(
+                            state.get("output_dir"),
+                            f"component_profile_diagnosis_{attempts}_{layer_idx}.json",
+                            cp_diagnosis,
+                        )
+                        build_state.add_event(
+                            "planning.component_profile_slab_diagnosed",
+                            "component-profile slab diagnosed",
+                            cp_diagnosis.model_dump(mode="json"),
+                        )
+                        if not cp_diagnosis.deterministic_repair_available:
+                            build_state.add_event(
+                                "planning.component_profile_dependency_repair_required",
+                                "component-profile repair is ambiguous; deferring to LLM",
+                                {"reasons": cp_diagnosis.reasons},
+                            )
+                            continue
+                        bundle = propose_shoulder_gap_repair_bundle(
+                            state=build_state, diagnosis=cp_diagnosis,
+                        )
+                        if bundle is None:
+                            continue
+                        _write_validation_repair_artifact(
+                            state.get("output_dir"),
+                            f"shoulder_gap_bundle_{attempts}_{layer_idx}.json",
+                            bundle,
+                        )
+                        build_state.add_event(
+                            "planning.shoulder_gap_bundle_proposed",
+                            "deterministic shoulder-gap repair bundle proposed",
+                            bundle.model_dump(mode="json"),
+                        )
+                        _axial_before = next(
+                            (p for p in build_state.patches.values()
+                             if p.patch_type == "axial_layers" and p.status == "valid"),
+                            None,
+                        )
+                        _universes_before = next(
+                            (p for p in build_state.patches.values()
+                             if p.patch_type == "universes" and p.status == "valid"),
+                            None,
+                        )
+                        if _axial_before:
+                            _write_validation_repair_artifact(
+                                state.get("output_dir"),
+                                f"axial_layers_before_{attempts}_{layer_idx}.json",
+                                _axial_before.content,
+                            )
+                        if _universes_before:
+                            _write_validation_repair_artifact(
+                                state.get("output_dir"),
+                                f"universes_before_{attempts}_{layer_idx}.json",
+                                _universes_before.content,
+                            )
+                        # Re-validate the current state as the "before" report
+                        _current_report = validate_simulation_plan(
+                            assembled_plan, requirement=state.get("requirement", ""),
+                        )
+                        bundle_eval = evaluate_shoulder_gap_repair_bundle(
+                            state=build_state,
+                            proposal=bundle,
+                            diagnosis=cp_diagnosis,
+                            report_before=_current_report,
+                            requirement=state.get("requirement", ""),
+                        )
+                        _write_validation_repair_artifact(
+                            state.get("output_dir"),
+                            f"shoulder_gap_bundle_evaluation_{attempts}_{layer_idx}.json",
+                            bundle_eval,
+                        )
+                        if bundle_eval.validation_report_after:
+                            _write_validation_repair_artifact(
+                                state.get("output_dir"),
+                                f"validation_after_{attempts}_{layer_idx}.json",
+                                bundle_eval.validation_report_after,
+                            )
+                        if bundle_eval.capability_after:
+                            _write_validation_repair_artifact(
+                                state.get("output_dir"),
+                                f"capability_after_{attempts}_{layer_idx}.json",
+                                bundle_eval.capability_after,
+                            )
+                        if bundle_eval.accepted:
+                            commit_accepted_repair_bundle(build_state, bundle, bundle_eval)
+                            _axial_after = next(
+                                (p for p in build_state.patches.values()
+                                 if p.patch_type == "axial_layers" and p.status == "valid"),
+                                None,
+                            )
+                            _universes_after = next(
+                                (p for p in build_state.patches.values()
+                                 if p.patch_type == "universes" and p.status == "valid"),
+                                None,
+                            )
+                            if _axial_after:
+                                _write_validation_repair_artifact(
+                                    state.get("output_dir"),
+                                    f"axial_layers_after_{attempts}_{layer_idx}.json",
+                                    _axial_after.content,
+                                )
+                            if _universes_after:
+                                _write_validation_repair_artifact(
+                                    state.get("output_dir"),
+                                    f"universes_after_{attempts}_{layer_idx}.json",
+                                    _universes_after.content,
+                                )
+                            build_state.add_event(
+                                "planning.shoulder_gap_bundle_accepted",
+                                "deterministic shoulder-gap repair bundle accepted",
+                                bundle_eval.model_dump(mode="json"),
+                            )
+                            last_bundle_eval = bundle_eval
+                            any_bundle_accepted = True
+                        else:
+                            build_state.add_event(
+                                "planning.shoulder_gap_bundle_rejected",
+                                "deterministic shoulder-gap repair bundle rejected",
+                                bundle_eval.model_dump(mode="json"),
+                            )
+                    if any_bundle_accepted and last_bundle_eval is not None:
+                        # Re-assemble the final plan from the committed state
+                        try:
+                            _parsed_final = [
+                                parse_patch_content(e.patch_type, e.content)
+                                for e in build_state.patches.values() if e.status == "valid"
+                            ]
+                            _assembly_final = assemble_simulation_plan_from_patches(_parsed_final, strict=True)
+                            if _assembly_final.ok and _assembly_final.plan is not None:
+                                last_bundle_eval.repaired_plan = _assembly_final.plan.model_dump(mode="json")
+                                _final_report = validate_simulation_plan(
+                                    _assembly_final.plan, requirement=state.get("requirement", ""),
+                                )
+                                last_bundle_eval.validation_report_after = _final_report.model_dump(mode="json")
+                        except Exception:
+                            pass
+                        return build_state, last_bundle_eval, {
+                            "status": "accepted",
+                            "strategy": "deterministic_shoulder_gap_repair",
+                        }
         if llm_client is None:
             return build_state, None, {"status": "unavailable"}
         _write_validation_repair_artifact(state.get("output_dir"), "diagnosis.json", {
