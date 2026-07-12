@@ -292,6 +292,50 @@
           "source_note": "VERA3 3B Pyrex inner-flow profile (r < 0.561): helium gas gaps (not water), SS304 tubes, Pyrex poison, borated water gap to guide-tube inner radius. Guide wall (0.561-0.602) is NOT part of this universe."
         },
         {
+          "universe_id": "pyrex_upper_gas_inner_profile",
+          "kind": "custom",
+          "cells": [
+            {
+              "id": "upper_inner_gas",
+              "role": "inner_gas",
+              "material_id": "helium",
+              "region_kind": "cylinder",
+              "r_max_cm": 0.214
+            },
+            {
+              "id": "upper_inner_tube",
+              "role": "inner_tube",
+              "material_id": "ss304",
+              "region_kind": "annulus",
+              "r_min_cm": 0.214,
+              "r_max_cm": 0.231
+            },
+            {
+              "id": "upper_plenum_gas",
+              "role": "gas_plenum",
+              "material_id": "helium",
+              "region_kind": "annulus",
+              "r_min_cm": 0.231,
+              "r_max_cm": 0.437
+            },
+            {
+              "id": "upper_outer_clad",
+              "role": "outer_clad",
+              "material_id": "ss304",
+              "region_kind": "annulus",
+              "r_min_cm": 0.437,
+              "r_max_cm": 0.484
+            },
+            {
+              "id": "upper_water_gap",
+              "role": "inner_flow_background",
+              "material_id": "borated_water",
+              "region_kind": "background"
+            }
+          ],
+          "source_note": "VERA3 3B Pyrex upper-gas inner-flow profile (r < 0.561) for z=376.441-397.510: SS304 inner tube and outer clad preserved; poison and internal voids replaced by helium plenum; water gap to guide-tube inner radius preserved. Guide wall (0.561-0.602) is NOT part of this universe."
+        },
+        {
           "universe_id": "thimble_inner_profile",
           "kind": "custom",
           "cells": [
@@ -662,6 +706,91 @@
           "purpose": "Apply 3B Pyrex rods only over the stated poison axial span via bounded nested fill."
         },
         {
+          "loading_id": "pyrex_upper_gas_loading",
+          "base_lattice_id": "assembly_lattice",
+          "derived_lattice_id": "assembly_lattice_pyrex_upper_gas_nested",
+          "transformations": [
+            {
+              "operation_id": "insert_pyrex_upper_gas_inside_guide",
+              "operation_kind": "nested_component_override",
+              "replacement_universe_id": "pyrex_upper_gas_inner_profile",
+              "target_coordinates": [
+                [
+                  2,
+                  5
+                ],
+                [
+                  3,
+                  3
+                ],
+                [
+                  5,
+                  2
+                ],
+                [
+                  2,
+                  11
+                ],
+                [
+                  3,
+                  13
+                ],
+                [
+                  5,
+                  14
+                ],
+                [
+                  11,
+                  2
+                ],
+                [
+                  13,
+                  3
+                ],
+                [
+                  14,
+                  5
+                ],
+                [
+                  11,
+                  14
+                ],
+                [
+                  13,
+                  13
+                ],
+                [
+                  14,
+                  11
+                ],
+                [
+                  8,
+                  5
+                ],
+                [
+                  8,
+                  11
+                ],
+                [
+                  5,
+                  8
+                ],
+                [
+                  11,
+                  8
+                ]
+              ],
+              "component_role": "inner_flow",
+              "preserve_component_roles": [
+                "tube_wall",
+                "outer_moderator"
+              ],
+              "purpose": "Preserve Pyrex rod SS304 tubes and upper helium plenum above poison segment while retaining guide wall and outer moderator"
+            }
+          ],
+          "purpose": "Apply 3B Pyrex upper-gas profile over z=376.441-397.510 cm via bounded nested fill."
+        },
+        {
           "loading_id": "thimble_plug_loading",
           "base_lattice_id": "assembly_lattice",
           "derived_lattice_id": "assembly_lattice_thimble_nested",
@@ -796,7 +925,8 @@
           "z_min_cm": 376.441,
           "z_max_cm": 377.711,
           "fill_type": "lattice",
-          "fill_id": "assembly_lattice"
+          "fill_id": "assembly_lattice",
+          "loading_id": "pyrex_upper_gas_loading"
         },
         {
           "layer_id": "upper_end_plug",
@@ -805,7 +935,10 @@
           "z_max_cm": 379.381,
           "fill_type": "lattice",
           "fill_id": "assembly_lattice",
-          "loading_id": "end_plug_loading"
+          "loading_ids": [
+            "end_plug_loading",
+            "pyrex_upper_gas_loading"
+          ]
         },
         {
           "layer_id": "upper_plenum_lower",
@@ -814,7 +947,10 @@
           "z_max_cm": 383.31,
           "fill_type": "lattice",
           "fill_id": "assembly_lattice",
-          "loading_id": "plenum_loading"
+          "loading_ids": [
+            "plenum_loading",
+            "pyrex_upper_gas_loading"
+          ]
         },
         {
           "layer_id": "upper_plenum_middle_thimble",
@@ -825,6 +961,7 @@
           "fill_id": "assembly_lattice",
           "loading_ids": [
             "plenum_loading",
+            "pyrex_upper_gas_loading",
             "thimble_plug_loading"
           ]
         },
@@ -835,7 +972,10 @@
           "z_max_cm": 395.381,
           "fill_type": "lattice",
           "fill_id": "assembly_lattice",
-          "loading_id": "plenum_loading"
+          "loading_ids": [
+            "plenum_loading",
+            "pyrex_upper_gas_loading"
+          ]
         },
         {
           "layer_id": "upper_shoulder_gap",
@@ -844,7 +984,10 @@
           "z_max_cm": 397.51,
           "fill_type": "lattice",
           "fill_id": "assembly_lattice",
-          "loading_id": "shoulder_water_loading"
+          "loading_ids": [
+            "shoulder_water_loading",
+            "pyrex_upper_gas_loading"
+          ]
         },
         {
           "layer_id": "upper_nozzle",

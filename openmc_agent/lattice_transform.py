@@ -1003,6 +1003,13 @@ def materialize_axial_lattice_transformations(
 
             derived_lattice = result.derived_lattice
             assert derived_lattice is not None
+            existing_ids = {lat.id for lat in new_spec.lattices}
+            if derived_lattice.id in existing_ids:
+                unique_suffix = "__".join(lids)
+                new_id = f"{derived_lattice.id}__{unique_suffix}"
+                while new_id in existing_ids:
+                    new_id += "_x"
+                derived_lattice = derived_lattice.model_copy(update={"id": new_id})
             new_spec.lattices.append(derived_lattice)
             new_spec.cells.extend(result.derived_cells)
             new_spec.universes.extend(result.derived_universes)

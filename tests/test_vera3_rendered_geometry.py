@@ -124,8 +124,12 @@ class TestMaterializationInProductionRenderer:
         outdir = _render_and_export(plan, tmp_path)
         model_py = outdir / "model.py"
         content = model_py.read_text()
-        assert "assembly_lattice_plenum" in content, (
-            "Derived plenum lattice not found in rendered model.py — "
+        has_derived = (
+            "assembly_lattice_plenum" in content
+            or "assembly_lattice_pyrex_upper_gas_nested" in content
+        )
+        assert has_derived, (
+            "Derived plenum/upper-gas lattice not found in rendered model.py — "
             "compose_lattice_loadings was not called by the production renderer"
         )
 

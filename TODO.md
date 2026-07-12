@@ -175,7 +175,7 @@ schema-valid → renderable → XML-exportable → geometry-accepted → physics
 
 完成标准：production fixture、geometry contract、acceptance helper 一致；active fuel gap 和 plenum 有 rendered point probes；fuel/gap/clad volume 可计算。
 
-### P0-V2：完成 3B Pyrex upper-gas axial profile 🚧
+### P0-V2：完成 3B Pyrex upper-gas axial profile ✅
 
 Pyrex poison segment 15.761–376.441 cm；upper helium region 376.441–397.510 cm。需要新增 `pyrex_upper_plenum_inner_profile` / `pyrex_upper_plenum_loading`，重新切分轴向层（376.441–397.510 区间），在 386.267–390.133 cm 叠加 top spacer-grid overlay。
 
@@ -340,7 +340,7 @@ audit → repair proposal → deterministic validation → targeted patch retry 
 
 - [x] fuel active radial gap 正确
 - [x] fuel upper plenum 半径正确
-- [ ] Pyrex poison / upper gas profile 正确
+- [x] Pyrex poison / upper gas profile 正确
 - [ ] thimble finite profile 正确
 - [ ] guide / instrument through-path 正确
 - [x] shoulder transitions 正确（lattice + replace_universe_family, 通过 deterministic repair）

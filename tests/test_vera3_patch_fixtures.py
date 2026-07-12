@@ -218,8 +218,8 @@ class TestVERA3BAssembly:
             "pyrex_rod": 0,
             "thimble_plug": 0,
         }
-        # end_plug + plenum + pyrex + thimble + shoulder water = 5 loadings
-        assert result.summary["lattice_loading_count"] == 5
+        # end_plug + plenum + pyrex + pyrex_upper_gas + thimble + shoulder water = 6 loadings
+        assert result.summary["lattice_loading_count"] == 6
 
     def test_bad_facts_guide_count_does_not_pollute_lattice_expected_counts(
         self,
@@ -265,7 +265,7 @@ class TestVERA3BAssembly:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         assert result.ok is True
         # Total patch size should be much smaller than 25K
-        assert total_patch_bytes < 25000, f"patches total {total_patch_bytes} bytes"
+        assert total_patch_bytes < 30000, f"patches total {total_patch_bytes} bytes"
 
 
 # ---------------------------------------------------------------------------

@@ -108,7 +108,7 @@ def test_build_axial_layers_from_reference() -> None:
     patch = build_reference_patch(patch_type="axial_layers", reference=ref, variant="3B")
     assert patch is not None
     assert len(patch.layers) == 16  # upper plenum split into 3 segments
-    assert len(patch.lattice_loadings) == 5  # end_plug + plenum + pyrex + thimble + shoulder water
+    assert len(patch.lattice_loadings) == 6  # end_plug + plenum + pyrex + pyrex_upper_gas + thimble + shoulder water
     has_fuel = any(l.role == "active_fuel" for l in patch.layers)
     assert has_fuel
 
@@ -297,6 +297,7 @@ def test_resume_skips_valid_patches(tmp_path: Path) -> None:
             {"universe_id": uid, "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]}
             for uid in ("fuel_pin", "fuel_pin_end_plug", "fuel_pin_plenum",
                         "moderator_only_pin", "pyrex_inner_profile",
+                        "pyrex_upper_gas_inner_profile",
                         "thimble_inner_profile", "guide_tube", "instrument_tube")
         ]}),
     ]:

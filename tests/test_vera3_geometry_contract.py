@@ -6,7 +6,7 @@ from helpers.vera3_acceptance import load_vera3_geometry_contract
 
 
 CONTRACT = load_vera3_geometry_contract()
-_STATUSES = {"confirmed", "derived", "conflicting", "missing", "modeling_assumption"}
+_STATUSES = {"confirmed", "derived", "conflicting", "missing", "modeling_assumption", "resolved"}
 
 
 def _facts(value):
@@ -21,7 +21,7 @@ def _facts(value):
 
 
 def test_contract_loads_and_separates_assembly_zones_from_component_profiles() -> None:
-    assert CONTRACT["contract_version"] == 1
+    assert CONTRACT["contract_version"] == 2
     assert CONTRACT["benchmark_id"] == "VERA3"
     zone_ids = {zone["id"] for zone in CONTRACT["assembly_level_zones"]}
     assert not zone_ids & {"lower_end_plug", "active_fuel", "upper_end_plug", "upper_plenum"}
@@ -42,7 +42,7 @@ def test_fact_statuses_have_required_provenance() -> None:
 def test_conflicts_are_explicit_and_not_confirmed() -> None:
     conflicts = CONTRACT["conflicts"]
     assert conflicts
-    assert all(conflict["status"] == "conflicting" for conflict in conflicts)
+    assert all(conflict["status"] in ("conflicting", "resolved") for conflict in conflicts)
 
 
 def test_fuel_profile_is_continuous_and_preserves_outer_semantics() -> None:
@@ -64,5 +64,9 @@ def test_variant_loading_contract_keeps_3b_base_lattice_and_inserts_separate() -
     loading = CONTRACT["variant_loadings"]["3B"]
     assert loading["base_lattice"] == {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}
     inserts = {item["id"]: item for item in loading["finite_inserts"]}
-    assert len(inserts["pyrex"]["coordinates_1based"]) == 16
+    assert len(inserts["pyrex_poison"]["coordinates_1based"]) == 16
+    assert len(inserts["pyrex_upper_gas"]["coordinates_1based"]) == 16
     assert len(inserts["thimble_plug"]["coordinates_1based"]) == 8
+    poison_coords = set(tuple(c) for c in inserts["pyrex_poison"]["coordinates_1based"])
+    upper_gas_coords = set(tuple(c) for c in inserts["pyrex_upper_gas"]["coordinates_1based"])
+    assert poison_coords == upper_gas_coords

@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "benchmark_id": "VERA3",
   "source": {
     "path": "Input/VERA3_problem.md",
@@ -54,16 +54,41 @@
         {"id": "water_gap", "r_min_cm": 0.484, "r_max_cm": 0.561, "material": "borated_water", "status": "confirmed", "source_section": "Section 12.2"},
         {"id": "guide_wall", "r_min_cm": 0.561, "r_max_cm": 0.602, "material": "zircaloy4", "status": "confirmed", "source_section": "Section 12.2"}
       ],
-      "axial_profile": {"poison_bottom_cm": {"value": 15.761, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "poison_height_cm": {"value": 360.68, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "poison_top_cm": {"value": 376.441, "unit": "cm", "status": "derived", "source_section": "Section 12.1", "derivation": "15.761 + 360.68"}, "gas_plenum_height_cm": {"value": 22.2, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "nominal_plenum_top_cm": {"value": 398.641, "unit": "cm", "status": "derived", "source_section": "Section 12.1", "derivation": "376.441 + 22.2"}, "end_plug_height_cm": {"value": 2.54, "unit": "cm", "status": "modeling_assumption", "source_section": "Section 12.1 / 12.3", "derivation": "Original table does not uniquely locate both end plugs."}}
+      "axial_profiles": [
+        {
+          "id": "pyrex_poison",
+          "z_range_cm": [15.761, 376.441],
+          "radial_profile_id": "pyrex_inner_profile",
+          "status": "confirmed",
+          "source_section": "Section 12.1 / 12.2"
+        },
+        {
+          "id": "pyrex_upper_gas",
+          "z_range_cm": [376.441, 397.510],
+          "nominal_top_cm": 398.641,
+          "modeled_top_cm": 397.510,
+          "radial_profile_id": "pyrex_upper_gas_inner_profile",
+          "status": "derived",
+          "truncation_reason": "Detailed lattice ends at homogenized upper nozzle boundary (Section 12.3 line 468).",
+          "radial_layers_override": [
+            {"id": "inner_region", "r_min_cm": 0.0, "r_max_cm": 0.214, "material": "helium"},
+            {"id": "inner_tube", "r_min_cm": 0.214, "r_max_cm": 0.231, "material": "ss304"},
+            {"id": "plenum_gas", "r_min_cm": 0.231, "r_max_cm": 0.437, "material": "helium"},
+            {"id": "outer_clad", "r_min_cm": 0.437, "r_max_cm": 0.484, "material": "ss304"},
+            {"id": "water_gap", "r_min_cm": 0.484, "r_max_cm": 0.561, "material": "borated_water"}
+          ]
+        }
+      ],
+      "axial_profile": {"poison_bottom_cm": {"value": 15.761, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "poison_height_cm": {"value": 360.68, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "poison_top_cm": {"value": 376.441, "unit": "cm", "status": "derived", "source_section": "Section 12.1", "derivation": "15.761 + 360.68"}, "gas_plenum_height_cm": {"value": 22.2, "unit": "cm", "status": "confirmed", "source_section": "Section 12.1", "derivation": null}, "nominal_plenum_top_cm": {"value": 398.641, "unit": "cm", "status": "derived", "source_section": "Section 12.1", "derivation": "376.441 + 22.2"}, "modeled_plenum_top_cm": {"value": 397.510, "unit": "cm", "status": "derived", "source_section": "Section 12.3", "derivation": "Truncated at homogenized upper nozzle start."}, "end_plug_height_cm": {"value": 2.54, "unit": "cm", "status": "modeling_assumption", "source_section": "Section 12.1 / 12.3", "derivation": "Original table does not uniquely locate both end plugs."}}
     },
     "thimble_plug": {"axial_profile": {"bottom_cm": {"value": 383.31, "unit": "cm", "status": "confirmed", "source_section": "Section 13", "derivation": null}, "height_cm": {"value": 11.0, "unit": "cm", "status": "confirmed", "source_section": "Section 13", "derivation": null}, "top_cm": {"value": 394.31, "unit": "cm", "status": "derived", "source_section": "Section 13", "derivation": "383.31 + 11.0"}}, "through_path_statement": "Outside the finite plug interval, all selected positions remain ordinary water-filled guide tubes."}
   },
   "variant_loadings": {
     "3A": {"base_lattice": {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}, "finite_inserts": []},
-    "3B": {"base_lattice": {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}, "finite_inserts": [{"id": "pyrex", "base_lattice_id": "assembly_lattice", "coordinate_count": 16, "coordinates_1based": [[3,6],[4,4],[6,3],[3,12],[4,14],[6,15],[12,3],[14,4],[15,6],[12,15],[14,14],[15,12],[9,6],[9,12],[6,9],[12,9]], "z_range_cm": [15.761, 376.441]}, {"id": "thimble_plug", "base_lattice_id": "assembly_lattice", "coordinate_count": 8, "coordinates_1based": [[3,9],[6,6],[6,12],[9,3],[9,15],[12,6],[12,12],[15,9]], "z_range_cm": [383.31, 394.31]}]}
+    "3B": {"base_lattice": {"fuel_pin": 264, "guide_tube": 24, "instrument_tube": 1}, "finite_inserts": [{"id": "pyrex_poison", "base_lattice_id": "assembly_lattice", "coordinate_count": 16, "coordinates_1based": [[3,6],[4,4],[6,3],[3,12],[4,14],[6,15],[12,3],[14,4],[15,6],[12,15],[14,14],[15,12],[9,6],[9,12],[6,9],[12,9]], "z_range_cm": [15.761, 376.441], "radial_profile_id": "pyrex_inner_profile"}, {"id": "pyrex_upper_gas", "base_lattice_id": "assembly_lattice", "coordinate_count": 16, "coordinates_1based": [[3,6],[4,4],[6,3],[3,12],[4,14],[6,15],[12,3],[14,4],[15,6],[12,15],[14,14],[15,12],[9,6],[9,12],[6,9],[12,9]], "z_range_cm": [376.441, 397.510], "nominal_top_cm": 398.641, "radial_profile_id": "pyrex_upper_gas_inner_profile", "truncation_reason": "Detailed lattice ends at homogenized upper nozzle boundary."}, {"id": "thimble_plug", "base_lattice_id": "assembly_lattice", "coordinate_count": 8, "coordinates_1based": [[3,9],[6,6],[6,12],[9,3],[9,15],[12,6],[12,12],[15,9]], "z_range_cm": [383.31, 394.31]}]}
   },
   "spacer_grids": [{"count": 8, "status": "confirmed", "source_section": "Section 9", "through_path_statement": "Grid is an outer-cell overlay and does not replace fuel, cladding, guide tube, instrument tube, or insert internals."}],
   "derived_breakpoints": {"active_fuel_region_cm": {"value": [11.951, 377.711], "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}, "axial_domain_cm": {"value": [-55.0, 463.937], "unit": "cm", "status": "confirmed", "source_section": "Section 6.1", "derivation": null}},
-  "conflicts": [{"id": "pyrex_nominal_plenum_intersects_homogenized_upper_nozzle", "status": "conflicting", "facts": ["Pyrex nominal plenum top is 398.641 cm", "homogenized upper nozzle begins at 397.510 cm"], "source_section": "Sections 11.2 / 12.1 / 12.3", "resolution": "Do not silently preserve the nominal extension in a detailed lattice; input directs detailed lattice/inserts to stop at 397.510 cm."}],
+  "conflicts": [{"id": "pyrex_nominal_plenum_intersects_homogenized_upper_nozzle", "status": "resolved", "facts": ["Pyrex nominal plenum top is 398.641 cm", "homogenized upper nozzle begins at 397.510 cm"], "source_section": "Sections 11.2 / 12.1 / 12.3", "resolution": "Detailed Pyrex upper-gas model truncated at 397.510 cm (contract v2). Above this, homogenized upper nozzle mixture applies. No explicit Pyrex end plug modeled because its nominal position overlaps the upper nozzle. P0-V2 implements this via pyrex_upper_gas_loading covering layers 376.441–397.510 cm."}],
   "modeling_assumptions": [{"id": "guide_tube_nozzle_connection", "status": "modeling_assumption", "source_section": "Section 8.3 / 11.2", "text": "Guide tubes connect to nozzles mechanically, but are not explicitly represented inside homogenized nozzle slabs."}]
 }

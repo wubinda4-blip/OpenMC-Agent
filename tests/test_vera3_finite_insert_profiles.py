@@ -155,8 +155,9 @@ class TestUpperPlenum:
         layers = assembled_3b.plan.complex_model.core.axial_layers
         middle = next((l for l in layers if "middle" in l.id), None)
         assert middle is not None
-        assert len(middle.loading_ids) == 2
+        assert len(middle.loading_ids) == 3
         assert "plenum_loading" in middle.loading_ids
+        assert "pyrex_upper_gas_loading" in middle.loading_ids
         assert any("thimble" in lid for lid in middle.loading_ids)
 
     def test_top_spacer_overlay_independent(self, assembled_3b):
