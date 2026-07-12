@@ -294,7 +294,11 @@ def test_resume_skips_valid_patches(tmp_path: Path) -> None:
              "composition_status": "approximate",
              "warnings": ["Inconel-718 approximated as pure Ni"]}]}),
         ("universes", {"patch_type": "universes", "universes": [
-            {"universe_id": "fp", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]}]}),
+            {"universe_id": uid, "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]}
+            for uid in ("fuel_pin", "fuel_pin_end_plug", "fuel_pin_plenum",
+                        "moderator_only_pin", "pyrex_inner_profile",
+                        "thimble_inner_profile", "guide_tube", "instrument_tube")
+        ]}),
     ]:
         env = PlanPatchEnvelope(
             patch_id=f"pre_{ptype}", patch_type=ptype,

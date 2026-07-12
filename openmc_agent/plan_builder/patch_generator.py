@@ -66,6 +66,12 @@ class PatchGenerationContext(AgentBaseModel):
     active_fuel_region_cm: tuple[float, float] | None = None
     axial_domain_cm: tuple[float, float] | None = None
     few_shot_case_ids: list[str] = Field(default_factory=list)
+    known_cell_ids: list[str] = Field(default_factory=list)
+    cell_owner_universe_ids: dict[str, list[str]] = Field(default_factory=dict)
+    material_roles_by_id: dict[str, str] = Field(default_factory=dict)
+    known_overlay_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    has_spacer_grids: bool = False
+    expected_spacer_grid_count: int | None = None
 
 
 class PatchGenerationAttempt(AgentBaseModel):
@@ -395,6 +401,12 @@ def _to_validation_context(
         axial_domain_cm=gen_context.axial_domain_cm,
         active_fuel_region_cm=gen_context.active_fuel_region_cm,
         strict_benchmark=gen_context.strict_benchmark,
+        known_cell_ids=gen_context.known_cell_ids,
+        cell_owner_universe_ids=gen_context.cell_owner_universe_ids,
+        material_roles_by_id=gen_context.material_roles_by_id,
+        known_overlay_summaries=gen_context.known_overlay_summaries,
+        has_spacer_grids=gen_context.has_spacer_grids,
+        expected_spacer_grid_count=gen_context.expected_spacer_grid_count,
     )
 
 

@@ -70,6 +70,67 @@ VALIDATION_ISSUE_REPAIR_POLICIES: dict[str, ValidationIssueRepairPolicy] = {
         owner_patch_type="axial_layers",
         allowed_path_patterns=["/layers/*/fill_id", "/layers/*/fill_type"],
     ),
+    "lattice_transform.replacement_universe_missing": ValidationIssueRepairPolicy(
+        issue_code="lattice_transform.replacement_universe_missing",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=[
+            "/lattice_loadings",
+            "/lattice_loadings/**",
+            "/layers/*/loading_id",
+            "/layers/*/loading_ids",
+            "/layers/*/loading_ids/**",
+        ],
+        forbidden_path_patterns=[
+            "/facts/**", "/materials/**", "/pin_map/**",
+            "/expected_counts/**",
+        ],
+        preferred_strategy="dependency_repair",
+    ),
+    "lattice_transform.source_universe_missing": ValidationIssueRepairPolicy(
+        issue_code="lattice_transform.source_universe_missing",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=["/lattice_loadings/**"],
+        forbidden_path_patterns=["/facts/**", "/materials/**"],
+    ),
+    "lattice_transform.loading_ref_missing": ValidationIssueRepairPolicy(
+        issue_code="lattice_transform.loading_ref_missing",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=["/layers/*/loading_id", "/layers/*/loading_ids/**", "/lattice_loadings/**"],
+    ),
+    "lattice_transform.base_lattice_mismatch": ValidationIssueRepairPolicy(
+        issue_code="lattice_transform.base_lattice_mismatch",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=["/lattice_loadings/**", "/layers/*/loading_id", "/layers/*/loading_ids/**"],
+    ),
+    "lattice_transform.cell_id_used_as_universe": ValidationIssueRepairPolicy(
+        issue_code="lattice_transform.cell_id_used_as_universe",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=["/lattice_loadings/**"],
+    ),
+    "assembly3d.spacer_grid_transformation_misuse": ValidationIssueRepairPolicy(
+        issue_code="assembly3d.spacer_grid_transformation_misuse",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=[
+            "/lattice_loadings",
+            "/lattice_loadings/**",
+            "/layers/*/loading_id",
+            "/layers/*/loading_ids",
+            "/layers/*/loading_ids/**",
+            "/overlays",
+            "/overlays/**",
+        ],
+        forbidden_path_patterns=[
+            "/facts/**", "/materials/**", "/pin_map/**",
+            "/expected_counts/**", "/layers/*/role",
+        ],
+        preferred_strategy="deterministic",
+    ),
+    "renderer.axial_loading_materialization_failed": ValidationIssueRepairPolicy(
+        issue_code="renderer.axial_loading_materialization_failed",
+        owner_patch_type="axial_layers",
+        allowed_path_patterns=["/lattice_loadings/**", "/layers/*/loading_id", "/layers/*/loading_ids/**"],
+        preferred_strategy="dependency_repair",
+    ),
 }
 
 

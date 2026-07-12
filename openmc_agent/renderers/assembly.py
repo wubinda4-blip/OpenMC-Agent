@@ -440,9 +440,20 @@ def _axial_assembly_modeling_errors(model: ComplexModelSpec) -> list[ValidationI
     :func:`openmc_agent.assembly3d_guard.assembly3d_structural_issues` so the
     plan validator and the renderer share one source of truth for the
     ``assembly3d.*`` codes.
+
+    Lattice-loading structural issues (replacement universe missing, source
+    universe missing, loading ref missing, etc.) are also surfaced here via
+    :func:`lattice_loading_structural_issues` so they are visible at
+    ``can_render`` time, not deferred to ``render()``.
     """
+    from openmc_agent.lattice_loading_validation import (
+        lattice_loading_structural_issues,
+    )
+
     assert model.core is not None
-    return assembly3d_structural_issues(model)
+    issues = assembly3d_structural_issues(model)
+    issues.extend(lattice_loading_structural_issues(model))
+    return issues
 
 
 def _lattice_pattern_errors(

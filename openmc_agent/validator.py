@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from openmc_agent.assembly3d_guard import validate_assembly3d_plan
 from openmc_agent.error_catalog import add_issue, issue_from_catalog
+from openmc_agent.lattice_loading_validation import lattice_loading_structural_issues
 from openmc_agent.lattice_validation import lattice_pin_count_issues
 from openmc_agent.schemas import (
     ComplexModelSpec,
@@ -229,6 +230,10 @@ def validate_simulation_plan(
         issues.extend(lattice_pin_count_issues(plan.complex_model.lattices))
         issues.extend(_complex_material_mixed_percent_issues(plan.complex_model))
         issues.extend(_lattice_universe_missing_coolant_issues(plan.complex_model))
+        # Shared lattice-loading structural validation: surfaces
+        # replacement_universe_missing, source_universe_missing, loading_ref_missing,
+        # etc. at validate_plan time rather than deferring to render().
+        issues.extend(lattice_loading_structural_issues(plan.complex_model))
 
     # Generic 3D axial-geometry guard: runs at plan-validation time (with the
     # requirement text) so axial requirements are caught before any renderer

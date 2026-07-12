@@ -1,0 +1,51 @@
+{
+  "description": "VERA3B regression: LLM generated replace_water_with_grid and replace_water_with_top_grid lattice transformations referencing an undefined 'grid_cell' replacement universe. The plan already has 8 correct spacer_grid axial overlays. Repair: remove the grid-only loadings and their layer references; overlays remain unchanged.",
+  "issue_codes": [
+    "lattice_transform.replacement_universe_missing",
+    "renderer.axial_loading_materialization_failed"
+  ],
+  "grid_operations": [
+    {
+      "loading_id": "spacer_grid_loadings",
+      "operation_id": "replace_water_with_grid",
+      "operation_kind": "replace_universe_family",
+      "replacement_universe_id": "grid_cell",
+      "source_universe_id": "water_cell"
+    },
+    {
+      "loading_id": "top_grid_loading",
+      "operation_id": "replace_water_with_top_grid",
+      "operation_kind": "replace_universe_family",
+      "replacement_universe_id": "grid_cell",
+      "source_universe_id": "water_cell"
+    }
+  ],
+  "replacement_id_resolution": {
+    "id": "grid_cell",
+    "is_universe_id": false,
+    "is_cell_id": false,
+    "is_material_id": false,
+    "owning_universe_ids": []
+  },
+  "layers_using_grid_loading": [
+    {
+      "layer_id": "active_fuel",
+      "loading_ids_before": ["pyrex_loading", "spacer_grid_loadings"],
+      "loading_ids_after": ["pyrex_loading"]
+    },
+    {
+      "layer_id": "upper_plenum",
+      "loading_ids_before": ["plenum_loading", "thimble_plug_loading", "top_grid_loading"],
+      "loading_ids_after": ["plenum_loading", "thimble_plug_loading"]
+    }
+  ],
+  "existing_grid_overlay_count": 8,
+  "repair_branch": "remove_redundant_grid_transformation",
+  "expected_after_repair": {
+    "lattice_transform_replacement_universe_missing": "resolved",
+    "renderer_axial_loading_materialization_failed": "resolved",
+    "non_grid_transformations_preserved": true,
+    "pin_counts_unchanged": true,
+    "overlay_count_unchanged": true
+  }
+}

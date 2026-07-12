@@ -51,7 +51,7 @@ def _broken_state(
             if not keep_moderator_only_universe:
                 content["universes"] = [
                     u for u in content["universes"]
-                    if u["universe_id"] != "moderator_only_pin"
+                    if u["universe_id"] not in ("moderator_only_pin", "water_cell")
                 ]
         state.add_patch(PlanPatchEnvelope(
             patch_id=content["patch_type"],

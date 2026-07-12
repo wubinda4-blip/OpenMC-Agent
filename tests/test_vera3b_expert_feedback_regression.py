@@ -81,15 +81,26 @@ def test_empty_input_does_not_produce_vague_continue(vera3b_plan: SimulationPlan
 
 
 def test_structural_blocker_visible_at_assess_time(vera3b_plan: SimulationPlan) -> None:
-    """The P0-D5 minimal probe makes the axial materialization blocker visible
-    at assessment time, before the expert panel asks material questions."""
+    """Lattice-loading structural blockers are visible at validate_plan time via
+    the shared validator, and the defensive probe does not duplicate them."""
     from openmc_agent.graph import _probe_axial_materialization_blockers
+    from openmc_agent.lattice_loading_validation import lattice_loading_structural_issues
+
+    model = vera3b_plan.complex_model
+    assert model is not None
+
+    shared_issues = lattice_loading_structural_issues(model)
+    shared_codes = {i.code for i in shared_issues}
+    assert "lattice_transform.replacement_universe_missing" in shared_codes
+    assert "renderer.axial_loading_materialization_failed" in shared_codes
+    assert all(i.severity == "error" for i in shared_issues)
 
     probe_issues = _probe_axial_materialization_blockers(vera3b_plan)
-    codes = {i.code for i in probe_issues}
-    assert "lattice_transform.replacement_universe_missing" in codes
-    assert "renderer.axial_loading_materialization_failed" in codes
-    assert all(i.severity == "error" for i in probe_issues)
+    probe_codes = {i.code for i in probe_issues}
+    assert probe_codes.isdisjoint(shared_codes), (
+        "defensive probe must not duplicate issues already caught by the "
+        "shared validator"
+    )
 
 
 def test_blocking_issue_codes_are_structural_not_material(vera3b_plan: SimulationPlan) -> None:

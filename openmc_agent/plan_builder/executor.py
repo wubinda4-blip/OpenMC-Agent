@@ -318,6 +318,10 @@ def build_generation_context_from_state(
 
     known_material_ids: list[str] = []
     known_universe_ids: list[str] = []
+    known_cell_ids: list[str] = []
+    cell_owner_universe_ids: dict[str, list[str]] = {}
+    material_roles_by_id: dict[str, str] = {}
+    known_overlay_summaries: list[dict[str, Any]] = []
     expected_counts: dict[str, int] = {}
     reference_expected_counts: dict[str, int] = {
         str(k): int(v)
@@ -368,12 +372,21 @@ def build_generation_context_from_state(
                 mid = mat.get("material_id")
                 if isinstance(mid, str):
                     known_material_ids.append(mid)
+                role = mat.get("role")
+                if isinstance(mid, str) and isinstance(role, str):
+                    material_roles_by_id[mid] = role
 
         elif ptype == "universes":
             for univ in content.get("universes", []):
                 uid = univ.get("universe_id")
                 if isinstance(uid, str):
                     known_universe_ids.append(uid)
+                for cell in univ.get("cells", []):
+                    cid = cell.get("id")
+                    if isinstance(cid, str) and isinstance(uid, str):
+                        if cid not in known_cell_ids:
+                            known_cell_ids.append(cid)
+                        cell_owner_universe_ids.setdefault(cid, []).append(uid)
 
         elif ptype == "pin_map":
             for group in (
@@ -403,6 +416,14 @@ def build_generation_context_from_state(
                 tl = ov.get("target_lattice_id")
                 if isinstance(tl, str) and tl not in ctx.known_lattice_ids:
                     ctx.known_lattice_ids.append(tl)
+                known_overlay_summaries.append({
+                    k: ov.get(k)
+                    for k in (
+                        "overlay_id", "overlay_kind", "z_min_cm", "z_max_cm",
+                        "target_lattice_id", "material_id", "geometry_mode",
+                        "through_path_preserved",
+                    )
+                })
 
     ctx.expected_counts = expected_counts
     ctx.reference_expected_counts = reference_expected_counts
@@ -416,6 +437,15 @@ def build_generation_context_from_state(
     ctx.known_universe_ids = list(dict.fromkeys(known_universe_ids))
     ctx.active_fuel_region_cm = active_fuel
     ctx.axial_domain_cm = axial_domain
+    ctx.known_cell_ids = list(dict.fromkeys(known_cell_ids))
+    ctx.cell_owner_universe_ids = cell_owner_universe_ids
+    ctx.material_roles_by_id = material_roles_by_id
+    ctx.known_overlay_summaries = known_overlay_summaries
+    ctx.has_spacer_grids = bool(
+        ctx.extracted_facts.get("has_spacer_grids")
+        or any(s.get("overlay_kind") == "spacer_grid" for s in known_overlay_summaries)
+    )
+    ctx.expected_spacer_grid_count = expected_counts.get("expected_spacer_grid_count")
 
     state.add_event(
         event_type=EVENT_PATCH_DEPENDENCY_CONTEXT_BUILT,

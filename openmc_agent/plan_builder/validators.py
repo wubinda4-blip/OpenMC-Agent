@@ -32,6 +32,7 @@ from .patches import (
     AxialOverlaysPatch,
     CoordinateConvention,
     FactsPatch,
+    LatticeTransformationPatchItem,
     MaterialSpecPatch,
     MaterialsPatch,
     PinMapPatch,
@@ -88,6 +89,12 @@ class PatchValidationContext(AgentBaseModel):
     axial_domain_cm: tuple[float, float] | None = None
     active_fuel_region_cm: tuple[float, float] | None = None
     strict_benchmark: bool = False
+    known_cell_ids: list[str] = Field(default_factory=list)
+    cell_owner_universe_ids: dict[str, list[str]] = Field(default_factory=dict)
+    material_roles_by_id: dict[str, str] = Field(default_factory=dict)
+    known_overlay_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    has_spacer_grids: bool = False
+    expected_spacer_grid_count: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +111,41 @@ _PATCH_COMPONENT_PROFILE_ROLES: frozenset[str] = frozenset({
     "lower_shoulder_gap",
     "upper_shoulder_gap",
 })
+
+
+# Weak evidence tokens for grid transformation detection.
+_GRID_OPERATION_TOKENS: frozenset[str] = frozenset({
+    "grid", "spacer", "top_grid", "replace_water_with_grid",
+    "replace_water_with_top_grid", "spacer_grid",
+})
+
+
+def _is_likely_grid_transformation(
+    t: LatticeTransformationPatchItem,
+    has_spacer_grids: bool,
+    overlay_summaries: list[dict[str, Any]],
+) -> bool:
+    """Heuristic: does this transformation likely express a spacer grid?
+
+    Weak evidence (operation_id / purpose text containing grid tokens) is used
+    only when combined with ``has_spacer_grids=True`` or existing spacer_grid
+    overlays.  This is intentionally conservative: it must not fire on ordinary
+    missing-universe errors that happen to contain the letter 'grid'.
+    """
+    text = " ".join([
+        t.operation_id or "",
+        t.purpose or "",
+    ]).lower()
+    has_grid_token = any(tok in text for tok in _GRID_OPERATION_TOKENS)
+    if not has_grid_token:
+        return False
+    # Require corroborating evidence from the plan structure.
+    if has_spacer_grids:
+        return True
+    has_grid_overlay = any(
+        s.get("overlay_kind") == "spacer_grid" for s in overlay_summaries
+    )
+    return has_grid_overlay
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +891,88 @@ def _validate_axial_layers(
                 ),
                 path=f"layers[{layer.layer_id}]",
             ))
+
+    # Lattice-loading transformation cross-reference validation.
+    # Check replacement_universe_id and source_universe_id against known
+    # universe IDs, cell IDs, and overlay summaries so defects are caught
+    # at patch-validation time.
+    if context.known_universe_ids and patch.lattice_loadings:
+        universe_set = set(context.known_universe_ids)
+        cell_set = set(context.known_cell_ids)
+        cell_owners = context.cell_owner_universe_ids
+        overlay_summaries = context.known_overlay_summaries
+        has_grids = context.has_spacer_grids
+
+        for loading in patch.lattice_loadings:
+            lpath = f"lattice_loadings[{loading.loading_id}]"
+            for t in loading.transformations:
+                tpath = f"{lpath}.transformations[{t.operation_id}]"
+
+                # replacement_universe_id must be a known universe
+                rep = t.replacement_universe_id
+                if rep and rep not in universe_set:
+                    # Check if it's actually a cell ID
+                    if rep in cell_set:
+                        owners = cell_owners.get(rep, [])
+                        issues.append(PatchValidationIssue(
+                            code="lattice_transform.cell_id_used_as_universe",
+                            severity="error",
+                            message=(
+                                f"operation {t.operation_id!r}: replacement_universe_id "
+                                f"{rep!r} is a Cell ID, not a Universe ID. "
+                                f"Owning universe(s): {owners}"
+                            ),
+                            path=f"{tpath}.replacement_universe_id",
+                            actual=rep,
+                        ))
+                    else:
+                        issues.append(PatchValidationIssue(
+                            code="lattice_transform.replacement_universe_missing",
+                            severity="error",
+                            message=(
+                                f"operation {t.operation_id!r}: replacement universe "
+                                f"{rep!r} not defined"
+                            ),
+                            path=f"{tpath}.replacement_universe_id",
+                            actual=rep,
+                        ))
+
+                        # Spacer-grid misuse detection
+                        if _is_likely_grid_transformation(t, has_grids, overlay_summaries):
+                            issues.append(PatchValidationIssue(
+                                code="assembly3d.spacer_grid_transformation_misuse",
+                                severity="error",
+                                message=(
+                                    f"operation {t.operation_id!r} appears to express a "
+                                    "spacer grid as a lattice transformation "
+                                    f"(replacement={rep!r}). Spacer grids must be "
+                                    "expressed as axial_overlays with overlay_kind="
+                                    "spacer_grid, not as replace_universe_family "
+                                    "or coordinate_override transformations that "
+                                    "replace the full pitch with a grid "
+                                    "material/universe."
+                                ),
+                                path=f"{tpath}.replacement_universe_id",
+                            ))
+
+                # source_universe_id must be a known universe
+                if t.operation_kind == "replace_universe_family":
+                    sources = []
+                    if t.source_universe_id:
+                        sources.append(t.source_universe_id)
+                    sources.extend(t.source_universe_ids)
+                    for src in sources:
+                        if src and src not in universe_set:
+                            issues.append(PatchValidationIssue(
+                                code="lattice_transform.source_universe_missing",
+                                severity="error",
+                                message=(
+                                    f"operation {t.operation_id!r}: source universe "
+                                    f"{src!r} not defined"
+                                ),
+                                path=f"{tpath}.source_universe_id",
+                                actual=src,
+                            ))
 
     return issues
 

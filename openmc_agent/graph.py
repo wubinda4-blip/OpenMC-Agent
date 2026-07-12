@@ -58,6 +58,11 @@ from openmc_agent.plan_builder.component_profile_repair import (
     evaluate_shoulder_gap_repair_bundle,
     commit_accepted_repair_bundle,
 )
+from openmc_agent.plan_builder.grid_loading_repair import (
+    diagnose_grid_loading_failure,
+    propose_grid_migration_repair_bundle,
+    evaluate_grid_migration_repair_bundle,
+)
 from openmc_agent.plan_builder.patches import parse_patch_content
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
@@ -2287,6 +2292,161 @@ def _try_incremental_validation_patch_repair(
                             "status": "accepted",
                             "strategy": "deterministic_shoulder_gap_repair",
                         }
+        # The grid-loading / lattice-transform oracle is also before any
+        # repair-model call.  It diagnoses replacement_universe_missing and
+        # spacer_grid_transformation_misuse, then produces a deterministic
+        # bundle to remove redundant grid transformations or migrate them to
+        # axial overlays.
+        _lattice_codes = {
+            "lattice_transform.replacement_universe_missing",
+            "lattice_transform.cell_id_used_as_universe",
+            "assembly3d.spacer_grid_transformation_misuse",
+            "lattice_transform.source_universe_missing",
+        }
+        if (
+            target_patch_type == "axial_layers"
+            and any(i.code in _lattice_codes for i in eligible)
+        ):
+            plan_payload = build_state.assembled_plan or (
+                state.get("simulation_plan").model_dump(mode="json")
+                if hasattr(state.get("simulation_plan"), "model_dump") else state.get("simulation_plan")
+            )
+            if isinstance(plan_payload, dict):
+                try:
+                    assembled_plan = SimulationPlan.model_validate(plan_payload)
+                except Exception:
+                    assembled_plan = None
+                if assembled_plan is not None:
+                    lattice_issues = [
+                        i for i in eligible if i.code in _lattice_codes
+                    ]
+                    try:
+                        grid_diagnosis = diagnose_grid_loading_failure(
+                            state=build_state, plan=assembled_plan, issues=lattice_issues,
+                        )
+                    except Exception as exc:
+                        grid_diagnosis = None
+                        build_state.add_event(
+                            "planning.grid_loading_diagnosed",
+                            "grid loading diagnosis failed",
+                            {"reason": str(exc)},
+                        )
+                    if grid_diagnosis is not None:
+                        _write_validation_repair_artifact(
+                            state.get("output_dir"),
+                            f"lattice_loading_diagnosis_{attempts}.json",
+                            grid_diagnosis,
+                        )
+                        build_state.add_event(
+                            "planning.grid_transformation_diagnosed",
+                            "grid transformation diagnosed",
+                            grid_diagnosis.model_dump(mode="json"),
+                        )
+                        if grid_diagnosis.deterministic_repair_available:
+                            grid_bundle = propose_grid_migration_repair_bundle(
+                                state=build_state, diagnosis=grid_diagnosis,
+                            )
+                            if grid_bundle is not None:
+                                _write_validation_repair_artifact(
+                                    state.get("output_dir"),
+                                    f"grid_overlay_migration_bundle_{attempts}.json",
+                                    grid_bundle,
+                                )
+                                build_state.add_event(
+                                    "planning.grid_overlay_migration_proposed",
+                                    "deterministic grid migration bundle proposed",
+                                    grid_bundle.model_dump(mode="json"),
+                                )
+                                _axial_before = next(
+                                    (p for p in build_state.patches.values()
+                                     if p.patch_type == "axial_layers" and p.status == "valid"),
+                                    None,
+                                )
+                                _overlays_before = next(
+                                    (p for p in build_state.patches.values()
+                                     if p.patch_type == "axial_overlays" and p.status == "valid"),
+                                    None,
+                                )
+                                if _axial_before:
+                                    _write_validation_repair_artifact(
+                                        state.get("output_dir"),
+                                        f"axial_layers_before_grid_{attempts}.json",
+                                        _axial_before.content,
+                                    )
+                                if _overlays_before:
+                                    _write_validation_repair_artifact(
+                                        state.get("output_dir"),
+                                        f"axial_overlays_before_grid_{attempts}.json",
+                                        _overlays_before.content,
+                                    )
+                                _current_report = validate_simulation_plan(
+                                    assembled_plan, requirement=state.get("requirement", ""),
+                                )
+                                grid_eval = evaluate_grid_migration_repair_bundle(
+                                    state=build_state,
+                                    proposal=grid_bundle,
+                                    diagnosis=grid_diagnosis,
+                                    report_before=_current_report,
+                                    requirement=state.get("requirement", ""),
+                                )
+                                _write_validation_repair_artifact(
+                                    state.get("output_dir"),
+                                    f"grid_migration_evaluation_{attempts}.json",
+                                    grid_eval,
+                                )
+                                if grid_eval.accepted:
+                                    commit_accepted_repair_bundle(build_state, grid_bundle, grid_eval)
+                                    _axial_after = next(
+                                        (p for p in build_state.patches.values()
+                                         if p.patch_type == "axial_layers" and p.status == "valid"),
+                                        None,
+                                    )
+                                    _overlays_after = next(
+                                        (p for p in build_state.patches.values()
+                                         if p.patch_type == "axial_overlays" and p.status == "valid"),
+                                        None,
+                                    )
+                                    if _axial_after:
+                                        _write_validation_repair_artifact(
+                                            state.get("output_dir"),
+                                            f"axial_layers_after_grid_{attempts}.json",
+                                            _axial_after.content,
+                                        )
+                                    if _overlays_after:
+                                        _write_validation_repair_artifact(
+                                            state.get("output_dir"),
+                                            f"axial_overlays_after_grid_{attempts}.json",
+                                            _overlays_after.content,
+                                        )
+                                    build_state.add_event(
+                                        "planning.grid_overlay_migration_accepted",
+                                        "deterministic grid migration accepted",
+                                        grid_eval.model_dump(mode="json"),
+                                    )
+                                    try:
+                                        _parsed_final = [
+                                            parse_patch_content(e.patch_type, e.content)
+                                            for e in build_state.patches.values() if e.status == "valid"
+                                        ]
+                                        _assembly_final = assemble_simulation_plan_from_patches(_parsed_final, strict=True)
+                                        if _assembly_final.ok and _assembly_final.plan is not None:
+                                            grid_eval.repaired_plan = _assembly_final.plan.model_dump(mode="json")
+                                            _final_report = validate_simulation_plan(
+                                                _assembly_final.plan, requirement=state.get("requirement", ""),
+                                            )
+                                            grid_eval.validation_report_after = _final_report.model_dump(mode="json")
+                                    except Exception:
+                                        pass
+                                    return build_state, grid_eval, {
+                                        "status": "accepted",
+                                        "strategy": "deterministic_grid_migration",
+                                    }
+                                else:
+                                    build_state.add_event(
+                                        "planning.grid_overlay_migration_rejected",
+                                        "deterministic grid migration rejected",
+                                        grid_eval.model_dump(mode="json"),
+                                    )
         if llm_client is None:
             return build_state, None, {"status": "unavailable"}
         _write_validation_repair_artifact(state.get("output_dir"), "diagnosis.json", {
@@ -5815,31 +5975,41 @@ def _capability_self_repair_errors(
 
 
 def _probe_axial_materialization_blockers(plan: SimulationPlan) -> list[ValidationIssue]:
-    """P0-D5 minimal alignment: surface axial-loading structural defects early.
+    """Defensive assertion: surface any lattice-loading defects the shared
+    validator may have missed.
 
-    ``can_render`` runs only static reference checks; the axial-lattice
-    materialization (which discovers that a lattice-loading operation references
-    an undefined replacement universe) currently runs only inside ``render()``.
-    That hides the *real* execution blocker until after the expert panel has
-    already asked its material questions.
-
-    This probe runs the same pure materialization function as a dry run so the
-    blocker classifier, supervisor, and expert panel see the structural defect
-    at assessment time. It does NOT implement a repair oracle (P0-D5 / future
-    deterministic repair); it only makes the existing structured issue visible.
-    Returns error-severity issues only.
+    The primary detection is now :func:`lattice_loading_structural_issues`
+    called from :func:`validate_simulation_plan`.  This probe runs the full
+    materialization as a dry-run defensively; if the shared validator already
+    caught everything, this returns an empty list.  It never duplicates issues
+    the validator already reported.
     """
+    from openmc_agent.lattice_loading_validation import (
+        lattice_loading_structural_issues,
+    )
+
     model = plan.complex_model
     if model is None or model.core is None or not getattr(model.core, "axial_layers", None):
         return []
+
+    # Issues already visible to the shared validator — these are the primary
+    # detection source and must not be re-injected by this probe.
+    shared_issues = lattice_loading_structural_issues(model)
+    shared_codes = {i.code for i in shared_issues}
+
     try:
         from openmc_agent.lattice_transform import materialize_axial_lattice_transformations
         _new_spec, issues, _meta = materialize_axial_lattice_transformations(model)
     except Exception:
-        # The probe is advisory; never let it crash assessment. render() will
-        # still surface the defect defensively as a skeleton.
         return []
-    return [issue for issue in issues if issue.severity == "error"]
+    # Only return issues whose code the shared validator did NOT already cover.
+    # Dedup by code (not code+path) because the compose engine and the shared
+    # validator annotate schema_paths differently.
+    return [
+        issue for issue in issues
+        if issue.severity == "error"
+        and issue.code not in shared_codes
+    ]
 
 
 def _capability_for_plan(plan: SimulationPlan) -> RenderCapabilityReport:
