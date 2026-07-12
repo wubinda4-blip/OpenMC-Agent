@@ -163,6 +163,12 @@ class GraphState(TypedDict, total=False):
     patch_error: str | None
     resolved_expert_items: list[dict[str, Any]]
     capability_repair_errors: list[str]
+    # P0-D5A expert-feedback semantics + skeleton blocker routing.
+    capability_blocker_summary: dict[str, Any]
+    expert_question_groups: list[dict[str, Any]]
+    expert_feedback_decision: dict[str, Any]
+    expert_assumption_acknowledgements: list[dict[str, Any]]
+    workflow_outcome: dict[str, Any]
     raw_llm_outputs: list[str]
     candidate_payload: dict[str, Any] | None
     plan_artifacts: list[str]
@@ -2915,6 +2921,9 @@ def _make_plan_capability_router():
 
 def _make_expert_feedback_router():
     def _route(state: GraphState) -> str:
+        decision = state.get("expert_feedback_decision") or {}
+        if isinstance(decision, dict) and decision.get("action") == "abort":
+            return "stop"
         if state.get("expert_feedback_action") == "classify":
             return "classify"
         return _make_plan_capability_router()(state)
@@ -3003,6 +3012,23 @@ def _make_assess_plan_capability_node(max_retries: int):
             return {}
 
         capability = _capability_for_plan(plan)
+        # P0-D5 minimal alignment: surface axial-loading structural defects that
+        # can_render's static checks miss, so the real blocker is visible before
+        # the expert panel asks material questions. Applied at the graph assess
+        # node only (not in _capability_for_plan) so other callers are unaffected.
+        probe_issues = _probe_axial_materialization_blockers(plan)
+        if probe_issues and capability.renderability in {"exportable", "runnable"}:
+            probe_codes = [issue.code for issue in probe_issues]
+            capability = capability.model_copy(update={
+                "renderability": "skeleton",
+                "is_executable": False,
+                "issues": [*capability.issues, *probe_issues],
+                "reasons": [
+                    *capability.reasons,
+                    "axial lattice materialization would fail (pre-render probe): "
+                    + "; ".join(probe_codes),
+                ],
+            })
         updated_plan = plan.model_copy(update={"capability_report": capability})
         report = state.get("validation_report") or ValidationReport(is_valid=True)
         warnings = [
@@ -3228,11 +3254,52 @@ def _ask_expert(state: GraphState) -> GraphState:
         "ask_expert",
         f"interrupting for expert feedback round {prompt_round}/{max_rounds}",
     )
-    start_update = _trace_event_update(
+    # Surface the *real* execution blocker (structural/environment) in the panel
+    # header so material assumptions cannot mask it. Computed deterministically;
+    # never asks an LLM.
+    blocker_payload = _capability_blocker_payload(state)
+    question_group_ids = [
+        g.get("question_id") for g in state.get("expert_question_groups", [])
+        if isinstance(g, dict)
+    ]
+    # Record classification + grouping as TRACE events (observability), not as
+    # human-loop interaction events, so they never shift human_loop_events order.
+    classified_update = _trace_event_update(
         state,
+        "capability_blockers_classified",
+        summary=(
+            f"primary_blockers={blocker_payload.get('primary_blocker_codes', [])} "
+            f"has_blocking={blocker_payload.get('has_blocking_issue')}"
+        ),
+        metadata={
+            "primary_blocker_codes": blocker_payload.get("primary_blocker_codes", []),
+            "has_blocking_issue": blocker_payload.get("has_blocking_issue"),
+            "structural_issue_not_visible_to_validate_plan": blocker_payload.get(
+                "structural_issue_not_visible_to_validate_plan"
+            ),
+        },
+        round_index=prompt_round,
+    )
+    grouped_update = _trace_event_update(
+        {**state, **classified_update},
+        "expert_questions_grouped",
+        summary=f"{len(state.get('expert_question_groups', []))} question group(s)",
+        metadata={
+            "group_count": len(state.get("expert_question_groups", [])),
+            "group_ids": question_group_ids,
+        },
+        round_index=prompt_round,
+    )
+    start_update = _trace_event_update(
+        {**state, **grouped_update},
         "ask_expert_started",
         summary=f"asking {len(questions)} expert question(s)",
-        metadata={"question_count": len(questions), "questions": questions},
+        metadata={
+            "question_count": len(questions),
+            "questions": questions,
+            "group_count": len(state.get("expert_question_groups", [])),
+            "primary_blocker_codes": blocker_payload.get("primary_blocker_codes", []),
+        },
         round_index=prompt_round,
     )
     resume_payload = interrupt(
@@ -3241,6 +3308,7 @@ def _ask_expert(state: GraphState) -> GraphState:
             "round": prompt_round,
             "max_rounds": max_rounds,
             "questions": questions,
+            "capability_blockers": blocker_payload,
             "instruction": (
                 "Provide expert feedback that fills, corrects, or explicitly defers "
                 "the missing modeling facts."
@@ -3272,19 +3340,135 @@ def _ask_expert(state: GraphState) -> GraphState:
             }
         )
 
-    if not should_continue or not feedback_items:
+    decision_action = _decision_action_from_resume_payload(resume_payload)
+    if decision_action:
+        # Explicit :command decision. Build the decision deterministically,
+        # create run-level acknowledgements (never mutating plan physics), and
+        # record a trace event. Material assumptions are NOT forwarded to any
+        # repair LLM: only the structural blocker codes are carried.
+        from openmc_agent.expert_feedback import (
+            ExpertFeedbackDecision,
+            build_assumption_acknowledgements,
+        )
+        acknowledged_ids = (
+            question_group_ids
+            if decision_action == "accept_assumptions_for_this_run"
+            else []
+        )
+        deferred_ids = (
+            question_group_ids
+            if decision_action == "defer_confirmations"
+            else []
+        )
+        decision = ExpertFeedbackDecision(
+            action=decision_action,  # type: ignore[arg-type]
+            feedback_items=feedback_items,
+            acknowledged_question_ids=acknowledged_ids,
+            deferred_question_ids=deferred_ids,
+            reason=f"explicit expert command {decision_action!r}",
+        )
+        event_name = {
+            "accept_assumptions_for_this_run": "expert_assumptions_accepted_for_run",
+            "accept_review_only": "expert_review_only_accepted",
+            "defer_confirmations": "expert_confirmations_deferred",
+            "abort": "expert_feedback_aborted",
+            "continue_repair": "structural_blocker_routed_before_human_confirmation",
+            "provide_corrections": "expert_feedback_classified",
+        }.get(decision_action, "expert_feedback_classified")
+        events.append(
+            {
+                "event": event_name,
+                "round": prompt_round,
+                "action": decision_action,
+                "question_ids": question_group_ids,
+                "reason": decision.reason,
+            }
+        )
+        acks = build_assumption_acknowledgements(
+            decision,
+            question_ids=question_group_ids,
+            round_index=prompt_round,
+            plan_hash=_plan_hash(_coerce_simulation_plan(state.get("simulation_plan"))),
+        )
         completed_update = _trace_event_update(
             {**state, **start_update},
             "ask_expert_completed",
-            summary="expert feedback was empty or deferred",
+            summary=f"expert decision -> {decision_action}",
+            metadata={
+                "question_count": len(questions),
+                "expert_feedback_action": decision_action,
+                "acknowledgement_count": len(acks),
+            },
+            round_index=prompt_round,
+        )
+        return {
+            **plan_update,
+            "pending_expert_questions": [] if decision_action != "defer_confirmations" else questions,
+            "expert_round_count": prompt_round,
+            "awaiting_expert_feedback": False,
+            "needs_regeneration": False,
+            "expert_feedback_action": "continue",
+            "expert_feedback_decision": decision.model_dump(mode="json"),
+            "expert_assumption_acknowledgements": [
+                a.model_dump(mode="json") for a in acks
+            ],
+            "resolved_expert_items": resolved_items,
+            "human_loop_events": events,
+            **completed_update,
+        }
+
+    if not should_continue or not feedback_items:
+        # Empty feedback no longer means a vague "accept the current artifact and
+        # continue". It is an explicit, traceable decision: defer confirmations
+        # for a runnable model, or accept the review-only skeleton for a blocked
+        # one (outcome=BLOCKED_REVIEW_ONLY, never a silent success).
+        from openmc_agent.expert_feedback import (
+            interpret_empty_feedback,
+            build_assumption_acknowledgements,
+        )
+        renderability = blocker_payload.get("renderability", "runnable")
+        has_blocking = bool(blocker_payload.get("has_blocking_issue"))
+        decision = interpret_empty_feedback(
+            renderability=renderability,
+            has_blocking_issue=has_blocking,
+        )
+        event_name = (
+            "expert_review_only_accepted"
+            if decision.action == "accept_review_only"
+            else "expert_confirmations_deferred"
+        )
+        events.append(
+            {
+                "event": event_name,
+                "round": prompt_round,
+                "action": decision.action,
+                "reason": decision.reason,
+                "renderability": renderability,
+                "has_blocking_issue": has_blocking,
+            }
+        )
+        acks = build_assumption_acknowledgements(
+            decision,
+            question_ids=question_group_ids,
+            round_index=prompt_round,
+            plan_hash=_plan_hash(_coerce_simulation_plan(state.get("simulation_plan"))),
+        )
+        completed_update = _trace_event_update(
+            {**state, **start_update},
+            "ask_expert_completed",
+            summary=f"expert feedback empty -> {decision.action}",
             metadata={
                 "question_count": len(questions),
                 "questions": questions,
                 "feedback_present": bool(feedback_items),
+                "expert_feedback_action": decision.action,
                 "requires_human_confirmation_count": len(questions),
             },
             round_index=prompt_round,
         )
+        # Routing falls through to render (the renderer emits a review-only
+        # skeleton for blocked models; execute_tools then skips). The
+        # workflow_outcome label is what distinguishes this from a real PASS.
         return {
             **plan_update,
             "pending_expert_questions": questions,
@@ -3292,6 +3476,10 @@ def _ask_expert(state: GraphState) -> GraphState:
             "awaiting_expert_feedback": False,
             "needs_regeneration": False,
             "expert_feedback_action": "continue",
+            "expert_feedback_decision": decision.model_dump(mode="json"),
+            "expert_assumption_acknowledgements": [
+                a.model_dump(mode="json") for a in acks
+            ],
             "resolved_expert_items": resolved_items,
             "human_loop_events": events,
             **completed_update,
@@ -3631,6 +3819,8 @@ def _render_plan_script(state: GraphState) -> GraphState:
         f"wrote {model_path} (renderer={result.renderer_name}, "
         f"renderability={result.renderability})",
     )
+    if result.renderability in {"skeleton", "none"}:
+        _enrich_skeleton_todo(output_dir, plan, state)
     completed_update = _trace_event_update(
         {**state, **start_update},
         "render_completed",
@@ -4240,6 +4430,24 @@ def _save_plan_record(state: GraphState) -> GraphState:
         plan_artifacts=state.get("plan_artifacts", []),
     )
     _progress(state, "save_record", "record saved")
+    output_dir = Path(state.get("output_dir", "data/runs"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    outcome = _compute_workflow_outcome(state, plan, report)
+    state["workflow_outcome"] = outcome
+    _write_expert_feedback_artifacts(output_dir, state, outcome)
+    if outcome.get("status") == "blocked_review_only":
+        blocked_update = _trace_event_update(
+            state,
+            "workflow_blocked_review_only",
+            summary=(
+                "review-only skeleton kept; OpenMC not attempted; "
+                f"blockers={outcome.get('reason_codes')}"
+            ),
+            report=report,
+            plan=plan,
+            metadata=outcome,
+        )
+        return {**blocked_update, "workflow_outcome": outcome}
     return _trace_event_update(
         state,
         "workflow_failed" if state.get("error") else "workflow_completed",
@@ -4250,7 +4458,123 @@ def _save_plan_record(state: GraphState) -> GraphState:
             "model_path": state.get("model_path"),
             "retry_count": state.get("retry_count", 0),
             "pending_expert_questions": state.get("pending_expert_questions", []),
+            "workflow_outcome": outcome,
         },
+    )
+
+
+def _enrich_skeleton_todo(output_dir: Path, plan: SimulationPlan, state: GraphState) -> None:
+    """Append the real blocker codes + next step to the review-only skeleton TODO.
+
+    Avoids a generic 'fill the gaps' note: the reviewer sees exactly which
+    structural code forced the skeleton, which confirmations are still open,
+    which assumptions were accepted for this run, and whether the next step is
+    an Agent repair or an expert fact.
+    """
+    import contextlib
+
+    from openmc_agent.capability_blockers import classify_capability_blockers
+
+    try:
+        summary = classify_capability_blockers(plan, state.get("validation_report"))
+    except Exception:
+        return
+    todo_path = output_dir / "TODO.md"
+    section_lines = [
+        "",
+        "## P0-D5A blocker summary",
+        f"- primary_blocker_codes: {', '.join(summary.primary_blocker_codes) or '(none)'}",
+        f"- structural_issue_not_visible_to_validate_plan: "
+        f"{summary.structural_issue_not_visible_to_validate_plan}",
+        f"- open human confirmations: {len(plan.capability_report.required_human_confirmations)}",
+        f"- accepted run-level assumptions: "
+        f"{len(state.get('expert_assumption_acknowledgements') or [])}",
+    ]
+    if summary.structural_agent_fixable:
+        section_lines.append(
+            "- next step: Agent repair (structural defect; does NOT need an expert fact)."
+        )
+    elif summary.human_fact_required:
+        section_lines.append(
+            "- next step: expert fact required (human_fact_required issue present)."
+        )
+    elif summary.environment_required:
+        section_lines.append("- next step: environment/runtime fix required.")
+    else:
+        section_lines.append("- next step: review the skeleton; no blocking issue classified.")
+    with contextlib.suppress(Exception):
+        with todo_path.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(section_lines) + "\n")
+
+
+def _compute_workflow_outcome(
+    state: GraphState,
+    plan: SimulationPlan | None,
+    report: ValidationReport,
+) -> dict[str, Any]:
+    """Classify the final workflow status, separating review-only skeletons from
+    real failures. A skeleton blocked by a structural/environment defect is
+    ``blocked_review_only`` (kept for review, OpenMC not attempted) -- never a
+    context-less ``FAIL``. Internal ``ok`` stays False so CI does not treat a
+    skeleton as a success.
+    """
+    from openmc_agent.capability_blockers import classify_capability_blockers
+
+    renderability = plan.capability_report.renderability if plan is not None else "none"
+    decision = state.get("expert_feedback_decision") or {}
+    user_decision = decision.get("action") if isinstance(decision, dict) else None
+    model_artifact_generated = bool(state.get("model_path"))
+    # execute_tools skips export/run for skeleton/none; runnable/exportable ran.
+    export_ran = any(
+        isinstance(tr, dict) and tr.get("name") == "export_xml"
+        for tr in state.get("tool_results", [])
+    )
+    openmc_execution_attempted = renderability in {"exportable", "runnable"} and export_ran
+
+    reason_codes: list[str] = []
+    if plan is not None:
+        summary = classify_capability_blockers(plan, report)
+        reason_codes = list(summary.primary_blocker_codes)
+        state["capability_blocker_summary"] = summary.model_dump(mode="json")
+
+    if renderability in {"skeleton", "none"}:
+        status = "blocked_review_only"
+    elif openmc_execution_attempted and report.is_valid:
+        status = "ok"
+    else:
+        status = "fail"
+    return {
+        "status": status,
+        "reason_codes": reason_codes,
+        "renderability": renderability,
+        "model_artifact_generated": model_artifact_generated,
+        "openmc_execution_attempted": openmc_execution_attempted,
+        "user_decision": user_decision,
+    }
+
+
+def _write_expert_feedback_artifacts(
+    output_dir: Path,
+    state: GraphState,
+    outcome: dict[str, Any],
+) -> None:
+    """Persist the P0-D5A expert-feedback artifacts next to the run record."""
+    import contextlib
+
+    def _write(name: str, payload: object) -> None:
+        with contextlib.suppress(Exception):
+            (output_dir / name).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+
+    _write("workflow_outcome.json", outcome)
+    _write("capability_blocker_summary.json", state.get("capability_blocker_summary") or {})
+    _write("expert_question_groups.json", state.get("expert_question_groups") or [])
+    _write("expert_feedback_decision.json", state.get("expert_feedback_decision") or {})
+    _write(
+        "expert_assumption_acknowledgements.json",
+        state.get("expert_assumption_acknowledgements") or [],
     )
 
 
@@ -4612,6 +4936,69 @@ def _cross_sections_question_resolved_by_env(text: str) -> bool:
     return _cross_sections_env_available() and _is_cross_sections_confirmation(text)
 
 
+def _plan_hash(plan: SimulationPlan | None) -> str:
+    """Stable hash of the plan's modeling fields for acknowledgement scoping.
+
+    Acknowledgements are scoped to a plan hash so a changed plan (different
+    materials/composition) cannot blindly reuse a prior run's accept/defer.
+    """
+    import hashlib
+
+    if plan is None:
+        return ""
+    try:
+        payload = plan.model_dump(mode="json", exclude={"capability_report"})
+    except Exception:
+        return ""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _capability_blocker_payload(state: GraphState) -> dict[str, Any]:
+    """Build the panel-header blocker view from the current plan + report."""
+    from openmc_agent.capability_blockers import classify_capability_blockers
+
+    plan = _coerce_simulation_plan(state.get("simulation_plan"))
+    if plan is None:
+        return {"renderability": "none", "is_executable": False, "has_blocking_issue": False}
+    report = state.get("validation_report")
+    summary = classify_capability_blockers(plan, report)
+    state["capability_blocker_summary"] = summary.model_dump(mode="json")
+    blockers: list[dict[str, Any]] = []
+    for issue in summary.structural_agent_fixable:
+        blockers.append({
+            "code": issue.code,
+            "message": issue.message,
+            "schema_path": issue.schema_path,
+            "route_type": "agent-fixable",
+        })
+    for issue in summary.environment_required:
+        blockers.append({
+            "code": issue.code,
+            "message": issue.message,
+            "schema_path": issue.schema_path,
+            "route_type": "environment",
+        })
+    for issue in summary.human_fact_required:
+        blockers.append({
+            "code": issue.code,
+            "message": issue.message,
+            "schema_path": issue.schema_path,
+            "route_type": "human-required",
+        })
+    return {
+        "renderability": summary.renderability,
+        "is_executable": summary.is_executable,
+        "has_blocking_issue": summary.has_blocking_issue,
+        "primary_blocker_codes": summary.primary_blocker_codes,
+        "blocking_issues": blockers,
+        "structural_issue_not_visible_to_validate_plan": (
+            summary.structural_issue_not_visible_to_validate_plan
+        ),
+    }
+
+
 def _pending_expert_questions(state: GraphState) -> list[str]:
     plan = _coerce_simulation_plan(state.get("simulation_plan"))
     if plan is None:
@@ -4628,8 +5015,6 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
         if _cross_sections_question_resolved_by_env(item):
             continue
         questions.append(f"Please provide or confirm: {item}")
-    for item in plan.expert_assumptions:
-        questions.append(f"Please confirm or correct this modeling assumption: {item}")
 
     report = state.get("validation_report")
     if report is not None:
@@ -4643,19 +5028,27 @@ def _pending_expert_questions(state: GraphState) -> list[str]:
                 questions.append(f"Please provide or confirm: [{issue.code}] {issue.message}")
 
     if capability.renderability in {"none", "skeleton"}:
-        non_expert_routes = {"auto_repair", "reflect_plan", "retrieval", "capability_downgrade"}
-        if not any(issue.route_hint in non_expert_routes for issue in capability.issues):
-            for reason in capability.reasons:
-                if is_structural_error_confirmation(reason):
-                    continue
-                questions.append(f"What expert information resolves this renderability gap: {reason}")
-            for warning in capability.warnings:
-                questions.append(f"Please review this modeling warning: {warning}")
         for issue in capability.issues:
             if issue.route_hint == "ask_expert" or issue.requires_human_confirmation:
                 if _cross_sections_question_resolved_by_env(issue.message):
                     continue
                 questions.append(f"Please provide or confirm: [{issue.code}] {issue.message}")
+
+    # Material assumptions are merged into per-material confirmable groups so the
+    # panel no longer shows a wall of near-duplicate questions. Structural /
+    # environment blockers are deliberately NOT turned into expert questions:
+    # they surface in the panel header (see capability_blocker_summary) and route
+    # to repair / review-only instead of asking the expert for physical facts.
+    from openmc_agent.expert_feedback import group_expert_questions
+    from openmc_agent.capability_blockers import classify_capability_blockers
+
+    summary = classify_capability_blockers(plan, report)
+    groups = group_expert_questions(plan, summary)
+    for group in groups:
+        questions.append(group.prompt)
+
+    questions = list(dict.fromkeys(q for q in questions if q.strip()))
+    return _filter_already_resolved_questions(questions, state)
 
     questions = list(dict.fromkeys(q for q in questions if q.strip()))
     return _filter_already_resolved_questions(questions, state)[:8]
@@ -5273,6 +5666,28 @@ def _feedback_from_resume_payload(payload: Any) -> tuple[list[str], bool]:
     return ([text] if text else []), bool(text)
 
 
+_VALID_DECISION_ACTIONS = frozenset(
+    {
+        "accept_assumptions_for_this_run",
+        "provide_corrections",
+        "defer_confirmations",
+        "continue_repair",
+        "accept_review_only",
+        "abort",
+    }
+)
+
+
+def _decision_action_from_resume_payload(payload: Any) -> str | None:
+    """Extract an explicit ``:command`` decision action from the resume payload."""
+    if not isinstance(payload, dict):
+        return None
+    action = payload.get("decision_action")
+    if isinstance(action, str) and action in _VALID_DECISION_ACTIONS:
+        return action
+    return None
+
+
 def _coerce_simulation_plan(value: Any) -> SimulationPlan | None:
     if value is None:
         return None
@@ -5397,6 +5812,34 @@ def _capability_self_repair_errors(
         ValidationIssue(severity="error", code="legacy.self_repairable", message=text)
         for text in dict.fromkeys(repaired_texts)
     ]
+
+
+def _probe_axial_materialization_blockers(plan: SimulationPlan) -> list[ValidationIssue]:
+    """P0-D5 minimal alignment: surface axial-loading structural defects early.
+
+    ``can_render`` runs only static reference checks; the axial-lattice
+    materialization (which discovers that a lattice-loading operation references
+    an undefined replacement universe) currently runs only inside ``render()``.
+    That hides the *real* execution blocker until after the expert panel has
+    already asked its material questions.
+
+    This probe runs the same pure materialization function as a dry run so the
+    blocker classifier, supervisor, and expert panel see the structural defect
+    at assessment time. It does NOT implement a repair oracle (P0-D5 / future
+    deterministic repair); it only makes the existing structured issue visible.
+    Returns error-severity issues only.
+    """
+    model = plan.complex_model
+    if model is None or model.core is None or not getattr(model.core, "axial_layers", None):
+        return []
+    try:
+        from openmc_agent.lattice_transform import materialize_axial_lattice_transformations
+        _new_spec, issues, _meta = materialize_axial_lattice_transformations(model)
+    except Exception:
+        # The probe is advisory; never let it crash assessment. render() will
+        # still surface the defect defensively as a skeleton.
+        return []
+    return [issue for issue in issues if issue.severity == "error"]
 
 
 def _capability_for_plan(plan: SimulationPlan) -> RenderCapabilityReport:

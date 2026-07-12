@@ -421,12 +421,19 @@ def _invoke_plan_graph_with_optional_feedback(
         payload = _interrupt_payload(state) or {}
         if not interactive_feedback:
             return state
-        feedback = _read_expert_feedback(payload)
+        reply = _read_expert_feedback(payload)
+        feedback = reply.get("feedback", "")
+        decision_action = reply.get("decision_action")
+        # should_continue remains False for empty free text so the graph applies
+        # the explicit defer/review-only semantics; an explicit decision command
+        # or non-empty feedback drives the graph forward.
+        should_continue = bool(feedback.strip()) or decision_action is not None
         state = graph.invoke(
             Command(
                 resume={
                     "expert_feedback": feedback,
-                    "should_continue": bool(feedback.strip()),
+                    "should_continue": should_continue,
+                    "decision_action": decision_action,
                 }
             ),
             config,
@@ -474,28 +481,71 @@ def _print_feedback_panel(
     max_rounds: Any,
     questions: list[str],
     instruction: str,
+    blockers: dict | None = None,
 ) -> None:
     width = _terminal_width()
     _eprint()
     _eprint(_dim("─" * width))
+    # Real execution blockers go at the top so material assumptions cannot
+    # mask the structural/environment defect that actually forced a skeleton.
+    if blockers and blockers.get("has_blocking_issue"):
+        _eprint(f"  {_bold('真实执行状态')}")
+        _eprint(
+            f"    Renderability: {blockers.get('renderability', 'unknown')}    "
+            f"Executable: {str(blockers.get('is_executable', False)).lower()}"
+        )
+        structural = [
+            b for b in blockers.get("blocking_issues", [])
+            if isinstance(b, dict) and b.get("route_type") == "agent-fixable"
+        ]
+        if structural:
+            _eprint(
+                _dim(
+                    "    以下问题由 Agent 负责修复，不需要专家提供物理事实："
+                )
+            )
+        for blk in blockers.get("blocking_issues", []):
+            if not isinstance(blk, dict):
+                continue
+            tag = {
+                "agent-fixable": "agent-fixable",
+                "environment": "environment",
+                "human-required": "human-required",
+            }.get(blk.get("route_type", ""), blk.get("route_type", ""))
+            _eprint(
+                f"    [{blk.get('code', '?')}] ({tag}) {blk.get('message', '')}"
+            )
+        _eprint(_dim("─" * width))
     _eprint(f"  {_bold('专家反馈')}  {_dim(f'· 轮次 {round_index}/{max_rounds}')}")
     if questions:
         for index, question in enumerate(questions, start=1):
             _eprint(f"    {_bold(f'{index}.')} {question}")
     else:
-        _eprint("    （无具体问题，可自由补充建模要点）")
+        _eprint("    （无材料/事实确认问题；可自由补充建模要点或直接接受）")
     if instruction:
         _eprint(f"  {_dim(instruction)}")
     _eprint(_dim("─" * width))
     _eprint(
         "  "
+        + _bold(":a")
+        + _dim(" 接受假设(仅本次)  ")
+        + _bold(":d")
+        + _dim(" 推迟  ")
+        + _bold(":r")
+        + _dim(" 让Agent修复  ")
+        + _bold(":s")
+        + _dim(" 接受review-only  ")
+        + _bold(":q")
+        + _dim(" 中止  ")
+        + _bold(":e")
+        + _dim(" 编辑器")
+    )
+    _eprint(
+        "  "
         + _dim("多行输入，")
         + _bold("空行结束")
-        + _dim("；")
-        + _bold("直接回车")
-        + _dim("＝接受当前产物继续；")
-        + _bold(":e")
-        + _dim("＝用 $EDITOR 输入")
+        + _dim("；直接回车＝")
+        + _dim("推迟确认（可执行模型）或接受review-only（skeleton）")
     )
 
 
@@ -569,40 +619,61 @@ def _edit_in_external_editor() -> str | None:
     return "\n".join(kept).strip()
 
 
-def _read_feedback_input() -> str:
+_EXPERT_COMMAND_ACTION: dict[str, str] = {
+    ":a": "accept_assumptions_for_this_run",
+    ":d": "defer_confirmations",
+    ":r": "continue_repair",
+    ":s": "accept_review_only",
+    ":q": "abort",
+}
+
+
+def _read_feedback_input() -> tuple[str, str | None]:
+    """Return (feedback_text, decision_action).
+
+    ``decision_action`` is one of the ExpertFeedbackDecision actions when the
+    user typed a ``:a/:d/:r/:s/:q`` command, else None (free text or empty).
+    """
     first = _read_decoded_line()
     if first is None:
-        return ""
+        return "", None
     first_stripped = first.strip()
 
     if first_stripped in (":e", ":editor"):
         edited = _edit_in_external_editor()
         if edited is not None:
-            return edited
+            return edited, None
         _eprint(_dim("（未找到可用编辑器，改为 inline 多行输入，空行结束）"))
-        return _accumulate_inline(first_line=None)
+        return _accumulate_inline(first_line=None), None
+
+    if first_stripped in _EXPERT_COMMAND_ACTION:
+        return "", _EXPERT_COMMAND_ACTION[first_stripped]
 
     if first_stripped == "":
-        return ""
-    return _accumulate_inline(first_line=first)
+        return "", None
+    return _accumulate_inline(first_line=first), None
 
 
-def _read_expert_feedback(payload: dict[str, Any]) -> str:
+def _read_expert_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     """Render the expert-feedback panel and collect the expert's reply.
 
-    Returns the feedback text (possibly multi-line); an empty string means
-    "accept the current artifact and continue" — the contract the LangGraph
-    resume in ``_invoke_plan_graph_with_optional_feedback`` relies on.
+    Returns a dict with ``feedback`` (text, possibly multi-line; empty means no
+    free-text feedback) and ``decision_action`` (an explicit
+    ExpertFeedbackDecision action when a ``:command`` was used, else None).
     """
     round_index = payload.get("round", "?")
     max_rounds = payload.get("max_rounds", "?")
     questions = payload.get("questions") or []
     instruction = payload.get("instruction") or ""
+    blockers = payload.get("capability_blockers")
 
-    _print_feedback_panel(round_index, max_rounds, questions, instruction)
+    _print_feedback_panel(round_index, max_rounds, questions, instruction, blockers)
 
-    feedback = _read_feedback_input().strip()
-    if feedback:
+    feedback, decision_action = _read_feedback_input()
+    feedback = feedback.strip()
+    if decision_action:
+        _eprint(_dim(f"专家指令：{decision_action}"))
+    elif feedback:
         line_count = feedback.count("\n") + 1
         _eprint(
             _dim(
@@ -611,8 +682,13 @@ def _read_expert_feedback(payload: dict[str, Any]) -> str:
             )
         )
     else:
-        _eprint(_dim("未输入反馈，按当前产物继续。"))
-    return feedback
+        _eprint(
+            _dim(
+                "未输入反馈：可执行模型将推迟确认；skeleton 将作为 review-only 保留"
+                "（BLOCKED_REVIEW_ONLY）。"
+            )
+        )
+    return {"feedback": feedback, "decision_action": decision_action}
 
 
 def _legacy_transcript_data(
@@ -682,6 +758,11 @@ def _plan_transcript_data(
         "plan_artifacts": state.get("plan_artifacts", []),
         "model_path": str(model_path) if model_path is not None else None,
         "error": state.get("error", ""),
+        "capability_blocker_summary": state.get("capability_blocker_summary") or {},
+        "expert_question_groups": state.get("expert_question_groups") or [],
+        "expert_feedback_decision": state.get("expert_feedback_decision") or {},
+        "expert_assumption_acknowledgements": state.get("expert_assumption_acknowledgements") or [],
+        "workflow_outcome": state.get("workflow_outcome") or {},
     }
 
 
@@ -1023,14 +1104,42 @@ def _format_compact_summary(result: InspectResult, output_path: Path) -> str:
     report = data.get("validation_report") or {}
     capability = data.get("capability_report") or {}
     render = data.get("render_outcome") or {}
+    outcome = data.get("workflow_outcome") or {}
+    blocker_summary = data.get("capability_blocker_summary") or {}
+    renderability = capability.get("renderability", "unknown")
+    outcome_status = outcome.get("status") if isinstance(outcome, dict) else None
+    # Display label: a review-only skeleton is BLOCKED_REVIEW_ONLY, not a vague
+    # FAIL. result.ok stays False internally so CI never treats a skeleton as a
+    # success; only the human-facing label changes.
+    if outcome_status == "blocked_review_only" or (
+        not result.ok and renderability in {"skeleton", "none"} and outcome_status != "fail"
+    ):
+        status_label = "BLOCKED_REVIEW_ONLY"
+    elif result.ok:
+        status_label = "PASS"
+    else:
+        status_label = "FAIL"
     lines = [
         "\nOpenMC Agent Run Summary",
-        f"  status: {'PASS' if result.ok else 'FAIL'}",
+        f"  status: {status_label}",
         f"  validation: {'valid' if report.get('is_valid') else 'invalid'}",
-        f"  capability: {capability.get('renderability', 'unknown')} / "
+        f"  capability: {renderability} / "
         f"{capability.get('supported_renderer', 'unknown')}",
         f"  retry_count: {data.get('retry_count', 0)}",
     ]
+    if status_label == "BLOCKED_REVIEW_ONLY":
+        lines.append(
+            f"  model.py: review-only skeleton"
+            if renderability == "skeleton"
+            else "  model.py: not generated"
+        )
+        lines.append("  OpenMC execution: not attempted")
+        codes = blocker_summary.get("primary_blocker_codes") or outcome.get("reason_codes") or []
+        if codes:
+            lines.append(f"  blocking issues: {', '.join(codes)}")
+        decision = data.get("expert_feedback_decision") or {}
+        if isinstance(decision, dict) and decision.get("action"):
+            lines.append(f"  expert decision: {decision.get('action')}")
     for name, key in (
         ("semantic_audit", "semantic_audit_result"),
         ("llm_repair", "repair_proposal_result"),
@@ -1041,8 +1150,9 @@ def _format_compact_summary(result: InspectResult, output_path: Path) -> str:
             status = value.get("status") or value.get("final_action") or "completed"
             suffix = " fallback" if value.get("fallback_used") else ""
             lines.append(f"  {name}: {status}{suffix}")
-    for line in render.get("lines", [])[:3]:
-        lines.append(f"  output: {line}")
+    if status_label != "BLOCKED_REVIEW_ONLY":
+        for line in render.get("lines", [])[:3]:
+            lines.append(f"  output: {line}")
     if data.get("error"):
         lines.append(f"  error: {data['error']}")
     lines.extend(

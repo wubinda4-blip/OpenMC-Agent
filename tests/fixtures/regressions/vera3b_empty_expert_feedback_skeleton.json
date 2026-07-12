@@ -1,0 +1,27 @@
+{
+  "schema_version": "vera3b_empty_expert_feedback_skeleton.v1",
+  "renderability": "skeleton",
+  "is_executable": false,
+  "supported_renderer": "assembly",
+  "real_blocking_issue_codes": [
+    "renderer.axial_loading_materialization_failed",
+    "lattice_transform.replacement_universe_missing"
+  ],
+  "structural_issue_not_visible_to_validate_plan": true,
+  "legacy_run_supervisor_action": "request_human_confirmation",
+  "legacy_empty_input_expert_feedback_action": "continue",
+  "legacy_pending_questions_retained_after_empty_input": true,
+  "legacy_final_status": "FAIL",
+  "expected": {
+    "new_empty_input_semantics": {
+      "runnable_nonblocking": "defer_confirmations",
+      "skeleton_or_blocked": "accept_review_only"
+    },
+    "final_status_label": "BLOCKED_REVIEW_ONLY",
+    "internal_ok": false,
+    "openmc_execution_attempted": false,
+    "expert_question_group_count": 8,
+    "material_assumption_count": 23,
+    "no_duplicate_question_wall": true
+  }
+}

@@ -536,6 +536,9 @@ def determine_deterministic_supervisor_action(
     """Pick an action using deterministic priority rules.
 
     Priority:
+    0. Structural (agent-fixable) blocker present → repair if budget/pending
+       patches, else downgrade to a review-only skeleton. Material confirmations
+       must never mask a structural blocker.
     1. Human confirmation needed → request_human_confirmation
     2. Failed patch retryable + budget → retry_patch
     3. Required patches pending → continue_patch_generation
@@ -561,6 +564,48 @@ def determine_deterministic_supervisor_action(
                 _evidence("workflow_history", rationale),
             ],
             confidence=confidence,
+        )
+
+    # 0. Structural (agent-fixable) blockers precede human confirmation.
+    # Material assumptions must never drive request_human_confirmation when the
+    # real execution blocker is a structural defect the agent owns.
+    from openmc_agent.capability_blockers import is_structural_blocker_code
+
+    structural_blockers = [
+        code for code in supervisor_input.blocking_issue_codes
+        if is_structural_blocker_code(code)
+    ]
+    if structural_blockers:
+        pending_patches = [
+            pt for pt in supervisor_input.required_patch_types
+            if supervisor_input.patch_status.get(pt) not in {"valid", "repaired", "skipped"}
+        ]
+        if (
+            pending_patches
+            and RunSupervisorAction.CONTINUE_PATCH_GENERATION.value in allowed
+        ):
+            return _decision(
+                RunSupervisorAction.CONTINUE_PATCH_GENERATION,
+                "structural_blocker_precedes_human_confirmation: structural "
+                f"blocker(s) {structural_blockers} present with pending repair "
+                f"patches {pending_patches}; routing to repair, not to material "
+                "confirmation.",
+            )
+        if RunSupervisorAction.DOWNGRADE_TO_SKELETON.value in allowed:
+            return _decision(
+                RunSupervisorAction.DOWNGRADE_TO_SKELETON,
+                "structural_blocker_precedes_human_confirmation: structural "
+                f"blocker(s) {structural_blockers} cannot be resolved by expert "
+                "material facts; downgrading to review-only skeleton instead of "
+                "requesting human confirmation for non-blocking assumptions.",
+                confidence=0.8,
+            )
+        return _decision(
+            RunSupervisorAction.STOP,
+            "structural_blocker_precedes_human_confirmation: structural "
+            f"blocker(s) {structural_blockers} present and no skeleton route "
+            "available; stopping instead of requesting material confirmation.",
+            confidence=0.7,
         )
 
     # 1. Human confirmation.
