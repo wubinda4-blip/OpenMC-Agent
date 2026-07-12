@@ -76,10 +76,10 @@ def test_repair_invocation_prefers_structured_patch_adapter() -> None:
     client = StructuredClient()
     assert _invoke_patch_repair_llm(client, request, "prompt")["repair_id"] == "r"
     assert client.kwargs["patch_type"] == "pin_map"
-    assert client.kwargs["json_schema"]["title"] == "PatchRepairProposal"
+    assert client.kwargs["json_schema"]["title"] == "PatchRepairModelOutput"
 
 
-def test_schema_invalid_real_model_like_proposal_writes_rejection_artifacts(tmp_path, monkeypatch) -> None:
+def test_missing_metadata_real_model_like_proposal_is_normalized_and_evaluated(tmp_path, monkeypatch) -> None:
     pytest.importorskip("openmc")
     from openmc_agent.graph import _try_incremental_validation_patch_repair
     from openmc_agent.plan_builder.state import PlanBuildState
@@ -104,7 +104,7 @@ def test_schema_invalid_real_model_like_proposal_writes_rejection_artifacts(tmp_
 
     class MissingMetadataClient:
         def generate_patch_json(self, **_kwargs):
-            return {"repair_id": "not-used", "target_patch_type": "pin_map", "operations": []}
+            return {"operations": []}
 
     repaired, evaluation, meta = _try_incremental_validation_patch_repair(
         state={"plan_build_state": state.model_dump(mode="json"), "output_dir": str(tmp_path), "requirement": "assembly"},
@@ -113,7 +113,45 @@ def test_schema_invalid_real_model_like_proposal_writes_rejection_artifacts(tmp_
         llm_client=MissingMetadataClient(),
     )
     assert repaired is not None
-    assert evaluation is not None and evaluation.status == "rejected_schema"
-    assert meta["status"] == "rejected_schema"
+    assert evaluation is not None and evaluation.status == "rejected_no_improvement"
+    assert meta["status"] == "rejected_no_improvement"
     saved = (tmp_path / "validation_repair" / "evaluation_0.json").read_text()
-    assert "rejected_schema" in saved
+    assert "rejected_no_improvement" in saved
+    normalized = (tmp_path / "validation_repair" / "normalized_proposal_0.json").read_text()
+    assert "Model did not provide a rationale." in normalized
+
+
+def test_malformed_operations_get_one_schema_only_correction(tmp_path) -> None:
+    pytest.importorskip("openmc")
+    from openmc_agent.graph import _try_incremental_validation_patch_repair
+    from openmc_agent.plan_builder.state import PlanBuildState, PlanPatchEnvelope
+    from openmc_agent.schemas import ValidationIssue, ValidationReport
+    from tests.test_workflow_trace import _complex_plan_with_pin_count_mismatch
+
+    plan = _complex_plan_with_pin_count_mismatch()
+    build_state = PlanBuildState(state_id="format-correction", requirement_text="assembly")
+    build_state.assembled_plan = plan.model_dump(mode="json")
+    build_state.add_patch(PlanPatchEnvelope(
+        patch_id="pin", patch_type="pin_map", status="valid",
+        content={"default_universe_id": "fuel_pin", "guide_tube_coords": [], "instrument_tube_coords": [], "water_cell_coords": []},
+    ))
+    report = ValidationReport(is_valid=False, issues=[ValidationIssue(
+        code="lattice.pin_count_mismatch", severity="error",
+        schema_path="complex_model.lattices.assembly_lattice.universe_pattern", message="mismatch",
+    )])
+
+    class CorrectionClient:
+        calls = 0
+        def generate_patch_json(self, **_kwargs):
+            self.calls += 1
+            return {} if self.calls == 1 else {"operations": []}
+
+    client = CorrectionClient()
+    _, evaluation, meta = _try_incremental_validation_patch_repair(
+        state={"plan_build_state": build_state.model_dump(mode="json"), "output_dir": str(tmp_path), "requirement": "assembly"},
+        report=report, target_patch_types=["pin_map"], llm_client=client,
+    )
+    assert client.calls == 2
+    assert evaluation is not None and evaluation.status == "rejected_no_improvement"
+    assert meta["format_correction_count"] == 1
+    assert (tmp_path / "validation_repair" / "raw_response_0_format_correction_1.json").exists()

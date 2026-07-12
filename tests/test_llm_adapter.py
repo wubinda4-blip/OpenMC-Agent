@@ -6,6 +6,7 @@ import pytest
 
 from openmc_agent.plan_builder.llm_adapter import (
     PATCH_MAX_TOKENS,
+    StructuredPatchLLMClient,
     make_patch_llm_client,
 )
 from openmc_agent.plan_builder.patch_generator import FakePatchLLM
@@ -62,3 +63,65 @@ def test_patch_max_tokens_budgets() -> None:
         assert ptype in PATCH_MAX_TOKENS
         assert PATCH_MAX_TOKENS[ptype] > 0
         assert PATCH_MAX_TOKENS[ptype] < 5000  # small budgets
+
+
+def test_json_schema_response_format_is_sent_to_provider() -> None:
+    calls = []
+
+    class FakeChoice:
+        class message:
+            content = "{}"
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    return FakeResponse()
+
+    client = StructuredPatchLLMClient(FakeClient(), model_name="test:model", output_mode="json_schema")
+    assert client.generate_patch_json(
+        prompt="prompt", patch_type="pin_map", json_schema={"type": "object"},
+    ) == "{}"
+    assert calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "pin_map_patch_repair",
+            "strict": True,
+            "schema": {"type": "object"},
+        },
+    }
+    assert client.last_output_mode_used == "json_schema"
+    assert client.last_output_fallback_used is False
+
+
+def test_json_schema_provider_rejection_falls_back_to_json_object() -> None:
+    calls = []
+
+    class FakeChoice:
+        class message:
+            content = "{}"
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    if kwargs.get("response_format", {}).get("type") == "json_schema":
+                        raise RuntimeError("unsupported response format")
+                    return FakeResponse()
+
+    client = StructuredPatchLLMClient(FakeClient(), model_name="test:model", output_mode="auto")
+    client.generate_patch_json(prompt="prompt", patch_type="pin_map", json_schema={"type": "object"})
+    assert [call.get("response_format", {}).get("type") for call in calls] == ["json_schema", "json_object"]
+    assert client.last_output_mode_used == "json_object"
+    assert client.last_output_fallback_used is True
+    assert "json_schema unsupported: RuntimeError" in client.last_output_fallback_reasons

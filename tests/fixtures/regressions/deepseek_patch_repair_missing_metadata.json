@@ -1,0 +1,14 @@
+{
+  "operations": [
+    {
+      "op": "replace",
+      "path": "/default_universe_id",
+      "value": "water_cell"
+    },
+    {
+      "op": "replace",
+      "path": "/water_cell_coords",
+      "value": []
+    }
+  ]
+}

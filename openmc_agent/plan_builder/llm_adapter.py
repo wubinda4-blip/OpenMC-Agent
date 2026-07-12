@@ -49,7 +49,10 @@ class StructuredPatchLLMClient:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._output_mode = output_mode
-        self._json_mode_supported: bool | None = None
+        self.last_output_mode_requested: str = output_mode
+        self.last_output_mode_used: str = "plain_prompt"
+        self.last_output_fallback_used: bool = False
+        self.last_output_fallback_reasons: list[str] = []
 
     def __call__(self, prompt: str) -> str:
         """Plain callable interface (backward compatible)."""
@@ -72,33 +75,53 @@ class StructuredPatchLLMClient:
         """
         effective_max = max_tokens or self._max_tokens
 
+        self.last_output_mode_requested = self._output_mode
+        self.last_output_fallback_used = False
+        self.last_output_fallback_reasons = []
+        schema_name = "".join(
+            char if char.isalnum() or char == "_" else "_"
+            for char in f"{patch_type}_patch_repair"
+        )
         if self._output_mode in ("json_schema", "auto"):
-            # Try response_format with json_schema (OpenAI structured output).
             try:
-                return self._call(
+                text = self._call(
+                    prompt,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema_name,
+                            "strict": True,
+                            "schema": json_schema or {},
+                        },
+                    },
+                    max_tokens=effective_max,
+                )
+                self.last_output_mode_used = "json_schema"
+                return text
+            except Exception as exc:
+                self._record_structured_fallback("json_schema", exc)
+
+        if self._output_mode in ("json_schema", "json_object", "auto"):
+            try:
+                text = self._call(
                     prompt,
                     response_format={"type": "json_object"},
                     max_tokens=effective_max,
                 )
-            except Exception:
-                if self._output_mode == "json_schema":
-                    raise  # strict mode: don't fallback
-                # auto mode: try json_object, then plain.
+                self.last_output_mode_used = "json_object"
+                return text
+            except Exception as exc:
+                self._record_structured_fallback("json_object", exc)
 
-        if self._output_mode in ("json_object", "auto"):
-            try:
-                return self._call(
-                    prompt,
-                    response_format={"type": "json_object"},
-                    max_tokens=effective_max,
-                )
-            except Exception:
-                if self._output_mode == "json_object":
-                    raise
-                # auto mode: fallback to plain.
+        # Providers which reject both structured modes still receive a strict
+        # JSON-only prompt and are recorded as an explicit compatibility mode.
+        text = self._call(prompt, response_format=None, max_tokens=effective_max)
+        self.last_output_mode_used = "plain_prompt"
+        return text
 
-        # Plain prompt fallback.
-        return self._call(prompt, response_format=None, max_tokens=effective_max)
+    def _record_structured_fallback(self, mode: str, exc: Exception) -> None:
+        self.last_output_fallback_used = True
+        self.last_output_fallback_reasons.append(f"{mode} unsupported: {type(exc).__name__}")
 
     def _call(
         self,

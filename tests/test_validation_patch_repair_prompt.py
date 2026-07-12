@@ -9,3 +9,6 @@ def test_repair_prompt_contains_previous_patch_and_exact_schema_path() -> None:
     assert '"default_universe_id": "bad"' in prompt
     assert "/default_universe_id" in prompt
     assert "complete SimulationPlan" in prompt
+    assert "All five top-level keys are required" in prompt
+    assert '"rationale"' in prompt
+    assert '"confidence": 0.0' in prompt

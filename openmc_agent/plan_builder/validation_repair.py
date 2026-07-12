@@ -8,7 +8,7 @@ import json
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from openmc_agent.repair_policy import is_protected_path, match_json_pointer_pattern
 from openmc_agent.repair_proposal import apply_json_patch_to_clone
@@ -25,6 +25,13 @@ class PatchRepairOperation(AgentBaseModel):
     op: Literal["test", "add", "replace", "remove"]
     path: str
     value: Any | None = None
+
+    @model_validator(mode="after")
+    def _require_value_for_value_operations(self) -> "PatchRepairOperation":
+        """Keep RFC6902 value-bearing operations locally well-formed."""
+        if self.op in {"add", "replace", "test"} and "value" not in self.model_fields_set:
+            raise ValueError(f"RFC6902 {self.op!r} operation requires a value")
+        return self
 
 
 class PatchRepairRequest(AgentBaseModel):
@@ -50,6 +57,42 @@ class PatchRepairProposal(AgentBaseModel):
     confidence: float
 
 
+class PatchRepairModelOutput(AgentBaseModel):
+    """The compatibility envelope accepted from a repair model.
+
+    The model only owns the RFC6902 operations.  Identity fields remain in
+    this shape for backwards compatibility, but are verified against the
+    request and never become authoritative.
+    """
+
+    operations: list[PatchRepairOperation]
+    rationale: str | None = None
+    confidence: float | None = None
+    repair_id: str | None = None
+    target_patch_type: str | None = None
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _validate_advisory_confidence(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("confidence must be a number between 0.0 and 1.0")
+        numeric = float(value)
+        if not 0.0 <= numeric <= 1.0:
+            raise ValueError("confidence must be between 0.0 and 1.0")
+        return numeric
+
+
+class PatchRepairNormalizationResult(AgentBaseModel):
+    ok: bool
+    proposal: PatchRepairProposal | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    raw_output: dict[str, Any] | None = None
+    normalized_output: dict[str, Any] | None = None
+
+
 class PatchRepairEvaluation(AgentBaseModel):
     accepted: bool
     status: Literal[
@@ -67,6 +110,7 @@ class PatchRepairEvaluation(AgentBaseModel):
     reasons: list[str] = Field(default_factory=list)
     repaired_plan: dict[str, Any] | None = None
     repaired_patch: dict[str, Any] | None = None
+    validation_report_after: dict[str, Any] | None = None
 
 
 class PatchRepairLLMClient(Protocol):
@@ -84,6 +128,83 @@ GLOBAL_FORBIDDEN_PATH_PATTERNS = [
 def stable_json_hash(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def normalize_patch_repair_model_output(
+    raw: str | dict[str, Any], *, request: PatchRepairRequest,
+) -> PatchRepairNormalizationResult:
+    """Bind a model response to its request without weakening JSON Patch safety.
+
+    Missing advisory/system envelope fields are deterministic compatibility
+    defaults.  Operations remain the model-owned, strict boundary: this
+    function never invents, repairs, or broadens an operation.
+    """
+    parsed: Any
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            return PatchRepairNormalizationResult(
+                ok=False,
+                errors=[f"repair response is not valid JSON: {exc}"],
+            )
+    else:
+        parsed = copy.deepcopy(raw)
+    if not isinstance(parsed, dict):
+        return PatchRepairNormalizationResult(
+            ok=False,
+            errors=["repair response must be a JSON object"],
+        )
+
+    raw_output = copy.deepcopy(parsed)
+    try:
+        model_output = PatchRepairModelOutput.model_validate(parsed)
+    except Exception as exc:
+        return PatchRepairNormalizationResult(
+            ok=False,
+            errors=[f"PatchRepairModelOutput schema validation failed: {exc}"],
+            raw_output=raw_output,
+        )
+    if model_output.repair_id is not None and model_output.repair_id != request.repair_id:
+        return PatchRepairNormalizationResult(
+            ok=False,
+            errors=["model repair_id conflicts with the system repair request"],
+            raw_output=raw_output,
+        )
+    if (
+        model_output.target_patch_type is not None
+        and model_output.target_patch_type != request.target_patch_type
+    ):
+        return PatchRepairNormalizationResult(
+            ok=False,
+            errors=["model target_patch_type conflicts with the system repair request"],
+            raw_output=raw_output,
+        )
+
+    warnings: list[str] = []
+    rationale = model_output.rationale
+    if rationale is None:
+        rationale = "Model did not provide a rationale."
+        warnings.append("repair_proposal.rationale_defaulted")
+    confidence = model_output.confidence
+    if confidence is None:
+        confidence = 0.0
+        warnings.append("repair_proposal.confidence_defaulted")
+    proposal = PatchRepairProposal(
+        repair_id=request.repair_id,
+        target_patch_type=request.target_patch_type,
+        operations=model_output.operations,
+        rationale=rationale,
+        confidence=confidence,
+    )
+    normalized = proposal.model_dump(mode="json")
+    return PatchRepairNormalizationResult(
+        ok=True,
+        proposal=proposal,
+        warnings=warnings,
+        raw_output=raw_output,
+        normalized_output=normalized,
+    )
 
 
 def _normal_path(path: str | None) -> str:
@@ -226,6 +347,7 @@ def evaluate_patch_repair_proposal(
         "issue_fingerprint_after": after_fingerprint,
         "repaired_plan": assembly.plan.model_dump(mode="json"),
         "repaired_patch": candidate,
+        "validation_report_after": after.model_dump(mode="json"),
     }
     if blocking:
         return PatchRepairEvaluation(status="rejected_new_blocker", reasons=[f"new blocking issues: {blocking}"], **common)

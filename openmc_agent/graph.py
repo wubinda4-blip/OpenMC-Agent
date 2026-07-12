@@ -38,13 +38,18 @@ from openmc_agent.plan_builder import (
 from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.plan_builder.validation_repair import (
     PatchRepairEvaluation,
+    PatchRepairModelOutput,
     PatchRepairProposal,
     build_patch_repair_request,
     commit_accepted_patch_repair,
     evaluate_patch_repair_proposal,
+    normalize_patch_repair_model_output,
 )
 from openmc_agent.plan_builder.validation_repair_policy import policy_for_issue_code
-from openmc_agent.plan_builder.validation_repair_prompts import build_patch_repair_prompt
+from openmc_agent.plan_builder.validation_repair_prompts import (
+    build_patch_repair_prompt,
+    build_patch_repair_schema_correction_prompt,
+)
 from openmc_agent.records import append_simulation_record
 from openmc_agent.renderers import choose_renderer
 from openmc_agent.repair_proposal import (
@@ -1887,7 +1892,7 @@ def _plan_build_state_for_validation_repair(value: Any) -> PlanBuildState | None
 
 def _invoke_patch_repair_llm(client: Any, request: Any, prompt: str) -> str | dict[str, Any]:
     """Support the explicit repair protocol and JSON-only callable test clients."""
-    schema = PatchRepairProposal.model_json_schema()
+    schema = PatchRepairModelOutput.model_json_schema()
     if hasattr(client, "propose_patch_repair"):
         return client.propose_patch_repair(request, prompt=prompt, json_schema=schema)
     # The normal real-model patch adapter exposes JSON mode under this method.
@@ -1903,6 +1908,26 @@ def _invoke_patch_repair_llm(client: Any, request: Any, prompt: str) -> str | di
     if callable(client):
         return client(prompt)
     raise TypeError("patch repair LLM client is unavailable")
+
+
+def _patch_repair_output_mode_metadata(client: Any) -> dict[str, Any]:
+    """Keep adapter capability fallback visible in repair artifacts."""
+    return {
+        "requested_output_mode": getattr(client, "last_output_mode_requested", "protocol_or_plain_prompt"),
+        "actual_output_mode": getattr(client, "last_output_mode_used", "protocol_or_plain_prompt"),
+        "structured_fallback_used": bool(getattr(client, "last_output_fallback_used", False)),
+        "fallback_reasons": list(getattr(client, "last_output_fallback_reasons", [])),
+    }
+
+
+def _needs_patch_repair_schema_correction(normalization: Any) -> bool:
+    """Only malformed/missing operations warrant one format-only retry."""
+    raw = getattr(normalization, "raw_output", None)
+    if not isinstance(raw, dict):
+        return False
+    if "operations" not in raw:
+        return True
+    return any("operations" in error for error in getattr(normalization, "errors", []))
 
 
 def _resolve_validation_patch_repair_llm_client(
@@ -1993,14 +2018,56 @@ def _try_incremental_validation_patch_repair(
             _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
             build_state.add_event("planning.validation_patch_repair_rejected", "patch repair LLM invocation failed", evaluation.model_dump(mode="json"))
             return build_state, evaluation, {"status": "failed", "reason": str(exc), "request_path": request_path}
-        try:
-            proposal = PatchRepairProposal.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
-        except Exception as exc:
-            build_state.validation_repair_attempts_by_fingerprint[fingerprint] = attempts + 1
+        _write_validation_repair_artifact(
+            state.get("output_dir"), f"raw_response_{attempts}.json", {"raw_response": raw}
+        )
+        normalization = normalize_patch_repair_model_output(raw, request=request)
+        output_metadata = _patch_repair_output_mode_metadata(llm_client)
+        format_correction_count = 0
+        if not normalization.ok and _needs_patch_repair_schema_correction(normalization):
+            format_correction_count = 1
+            correction_prompt = build_patch_repair_schema_correction_prompt(
+                request,
+                previous_raw_output=normalization.raw_output,
+            )
+            try:
+                correction_raw = _invoke_patch_repair_llm(llm_client, request, correction_prompt)
+                _write_validation_repair_artifact(
+                    state.get("output_dir"),
+                    f"raw_response_{attempts}_format_correction_1.json",
+                    {"raw_response": correction_raw},
+                )
+                normalization = normalize_patch_repair_model_output(correction_raw, request=request)
+                output_metadata = _patch_repair_output_mode_metadata(llm_client)
+            except Exception as exc:
+                normalization.errors.append(f"schema-only correction invocation failed: {exc}")
+            build_state.metadata.setdefault("validation_repair_format_correction_counts", {})[
+                fingerprint
+            ] = format_correction_count
+        raw_fields = sorted(normalization.raw_output) if normalization.raw_output else []
+        fields_defaulted = [warning.rsplit(".", 1)[0] for warning in normalization.warnings]
+        normalization_artifact = {
+            **output_metadata,
+            "fields_present": raw_fields,
+            "fields_defaulted": fields_defaulted,
+            "warnings": normalization.warnings,
+            "errors": normalization.errors,
+            "schema_correction_attempted": bool(format_correction_count),
+            "format_correction_count": format_correction_count,
+        }
+        _write_validation_repair_artifact(
+            state.get("output_dir"), f"normalization_{attempts}.json", normalization_artifact
+        )
+        _write_validation_repair_artifact(
+            state.get("output_dir"),
+            f"normalized_proposal_{attempts}.json",
+            normalization.normalized_output or {},
+        )
+        if not normalization.ok or normalization.proposal is None:
             _write_validation_repair_artifact(
                 state.get("output_dir"),
                 f"proposal_{attempts}.json",
-                {"raw_response": raw, "schema_error": str(exc)},
+                {"raw_response": raw, "schema_error": normalization.errors},
             )
             evaluation = PatchRepairEvaluation(
                 accepted=False,
@@ -2010,15 +2077,24 @@ def _try_incremental_validation_patch_repair(
                 resolved_issue_codes=[],
                 introduced_issue_codes=[],
                 issue_fingerprint_before=fingerprint,
-                reasons=[f"repair proposal schema validation failed: {exc}"],
+                reasons=normalization.errors or ["repair proposal normalization failed"],
             )
             _write_validation_repair_artifact(state.get("output_dir"), f"evaluation_{attempts}.json", evaluation)
             build_state.add_event("planning.validation_patch_repair_rejected", "patch repair proposal schema rejected", evaluation.model_dump(mode="json"))
-            return build_state, evaluation, {"status": "rejected_schema", "reason": str(exc), "request_path": request_path}
+            return build_state, evaluation, {
+                "status": "rejected_schema", "reason": "; ".join(normalization.errors),
+                "request_path": request_path, "format_correction_count": format_correction_count,
+            }
+        proposal = normalization.proposal
         _write_validation_repair_artifact(state.get("output_dir"), f"proposal_{attempts}.json", proposal)
         build_state.add_event(
             "planning.validation_patch_repair_proposed", "patch repair proposal received",
-            {"target_patch_type": target_patch_type, "issue_fingerprint": fingerprint},
+            {
+                "target_patch_type": target_patch_type,
+                "issue_fingerprint": fingerprint,
+                "normalization_warnings": normalization.warnings,
+                "format_correction_count": format_correction_count,
+            },
         )
         evaluation = evaluate_patch_repair_proposal(
             state=build_state, request=request, proposal=proposal, requirement=state.get("requirement", ""),
@@ -2030,18 +2106,31 @@ def _try_incremental_validation_patch_repair(
         if evaluation.repaired_patch is not None:
             _write_validation_repair_artifact(state.get("output_dir"), f"patch_after_{attempts}.json", evaluation.repaired_patch)
         if evaluation.repaired_plan is not None:
-            _write_validation_repair_artifact(state.get("output_dir"), f"plan_validation_after_{attempts}.json", {"issues": evaluation.issues_after})
+            _write_validation_repair_artifact(
+                state.get("output_dir"),
+                f"plan_validation_after_{attempts}.json",
+                evaluation.validation_report_after or {"issues": evaluation.issues_after},
+            )
         if evaluation.accepted:
             commit_accepted_patch_repair(build_state, evaluation, request)
             build_state.add_event("planning.validation_patch_repair_accepted", "patch repair accepted", evaluation.model_dump(mode="json"))
-            return build_state, evaluation, {"status": "accepted", "policy_source": policy_source}
+            return build_state, evaluation, {
+                "status": "accepted", "policy_source": policy_source,
+                "format_correction_count": format_correction_count,
+            }
         event = "planning.validation_patch_repair_no_progress" if evaluation.status in {"rejected_no_improvement", "rejected_duplicate_candidate"} else "planning.validation_patch_repair_rejected"
         build_state.add_event(event, "patch repair rejected", evaluation.model_dump(mode="json"))
         # A no-progress candidate cannot improve on a second identical prompt;
         # retain the candidate hash and immediately fall through to regeneration.
         if evaluation.status in {"rejected_no_improvement", "rejected_duplicate_candidate"}:
-            return build_state, evaluation, {"status": evaluation.status, "policy_source": policy_source}
-        return build_state, evaluation, {"status": evaluation.status, "policy_source": policy_source}
+            return build_state, evaluation, {
+                "status": evaluation.status, "policy_source": policy_source,
+                "format_correction_count": format_correction_count,
+            }
+        return build_state, evaluation, {
+            "status": evaluation.status, "policy_source": policy_source,
+            "format_correction_count": format_correction_count,
+        }
     return build_state, None, {"status": "budget_exhausted"}
 
 
