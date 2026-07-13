@@ -4689,6 +4689,7 @@ def _make_classify_runtime_feedback_node():
         """Classify runtime tool failures and route to repair or stop."""
         from openmc_agent.runtime_feedback import (
             RuntimeFailure,
+            RuntimeFailureClass,
             classify_runtime_tool_results,
         )
         from openmc_agent.runtime_repair_policy import get_repair_policy
@@ -5455,6 +5456,15 @@ def _make_runtime_supervisor_node(
             "vetoed": result.vetoed,
         }]
         event = "runtime_supervisor_decision_accepted" if result.accepted else "runtime_supervisor_decision_vetoed"
+        retry_reset: dict[str, Any] = {}
+        if action == "retry_same_plan":
+            # Transient retry: the plan schema is valid, only the runtime tool
+            # failed. Reset the stale tool-level validation_report so
+            # render_plan_script does not skip re-rendering.
+            retry_reset = {
+                "validation_report": ValidationReport(is_valid=True),
+                "error": "",
+            }
         return {
             "runtime_policy_summary": policy_summary,
             "runtime_execution_succeeded": supervisor_state["runtime_execution_succeeded"],
@@ -5466,6 +5476,7 @@ def _make_runtime_supervisor_node(
             "runtime_transient_retry_count": transient_retries,
             "runtime_final_disposition": action,
             "runtime_no_progress_count": supervisor_state["runtime_no_progress_count"],
+            **retry_reset,
             **_trace_event_update(
                 state,
                 event,

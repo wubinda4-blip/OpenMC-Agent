@@ -131,6 +131,29 @@ def load_vera3b_accepted_state() -> PlanBuildState:
         ))
     from openmc_agent.plan_builder.state import assemble_state_if_ready
     state = assemble_state_if_ready(state, strict=True)
+
+    # Run capability assessment so the production graph's execute_tools node
+    # does not skip export/debug/smoke due to renderability="none".
+    if state.assembled_plan is not None:
+        from openmc_agent.renderers import choose_renderer
+        from openmc_agent.schemas import SimulationPlan
+        plan = SimulationPlan.model_validate(state.assembled_plan)
+        renderer, capability = choose_renderer(plan)
+        if renderer is not None:
+            state.assembled_plan["capability_report"] = capability.model_dump(mode="json")
+            state.assembled_plan["model_spec"] = plan.model_spec
+
+        # Patch fuel density so source pre-flight recognizes fissionable fuel.
+        # Fixture materials carry atom-density composition but not g/cm3 density;
+        # source pre-flight requires density_value to be set.
+        for mat in state.assembled_plan.get("complex_model", {}).get("materials", []):
+            if mat.get("density_value") is None and any(
+                n.get("name") in ("U235", "U238", "Pu239")
+                for n in mat.get("composition", [])
+            ):
+                mat["density_value"] = 10.257
+                mat["density_unit"] = "g/cm3"
+
     return state
 
 
@@ -168,7 +191,7 @@ def default_fault_matrix() -> list[FaultInjectionCase]:
     cases: list[FaultInjectionCase] = []
     for prefix, name, layer, code, classification, channel, disposition, real_openmc in specs:
         operations = []
-        if name == "source_strategy_fault":
+        if name in ("source_strategy_fault", "process_crash_after_source_rejection"):
             operations = [{"patch_type": "settings", "set": {"source_strategy": "assembly_box", "source_requires_fissionable_constraint": False}}]
         cases.append(FaultInjectionCase(
             case_id=f"{prefix}_{name}", title=name.replace("_", " "), description=name,
