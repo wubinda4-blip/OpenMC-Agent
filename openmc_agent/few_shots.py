@@ -236,12 +236,17 @@ def build_gold_few_shot_examples() -> list[FewShotExample]:
     return examples
 
 
-def select_few_shots(requirement: str, *, limit: int = 3) -> list[dict[str, Any]]:
+def select_few_shots(
+    requirement: str, *, limit: int = 3, include_gold: bool = True
+) -> list[dict[str, Any]]:
     """Select relevant few-shot examples (abstract outlines + gold cases).
 
     Gold cases are scored by lexical trigger overlap plus structural-feature
     intersection (weighted higher); abstract outlines by lexical overlap only.
     Selection is reactor-type agnostic — purely structural / lexical.
+
+    Set ``include_gold=False`` to skip gold cases entirely (useful for clean
+    runs that should not be biased by stored benchmark IR).
     """
     terms = _terms(requirement)
     req_features = extract_structural_features(requirement)
@@ -251,12 +256,13 @@ def select_few_shots(requirement: str, *, limit: int = 3) -> list[dict[str, Any]
         lex = sum(1 for term in example.trigger_terms if term.lower() in terms)
         if lex:
             candidates.append((float(lex), example.name, example))
-    for example in build_gold_few_shot_examples():
-        lex = sum(1 for term in example.trigger_terms if term.lower() in terms)
-        struct = len(set(example.structural_features) & req_features)
-        score = float(lex) + 2.0 * float(struct)
-        if score:
-            candidates.append((score, example.name, example))
+    if include_gold:
+        for example in build_gold_few_shot_examples():
+            lex = sum(1 for term in example.trigger_terms if term.lower() in terms)
+            struct = len(set(example.structural_features) & req_features)
+            score = float(lex) + 2.0 * float(struct)
+            if score:
+                candidates.append((score, example.name, example))
 
     if not candidates:
         candidates.append((1.0, DEFAULT_FEW_SHOT_EXAMPLE.name, DEFAULT_FEW_SHOT_EXAMPLE))

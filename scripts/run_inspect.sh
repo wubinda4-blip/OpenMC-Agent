@@ -26,6 +26,9 @@ SUPERVISOR_MODE="advisory"
 DISABLE_AUDIT=0
 DISABLE_REPAIR=0
 DISABLE_SUPERVISOR=0
+REFERENCE_PATCH_POLICY="off"
+GOLD_FEW_SHOTS=0
+MONOLITHIC_FALLBACK=0
 
 usage() {
   cat <<'EOF'
@@ -72,6 +75,16 @@ Options:
   --disable-audit         Disable semantic audit.
   --disable-repair        Disable LLM repair proposer.
   --disable-supervisor    Disable run supervisor.
+  --reference-patch-policy POLICY
+                          Benchmark reference-patch policy for incremental
+                          planning. Default: off (no benchmark memory loaded).
+                          Choices: off, fallback_after_llm_failure,
+                          prefer_reference_for_structural,
+                          reference_only_for_structural.
+  --gold-few-shots        Enable gold few-shot examples (default: off).
+  --allow-monolithic-fallback
+                          Allow monolithic plan fallback when incremental
+                          patch generation fails (default: off).
   -h, --help              Show this help.
 
 Providers:
@@ -192,6 +205,18 @@ while [[ $# -gt 0 ]]; do
       DISABLE_SUPERVISOR=1
       shift
       ;;
+    --reference-patch-policy)
+      REFERENCE_PATCH_POLICY="${2:-}"
+      shift 2
+      ;;
+    --gold-few-shots)
+      GOLD_FEW_SHOTS=1
+      shift
+      ;;
+    --allow-monolithic-fallback)
+      MONOLITHIC_FALLBACK=1
+      shift
+      ;;
     *)
       echo "Unknown option: $1" >&2
       usage >&2
@@ -305,6 +330,10 @@ if [[ "$DISABLE_SUPERVISOR" -eq 0 ]]; then
   cmd+=(--enable-run-supervisor)
   [[ "$SUPERVISOR_MODE" == "controlled_route" ]] && cmd+=(--controlled-route)
 fi
+
+cmd+=(--reference-patch-policy "$REFERENCE_PATCH_POLICY")
+[[ "$GOLD_FEW_SHOTS" -eq 1 ]] && cmd+=(--gold-few-shots)
+[[ "$MONOLITHIC_FALLBACK" -eq 1 ]] && cmd+=(--allow-monolithic-fallback)
 
 if [[ "$ENABLE_PLOT" -eq 1 ]]; then
   cmd+=(--plot)

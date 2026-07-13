@@ -1,4 +1,5 @@
 import argparse
+import functools
 import json
 import os
 import shlex
@@ -13,6 +14,7 @@ from typing import Any
 
 from langgraph.types import Command
 
+from openmc_agent.few_shots import select_few_shots
 from openmc_agent.graph import (
     ExportXmlToolFn,
     GeneratePlanFn,
@@ -76,6 +78,9 @@ def inspect_requirement(
     enable_llm_repair_proposer: bool = False,
     enable_run_supervisor: bool = False,
     run_supervisor_mode: str = "advisory",
+    reference_patch_policy: str = "off",
+    use_gold_few_shots: bool = True,
+    allow_monolithic_fallback: bool = False,
     verbose: bool = False,
 ) -> InspectResult:
     set_llm_progress(verbose)
@@ -107,6 +112,9 @@ def inspect_requirement(
             enable_llm_repair_proposer=enable_llm_repair_proposer,
             enable_run_supervisor=enable_run_supervisor,
             run_supervisor_mode=run_supervisor_mode,
+            reference_patch_policy=reference_patch_policy,
+            use_gold_few_shots=use_gold_few_shots,
+            allow_monolithic_fallback=allow_monolithic_fallback,
             verbose=verbose,
         )
 
@@ -301,6 +309,9 @@ def _inspect_plan_requirement(
     enable_llm_repair_proposer: bool,
     enable_run_supervisor: bool,
     run_supervisor_mode: str,
+    reference_patch_policy: str,
+    use_gold_few_shots: bool,
+    allow_monolithic_fallback: bool,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -357,6 +368,11 @@ def _inspect_plan_requirement(
         run_supervisor_mode=run_supervisor_mode,
         run_supervisor_client=run_supervisor_client,
         run_supervisor_model=model,
+        reference_patch_policy=reference_patch_policy,
+        allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback,
+        select_examples=functools.partial(
+            select_few_shots, include_gold=use_gold_few_shots
+        ),
     )
     if verbose:
         print("[agent] Invoking LLM. This can take 30-120 seconds on remote models...", file=sys.stderr)
@@ -1017,6 +1033,31 @@ def main(argv: list[str] | None = None) -> int:
         "knowledge_summary.json) produced by the ingestion CLI. Also settable via "
         "the OPENMC_AGENT_KNOWLEDGE_DIR environment variable.",
     )
+    parser.add_argument(
+        "--reference-patch-policy",
+        choices=[
+            "off",
+            "fallback_after_llm_failure",
+            "prefer_reference_for_structural",
+            "reference_only_for_structural",
+        ],
+        default="off",
+        help="Benchmark reference-patch policy for incremental planning (default: off). "
+        "off = no benchmark reference data loaded.",
+    )
+    parser.add_argument(
+        "--gold-few-shots",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable gold few-shot examples from data/few_shot_cases/ (default: off). "
+        "Pass --gold-few-shots to enable, --no-gold-few-shots to explicitly disable.",
+    )
+    parser.add_argument(
+        "--allow-monolithic-fallback",
+        action="store_true",
+        help="Allow monolithic plan fallback when incremental patch generation fails "
+        "(default: off).",
+    )
     args = parser.parse_args(argv)
     if args.compact and args.json_output:
         parser.error("Use either --compact or --json, not both")
@@ -1059,6 +1100,9 @@ def main(argv: list[str] | None = None) -> int:
             enable_llm_repair_proposer=args.enable_llm_repair,
             enable_run_supervisor=args.enable_run_supervisor or args.controlled_route,
             run_supervisor_mode="controlled_route" if args.controlled_route else "advisory",
+            reference_patch_policy=args.reference_patch_policy,
+            use_gold_few_shots=args.gold_few_shots,
+            allow_monolithic_fallback=args.allow_monolithic_fallback,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -1082,6 +1126,9 @@ def main(argv: list[str] | None = None) -> int:
             enable_llm_repair_proposer=args.enable_llm_repair,
             enable_run_supervisor=args.enable_run_supervisor or args.controlled_route,
             run_supervisor_mode="controlled_route" if args.controlled_route else "advisory",
+            reference_patch_policy=args.reference_patch_policy,
+            use_gold_few_shots=args.gold_few_shots,
+            allow_monolithic_fallback=args.allow_monolithic_fallback,
         )
     else:
         parser.error("Provide a requirement or --md-file")
