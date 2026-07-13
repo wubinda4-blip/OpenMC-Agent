@@ -44,6 +44,31 @@ def _is_element_symbol(name: str) -> bool:
     return bool(_ELEMENT_SYMBOL_RE.match(name))
 
 
+# Matches GND-style hyphenated nuclide names: "B-10", "U-235", "Zr-90m".
+# The OpenMC HDF5 libraries (endfb-vii.1, endfb-viii.0, JEFF, JENDL, TENDL)
+# only carry the concatenated form ("B10", "U235"), and OpenMC 0.15.x stores
+# nuclide names verbatim on export, so a hyphenated name from the planner
+# surfaces at transport time as "Could not find nuclide <name>" MPI_ABORT.
+# Captures element symbol, mass number, and any trailing metastable/library
+# suffix ("m", ".71c") which must be preserved.
+_HYPHENATED_NUCLIDE_RE = re.compile(r"^([A-Z][a-z]?)-(\d+)(.*)$")
+
+
+def _normalize_nuclide_name(name: str) -> str:
+    """Rewrite GND-style hyphenated nuclide names to the OpenMC library form.
+
+    "B-10" -> "B10", "U-235m" -> "U235m", "B-10.71c" -> "B10.71c". Names
+    without an element-mass hyphen separator are returned unchanged, so
+    already-canonical names ("H1", "O16", "U235") and element symbols routed
+    to add_element are untouched. This is a pure formatting change: it never
+    alters composition, density, or any physics.
+    """
+    match = _HYPHENATED_NUCLIDE_RE.match(name.strip())
+    if match is None:
+        return name
+    return f"{match.group(1)}{match.group(2)}{match.group(3)}"
+
+
 def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
     if _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
         raise ValueError(
@@ -81,7 +106,7 @@ def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
                 )
             else:
                 material.add_nuclide(
-                    component.name,
+                    _normalize_nuclide_name(component.name),
                     component.percent,
                     component.percent_type,
                 )
@@ -134,7 +159,7 @@ def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
                 )
             else:
                 material.add_nuclide(
-                    component.name,
+                    _normalize_nuclide_name(component.name),
                     component.percent,
                     component.percent_type,
                 )
@@ -648,7 +673,7 @@ def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
             else:
                 lines.append(
                     f"{variable_name}.add_nuclide("
-                    f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
+                    f"{_normalize_nuclide_name(component.name)!r}, {component.percent!r}, {component.percent_type!r})"
                 )
     for sab_name in spec.sab:
         lines.append(f"{variable_name}.add_s_alpha_beta({sab_name!r})")
@@ -1189,7 +1214,7 @@ def _render_mixture_material_definition(
             )
         else:
             lines.append(
-                f"{variable_name}.add_nuclide({name!r}, {percent!r}, {ptype!r})"
+                f"{variable_name}.add_nuclide({_normalize_nuclide_name(name)!r}, {percent!r}, {ptype!r})"
             )
     lines.append(f"materials_by_id[{spec.id!r}] = {variable_name}")
     return "\n".join(lines)
@@ -1235,7 +1260,7 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
             else:
                 lines.append(
                     f"{variable_name}.add_nuclide("
-                    f"{component.name!r}, {component.percent!r}, {component.percent_type!r})"
+                    f"{_normalize_nuclide_name(component.name)!r}, {component.percent!r}, {component.percent_type!r})"
                 )
     for sab_name in spec.sab:
         lines.append(f"{variable_name}.add_s_alpha_beta({sab_name!r})")

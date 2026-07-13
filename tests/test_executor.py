@@ -13,6 +13,7 @@ from pathlib import Path
 
 from openmc_agent.executor import (
     _drop_dangling_lattice_outer,
+    _normalize_nuclide_name,
     _region_expression_to_python,
     _surface_constructor,
     build_openmc_complex_material,
@@ -142,6 +143,144 @@ def test_build_openmc_complex_material_uses_formula_for_mixed_percent_types() ->
     assert material.name == "UO2 fuel"
     assert {nuclide.percent_type for nuclide in material.nuclides} == {"ao"}
     assert any(nuclide.name == "U235" for nuclide in material.nuclides)
+
+
+def test_normalize_nuclide_name_strips_gnd_hyphens() -> None:
+    """GND-style hyphenated names are rewritten to the OpenMC library form;
+    canonical names and element symbols are left untouched."""
+    assert _normalize_nuclide_name("B-10") == "B10"
+    assert _normalize_nuclide_name("B-11") == "B11"
+    assert _normalize_nuclide_name("U-235") == "U235"
+    assert _normalize_nuclide_name("Zr-90") == "Zr90"
+    # Metastable and library suffixes are preserved.
+    assert _normalize_nuclide_name("U-235m") == "U235m"
+    assert _normalize_nuclide_name("Am-242m") == "Am242m"
+    assert _normalize_nuclide_name("B-10.71c") == "B10.71c"
+    # Already-canonical names pass through unchanged.
+    assert _normalize_nuclide_name("B10") == "B10"
+    assert _normalize_nuclide_name("U235") == "U235"
+    assert _normalize_nuclide_name("O16") == "O16"
+    # Bare element symbols (routed to add_element) are not mangled.
+    assert _normalize_nuclide_name("Zr") == "Zr"
+    assert _normalize_nuclide_name("U") == "U"
+
+
+def test_build_openmc_material_normalizes_hyphenated_boron() -> None:
+    """A borated-water spec written with GND 'B-10' must reach OpenMC as 'B10'
+    so the smoke test does not abort with 'Could not find nuclide B-10'."""
+    spec = MaterialSpec(
+        name="Borated water",
+        density_unit="g/cm3",
+        density_value=1.0,
+        composition=[
+            NuclideSpec(name="B-10", percent=0.0002132, percent_type="ao"),
+            NuclideSpec(name="H1", percent=2.0, percent_type="ao"),
+            NuclideSpec(name="O16", percent=1.0, percent_type="ao"),
+        ],
+    )
+
+    material = build_openmc_material(spec)
+
+    names = [n.name for n in material.nuclides]
+    assert "B10" in names
+    assert "B-10" not in names
+
+
+def test_build_openmc_complex_material_normalizes_hyphenated_boron() -> None:
+    spec = ComplexMaterialSpec(
+        id="borated_water",
+        name="Borated water",
+        density_unit="g/cm3",
+        density_value=1.0,
+        composition=[
+            NuclideSpec(name="B-10", percent=0.0002132, percent_type="ao"),
+            NuclideSpec(name="B-11", percent=0.00086, percent_type="ao"),
+            NuclideSpec(name="H1", percent=2.0, percent_type="ao"),
+            NuclideSpec(name="O16", percent=1.0, percent_type="ao"),
+        ],
+    )
+
+    material = build_openmc_complex_material(spec)
+
+    names = [n.name for n in material.nuclides]
+    assert "B10" in names
+    assert "B11" in names
+    assert "B-10" not in names
+    assert "B-11" not in names
+
+
+def test_render_openmc_script_emits_library_nuclide_names() -> None:
+    """The rendered model.py must use 'B10', never the hyphenated 'B-10' that
+    the nuclear data library cannot resolve at transport time. Covers the
+    simple-material render-emit path via a borated-water moderator."""
+    from openmc_agent.executor import _render_complex_material_definition
+
+    moderator = MaterialSpec(
+        name="Borated water",
+        density_unit="g/cm3",
+        density_value=1.0,
+        composition=[
+            NuclideSpec(name="B-10", percent=0.0002132, percent_type="ao"),
+            NuclideSpec(name="H1", percent=2.0, percent_type="ao"),
+            NuclideSpec(name="O16", percent=1.0, percent_type="ao"),
+        ],
+    )
+    fuel = MaterialSpec(
+        name="UO2 fuel",
+        density_unit="g/cm3",
+        density_value=10.4,
+        composition=[
+            NuclideSpec(name="U235", percent=4.95, percent_type="ao"),
+            NuclideSpec(name="U238", percent=95.05, percent_type="ao"),
+            NuclideSpec(name="O16", percent=200.0, percent_type="ao"),
+        ],
+    )
+    cladding = MaterialSpec(
+        name="Zircaloy cladding",
+        density_unit="g/cm3",
+        density_value=6.55,
+        composition=[NuclideSpec(name="Zr", percent=1.0, kind="element")],
+    )
+    spec = SimulationSpec(
+        name="borated pin-cell",
+        pin_cell=PinCellSpec(
+            fuel=fuel,
+            moderator=moderator,
+            cladding=cladding,
+            geometry=GeometrySpec(
+                fuel_radius_cm=0.41,
+                clad_inner_radius_cm=0.42,
+                clad_outer_radius_cm=0.48,
+                pitch_cm=1.26,
+            ),
+        ),
+        settings=SettingsSpec(batches=5, inactive=0, particles=100),
+    )
+
+    script = render_openmc_script(spec)
+
+    assert "add_nuclide('B10'," in script
+    assert "B-10" not in script
+
+    # Also exercise the complex-material render-emit path directly.
+    complex_script = _render_complex_material_definition(
+        ComplexMaterialSpec(
+            id="borated_water",
+            name="Borated Water",
+            density_unit="g/cm3",
+            density_value=1.0,
+            composition=[
+                NuclideSpec(name="B-10", percent=0.0002132, percent_type="ao"),
+                NuclideSpec(name="B-11", percent=0.00086, percent_type="ao"),
+                NuclideSpec(name="H1", percent=2.0, percent_type="ao"),
+                NuclideSpec(name="O16", percent=1.0, percent_type="ao"),
+            ],
+        )
+    )
+    assert "add_nuclide('B10'," in complex_script
+    assert "add_nuclide('B11'," in complex_script
+    assert "B-10" not in complex_script
+    assert "B-11" not in complex_script
 
 
 def test_render_openmc_script_for_minimal_pin_cell() -> None:
