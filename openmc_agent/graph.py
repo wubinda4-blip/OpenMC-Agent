@@ -227,6 +227,18 @@ class GraphState(TypedDict, total=False):
     runtime_repair_applied: bool
     runtime_repair_attempts_by_fingerprint: dict[str, int]
     runtime_repair_candidate_hashes: list[str]
+    runtime_repair_mode: str
+    runtime_diagnosis_input: dict[str, Any]
+    runtime_diagnosis_result: dict[str, Any]
+    runtime_validated_diagnosis: dict[str, Any]
+    runtime_llm_proposal: dict[str, Any]
+    runtime_llm_proposal_validation: dict[str, Any]
+    runtime_llm_evaluation: dict[str, Any]
+    runtime_llm_diagnosis_count: int
+    runtime_llm_proposal_count: int
+    runtime_committed_repair_count: int
+    runtime_reexecution_count: int
+    runtime_llm_candidate_hashes: list[str]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -323,6 +335,14 @@ def build_plan_graph(
     run_supervisor_max_decisions: int = 5,
     run_supervisor_max_patch_retries: int = 2,
     run_supervisor_max_no_progress: int = 2,
+    enable_llm_runtime_repair: bool = False,
+    llm_runtime_repair_mode: Literal["off", "diagnose_only", "validate_only", "apply_if_safe"] = "diagnose_only",
+    runtime_diagnostician_client: Any | None = None,
+    runtime_diagnostician_model: str | None = None,
+    runtime_diagnostician_allow_fallback: bool = False,
+    runtime_patch_proposer_client: Any | None = None,
+    runtime_patch_proposer_model: str | None = None,
+    runtime_patch_proposer_allow_fallback: bool = False,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -433,6 +453,24 @@ def build_plan_graph(
         "deterministic_runtime_repair",
         _make_deterministic_runtime_repair_node(),
     )
+    graph.add_node(
+        "llm_runtime_diagnose",
+        _make_llm_runtime_diagnose_node(
+            client=runtime_diagnostician_client,
+            model_name=runtime_diagnostician_model,
+            allow_fallback=runtime_diagnostician_allow_fallback,
+            mode=llm_runtime_repair_mode,
+        ),
+    )
+    graph.add_node(
+        "llm_runtime_propose",
+        _make_llm_runtime_propose_node(
+            client=runtime_patch_proposer_client,
+            model_name=runtime_patch_proposer_model,
+            allow_fallback=runtime_patch_proposer_allow_fallback,
+            mode=llm_runtime_repair_mode,
+        ),
+    )
 
     graph.add_edge(START, "receive_requirement")
     graph.add_edge("receive_requirement", "retrieve_openmc_docs")
@@ -510,15 +548,37 @@ def build_plan_graph(
     )
     graph.add_conditional_edges(
         "classify_runtime_feedback",
-        _make_runtime_feedback_router(),
+        _make_runtime_feedback_router(
+            enable_llm_runtime_repair=enable_llm_runtime_repair,
+        ),
         {
             "repair": "deterministic_runtime_repair",
+            "llm_diagnose": "llm_runtime_diagnose",
             "save": "save_record",
         },
     )
     graph.add_conditional_edges(
         "deterministic_runtime_repair",
-        _make_runtime_repair_result_router(),
+        _make_runtime_repair_result_router(
+            enable_llm_runtime_repair=enable_llm_runtime_repair,
+        ),
+        {
+            "render": "render_plan_script",
+            "llm_diagnose": "llm_runtime_diagnose",
+            "save": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "llm_runtime_diagnose",
+        _make_llm_diagnosis_router(),
+        {
+            "propose": "llm_runtime_propose",
+            "save": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "llm_runtime_propose",
+        _make_llm_proposal_router(),
         {
             "render": "render_plan_script",
             "save": "save_record",
@@ -3289,7 +3349,7 @@ def _has_runtime_repairable_failure(state: GraphState) -> bool:
     return False
 
 
-def _make_runtime_feedback_router():
+def _make_runtime_feedback_router(*, enable_llm_runtime_repair: bool = False):
     def _route(state: GraphState) -> str:
         from openmc_agent.runtime_repair_policy import get_repair_policy
 
@@ -3304,13 +3364,50 @@ def _make_runtime_feedback_router():
             and state.get("runtime_repair_count", 0) == 0
         ):
             return "repair"
+        # LLM diagnosis path: plan_fixable + LLM enabled + diagnosis supported.
+        if (
+            enable_llm_runtime_repair
+            and policy is not None
+            and policy.llm_diagnosis_supported
+            and state.get("runtime_llm_diagnosis_count", 0) == 0
+        ):
+            return "llm_diagnose"
         return "save"
 
     return _route
 
 
-def _make_runtime_repair_result_router():
+def _make_runtime_repair_result_router(*, enable_llm_runtime_repair: bool = False):
     def _route(state: GraphState) -> str:
+        if state.get("runtime_repair_applied", False):
+            return "render"
+        # If deterministic repair rejected and LLM enabled, try LLM diagnosis.
+        if (
+            enable_llm_runtime_repair
+            and state.get("runtime_llm_diagnosis_count", 0) == 0
+        ):
+            return "llm_diagnose"
+        return "save"
+
+    return _route
+
+
+def _make_llm_diagnosis_router():
+    def _route(state: GraphState) -> str:
+        validated = state.get("runtime_validated_diagnosis")
+        if not validated:
+            return "save"
+        if isinstance(validated, dict):
+            if validated.get("proposal_allowed") and state.get("runtime_llm_proposal_count", 0) == 0:
+                return "propose"
+        return "save"
+
+    return _route
+
+
+def _make_llm_proposal_router():
+    def _route(state: GraphState) -> str:
+        # Check if proposal was accepted and committed.
         if state.get("runtime_repair_applied", False):
             return "render"
         return "save"
@@ -4762,6 +4859,285 @@ def _stable_json_hash_from_plan(plan: Any) -> str:
 
 
 stable_json_hash_from_plan = _stable_json_hash_from_plan
+
+
+# --------------------------------------------------------------------------- #
+# LLM Runtime diagnostician + constrained patch proposer nodes (R4)
+# --------------------------------------------------------------------------- #
+
+
+def _make_llm_runtime_diagnose_node(
+    *,
+    client: Any | None = None,
+    model_name: str | None = None,
+    allow_fallback: bool = False,
+    mode: str = "diagnose_only",
+):
+    def _diagnose(state: GraphState) -> GraphState:
+        """Run LLM diagnosis on the primary runtime failure."""
+        from openmc_agent.runtime_diagnostician import (
+            FakeRuntimeDiagnosticianClient,
+            RuntimeDiagnosis,
+            build_runtime_diagnosis_input,
+            make_runtime_diagnostician_client,
+            validate_runtime_diagnosis,
+        )
+        from openmc_agent.runtime_feedback import RuntimeFailure
+        from openmc_agent.runtime_repair_policy import get_repair_policy
+
+        primary_dict = state.get("runtime_primary_failure")
+        if not primary_dict:
+            return {}
+
+        diag_count = state.get("runtime_llm_diagnosis_count", 0)
+        if diag_count >= 1:
+            return {}
+
+        # Reconstruct failure.
+        failure = RuntimeFailure(
+            failure_id=primary_dict.get("failure_id", ""),
+            stage=primary_dict.get("stage", ""),
+            tool_name=primary_dict.get("tool_name", ""),
+            returncode=primary_dict.get("returncode"),
+            primary_issue_code=primary_dict.get("primary_issue_code", ""),
+            secondary_issue_codes=primary_dict.get("secondary_issue_codes", []),
+            normalized_message=primary_dict.get("normalized_message", ""),
+            raw_error_excerpt=primary_dict.get("raw_error_excerpt", ""),
+            error_fingerprint=primary_dict.get("error_fingerprint", ""),
+            classification=RuntimeFailureClass(
+                primary_dict.get("classification", "unknown")
+            ),
+        )
+
+        policy = get_repair_policy(failure.primary_issue_code)
+        if policy is None or not policy.llm_diagnosis_supported:
+            return {
+                "runtime_llm_diagnosis_count": diag_count + 1,
+            }
+
+        plan = _coerce_simulation_plan(state.get("simulation_plan"))
+        build_state = state.get("plan_build_state", {})
+        output_dir = state.get("output_dir", "data/runs")
+
+        diagnosis_input = build_runtime_diagnosis_input(
+            failure, plan, build_state,
+            state.get("tool_results", []),
+            output_dir,
+        )
+
+        trace_update = _trace_event_update(
+            state,
+            "runtime_llm_diagnosis_started",
+            summary=f"Diagnosing {failure.primary_issue_code}",
+            metadata={"mode": mode},
+        )
+
+        # Get client.
+        actual_client = client
+        fallback_used = False
+        if actual_client is None:
+            if allow_fallback:
+                actual_client = FakeRuntimeDiagnosticianClient()
+                fallback_used = True
+            else:
+                trace_update2 = _trace_event_update(
+                    {**state, **trace_update},
+                    "runtime_llm_client_unavailable",
+                    summary="No diagnostician client available",
+                )
+                return {
+                    "runtime_llm_diagnosis_count": diag_count + 1,
+                    **trace_update2,
+                }
+
+        # Call client.
+        try:
+            from openmc_agent.runtime_diagnostician_prompts import (
+                build_runtime_diagnosis_prompt,
+            )
+            prompt = build_runtime_diagnosis_prompt(diagnosis_input)
+            schema = RuntimeDiagnosis.model_json_schema()
+            raw = actual_client.diagnose(
+                diagnosis_input, prompt=prompt, json_schema=schema,
+            )
+        except Exception as exc:
+            return {
+                "runtime_llm_diagnosis_count": diag_count + 1,
+                **_trace_event_update(
+                    {**state, **trace_update},
+                    "runtime_llm_diagnosis_invalid",
+                    summary=f"Client error: {exc}",
+                ),
+            }
+
+        # Parse and validate diagnosis.
+        import json as _json
+        try:
+            data = _json.loads(raw) if isinstance(raw, str) else raw
+            diagnosis = RuntimeDiagnosis.model_validate(data)
+        except Exception as exc:
+            return {
+                "runtime_llm_diagnosis_count": diag_count + 1,
+                **_trace_event_update(
+                    {**state, **trace_update},
+                    "runtime_llm_diagnosis_invalid",
+                    summary=f"Parse error: {exc}",
+                ),
+            }
+
+        validated = validate_runtime_diagnosis(
+            diagnosis, failure, build_state, policy=policy,
+        )
+
+        if not validated.accepted:
+            return {
+                "runtime_llm_diagnosis_count": diag_count + 1,
+                "runtime_diagnosis_result": diagnosis.model_dump(mode="json"),
+                "runtime_validated_diagnosis": validated.model_dump(mode="json"),
+                **_trace_event_update(
+                    {**state, **trace_update},
+                    "runtime_llm_diagnosis_no_safe_repair",
+                    summary=f"Rejected: {'; '.join(validated.rejection_codes)}",
+                ),
+            }
+
+        return {
+            "runtime_llm_diagnosis_count": diag_count + 1,
+            "runtime_diagnosis_input": diagnosis_input,
+            "runtime_diagnosis_result": diagnosis.model_dump(mode="json"),
+            "runtime_validated_diagnosis": validated.model_dump(mode="json"),
+            **_trace_event_update(
+                {**state, **trace_update},
+                "runtime_llm_diagnosis_validated",
+                summary=f"Validated: {diagnosis.repair_kind}, proposal_allowed={validated.proposal_allowed}",
+            ),
+        }
+
+    return _diagnose
+
+
+def _make_llm_runtime_propose_node(
+    *,
+    client: Any | None = None,
+    model_name: str | None = None,
+    allow_fallback: bool = False,
+    mode: str = "validate_only",
+):
+    def _propose(state: GraphState) -> GraphState:
+        """Generate a constrained LLM patch proposal from validated diagnosis."""
+        from openmc_agent.runtime_diagnostician import ValidatedRuntimeDiagnosis
+        from openmc_agent.runtime_patch_proposer import (
+            FakeRuntimePatchProposerClient,
+            LLMRuntimeRepairProposal,
+            make_runtime_patch_proposer_client,
+            validate_llm_runtime_proposal,
+        )
+
+        validated_dict = state.get("runtime_validated_diagnosis")
+        if not validated_dict:
+            return {}
+
+        proposal_count = state.get("runtime_llm_proposal_count", 0)
+        if proposal_count >= 1:
+            return {}
+
+        validated = ValidatedRuntimeDiagnosis.model_validate(validated_dict)
+        if not validated.proposal_allowed:
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+            }
+
+        build_state = state.get("plan_build_state", {})
+        # Get current patch content for target.
+        target_content: dict[str, Any] = {}
+        patches = build_state.get("patches", {}) if isinstance(build_state, dict) else {}
+        target_id = validated.target_patch_id
+        for pid, penv in patches.items():
+            if pid == target_id or (isinstance(penv, dict) and penv.get("patch_type") == validated.target_patch_type):
+                target_content = penv.get("content", {}) if isinstance(penv, dict) else {}
+                break
+
+        proposal_input = {
+            "diagnosis_id": validated.failure_id,
+            "failure_id": validated.failure_id,
+            "target_patch_type": validated.target_patch_type,
+            "target_patch_id": validated.target_patch_id,
+            "repair_kind": validated.repair_kind,
+            "allowed_paths": validated.deterministically_allowed_paths,
+            "forbidden_paths": validated.deterministically_forbidden_paths,
+            "current_patch": target_content,
+            "max_mutating_operations": 4,
+        }
+
+        actual_client = client
+        if actual_client is None:
+            if allow_fallback:
+                actual_client = FakeRuntimePatchProposerClient()
+            else:
+                return {
+                    "runtime_llm_proposal_count": proposal_count + 1,
+                    **_trace_event_update(
+                        state,
+                        "runtime_llm_client_unavailable",
+                        summary="No proposer client available",
+                    ),
+                }
+
+        try:
+            from openmc_agent.runtime_patch_prompts import (
+                build_runtime_patch_proposal_prompt,
+            )
+            prompt = build_runtime_patch_proposal_prompt(proposal_input)
+            schema = LLMRuntimeRepairProposal.model_json_schema()
+            raw = actual_client.propose(
+                proposal_input, prompt=prompt, json_schema=schema,
+            )
+        except Exception as exc:
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+                **_trace_event_update(
+                    state,
+                    "runtime_llm_proposal_invalid",
+                    summary=f"Client error: {exc}",
+                ),
+            }
+
+        import json as _json
+        try:
+            data = _json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            data = raw if isinstance(raw, dict) else {}
+
+        # Statically validate.
+        validation = validate_llm_runtime_proposal(
+            data, validated, target_content,
+        )
+
+        if not validation.accepted:
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+                "runtime_llm_proposal": data if isinstance(data, dict) else {},
+                "runtime_llm_proposal_validation": validation.model_dump(mode="json"),
+                **_trace_event_update(
+                    state,
+                    "runtime_llm_proposal_rejected",
+                    summary=f"Rejected: {'; '.join(validation.rejection_codes[:3])}",
+                ),
+            }
+
+        proposal = validation.proposal
+        return {
+            "runtime_llm_proposal_count": proposal_count + 1,
+            "runtime_llm_proposal": proposal.model_dump(mode="json") if proposal else {},
+            "runtime_llm_proposal_validation": validation.model_dump(mode="json"),
+            **_trace_event_update(
+                state,
+                "runtime_llm_proposal_accepted",
+                summary=f"Static validation passed: {proposal.repair_kind if proposal else 'unknown'}",
+            ),
+        }
+
+    return _propose
 
 
 # Number of consecutive patch failures (auto-repair or investigation) after which

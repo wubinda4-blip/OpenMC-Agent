@@ -50,6 +50,15 @@ class RuntimeRepairPolicy:
     retryable: bool = False
     requires_human_confirmation: bool = False
     description: str = ""
+    # R4 LLM fields.
+    llm_diagnosis_supported: bool = False
+    llm_proposal_supported: bool = False
+    allowed_repair_kinds: list[str] = field(default_factory=list)
+    max_mutating_operations: int = 4
+    minimum_diagnosis_confidence: float = 0.5
+    minimum_proposal_confidence: float = 0.5
+    auto_apply_risk_ceiling: str = "low"
+    requires_rendered_object_mapping: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -88,8 +97,11 @@ _register(RuntimeRepairPolicy(
     requires_unique_diagnosis=False,
     requires_clone_openmc_check=True,
     retryable=True,
+    llm_diagnosis_supported=True,
+    llm_proposal_supported=False,
     description="Source box likely does not overlap fissionable fuel; "
-                "deterministically bind source_strategy to active_fuel_box.",
+                "deterministically bind source_strategy to active_fuel_box. "
+                "LLM diagnosis only when deterministic repair is no-op.",
 ))
 
 for _code in (
@@ -160,8 +172,20 @@ for _code in (
         deterministic_repair_supported=False,
         requires_unique_diagnosis=True,
         requires_clone_openmc_check=True,
-        description="Geometry overlap/lost-particle; requires unique diagnosis. "
-                    "R3-B may support mechanical consistency repair only.",
+        llm_diagnosis_supported=True,
+        llm_proposal_supported=True,
+        allowed_repair_kinds=[
+            "reference_correction",
+            "duplicate_reference_removal",
+            "restore_existing_topology_constraint",
+            "align_redundant_boundary_to_existing_value",
+        ],
+        max_mutating_operations=4,
+        minimum_diagnosis_confidence=0.6,
+        minimum_proposal_confidence=0.6,
+        requires_rendered_object_mapping=True,
+        description="Geometry overlap/lost-particle; LLM diagnosis + constrained "
+                    "proposal for reference correction and topology restoration only.",
     ))
 
 # --- Material missing nuclide: human fact ---
@@ -234,8 +258,17 @@ for _code in (
         candidate_patch_types=["universes", "pin_map", "axial_layers"],
         deterministic_repair_supported=False,
         requires_unique_diagnosis=True,
-        description="Dangling XML reference; handled by existing reflect_plan "
-                    "auto-repair, not by runtime repair.",
+        llm_diagnosis_supported=True,
+        llm_proposal_supported=True,
+        allowed_repair_kinds=[
+            "reference_correction",
+            "duplicate_reference_removal",
+        ],
+        max_mutating_operations=2,
+        minimum_diagnosis_confidence=0.7,
+        minimum_proposal_confidence=0.7,
+        description="Dangling XML reference; LLM can diagnose and propose "
+                    "reference correction to existing unique candidate.",
     ))
 
 
