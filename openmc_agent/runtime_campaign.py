@@ -156,9 +156,9 @@ def prepare_real_campaign(
     if not key_available:
         status = "VERA3B_REAL_LLM_STABILITY_NOT_RUN_ENV"
     elif not confirm_real_campaign:
-        status = "REAL_CAMPAIGN_CONFIRMATION_REQUIRED"
+        status = "VERA3B_REAL_LLM_CONFIRMATION_REQUIRED"
     else:
-        status = "READY_FOR_CONFIRMED_REAL_CAMPAIGN"
+        status = "VERA3B_REAL_LLM_EXECUTOR_NOT_IMPLEMENTED"
     manifest = {
         "campaign_id": "vera3b_runtime_stability",
         "profile": profile,
@@ -192,7 +192,10 @@ def prepare_real_campaign(
     })
     _write_json(root / "runtime_stage_final_report.json", {
         "real_campaign_status": real_campaign_status(
-            metrics, real_environment_available=False,
+            metrics,
+            real_environment_available=key_available,
+            executor_implemented=False,
+            confirmed=confirm_real_campaign,
         ),
         "manifest": manifest,
     })
