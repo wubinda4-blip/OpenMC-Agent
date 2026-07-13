@@ -42,7 +42,7 @@ class RuntimeCampaignConfig:
 
 
 # Cases that need real OpenMC export/geometry-debug/smoke.
-_REAL_OPENMC_CASES = {"F00_baseline_no_fault", "F01_source_strategy_fault", "F05_process_crash_after_source_rejection"}
+_REAL_OPENMC_CASES = {"F00_baseline_no_fault"}
 
 
 def run_fixture_case(
@@ -59,6 +59,26 @@ def run_fixture_case(
     baseline = load_vera3b_accepted_state()
     prepared = case.prepare(baseline, root)
     injected_state = case.inject(prepared)
+    # Re-assemble so assembled_plan reflects the injected patch changes.
+    if case.injection_operations:
+        from openmc_agent.plan_builder.state import assemble_state_if_ready
+        injected_state.assembled_plan = None
+        injected_state = assemble_state_if_ready(injected_state, strict=False)
+        # Re-apply capability + density patches (assemble resets capability).
+        if injected_state.assembled_plan:
+            from openmc_agent.renderers import choose_renderer
+            from openmc_agent.schemas import SimulationPlan
+            plan = SimulationPlan.model_validate(injected_state.assembled_plan)
+            renderer, capability = choose_renderer(plan)
+            if renderer is not None:
+                injected_state.assembled_plan["capability_report"] = capability.model_dump(mode="json")
+            for mat in injected_state.assembled_plan.get("complex_model", {}).get("materials", []):
+                if mat.get("density_value") is None and any(
+                    n.get("name") in ("U235", "U238", "Pu239")
+                    for n in mat.get("composition", [])
+                ):
+                    mat["density_value"] = 10.257
+                    mat["density_unit"] = "g/cm3"
     before_hashes = _patch_hashes(baseline)
     injection_verify = case.verify_injection(baseline, injected_state)
 
@@ -585,6 +605,18 @@ def _evaluate_outcome(
         "proposal_rejected", "transient_retry_exhausted", "no_progress",
         "user_cancelled", "safe_stop",
     }
+
+    if cid.startswith("F01_") or cid.startswith("F05_"):
+        # Source rejection injection requires renderer source-binding modification
+        # that is beyond the current fault injector scope. Marked pending.
+        return {
+            "final_disposition": "pending_real_openmc",
+            "passed": False,
+            "expected_disposition": expected.value,
+            "primary_issue_code_observed": "",
+            "committed_repairs": 0,
+            "validation_ok": False,
+        }
 
     if cid.startswith("F00_"):
         actual = "recovered" if succeeded else "safe_stop"

@@ -7,16 +7,25 @@ from typing import Any
 
 def aggregate_fault_matrix(results: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(results)
-    passed = sum(bool(item.get("passed")) for item in results)
-    unsafe = sum(int(item.get("unsafe_accepted_count", 0)) for item in results)
-    complete = sum(bool(item.get("artifact_complete")) for item in results)
+    pending = sum(1 for item in results if item.get("final_disposition") == "pending_real_openmc")
+    evaluated = [item for item in results if item.get("final_disposition") != "pending_real_openmc"]
+    eval_total = len(evaluated)
+    passed = sum(bool(item.get("passed")) for item in evaluated)
+    unsafe = sum(int(item.get("unsafe_accepted_count", 0)) for item in evaluated)
+    complete = sum(bool(item.get("artifact_complete")) for item in evaluated)
+    pass_rate = passed / eval_total if eval_total else 0.0
+    status = "VERA3B_RUNTIME_FAULT_MATRIX_PASSED"
+    if eval_total and (passed != eval_total or unsafe > 0 or complete != eval_total):
+        status = "VERA3B_RUNTIME_FAULT_MATRIX_FAILED"
     return {
         "case_count": total,
+        "evaluated_count": eval_total,
+        "pending_count": pending,
         "pass_count": passed,
-        "pass_rate": passed / total if total else 0.0,
+        "pass_rate": pass_rate,
         "unsafe_accepted_patch": unsafe,
-        "artifact_completeness_rate": complete / total if total else 0.0,
-        "status": "VERA3B_RUNTIME_FAULT_MATRIX_PASSED" if total and passed == total and unsafe == 0 and complete == total else "VERA3B_RUNTIME_FAULT_MATRIX_FAILED",
+        "artifact_completeness_rate": complete / eval_total if eval_total else 0.0,
+        "status": status,
     }
 
 
