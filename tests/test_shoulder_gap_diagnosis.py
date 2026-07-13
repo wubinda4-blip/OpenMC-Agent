@@ -31,7 +31,7 @@ def _broken_state_with_shoulder_slab(
             for layer in content["layers"]:
                 if "shoulder" in layer["layer_id"]:
                     layer["fill_type"] = "material"
-                    layer["fill_id"] = "borated_water"
+                    layer["fill_id"] = "borated_water_3a"
                     layer["loading_id"] = None
                     layer["loading_ids"] = []
                     layer["role"] = "shoulder_gap"
@@ -70,9 +70,9 @@ def test_diagnosis_identifies_shoulder_gap_with_existing_universe() -> None:
     assert diagnosis is not None
     assert diagnosis.layer_id == "lower_shoulder_gap"
     assert diagnosis.current_fill_type == "material"
-    assert diagnosis.current_fill_id == "borated_water"
+    assert diagnosis.current_fill_id == "borated_water_3a"
     assert diagnosis.base_default_universe_id == "fuel_pin"
-    assert diagnosis.background_material_id == "borated_water"
+    assert diagnosis.background_material_id == "borated_water_3a"
     assert "moderator_only_pin" in diagnosis.candidate_profile_universe_ids
     assert diagnosis.deterministic_repair_available is True
 

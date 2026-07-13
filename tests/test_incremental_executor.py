@@ -722,7 +722,8 @@ def test_vera3_3b_reference_structural_run_succeeds() -> None:
     }
     assert result.summary["lattice_loading_count"] == 6  # end_plug + plenum + pyrex + pyrex_upper_gas + thimble + shoulder_water
     assert result.summary["material_aliases_applied"] == {
-        "grid_zircaloy4": "zircaloy4"
+        "grid_zircaloy4": "zircaloy4",
+        "borated_water": "borated_water_3b",
     }
 
     plan = SimulationPlan.model_validate(result.assembled_plan)

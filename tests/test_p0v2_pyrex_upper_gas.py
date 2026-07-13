@@ -100,7 +100,7 @@ class TestUpperGasProfileStructure:
     def test_upper_profile_has_water_gap(self, upper_gas_universe):
         bg = [c for c in upper_gas_universe["cells"] if c.get("role") == "inner_flow_background"]
         assert len(bg) == 1
-        assert bg[0]["material_id"] == "borated_water"
+        assert bg[0]["material_id"] == "borated_water_3b"
 
     def test_upper_profile_no_guide_wall(self, upper_gas_universe):
         roles = {c.get("role") for c in upper_gas_universe["cells"]}

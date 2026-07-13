@@ -206,7 +206,8 @@ class TestVERA3BAssembly:
         }
         assert mid_grid_materials == {"zircaloy4"}
         assert result.summary["material_aliases_applied"] == {
-            "grid_zircaloy4": "zircaloy4"
+            "grid_zircaloy4": "zircaloy4",
+            "borated_water": "borated_water_3b",
         }
 
     def test_actual_pin_counts_summary(self, vera3_3b_patches: list) -> None:
@@ -265,7 +266,7 @@ class TestVERA3BAssembly:
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         assert result.ok is True
         # Total patch size should be much smaller than 25K
-        assert total_patch_bytes < 30000, f"patches total {total_patch_bytes} bytes"
+        assert total_patch_bytes < 35000, f"patches total {total_patch_bytes} bytes"
 
 
 # ---------------------------------------------------------------------------

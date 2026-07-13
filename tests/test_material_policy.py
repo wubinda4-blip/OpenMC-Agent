@@ -288,7 +288,8 @@ def _load_vera3(variant: str) -> list:
 
 
 @pytest.mark.parametrize("variant", ["3a", "3b"])
-def test_assembler_apply_alloy_library_replaces_three_alloys(variant: str) -> None:
+def test_assembler_apply_alloy_library_preserves_confirmed_compositions(variant: str) -> None:
+    """With confirmed multi-element compositions the alloy library is not applied."""
     patches = _load_vera3(variant)
     result = assemble_simulation_plan_from_patches(
         patches, material_policy="apply_alloy_library",
@@ -300,15 +301,17 @@ def test_assembler_apply_alloy_library_replaces_three_alloys(variant: str) -> No
     for alloy_id in ("zircaloy4", "ss304", "inconel718"):
         assert alloy_id in by_id, f"missing material {alloy_id}"
         entry = by_id[alloy_id]
-        assert entry.alloy_library_applied is True, f"{alloy_id} not applied"
-        assert entry.alloy_id == alloy_id
+        # Compositions are already rich (confirmed atom densities); library skipped.
+        assert entry.alloy_library_applied is False, f"{alloy_id} should not be applied"
     # Fuel and water untouched.
-    assert by_id["uo2_fuel"].alloy_library_applied is False
-    assert by_id["borated_water"].alloy_library_applied is False
+    fuel_id = f"fuel_{variant}"
+    water_id = f"borated_water_{variant}"
+    assert by_id[fuel_id].alloy_library_applied is False
+    assert by_id[water_id].alloy_library_applied is False
 
 
 @pytest.mark.parametrize("variant", ["3a", "3b"])
-def test_assembler_preserve_plan_keeps_pure_elements(variant: str) -> None:
+def test_assembler_preserve_plan_keeps_full_compositions(variant: str) -> None:
     patches = _load_vera3(variant)
     result = assemble_simulation_plan_from_patches(
         patches, material_policy="preserve_plan",
@@ -316,7 +319,10 @@ def test_assembler_preserve_plan_keeps_pure_elements(variant: str) -> None:
     assert result.ok
     by_id = {m.material_id: m for m in result.material_composition_report.materials}
     assert by_id["zircaloy4"].alloy_library_applied is False
-    assert set(by_id["zircaloy4"].elements.keys()) == {"Zr"}
+    # The new fixtures provide full multi-element compositions (Zr, Sn, Cr, Fe, ...).
+    elements = set(by_id["zircaloy4"].elements.keys())
+    assert any(e.startswith("Zr") for e in elements)
+    assert len(elements) > 1
 
 
 def test_assembler_default_policy_is_apply_alloy_library() -> None:
@@ -328,13 +334,15 @@ def test_assembler_default_policy_is_apply_alloy_library() -> None:
     assert summary["material_composition_report_present"] is True
 
 
-def test_assembler_emits_info_issue_for_applied_alloy() -> None:
+def test_assembler_no_alloy_applied_for_confirmed_compositions() -> None:
+    """With confirmed multi-element compositions, no alloy_library_applied issues emitted."""
     patches = _load_vera3("3a")
     result = assemble_simulation_plan_from_patches(
         patches, material_policy="apply_alloy_library",
     )
     codes = [i.code for i in result.issues]
-    assert codes.count("materials.alloy_library_applied") >= 3
+    # The new fixtures provide full compositions; the library is not applied.
+    assert codes.count("materials.alloy_library_applied") == 0
 
 
 def test_assembler_unknown_material_id_does_not_block() -> None:
