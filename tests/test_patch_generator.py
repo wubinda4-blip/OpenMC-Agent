@@ -184,6 +184,54 @@ def test_max_attempts_exceeded() -> None:
     assert len(result.attempts) == 2
 
 
+def test_axial_layers_normalize_unique_universe_id_variant() -> None:
+    """Separator-only ID variants resolve to an unambiguous known universe."""
+    raw = _patch_json(
+        "axial_layers",
+        layers=[
+            {
+                "layer_id": "active_fuel", "role": "active_fuel",
+                "z_min_cm": 0.0, "z_max_cm": 10.0,
+                "fill_type": "lattice", "fill_id": "assembly_lattice",
+            },
+            {
+                "layer_id": "upper_end_plug", "role": "upper_end_plug",
+                "z_min_cm": 10.0, "z_max_cm": 11.0,
+                "fill_type": "lattice", "fill_id": "assembly_lattice",
+                "loading_id": "plug_loading",
+            },
+        ],
+        lattice_loadings=[
+            {
+                "loading_id": "plug_loading",
+                "base_lattice_id": "assembly_lattice",
+                "derived_lattice_id": "assembly_lattice_plug",
+                "transformations": [
+                    {
+                        "operation_id": "replace_plug",
+                        "operation_kind": "replace_universe_family",
+                        "source_universe_id": "fuel_pin",
+                        "replacement_universe_id": "fuel_pin_endplug",
+                    }
+                ],
+            }
+        ],
+    )
+    result = generate_patch(
+        patch_type="axial_layers",
+        requirement="3D assembly",
+        llm_client=FakePatchLLM([raw]),
+        context=PatchGenerationContext(
+            known_universe_ids=["fuel_pin", "fuel_pin_end_plug"],
+        ),
+        max_attempts=1,
+    )
+    assert result.ok is True
+    assert result.parsed_patch is not None
+    transformation = result.parsed_patch["lattice_loadings"][0]["transformations"][0]
+    assert transformation["replacement_universe_id"] == "fuel_pin_end_plug"
+
+
 # ---------------------------------------------------------------------------
 # 10. SettingsPatch treats cross sections as runtime
 # ---------------------------------------------------------------------------

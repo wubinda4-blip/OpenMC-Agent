@@ -410,6 +410,55 @@ def _to_validation_context(
     )
 
 
+def _canonical_universe_id(value: str, known_ids: list[str]) -> str | None:
+    """Return a unique separator-insensitive match from known universe IDs."""
+    normalized = re.sub(r"[^a-z0-9]", "", value.lower())
+    matches = [
+        universe_id
+        for universe_id in known_ids
+        if re.sub(r"[^a-z0-9]", "", universe_id.lower()) == normalized
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _normalize_known_universe_references(
+    patch_type: str,
+    content: dict[str, Any],
+    context: PatchGenerationContext,
+) -> None:
+    """Normalize unambiguous LLM spelling variants in lattice transformations.
+
+    This intentionally never creates a new universe or guesses between multiple
+    IDs. It only maps variants such as ``fuel_pin_endplug`` to the sole known
+    ``fuel_pin_end_plug`` before schema/semantic validation.
+    """
+    if patch_type != "axial_layers" or not context.known_universe_ids:
+        return
+    for loading in content.get("lattice_loadings", []):
+        if not isinstance(loading, dict):
+            continue
+        for transformation in loading.get("transformations", []):
+            if not isinstance(transformation, dict):
+                continue
+            for field in ("replacement_universe_id", "source_universe_id"):
+                value = transformation.get(field)
+                if isinstance(value, str):
+                    canonical = _canonical_universe_id(value, context.known_universe_ids)
+                    if canonical is not None:
+                        transformation[field] = canonical
+            values = transformation.get("source_universe_ids")
+            if isinstance(values, list):
+                normalized_values: list[Any] = []
+                for value in values:
+                    canonical = (
+                        _canonical_universe_id(value, context.known_universe_ids)
+                        if isinstance(value, str)
+                        else None
+                    )
+                    normalized_values.append(canonical if canonical is not None else value)
+                transformation["source_universe_ids"] = normalized_values
+
+
 # ---------------------------------------------------------------------------
 # Main generate_patch API
 # ---------------------------------------------------------------------------
@@ -547,6 +596,10 @@ def generate_patch(
             attempts.append(attempt)
             last_issues = attempt.issues
             continue
+
+        _normalize_known_universe_references(
+            patch_type, content, effective_context
+        )
 
         # Phase 7C: validate patch contract (patch_type, allowed/forbidden keys).
         contract_issues = validate_patch_contract(

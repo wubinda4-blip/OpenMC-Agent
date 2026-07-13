@@ -593,10 +593,12 @@ def _cylinder_geometry_errors(
             warnings.append("cannot verify cylinder radius < pitch/2: assembly pitch unknown")
         else:
             max_radius = max(radii)
-            if max_radius >= pitch / 2.0:
+            # A cylinder may touch the half-pitch boundary of a square lattice
+            # cell; the corner regions remain covered by the background cell.
+            if max_radius > pitch / 2.0 + 1.0e-12:
                 errors.append(_iss(
                     "surface.cylinder_radius_invalid",
-                    f"maximum cylinder outer radius {max_radius} must be less than "
+                    f"maximum cylinder outer radius {max_radius} must be no greater than "
                     f"pitch/2 ({pitch / 2.0})",
                     "complex_model.surfaces.parameters.r",
                 ))

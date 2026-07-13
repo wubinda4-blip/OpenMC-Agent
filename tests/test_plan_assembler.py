@@ -162,6 +162,32 @@ def test_assembler_does_not_duplicate_explicit_background() -> None:
     assert "fuel_pin_outer_moderator" not in fuel_universe.cell_ids
 
 
+def test_water_cell_at_half_pitch_remains_renderable() -> None:
+    """A moderator cylinder may touch a square lattice-cell side boundary."""
+    from openmc_agent.renderers.assembly import RectAssemblyRenderer
+
+    patches = _minimal_3d_patches()
+    universes = next(p for p in patches if isinstance(p, UniversesPatch))
+    universes.universes.append(UniverseSpecPatch(
+        universe_id="water_cell",
+        kind="water_cell",
+        cells=[CellLayerPatch(
+            id="water", role="coolant", material_id="water",
+            region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.63,
+        )],
+    ))
+    pin_map = next(p for p in patches if isinstance(p, PinMapPatch))
+    pin_map.water_cell_coords = [(0, 0)]
+
+    result = assemble_simulation_plan_from_patches(patches)
+    assert result.ok is True
+    assert result.plan is not None
+    capability = RectAssemblyRenderer().can_render(result.plan)
+    assert "surface.cylinder_radius_invalid" not in [
+        issue.code for issue in capability.issues
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 2. Missing required patch fails cleanly
 # ---------------------------------------------------------------------------
