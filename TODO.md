@@ -193,21 +193,20 @@ Pyrex poison segment 15.761–376.441 cm；upper helium region 376.441–397.510
 
 完成标准：不再用纯 SS304 slab 替代 mixture；mixture provenance 写入 material report；3A/3B mixture 不被错误复用。
 
-### P0-V5：材料组成可信化 🚧
+### P0-V5：材料组成可信化 ✅ 已被 P0-FINAL 合并
 
-优先完成：UO₂ isotopes (U-234/235/236/238 + O-16 stoichiometry)；Pyrex isotopes (B-10/B-11/O-16/Si)；structural alloys (Zircaloy-4/SS304/Inconel-718 controlled library)；coolant variant-specific temperature/density/boron。
+VERA3 reference Table P3-3 的精确原子数密度已直接写入 fixtures（`atom_density_barn_cm`）。所有存根已被替换：UO₂ isotopics、Zircaloy-4（29 nuclides）、SS304（19 nuclides）、Inconel-718（21 nuclides）、Pyrex、helium、variant-specific coolant、pre-homogenized nozzle/core-plate。
 
-完成标准：所有材料有 `composition_status` 和 provenance；no placeholder 标为 benchmark-confirmed。
+### P0-V6/V7：几何 Gold + 数值 Acceptance — DEFERRED
 
-### P0-V6：几何 Gold Acceptance 🚧
+已通过 transport smoke（3A Δ=0.025%, 3B Δ=0.53%），但正式 gold/numerical acceptance 推迟到用户提供更高统计要求后的 production 验证。
 
-Plan-level（contract diff、base lattice counts、loading coords、radial radii、axial coverage、overlay ranges、boundary conditions）+ Rendered XML-level（point probes、hashes、geometry debug、no overlaps）+ 人工审查（fuel/Pyrex/thimble/guide/instrument/shoulder/grid paths）。
+### P0-FINAL + FC-MVP：工程基线闭合 + 全堆 MVP ✅
 
-完成后生成 `data/benchmarks/VERA3/` 下的 provenance、contracts、gold plans、acceptance reports、plots。
-
-### P0-V7：数值 Benchmark Acceptance ⬜
-
-只在 V0–V6 完成后开始。顺序：source/settings smoke → low-particle → convergence → production keff → reference comparison → pin power / axial power → uncertainty report。
+- VERA3 engineering baseline + transport smoke passed
+- Reusable 3D assembly universe（transmission boundaries）
+- Full-core MVP: 3×3 core lattice + reflector + vacuum BC
+- Full-core transport smoke: keff=0.99452±0.005, 0 lost particles, assembly tally 9 entries
 
 ---
 
