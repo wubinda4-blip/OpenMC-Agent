@@ -239,6 +239,19 @@ class GraphState(TypedDict, total=False):
     runtime_committed_repair_count: int
     runtime_reexecution_count: int
     runtime_llm_candidate_hashes: list[str]
+    runtime_iteration_count: int
+    runtime_transient_retry_count: int
+    runtime_failure_history: list[dict[str, Any]]
+    runtime_repair_history: list[dict[str, Any]]
+    runtime_iteration_history: list[dict[str, Any]]
+    runtime_supervisor_history: list[dict[str, Any]]
+    runtime_no_progress_count: int
+    runtime_execution_succeeded: bool
+    runtime_last_plan_hash: str
+    runtime_last_build_state_hash: str
+    runtime_policy_summary: dict[str, Any]
+    runtime_final_disposition: str
+    runtime_last_committed_failure_fingerprint: str
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -343,6 +356,11 @@ def build_plan_graph(
     runtime_patch_proposer_client: Any | None = None,
     runtime_patch_proposer_model: str | None = None,
     runtime_patch_proposer_allow_fallback: bool = False,
+    enable_runtime_supervisor: bool = False,
+    runtime_supervisor_client: Any | None = None,
+    runtime_supervisor_model: str | None = None,
+    runtime_supervisor_allow_fallback: bool = False,
+    runtime_loop_budget: Any | None = None,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -451,7 +469,10 @@ def build_plan_graph(
     )
     graph.add_node(
         "deterministic_runtime_repair",
-        _make_deterministic_runtime_repair_node(),
+        _make_deterministic_runtime_repair_node(
+            max_runtime_repairs=(runtime_loop_budget or {}).get("max_deterministic_attempts", 3)
+            if isinstance(runtime_loop_budget, dict) else 3,
+        ),
     )
     graph.add_node(
         "llm_runtime_diagnose",
@@ -469,6 +490,16 @@ def build_plan_graph(
             model_name=runtime_patch_proposer_model,
             allow_fallback=runtime_patch_proposer_allow_fallback,
             mode=llm_runtime_repair_mode,
+        ),
+    )
+    graph.add_node(
+        "runtime_supervisor",
+        _make_runtime_supervisor_node(
+            client=runtime_supervisor_client,
+            model_name=runtime_supervisor_model,
+            allow_fallback=runtime_supervisor_allow_fallback,
+            budget=runtime_loop_budget,
+            enable_llm_runtime_repair=enable_llm_runtime_repair,
         ),
     )
 
@@ -538,22 +569,28 @@ def build_plan_graph(
     graph.add_edge("render_plan_script", "execute_tools")
     graph.add_conditional_edges(
         "execute_tools",
-        _make_plan_execution_router(max_retries),
+        _make_plan_execution_router(
+            max_retries,
+            enable_runtime_supervisor=enable_runtime_supervisor,
+        ),
         {
             "ask": "ask_expert",
             "reflect": "reflect_plan",
             "save": "save_record",
             "runtime_repair": "classify_runtime_feedback",
+            "runtime_supervisor": "runtime_supervisor",
         },
     )
     graph.add_conditional_edges(
         "classify_runtime_feedback",
         _make_runtime_feedback_router(
             enable_llm_runtime_repair=enable_llm_runtime_repair,
+            enable_runtime_supervisor=enable_runtime_supervisor,
         ),
         {
             "repair": "deterministic_runtime_repair",
             "llm_diagnose": "llm_runtime_diagnose",
+            "runtime_supervisor": "runtime_supervisor",
             "save": "save_record",
         },
     )
@@ -561,11 +598,24 @@ def build_plan_graph(
         "deterministic_runtime_repair",
         _make_runtime_repair_result_router(
             enable_llm_runtime_repair=enable_llm_runtime_repair,
+            enable_runtime_supervisor=enable_runtime_supervisor,
         ),
         {
             "render": "render_plan_script",
             "llm_diagnose": "llm_runtime_diagnose",
             "save": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "runtime_supervisor",
+        _make_runtime_supervisor_router(),
+        {
+            "finish": "save_record",
+            "deterministic": "deterministic_runtime_repair",
+            "llm": "llm_runtime_diagnose",
+            "retry": "render_plan_script",
+            "ask": "ask_expert",
+            "stop": "save_record",
         },
     )
     graph.add_conditional_edges(
@@ -3279,9 +3329,13 @@ def _make_plan_patch_router():
     return _route
 
 
-def _make_plan_execution_router(max_retries: int):
+def _make_plan_execution_router(max_retries: int, *, enable_runtime_supervisor: bool = False):
     def _route(state: GraphState) -> str:
         report = state.get("validation_report")
+        if enable_runtime_supervisor:
+            if report is not None and report.is_valid:
+                return "runtime_supervisor"
+            return "runtime_repair"
         if report is not None and report.is_valid:
             return "save"
         # Check for deterministic runtime repair opportunity.
@@ -3349,13 +3403,16 @@ def _has_runtime_repairable_failure(state: GraphState) -> bool:
     return False
 
 
-def _make_runtime_feedback_router(*, enable_llm_runtime_repair: bool = False):
+def _make_runtime_feedback_router(*, enable_llm_runtime_repair: bool = False, enable_runtime_supervisor: bool = False):
     def _route(state: GraphState) -> str:
+        from openmc_agent.runtime_repair import stable_json_hash
         from openmc_agent.runtime_repair_policy import get_repair_policy
 
         primary = state.get("runtime_primary_failure")
         if not primary:
-            return "save"
+            return "runtime_supervisor" if enable_runtime_supervisor else "save"
+        if enable_runtime_supervisor:
+            return "runtime_supervisor"
         code = primary.get("primary_issue_code", "")
         policy = get_repair_policy(code)
         if (
@@ -3377,10 +3434,16 @@ def _make_runtime_feedback_router(*, enable_llm_runtime_repair: bool = False):
     return _route
 
 
-def _make_runtime_repair_result_router(*, enable_llm_runtime_repair: bool = False):
+def _make_runtime_repair_result_router(
+    *,
+    enable_llm_runtime_repair: bool = False,
+    enable_runtime_supervisor: bool = False,
+):
     def _route(state: GraphState) -> str:
         if state.get("runtime_repair_applied", False):
             return "render"
+        if enable_runtime_supervisor:
+            return "runtime_supervisor"
         # If deterministic repair rejected and LLM enabled, try LLM diagnosis.
         if (
             enable_llm_runtime_repair
@@ -4813,9 +4876,12 @@ def _make_deterministic_runtime_repair_node(*, max_runtime_repairs: int = 1):
             )
             return {
                 "plan_build_state": updated_state.model_dump(mode="json"),
-                "simulation_plan": None,  # Force re-assembly
+                "simulation_plan": SimulationPlan.model_validate(updated_state.assembled_plan),
                 "runtime_repair_applied": True,
                 "runtime_repair_count": repair_count + 1,
+                "runtime_committed_repair_count": state.get("runtime_committed_repair_count", 0) + 1,
+                "runtime_reexecution_count": state.get("runtime_reexecution_count", 0) + 1,
+                "runtime_last_committed_failure_fingerprint": fingerprint,
                 "runtime_repair_evaluation": evaluation.model_dump(mode="json"),
                 "runtime_repair_candidate_hashes": [
                     *prior_hashes, evaluation.patch_hash_after,
@@ -5251,6 +5317,126 @@ def _make_llm_runtime_propose_node(
         }
 
     return _propose
+
+
+def _make_runtime_supervisor_node(
+    *,
+    client: Any | None = None,
+    model_name: str | None = None,
+    allow_fallback: bool = False,
+    budget: Any | None = None,
+    enable_llm_runtime_repair: bool = False,
+):
+    def _supervise(state: GraphState) -> GraphState:
+        """Choose a bounded post-execution action without altering patches."""
+        from openmc_agent.runtime_repair_policy import get_repair_policy
+        from openmc_agent.runtime_supervisor import (
+            RuntimeIterationState,
+            RuntimeLoopBudget,
+            run_runtime_supervisor_decision,
+            write_runtime_iteration_manifest,
+        )
+        from openmc_agent.runtime_supervisor_policy import build_runtime_supervisor_input
+
+        runtime_budget = (
+            budget if isinstance(budget, RuntimeLoopBudget)
+            else RuntimeLoopBudget.model_validate(budget or {})
+        )
+        primary = state.get("runtime_primary_failure") or {}
+        repeated_after_commit = bool(
+            primary
+            and primary.get("error_fingerprint")
+            and primary.get("error_fingerprint")
+            == state.get("runtime_last_committed_failure_fingerprint")
+        )
+        policy = get_repair_policy(primary.get("primary_issue_code", "")) if primary else None
+        policy_summary = {
+            "deterministic_repair_supported": bool(policy and policy.deterministic_repair_supported),
+            "llm_diagnosis_supported": bool(enable_llm_runtime_repair and policy and policy.llm_diagnosis_supported),
+            "llm_proposal_supported": bool(enable_llm_runtime_repair and policy and policy.llm_proposal_supported),
+        }
+        plan = _coerce_simulation_plan(state.get("simulation_plan"))
+        plan_hash = stable_json_hash_from_plan(plan) if plan else "none"
+        build_hash = stable_json_hash(state.get("plan_build_state", {}))
+        supervisor_state = {
+            **state,
+            "runtime_policy_summary": policy_summary,
+            "runtime_execution_succeeded": bool(
+                state.get("validation_report") and state["validation_report"].is_valid
+            ),
+            "runtime_last_plan_hash": plan_hash,
+            "runtime_last_build_state_hash": build_hash,
+            "runtime_no_progress_count": (
+                max(2, state.get("runtime_no_progress_count", 0))
+                if repeated_after_commit
+                else state.get("runtime_no_progress_count", 0)
+            ),
+        }
+        supervisor_input = build_runtime_supervisor_input(supervisor_state, budget=runtime_budget)
+        result = run_runtime_supervisor_decision(
+            supervisor_input,
+            client=client,
+            model_name=model_name,
+            allow_fallback=allow_fallback,
+        )
+        action = result.final_action.value if result.final_action else "stop"
+        transient_retries = state.get("runtime_transient_retry_count", 0)
+        if action == "retry_same_plan":
+            transient_retries += 1
+        iteration = RuntimeIterationState(
+            iteration=state.get("runtime_iteration_count", 0),
+            plan_hash_before_execution=plan_hash,
+            build_state_hash=build_hash,
+            primary_failure_fingerprint=primary.get("error_fingerprint"),
+            primary_issue_code=primary.get("primary_issue_code"),
+            supervisor_action=action,
+            execution_result="success" if supervisor_state["runtime_execution_succeeded"] else "failure",
+        )
+        artifacts = write_runtime_iteration_manifest(
+            state.get("output_dir", "data/runs"), iteration, supervisor_input, result,
+            final_disposition=action,
+        )
+        history = [*state.get("runtime_supervisor_history", []), {
+            "action": action,
+            "state_fingerprint": result.state_fingerprint,
+            "vetoed": result.vetoed,
+        }]
+        event = "runtime_supervisor_decision_accepted" if result.accepted else "runtime_supervisor_decision_vetoed"
+        return {
+            "runtime_policy_summary": policy_summary,
+            "runtime_execution_succeeded": supervisor_state["runtime_execution_succeeded"],
+            "runtime_last_plan_hash": plan_hash,
+            "runtime_last_build_state_hash": build_hash,
+            "runtime_supervisor_result": result.model_dump(mode="json"),
+            "runtime_supervisor_history": history,
+            "runtime_iteration_count": state.get("runtime_iteration_count", 0) + 1,
+            "runtime_transient_retry_count": transient_retries,
+            "runtime_final_disposition": action,
+            "runtime_no_progress_count": supervisor_state["runtime_no_progress_count"],
+            **_trace_event_update(
+                state,
+                event,
+                summary=f"Runtime supervisor: {action}",
+                metadata={"state_fingerprint": result.state_fingerprint, "artifacts": artifacts},
+            ),
+        }
+
+    return _supervise
+
+
+def _make_runtime_supervisor_router():
+    def _route(state: GraphState) -> str:
+        result = state.get("runtime_supervisor_result", {})
+        action = result.get("final_action") if isinstance(result, dict) else None
+        return {
+            "finish_success": "finish",
+            "attempt_deterministic_repair": "deterministic",
+            "attempt_llm_repair": "llm",
+            "retry_same_plan": "retry",
+            "request_human_confirmation": "ask",
+            "stop": "stop",
+        }.get(action, "stop")
+    return _route
 
 
 # Number of consecutive patch failures (auto-repair or investigation) after which
