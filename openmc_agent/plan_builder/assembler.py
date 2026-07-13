@@ -383,6 +383,7 @@ def _assemble_materials(
 def _assemble_universes(
     patch: UniversesPatch,
     material_ids: set[str],
+    outer_moderator_material_id: str | None,
 ) -> tuple[list[UniverseSpec], list[CellSpec], list[SurfaceSpec], list[RegionSpec], list[PlanAssemblyIssue]]:
     issues: list[PlanAssemblyIssue] = []
     universes: list[UniverseSpec] = []
@@ -393,6 +394,7 @@ def _assemble_universes(
     for univ in patch.universes:
         cell_ids: list[str] = []
         prev_surface_id: str | None = None
+        has_background = False
 
         for cell_patch in univ.cells:
             cell_id = f"{univ.universe_id}_{cell_patch.id}"
@@ -401,7 +403,7 @@ def _assemble_universes(
 
             # Build surface/region from cell geometry (region_kind / r_min / r_max).
             region_id: str | None = None
-            if cell_patch.region_kind == "cylinder" and cell_patch.r_max_cm is not None:
+            if cell_patch.region_kind in {"cylinder", "annulus"} and cell_patch.r_max_cm is not None:
                 # Innermost solid cylinder (e.g. fuel pellet).
                 surf_id = f"surf_{cell_id}"
                 all_surfaces.append(SurfaceSpec(
@@ -409,23 +411,11 @@ def _assemble_universes(
                     parameters={"r": cell_patch.r_max_cm},
                     purpose=f"Auto-generated pin cylinder for {cell_id}",
                 ))
-                region_id = f"reg_{cell_id}_in"
-                all_regions.append(RegionSpec(
-                    id=region_id, expression=f"-{surf_id}",
-                    surface_ids=[surf_id],
-                    purpose=f"Inside cylinder for {cell_id}",
-                ))
-                prev_surface_id = surf_id
-
-            elif cell_patch.region_kind == "annulus" and cell_patch.r_max_cm is not None:
-                # Annular layer (e.g. clad, gap).
-                surf_id = f"surf_{cell_id}"
-                all_surfaces.append(SurfaceSpec(
-                    id=surf_id, kind="zcylinder",
-                    parameters={"r": cell_patch.r_max_cm},
-                    purpose=f"Auto-generated pin cylinder for {cell_id}",
-                ))
-                if prev_surface_id is not None:
+                is_annulus = (
+                    cell_patch.region_kind == "annulus"
+                    or (cell_patch.r_min_cm is not None and cell_patch.r_min_cm > 0.0)
+                )
+                if is_annulus and prev_surface_id is not None:
                     region_id = f"reg_{cell_id}_annulus"
                     all_regions.append(RegionSpec(
                         id=region_id,
@@ -433,10 +423,18 @@ def _assemble_universes(
                         surface_ids=[prev_surface_id, surf_id],
                         purpose=f"Annulus for {cell_id}",
                     ))
+                else:
+                    region_id = f"reg_{cell_id}_in"
+                    all_regions.append(RegionSpec(
+                        id=region_id, expression=f"-{surf_id}",
+                        surface_ids=[surf_id],
+                        purpose=f"Inside cylinder for {cell_id}",
+                    ))
                 prev_surface_id = surf_id
 
             elif cell_patch.region_kind == "background":
                 # Outermost region (e.g. coolant outside cladding).
+                has_background = True
                 if prev_surface_id is not None:
                     region_id = f"reg_{cell_id}_out"
                     all_regions.append(RegionSpec(
@@ -466,6 +464,29 @@ def _assemble_universes(
                     message=f"cell {cell_id!r} failed schema: {exc}",
                     path=f"universes[{univ.universe_id}].cells[{cell_patch.id}]",
                 ))
+        if (
+            prev_surface_id is not None
+            and not has_background
+            and outer_moderator_material_id is not None
+        ):
+            background_id = f"{univ.universe_id}_outer_moderator"
+            background_region_id = f"reg_{background_id}_out"
+            all_regions.append(RegionSpec(
+                id=background_region_id,
+                expression=f"+{prev_surface_id}",
+                surface_ids=[prev_surface_id],
+                purpose=f"Outer moderator for {univ.universe_id}",
+            ))
+            all_cells.append(CellSpec(
+                id=background_id,
+                name="outer_moderator",
+                fill_type="material",
+                fill_id=outer_moderator_material_id,
+                region_id=background_region_id,
+                component_role="coolant",
+                purpose="Auto-generated outer moderator",
+            ))
+            cell_ids.append(background_id)
         try:
             universes.append(UniverseSpec(
                 id=univ.universe_id,
@@ -482,6 +503,14 @@ def _assemble_universes(
             ))
 
     return universes, all_cells, all_surfaces, all_regions, issues
+
+
+def _outer_moderator_material_id(materials_patch: MaterialsPatch) -> str | None:
+    """Return the input-declared moderator material for pin-universe closure."""
+    for material in materials_patch.materials:
+        if material.role.strip().lower() in {"coolant", "moderator", "water"}:
+            return material.material_id
+    return None
 
 
 def _patch_fill_type_to_schema(
@@ -1245,7 +1274,9 @@ def assemble_simulation_plan_from_patches(
     if universes_patch is None:
         universes_patch = UniversesPatch(universes=[])
     plan_universes, plan_cells, pin_surfaces, pin_regions, univ_issues = _assemble_universes(
-        universes_patch, material_ids,
+        universes_patch,
+        material_ids,
+        _outer_moderator_material_id(materials_patch),
     )
     issues.extend(univ_issues)
     universe_ids = {u.id for u in plan_universes}

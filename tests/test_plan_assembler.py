@@ -118,6 +118,50 @@ def test_assemble_minimal_3d_plan() -> None:
     assert len(cm.core.axial_overlays) >= 1
 
 
+def test_assembler_closes_pin_universe_and_honors_explicit_r_min() -> None:
+    """LLM cylinder labels must not discard r_min annuli or outer moderator."""
+    patches = _minimal_3d_patches()
+    universes = next(p for p in patches if isinstance(p, UniversesPatch))
+    fuel_pin = next(u for u in universes.universes if u.universe_id == "fuel_pin")
+    fuel_pin.cells = [
+        CellLayerPatch(
+            id="fuel", role="fuel", material_id="fuel",
+            region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.40,
+        ),
+        CellLayerPatch(
+            id="gap", role="gap", material_id="water",
+            region_kind="cylinder", r_min_cm=0.40, r_max_cm=0.42,
+        ),
+        CellLayerPatch(
+            id="clad", role="cladding", material_id="clad",
+            region_kind="cylinder", r_min_cm=0.42, r_max_cm=0.48,
+        ),
+    ]
+
+    result = assemble_simulation_plan_from_patches(patches)
+    assert result.ok is True
+    assert result.plan is not None
+    model = result.plan.complex_model
+    fuel_universe = next(u for u in model.universes if u.id == "fuel_pin")
+    assert "fuel_pin_outer_moderator" in fuel_universe.cell_ids
+    regions = {region.id: region.expression for region in model.regions}
+    assert regions["reg_fuel_pin_gap_annulus"] == "+surf_fuel_pin_fuel -surf_fuel_pin_gap"
+    assert regions["reg_fuel_pin_clad_annulus"] == "+surf_fuel_pin_gap -surf_fuel_pin_clad"
+    assert regions["reg_fuel_pin_outer_moderator_out"] == "+surf_fuel_pin_clad"
+
+
+def test_assembler_does_not_duplicate_explicit_background() -> None:
+    """An input-provided outer background remains the sole exterior cell."""
+    result = assemble_simulation_plan_from_patches(_minimal_3d_patches())
+    assert result.ok is True
+    assert result.plan is not None
+    fuel_universe = next(
+        universe for universe in result.plan.complex_model.universes
+        if universe.id == "fuel_pin"
+    )
+    assert "fuel_pin_outer_moderator" not in fuel_universe.cell_ids
+
+
 # ---------------------------------------------------------------------------
 # 2. Missing required patch fails cleanly
 # ---------------------------------------------------------------------------
