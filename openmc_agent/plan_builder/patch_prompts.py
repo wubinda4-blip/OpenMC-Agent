@@ -166,6 +166,11 @@ Schema: {{"patch_type": "axial_layers", "axial_domain_cm": [float,float],
 
 Rules:
 - Do NOT generate materials/universes/lattice/full plan.
+- For fill_type="material", fill_id MUST be one of Context.known_material_ids. Do not
+  invent homogenized mixture IDs; use an existing ID or mark the layer for human
+  confirmation when no supported material is available.
+- For fill_type="universe" and every transformation replacement_universe_id,
+  use only Context.known_universe_ids. Do not invent end-plug or plenum universes.
 - active_fuel layer must exist if the problem is a 3D fuel assembly.
 - active_fuel fill_type should be "lattice" and fill_id should be "assembly_lattice".
 - Do NOT use default z=-1..1 for an explicit 3D benchmark.

@@ -820,6 +820,41 @@ def _validate_axial_layers(
                 path=f"layers[{layer.layer_id}].fill_id",
             ))
 
+        # Validate fill_id references against known materials/universes so
+        # the LLM cannot invent IDs that don't exist in upstream patches.
+        if layer.fill_id and layer.fill_type == "material" and context.known_material_ids:
+            resolved = resolve_material_id(
+                layer.fill_id,
+                set(context.known_material_ids),
+                context.material_aliases,
+            )
+            if not resolved.ok:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_layers.fill_ref_missing",
+                    severity="error",
+                    message=(
+                        f"layer {layer.layer_id!r} references missing "
+                        f"material {layer.fill_id!r}. Known materials: "
+                        f"{context.known_material_ids}"
+                    ),
+                    path=f"layers[{layer.layer_id}].fill_id",
+                    actual=layer.fill_id,
+                ))
+
+        if layer.fill_id and layer.fill_type == "universe" and context.known_universe_ids:
+            if layer.fill_id not in set(context.known_universe_ids):
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_layers.fill_ref_missing",
+                    severity="error",
+                    message=(
+                        f"layer {layer.layer_id!r} references missing "
+                        f"universe {layer.fill_id!r}. Known universes: "
+                        f"{context.known_universe_ids}"
+                    ),
+                    path=f"layers[{layer.layer_id}].fill_id",
+                    actual=layer.fill_id,
+                ))
+
         # Early component-profile slab detection: a layer whose role is a
         # fuel-pin internal component profile (end plug, plenum, gas gap,
         # shoulder gap) must NOT use fill_type=material.  A material slab

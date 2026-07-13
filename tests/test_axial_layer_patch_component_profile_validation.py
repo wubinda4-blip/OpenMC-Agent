@@ -81,6 +81,39 @@ def test_patch_validator_ignores_non_profile_material_layer() -> None:
     assert "assembly3d.component_profile_as_material_slab" not in codes
 
 
+def test_patch_validator_rejects_unknown_material_fill_reference() -> None:
+    """A material layer may only use material IDs from upstream patches."""
+    patch = _make_axial_patch(
+        layer_id="core_plate",
+        role="core_plate",
+        fill_id="invented_core_plate_mix",
+    )
+    result = validate_patch(
+        patch,
+        PatchValidationContext(known_material_ids=["borated_water", "ss304"]),
+    )
+    codes = [i.code for i in result.issues]
+    assert "patch.axial_layers.fill_ref_missing" in codes
+    assert not result.ok
+
+
+def test_patch_validator_rejects_unknown_universe_fill_reference() -> None:
+    """A universe layer may only use universe IDs from upstream patches."""
+    patch = _make_axial_patch(
+        layer_id="universe_layer",
+        role="custom",
+        fill_type="universe",
+        fill_id="invented_plenum_universe",
+    )
+    result = validate_patch(
+        patch,
+        PatchValidationContext(known_universe_ids=["fuel_pin", "guide_tube"]),
+    )
+    codes = [i.code for i in result.issues]
+    assert "patch.axial_layers.fill_ref_missing" in codes
+    assert not result.ok
+
+
 def test_shoulder_gap_role_accepted_by_schema() -> None:
     """The shoulder_gap role is accepted by AxialLayerPatchItem."""
     layer = AxialLayerPatchItem(

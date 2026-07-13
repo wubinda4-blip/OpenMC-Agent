@@ -285,6 +285,7 @@ def test_resume_skips_valid_patches(tmp_path: Path) -> None:
         ("facts", {"patch_type": "facts", "benchmark_id": "VERA3", "selected_variant": "3B"}),
         ("materials", {"patch_type": "materials", "materials": [
             {"material_id": "m", "name": "M", "role": "fuel", "density_g_cm3": 10.0},
+            {"material_id": "borated_water_3b", "name": "Borated water", "role": "coolant", "density_g_cm3": 0.71},
             {"material_id": "zircaloy4", "name": "Zircaloy-4", "role": "cladding",
              "density_g_cm3": 6.56, "composition": {"Zr": 1.0},
              "composition_status": "approximate",
@@ -292,7 +293,10 @@ def test_resume_skips_valid_patches(tmp_path: Path) -> None:
             {"material_id": "inconel718", "name": "Inconel-718", "role": "grid_inconel",
              "density_g_cm3": 8.19, "composition": {"Ni": 1.0},
              "composition_status": "approximate",
-             "warnings": ["Inconel-718 approximated as pure Ni"]}]}),
+             "warnings": ["Inconel-718 approximated as pure Ni"]},
+            {"material_id": "lower_nozzle_3b", "name": "Lower nozzle", "role": "structural", "density_g_cm3": 3.0},
+            {"material_id": "upper_nozzle_3b", "name": "Upper nozzle", "role": "structural", "density_g_cm3": 3.0},
+            {"material_id": "core_plate_3b", "name": "Core plate", "role": "structural", "density_g_cm3": 3.0}]}),
         ("universes", {"patch_type": "universes", "universes": [
             {"universe_id": uid, "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel"}]}
             for uid in ("fuel_pin", "fuel_pin_end_plug", "fuel_pin_plenum",
