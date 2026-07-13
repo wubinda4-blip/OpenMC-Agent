@@ -153,21 +153,43 @@ def _nuclide_names(material: ComplexMaterialSpec) -> set[str]:
 
 
 def fuel_material_ids(model: ComplexModelSpec) -> set[str]:
-    """Ids of materials that look like fuel (U/Pu + density present)."""
+    """Ids of materials that are fissionable fuel with executable density.
+
+    Recognizes:
+    - **mass-density basis** (g/cm3, kg/m3): density_value > 0 + U/Pu nuclide.
+    - **atom-density basis** (sum): composition percents are absolute number
+      densities; a U/Pu nuclide with percent > 0 is executable fuel.
+    - **atom-density basis** (atom/b-cm): density_value > 0 + U/Pu nuclide.
+    - Fraction-only basis (ao/wo) without a bulk density is NOT executable fuel.
+    """
     ids: set[str] = set()
+    _fuel_nuclides = ("U235", "U238", "Pu239", "Pu241")
     for m in model.materials:
         names = _nuclide_names(m)
-        if any(nuclide in names for nuclide in ("U235", "U238", "Pu239", "Pu241")) and m.density_value:
-            ids.add(m.id)
+        if not any(n in names for n in _fuel_nuclides):
+            continue
+        unit = m.density_unit
+        if unit == "sum":
+            # Absolute atom densities: percents ARE number densities.
+            if any(n.name in _fuel_nuclides and n.percent > 0 for n in m.composition):
+                ids.add(m.id)
+        elif unit == "atom/b-cm":
+            if m.density_value and m.density_value > 0:
+                ids.add(m.id)
+        elif unit in ("g/cm3", "kg/m3"):
+            if m.density_value and m.density_value > 0:
+                ids.add(m.id)
     return ids
 
 
 def fissionable_material_ids(model: ComplexModelSpec) -> set[str]:
-    """Ids of materials containing a fissile/fertile nuclide."""
+    """Ids of materials containing a fissile/fertile nuclide with positive amount."""
     ids: set[str] = set()
     for m in model.materials:
-        if _nuclide_names(m) & _FISSIONABLE_NUCLIDES:
-            ids.add(m.id)
+        for n in m.composition:
+            if n.name in _FISSIONABLE_NUCLIDES and n.percent > 0:
+                ids.add(m.id)
+                break
     return ids
 
 

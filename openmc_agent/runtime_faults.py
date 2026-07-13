@@ -143,17 +143,6 @@ def load_vera3b_accepted_state() -> PlanBuildState:
             state.assembled_plan["capability_report"] = capability.model_dump(mode="json")
             state.assembled_plan["model_spec"] = plan.model_spec
 
-        # Patch fuel density so source pre-flight recognizes fissionable fuel.
-        # Fixture materials carry atom-density composition but not g/cm3 density;
-        # source pre-flight requires density_value to be set.
-        for mat in state.assembled_plan.get("complex_model", {}).get("materials", []):
-            if mat.get("density_value") is None and any(
-                n.get("name") in ("U235", "U238", "Pu239")
-                for n in mat.get("composition", [])
-            ):
-                mat["density_value"] = 10.257
-                mat["density_unit"] = "g/cm3"
-
     return state
 
 

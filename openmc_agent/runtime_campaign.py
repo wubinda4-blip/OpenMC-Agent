@@ -64,7 +64,7 @@ def run_fixture_case(
         from openmc_agent.plan_builder.state import assemble_state_if_ready
         injected_state.assembled_plan = None
         injected_state = assemble_state_if_ready(injected_state, strict=False)
-        # Re-apply capability + density patches (assemble resets capability).
+        # Re-apply capability (assemble resets capability).
         if injected_state.assembled_plan:
             from openmc_agent.renderers import choose_renderer
             from openmc_agent.schemas import SimulationPlan
@@ -72,13 +72,6 @@ def run_fixture_case(
             renderer, capability = choose_renderer(plan)
             if renderer is not None:
                 injected_state.assembled_plan["capability_report"] = capability.model_dump(mode="json")
-            for mat in injected_state.assembled_plan.get("complex_model", {}).get("materials", []):
-                if mat.get("density_value") is None and any(
-                    n.get("name") in ("U235", "U238", "Pu239")
-                    for n in mat.get("composition", [])
-                ):
-                    mat["density_value"] = 10.257
-                    mat["density_unit"] = "g/cm3"
     before_hashes = _patch_hashes(baseline)
     injection_verify = case.verify_injection(baseline, injected_state)
 
