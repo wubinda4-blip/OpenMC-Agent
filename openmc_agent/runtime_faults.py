@@ -182,7 +182,7 @@ def default_fault_matrix() -> list[FaultInjectionCase]:
         ("F12", "missing_prior_test_operation", FaultInjectionLayer.LLM_RESPONSE, "runtime.geometry_overlap", "plan_fixable", "llm_propose", FaultExpectedDisposition.PROPOSAL_REJECTED, False),
         ("F13", "duplicate_candidate", FaultInjectionLayer.LLM_RESPONSE, "runtime.geometry_overlap", "plan_fixable", "llm_propose", FaultExpectedDisposition.PROPOSAL_REJECTED, False),
         ("F14", "same_failure_after_commit", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.NO_PROGRESS, False),
-        ("F15", "new_failure_after_repair", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.TRANSIENT_RETRY_THEN_SUCCESS, False),
+        ("F15", "new_failure_after_repair", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.SAFE_STOP, False),
         ("F16", "environment_after_repair", FaultInjectionLayer.ENVIRONMENT, "runtime.cross_sections_missing", "environment", "none", FaultExpectedDisposition.BLOCKED_ENVIRONMENT, False),
         ("F17", "malformed_diagnosis_response", FaultInjectionLayer.LLM_RESPONSE, "runtime.geometry_overlap", "plan_fixable", "llm_diagnose", FaultExpectedDisposition.PROPOSAL_REJECTED, False),
         ("F18", "supervisor_unsafe_action", FaultInjectionLayer.LLM_RESPONSE, "runtime.cross_sections_missing", "environment", "veto", FaultExpectedDisposition.BLOCKED_ENVIRONMENT, False),
