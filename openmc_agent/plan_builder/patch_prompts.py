@@ -70,7 +70,8 @@ Minimal example (adapt to the actual requirement):
 Requested patch type: materials
 Schema: {{"patch_type": "materials", "materials": [{{"material_id", "name", "role",
   "density_g_cm3", "temperature_K", "composition": {{"element": fraction}},
-  "composition_basis", "composition_status", "source_note", "warnings": []}}], "assumptions": []}}
+  "composition_basis", "composition_status", "source_note", "warnings": [],
+  "mixture_components": [{{"material_id", "volume_fraction"}}]}}], "assumptions": []}}
 
 Rules:
 - Do NOT generate universes, cells, lattices, or axial structures.
@@ -78,6 +79,12 @@ Rules:
 - If composition is incomplete, set composition_status to "needs_library" or "needs_confirmation".
 - approximate alloy is allowed ONLY with composition_status="approximate" AND an explicit warning.
 - Never set composition_status="confirmed" for a known multi-element alloy with a single-element composition.
+- When the input specifies a homogenized structural slab (for example a nozzle,
+  support plate, baffle, or other steel/coolant structure), define a distinct
+  material with role="structural" and mixture_components referencing the existing
+  structural and coolant material IDs with the input-provided volume fractions.
+  Do not represent that mixture only in an assumption and do not substitute pure
+  coolant for the structural slab.
 - Cross section paths do NOT belong here.
 
 Minimal example:
@@ -169,6 +176,11 @@ Rules:
 - For fill_type="material", fill_id MUST be one of Context.known_material_ids. Do not
   invent homogenized mixture IDs; use an existing ID or mark the layer for human
   confirmation when no supported material is available.
+- lower_nozzle, upper_nozzle, and core_plate are whole-cross-section structural
+  slabs. They MUST use an existing material whose Context material role is
+  structural/steel/mixture, never a coolant/moderator material merely because the
+  slab is homogenized with coolant. Do not encode a steel/coolant mixture only as
+  an assumption while filling the layer with pure coolant.
 - For fill_type="universe" and every transformation replacement_universe_id,
   use only Context.known_universe_ids. Do not invent end-plug or plenum universes.
 - active_fuel layer must exist if the problem is a 3D fuel assembly.

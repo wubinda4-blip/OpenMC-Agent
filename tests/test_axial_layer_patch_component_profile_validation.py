@@ -114,6 +114,50 @@ def test_patch_validator_rejects_unknown_universe_fill_reference() -> None:
     assert not result.ok
 
 
+def test_patch_validator_rejects_moderator_filled_structural_slab() -> None:
+    """A core plate/nozzle cannot silently become a pure moderator slab."""
+    patch = _make_axial_patch(
+        layer_id="core_plate",
+        role="core_plate",
+        fill_id="borated_water",
+    )
+    result = validate_patch(
+        patch,
+        PatchValidationContext(
+            known_material_ids=["borated_water", "core_plate_mix"],
+            material_roles_by_id={
+                "borated_water": "coolant",
+                "core_plate_mix": "structural",
+            },
+        ),
+    )
+    codes = [issue.code for issue in result.issues]
+    assert "assembly3d.structural_slab_as_moderator" in codes
+    assert not result.ok
+
+
+def test_patch_validator_accepts_structural_mixture_for_structural_slab() -> None:
+    """An input-defined structural mixture is valid for a core plate/nozzle."""
+    patch = _make_axial_patch(
+        layer_id="core_plate",
+        role="core_plate",
+        fill_id="core_plate_mix",
+    )
+    result = validate_patch(
+        patch,
+        PatchValidationContext(
+            known_material_ids=["borated_water", "core_plate_mix"],
+            material_roles_by_id={
+                "borated_water": "coolant",
+                "core_plate_mix": "structural",
+            },
+        ),
+    )
+    codes = [issue.code for issue in result.issues]
+    assert "assembly3d.structural_slab_as_moderator" not in codes
+    assert result.ok
+
+
 def test_shoulder_gap_role_accepted_by_schema() -> None:
     """The shoulder_gap role is accepted by AxialLayerPatchItem."""
     layer = AxialLayerPatchItem(

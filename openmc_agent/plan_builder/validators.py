@@ -113,6 +113,18 @@ _PATCH_COMPONENT_PROFILE_ROLES: frozenset[str] = frozenset({
     "upper_shoulder_gap",
 })
 
+_PATCH_STRUCTURAL_SLAB_ROLES: frozenset[str] = frozenset({
+    "lower_nozzle",
+    "upper_nozzle",
+    "core_plate",
+})
+
+_MODERATOR_MATERIAL_ROLES: frozenset[str] = frozenset({
+    "coolant",
+    "moderator",
+    "water",
+})
+
 
 # Weak evidence tokens for grid transformation detection.
 _GRID_OPERATION_TOKENS: frozenset[str] = frozenset({
@@ -840,6 +852,24 @@ def _validate_axial_layers(
                     path=f"layers[{layer.layer_id}].fill_id",
                     actual=layer.fill_id,
                 ))
+            elif layer.role in _PATCH_STRUCTURAL_SLAB_ROLES:
+                material_role = context.material_roles_by_id.get(
+                    resolved.resolved_id or layer.fill_id, ""
+                ).strip().lower()
+                if material_role in _MODERATOR_MATERIAL_ROLES:
+                    issues.append(PatchValidationIssue(
+                        code="assembly3d.structural_slab_as_moderator",
+                        severity="error",
+                        message=(
+                            f"layer {layer.layer_id!r} (role={layer.role!r}) is a "
+                            f"structural slab but fill_id {layer.fill_id!r} has "
+                            f"material role {material_role!r}. Use an input-defined "
+                            "structural or homogenized-mixture material; coolant/moderator "
+                            "belongs only in reflector or explicitly moderator layers."
+                        ),
+                        path=f"layers[{layer.layer_id}].fill_id",
+                        actual=layer.fill_id,
+                    ))
 
         if layer.fill_id and layer.fill_type == "universe" and context.known_universe_ids:
             if layer.fill_id not in set(context.known_universe_ids):
