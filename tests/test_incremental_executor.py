@@ -794,6 +794,46 @@ def test_reference_only_missing_reference_fails_without_structural_llm() -> None
     assert len(fake.prompts) == 0
 
 
+def test_missing_axial_replacement_universe_schedules_targeted_repair() -> None:
+    """Missing axial profile universes regenerate universes, not all patches."""
+    raw_patches = _load_fixture_raw("3b")
+    fixture_by_type = {patch["patch_type"]: patch for patch in raw_patches}
+    state = _init_3b_state()
+    for patch_type in ("facts", "materials", "universes", "pin_map"):
+        content = dict(fixture_by_type[patch_type])
+        if patch_type == "universes":
+            content = {
+                **content,
+                "universes": [
+                    universe for universe in content["universes"]
+                    if universe["universe_id"] not in {"fuel_pin_end_plug", "fuel_pin_plenum"}
+                ],
+            }
+        state.add_patch(PlanPatchEnvelope(
+            patch_id=f"pre_{patch_type}",
+            patch_type=patch_type,
+            content=content,
+            status="valid",
+        ))
+
+    fake = FakePatchLLM([json.dumps(fixture_by_type["axial_layers"])] * 2)
+    result = run_incremental_planning(
+        requirement=_VERA3_3B_REQ,
+        state=state,
+        llm_client=fake,
+        max_patch_attempts=2,
+        task_order=["axial_layers"],
+    )
+
+    assert result.ok is False
+    repair = state.metadata["incremental_dependency_repair"]
+    assert repair["missing_universe_ids"] == ["fuel_pin_end_plug", "fuel_pin_plenum"]
+    request = state.metadata["plan_validation_repair"]
+    assert request["target_patch_types"] == ["universes"]
+    assert state.patches["pre_facts"].status == "valid"
+    assert state.patches["pre_materials"].status == "valid"
+
+
 # ---------------------------------------------------------------------------
 # 14. VERA3 3B pin_map response size remains small
 # ---------------------------------------------------------------------------

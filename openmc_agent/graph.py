@@ -2655,6 +2655,39 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                 and retry_count < max_retries
                 and _is_incremental_patch_generation_failure(state, report)
             ):
+                dependency_repair = _incremental_dependency_repair_metadata(state)
+                if dependency_repair is not None:
+                    _progress(
+                        state,
+                        "validate_plan",
+                        "incremental dependency failure; scheduling targeted universe regeneration",
+                    )
+                    return {
+                        "simulation_plan": None,
+                        "simulation_spec": None,
+                        "validation_report": report,
+                        "retry_history": history,
+                        "retry_count": retry_count + 1,
+                        "error": "",
+                        "incremental_regeneration_pending": True,
+                        "plan_build_state": state.get("plan_build_state", {}),
+                        "requirement": state.get("requirement", ""),
+                        **_trace_event_update(
+                            state,
+                            "incremental_dependency_regeneration_scheduled",
+                            summary=(
+                                "incremental axial dependency failure; preserving "
+                                "upstream patches for targeted universe regeneration"
+                            ),
+                            report=report,
+                            metadata={
+                                "retry_count": retry_count + 1,
+                                "missing_universe_ids": dependency_repair.get(
+                                    "missing_universe_ids", []
+                                ),
+                            },
+                        ),
+                    }
                 _progress(
                     state,
                     "validate_plan",
@@ -3220,6 +3253,23 @@ def _is_incremental_patch_generation_failure(
         or "incremental.execution_failed" in error_text
         or "incremental.assembled_plan_schema_invalid" in error_text
     )
+
+
+def _incremental_dependency_repair_metadata(state: GraphState) -> dict[str, Any] | None:
+    """Return a persisted patch-dependency repair request, if one exists."""
+    build_state = state.get("plan_build_state")
+    if not isinstance(build_state, dict):
+        return None
+    metadata = build_state.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    repair = metadata.get("incremental_dependency_repair")
+    if not isinstance(repair, dict):
+        return None
+    missing = repair.get("missing_universe_ids")
+    if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
+        return None
+    return repair
 
 
 def _make_assess_plan_capability_node(max_retries: int):

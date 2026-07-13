@@ -674,6 +674,26 @@ def run_incremental_planning(
             )
             required = sorted(set(required) | set(repair_targets), key=order.index)
 
+    dependency_repair = state.metadata.pop("incremental_dependency_repair", None)
+    if isinstance(dependency_repair, dict):
+        missing_universe_ids = [
+            str(universe_id)
+            for universe_id in dependency_repair.get("missing_universe_ids", [])
+            if isinstance(universe_id, str)
+        ]
+        if missing_universe_ids:
+            requirement = (
+                f"{requirement}\n\n"
+                "=== Incremental dependency correction required ===\n"
+                "The prior axial-layers patch references the following replacement "
+                "universe IDs, but the universes patch did not define them:\n"
+                + "\n".join(f"- {universe_id}" for universe_id in missing_universe_ids)
+                + "\nRegenerate the universes patch to define every listed universe "
+                "with input-supported concentric cells, then regenerate downstream "
+                "patches. Preserve valid upstream facts and materials; do not replace "
+                "a missing profile universe with an unrelated base universe."
+            )
+
     def _sync_benchmark_from_facts() -> None:
         """Extract benchmark_id/variant from the valid FactsPatch content.
 
@@ -1030,6 +1050,33 @@ def run_incremental_planning(
                     "error_codes": error_codes,
                 },
             )
+
+            missing_universe_ids = sorted({
+                str(issue.get("actual"))
+                for issue in result.issues
+                if issue.get("code") == "lattice_transform.replacement_universe_missing"
+                and isinstance(issue.get("actual"), str)
+            })
+            if patch_type == "axial_layers" and missing_universe_ids:
+                dependency_issues = [
+                    issue for issue in result.issues
+                    if issue.get("code") == "lattice_transform.replacement_universe_missing"
+                ]
+                state.metadata["plan_validation_repair"] = {
+                    "target_patch_types": ["universes"],
+                    "issues": dependency_issues,
+                }
+                state.metadata["incremental_dependency_repair"] = {
+                    "missing_universe_ids": missing_universe_ids,
+                }
+                state.add_event(
+                    event_type="planning.axial_dependency_repair_scheduled",
+                    message=(
+                        "axial-layers replacement universes are missing; scheduling "
+                        "targeted universe regeneration"
+                    ),
+                    data={"missing_universe_ids": missing_universe_ids},
+                )
 
             issues.append(IncrementalExecutionIssue(
                 code="incremental.patch_generation_failed",
