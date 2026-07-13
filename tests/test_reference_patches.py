@@ -118,7 +118,7 @@ def test_build_axial_overlays_from_reference() -> None:
     patch = build_reference_patch(patch_type="axial_overlays", reference=ref, variant="3B")
     assert patch is not None
     assert len(patch.overlays) == 8
-    assert all(o.geometry_mode == "homogenized_open_region" for o in patch.overlays)
+    assert all(o.geometry_mode == "mass_conserving_outer_frame" for o in patch.overlays)
     assert all(o.through_path_preserved is True for o in patch.overlays)
 
 

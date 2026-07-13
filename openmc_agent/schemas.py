@@ -825,6 +825,7 @@ class AxialOverlaySpec(AgentBaseModel):
     geometry_mode: Literal[
         "skeleton",
         "homogenized_open_region",
+        "mass_conserving_outer_frame",
         "annular_shell",
         "explicit_bars",
         "volume_fraction_calibrated",
@@ -833,8 +834,12 @@ class AxialOverlaySpec(AgentBaseModel):
         description=(
             "How the overlay should be rendered. 'skeleton' acknowledges the "
             "overlay without producing geometry (review-only / human "
-            "confirmation). The other modes describe intended fidelity but "
-            "require renderer support that is not yet implemented."
+            "confirmation). 'homogenized_open_region' swaps the open coolant "
+            "cell fill for grid material (Level 1). 'mass_conserving_outer_frame' "
+            "adds a thin square frame of grid alloy per pitch cell whose area "
+            "satisfies total-mass conservation (Level 2). The remaining modes "
+            "describe intended fidelity but require renderer support that is "
+            "not yet implemented."
         ),
     )
     through_path_preserved: bool | None = Field(
@@ -854,6 +859,57 @@ class AxialOverlaySpec(AgentBaseModel):
     )
     volume_fraction: float | None = Field(default=None, gt=0, le=1.0)
     effective_density_g_cm3: float | None = Field(default=None, gt=0)
+    # --- mass_conserving_outer_frame source facts ---
+    total_mass_g: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Total grid mass in grams distributed equally across all pitch "
+            "cells. Required source fact for geometry_mode='mass_conserving_outer_frame'."
+        ),
+    )
+    cell_count: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Number of pitch cells the grid mass is distributed over "
+            "(typically the full lattice size, e.g. 289 for a 17x17 assembly)."
+        ),
+    )
+    pitch_cm: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional override for the lattice pitch in cm. When omitted the "
+            "pitch is read from the target lattice at render time."
+        ),
+    )
+    material_density_source: str | None = Field(
+        default=None,
+        description=(
+            "Provenance note for the density value used in the mass-balance "
+            "calculation (e.g. 'material:zircaloy4.density_g_cm3')."
+        ),
+    )
+    frame_area_cm2: float | None = Field(
+        default=None,
+        description=(
+            "Derived: frame cross-sectional area per cell. Computed at render "
+            "time; provided here only for artifact/provenance."
+        ),
+    )
+    frame_thickness_cm: float | None = Field(
+        default=None,
+        description=(
+            "Derived: frame thickness per side. Computed at render time; "
+            "provided here only for artifact/provenance."
+        ),
+    )
+    mass_tolerance_rel: float = Field(
+        default=1e-6,
+        gt=0,
+        description="Relative mass-conservation tolerance for the frame plan.",
+    )
     requires_human_confirmation: bool = False
     assumptions: list[str] = Field(default_factory=list)
     source_note: str | None = None

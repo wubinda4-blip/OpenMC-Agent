@@ -618,8 +618,12 @@
           "z_max_cm": 15.817,
           "target_lattice_id": "assembly_lattice",
           "material_id": "inconel718",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 1017.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Inconel-718 end grid, 1017 g, height 3.866 cm",
+          "material_density_source": "material:inconel718.density_g_cm3"
         },
         {
           "overlay_id": "grid_1_mid",
@@ -628,8 +632,12 @@
           "z_max_cm": 77.105,
           "target_lattice_id": "assembly_lattice",
           "material_id": "grid_zircaloy4",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 875.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Zircaloy-4 mid grid, 875 g, height 3.810 cm",
+          "material_density_source": "material:zircaloy4.density_g_cm3"
         },
         {
           "overlay_id": "grid_2_mid",
@@ -638,8 +646,12 @@
           "z_max_cm": 129.305,
           "target_lattice_id": "assembly_lattice",
           "material_id": "grid_zircaloy4",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 875.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Zircaloy-4 mid grid, 875 g, height 3.810 cm",
+          "material_density_source": "material:zircaloy4.density_g_cm3"
         },
         {
           "overlay_id": "grid_3_mid",
@@ -648,8 +660,12 @@
           "z_max_cm": 181.505,
           "target_lattice_id": "assembly_lattice",
           "material_id": "grid_zircaloy4",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 875.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Zircaloy-4 mid grid, 875 g, height 3.810 cm",
+          "material_density_source": "material:zircaloy4.density_g_cm3"
         },
         {
           "overlay_id": "grid_4_mid",
@@ -658,8 +674,12 @@
           "z_max_cm": 233.705,
           "target_lattice_id": "assembly_lattice",
           "material_id": "grid_zircaloy4",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 875.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Zircaloy-4 mid grid, 875 g, height 3.810 cm",
+          "material_density_source": "material:zircaloy4.density_g_cm3"
         },
         {
           "overlay_id": "grid_5_mid",
@@ -668,8 +688,12 @@
           "z_max_cm": 285.905,
           "target_lattice_id": "assembly_lattice",
           "material_id": "grid_zircaloy4",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 875.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Zircaloy-4 mid grid, 875 g, height 3.810 cm",
+          "material_density_source": "material:zircaloy4.density_g_cm3"
         },
         {
           "overlay_id": "grid_6_mid",
@@ -678,8 +702,12 @@
           "z_max_cm": 338.105,
           "target_lattice_id": "assembly_lattice",
           "material_id": "grid_zircaloy4",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 875.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Zircaloy-4 mid grid, 875 g, height 3.810 cm",
+          "material_density_source": "material:zircaloy4.density_g_cm3"
         },
         {
           "overlay_id": "grid_7_end_top",
@@ -688,8 +716,12 @@
           "z_max_cm": 390.133,
           "target_lattice_id": "assembly_lattice",
           "material_id": "inconel718",
-          "geometry_mode": "homogenized_open_region",
-          "through_path_preserved": true
+          "geometry_mode": "mass_conserving_outer_frame",
+          "through_path_preserved": true,
+          "total_mass_g": 1017.0,
+          "cell_count": 289,
+          "source_note": "VERA3 Problem Spec Section 9: Inconel-718 end grid, 1017 g, height 3.866 cm",
+          "material_density_source": "material:inconel718.density_g_cm3"
         }
       ]
     },

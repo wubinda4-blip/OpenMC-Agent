@@ -80,9 +80,12 @@ _PROTECTED_MATERIAL_TOKENS: tuple[str, ...] = (
 MaterialRole = Literal["open", "protected", "unknown"]
 
 # Geometry modes the current renderer can actually turn into geometry. Level 1
-# adds ``homogenized_open_region``; explicit bars / annular shells /
-# volume-fraction modes still downgrade.
-SUPPORTED_GEOMETRY_MODES: frozenset[str] = frozenset({"homogenized_open_region"})
+# adds ``homogenized_open_region``; Level 2 adds ``mass_conserving_outer_frame``;
+# explicit bars / annular shells / volume-fraction modes still downgrade.
+SUPPORTED_GEOMETRY_MODES: frozenset[str] = frozenset({
+    "homogenized_open_region",
+    "mass_conserving_outer_frame",
+})
 
 _Z_TOLERANCE_CM: float = 1e-6
 
@@ -224,17 +227,25 @@ def overlay_is_promotable_to_level1(overlay: AxialOverlaySpec, model: ComplexMod
 
 
 def overlay_is_structurally_renderable(overlay: AxialOverlaySpec, model: ComplexModelSpec) -> bool:
-    """True when an overlay meets all structural preconditions for Level 1
-    rendering (resolvable rect target lattice + resolvable material).
+    """True when an overlay meets all structural preconditions for rendering.
 
-    A ``homogenized_open_region`` overlay additionally needs
-    ``through_path_preserved=True``. A ``skeleton`` overlay that is
-    :func:`overlay_is_promotable_to_level1` is treated as renderable: the
-    renderer auto-promotes it (through-path defaults to preserved). Does NOT
-    check the deep open-region derivability -- see :func:`overlay_derivation_plan`.
+    * ``homogenized_open_region`` — promotable + through-path preserved.
+    * ``mass_conserving_outer_frame`` — promotable + through-path preserved +
+      total_mass_g provided.
+    * ``skeleton`` — auto-promotes when promotable.
+
+    Does NOT check the deep open-region derivability or clearance — those are
+    handled by the guard and the planner respectively.
     """
     if overlay.geometry_mode == "homogenized_open_region":
         return overlay_is_promotable_to_level1(overlay, model) and overlay.through_path_preserved is True
+    if overlay.geometry_mode == "mass_conserving_outer_frame":
+        return (
+            overlay_is_promotable_to_level1(overlay, model)
+            and overlay.through_path_preserved is True
+            and overlay.total_mass_g is not None
+            and overlay.total_mass_g > 0
+        )
     if overlay.geometry_mode == "skeleton":
         return overlay_is_promotable_to_level1(overlay, model)
     return False

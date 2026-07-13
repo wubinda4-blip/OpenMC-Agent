@@ -181,7 +181,7 @@ Pyrex poison segment 15.761–376.441 cm；upper helium region 376.441–397.510
 
 完成标准：Pyrex 不在 376.441 cm 后错误恢复为水导向管；16 Pyrex path 保留正确上部气腔；8 thimble path 坐标互斥；multi-loading + top grid overlay 同时正确。
 
-### P0-V3：Spacer-grid 质量守恒几何 🚧
+### P0-V3：Spacer-grid 质量守恒几何 ✅
 
 实现 mass/volume-conserving outer-frame overlay（`mass_conserving_outer_frame`）。端部格架 Inconel-718 1017 g / 3.866 cm；中间格架 Zircaloy-4 875 g / 3.810 cm；质量平均分配到 289 cells；grid material 只占 pitch cell 最外薄方框。
 
@@ -344,7 +344,7 @@ audit → repair proposal → deterministic validation → targeted patch retry 
 - [ ] thimble finite profile 正确
 - [ ] guide / instrument through-path 正确
 - [x] shoulder transitions 正确（lattice + replace_universe_family, 通过 deterministic repair）
-- [ ] spacer-grid mass/volume 正确
+- [x] spacer-grid mass/volume 正确
 - [ ] nozzle / plate slab 正确
 - [ ] axial coverage 无 gap / overlap
 - [ ] rendered point probes 全通过

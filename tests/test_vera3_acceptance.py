@@ -156,7 +156,7 @@ def test_deterministic_3a_renders_level1_overlay(tmp_path: Path) -> None:
     capability = RectAssemblyRenderer().can_render(plan)
     assert capability.renderability in {"exportable", "runnable"}
     assert "axial_overlays" in capability.executable_subsystems
-    assert any("Level 1" in w for w in capability.warnings)
+    assert any("Level 2" in w or "Level 1" in w for w in capability.warnings)
 
     result = RectAssemblyRenderer().render(plan, tmp_path)
     assert result.renderability in {"exportable", "runnable"}

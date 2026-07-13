@@ -306,6 +306,7 @@ class AxialOverlayPatchItem(_PatchBase):
     geometry_mode: Literal[
         "skeleton",
         "homogenized_open_region",
+        "mass_conserving_outer_frame",
         "annular_shell",
         "explicit_bars",
         "volume_fraction_calibrated",
@@ -313,6 +314,13 @@ class AxialOverlayPatchItem(_PatchBase):
     through_path_preserved: bool | None = None
     volume_fraction: float | None = None
     effective_density_g_cm3: float | None = None
+    total_mass_g: float | None = None
+    cell_count: int | None = None
+    pitch_cm: float | None = None
+    material_density_source: str | None = None
+    frame_area_cm2: float | None = None
+    frame_thickness_cm: float | None = None
+    mass_tolerance_rel: float = 1e-6
     requires_human_confirmation: bool = False
     assumptions: list[str] = Field(default_factory=list)
     source_note: str | None = None

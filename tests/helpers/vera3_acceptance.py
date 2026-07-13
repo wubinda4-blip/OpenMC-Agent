@@ -968,11 +968,14 @@ def build_vera3_like_plan(
         n = grid_count if grid_count is not None else len(ref_grids)
         for i, g in enumerate(ref_grids[:n]):
             material_id = "grid_inconel" if g["material"] == "inconel718" else "grid_zircaloy"
+            is_end = g["material"] == "inconel718"
             overlays.append(AxialOverlaySpec(
                 id=f"spacer_grid_{i}", overlay_kind="spacer_grid",
                 z_min_cm=g["z_min_cm"], z_max_cm=g["z_max_cm"],
                 target_lattice_id="assembly_lattice", material_id=material_id,
-                geometry_mode="homogenized_open_region", through_path_preserved=True,
+                geometry_mode="mass_conserving_outer_frame", through_path_preserved=True,
+                total_mass_g=1017.0 if is_end else 875.0,
+                cell_count=289,
             ))
 
     model = ComplexModelSpec(

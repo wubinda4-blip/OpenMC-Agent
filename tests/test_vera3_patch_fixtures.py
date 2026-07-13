@@ -94,7 +94,7 @@ class TestVERA3AAssembly:
         result = assemble_simulation_plan_from_patches(vera3_3a_patches)
         overlays = result.plan.complex_model.core.axial_overlays
         assert len(overlays) == 8
-        assert all(o.geometry_mode == "homogenized_open_region" for o in overlays)
+        assert all(o.geometry_mode == "mass_conserving_outer_frame" for o in overlays)
         assert all(o.through_path_preserved is True for o in overlays)
 
     def test_no_pyrex_positions(self, vera3_3a_patches: list) -> None:

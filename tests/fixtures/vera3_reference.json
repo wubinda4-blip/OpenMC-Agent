@@ -91,7 +91,7 @@
     "helium": {"name_hint": "helium"},
     "pyrex": {"name_hint": "Pyrex / borosilicate glass", "density_g_cc": 2.25, "variant": "3B only"}
   },
-  "expected_overlay_geometry_mode": "homogenized_open_region",
+  "expected_overlay_geometry_mode": "mass_conserving_outer_frame",
   "expected_overlay_target_lattice_id": "assembly_lattice",
   "tolerance_cm": 1.0e-3
 }

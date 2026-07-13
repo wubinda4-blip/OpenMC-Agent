@@ -779,6 +779,22 @@ def assembly3d_overlay_issues(model: ComplexModelSpec) -> list[ValidationIssue]:
                         schema_path=base,
                     )
                 )
+        elif overlay.geometry_mode == "mass_conserving_outer_frame":
+            if not overlay_is_structurally_renderable(overlay, model):
+                issues.append(
+                    _issue(
+                        "assembly3d.axial_overlay_requires_renderer_support",
+                        (
+                            f"axial overlay {overlay.id!r} requests "
+                            "geometry_mode='mass_conserving_outer_frame' but is not "
+                            "structurally renderable (needs a rectangular target "
+                            "lattice, a resolvable material_id, "
+                            "through_path_preserved=true, and total_mass_g > 0). "
+                            "Downgrade to 'skeleton' or supply the missing fields."
+                        ),
+                        schema_path=base,
+                    )
+                )
         elif overlay.geometry_mode not in _RENDERER_SUPPORTED_OVERLAY_MODES:
             issues.append(
                 _issue(

@@ -2602,15 +2602,144 @@ def _render_source_block(spec: ComplexModelSpec) -> str:
     return "\n".join(lines)
 
 
-def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[tuple[str, str], str]]:
-    """Emit Level 1 ``homogenized_open_region`` overlay-derived cells, universes
-    and lattices.
+def _resolve_material_density_g_cm3(material: object) -> float:
+    """Resolve a material's density in g/cm3 from ComplexMaterialSpec."""
+    density_value = getattr(material, "density_value", None)
+    density_unit = getattr(material, "density_unit", None)
+    if density_value is None:
+        raise ValueError(
+            f"material {getattr(material, 'id', '?')!r} has no density_value"
+        )
+    if density_unit in (None, "g/cm3"):
+        return float(density_value)
+    if density_unit == "kg/m3":
+        return float(density_value) / 1000.0
+    # For atom/b-cm, sum, macro — we cannot convert to g/cm3. This should
+    # be caught earlier by the validator.
+    raise ValueError(
+        f"material {getattr(material, 'id', '?')!r} density_unit "
+        f"{density_unit!r} is not convertible to g/cm3"
+    )
 
-    For each structurally renderable overlay, every target-lattice universe with
-    a single open/coolant cell gets a derived universe whose open cell fill is
-    swapped for the grid material (fuel/clad/tube solids are reused untouched).
-    Universes with ambiguous open regions are reused as-is to preserve through-
-    paths. Returns ``(script_block, {(overlay_id, lattice_id): variable})``.
+
+def _lattice_cell_count(lattice: object) -> int:
+    """Count total cells in a rectangular lattice pattern."""
+    return sum(len(row) for row in lattice.universe_pattern)
+
+
+def _emit_outer_frame_plan(
+    overlay: object,
+    target: object,
+    spec: ComplexModelSpec,
+    lines: list[str],
+) -> tuple[object, str]:
+    """Compute the mass-conserving outer-frame plan and emit boundary surfaces.
+
+    Returns ``(plan, inner_square_region_var)`` where *plan* is an
+    :class:`OuterFrameGeometryPlan` and *inner_square_region_var* is the
+    Python variable name referencing the inner-square region expression in
+    the emitted script.
+    """
+    from openmc_agent.outer_frame_overlay import (
+        collect_lattice_universe_extents,
+        derive_mass_conserving_outer_frame,
+    )
+
+    materials_by_id = {m.id: m for m in spec.materials}
+    regions_by_id = {r.id: r for r in spec.regions}
+    surfaces_by_id = {s.id: s for s in spec.surfaces}
+    universes_by_id = {u.id: u for u in spec.universes}
+    cells_by_id = {c.id: c for c in spec.cells}
+
+    # Resolve material density from the model spec.
+    mat = materials_by_id.get(overlay.material_id)
+    if mat is None:
+        raise ValueError(
+            f"overlay {overlay.id!r} material_id {overlay.material_id!r} not found"
+        )
+    material_density = _resolve_material_density_g_cm3(mat)
+
+    # Resolve cell count.
+    cell_count = overlay.cell_count or _lattice_cell_count(target)
+
+    # Resolve pitch.
+    pitch_x, pitch_y = _rect_lattice_pitch(target)
+    if overlay.pitch_cm is not None:
+        pitch_x = overlay.pitch_cm
+        pitch_y = overlay.pitch_cm
+
+    # Compute max solid extents for clearance check.
+    from openmc_agent.axial_overlay import classify_material_role
+
+    def _is_open_cell(cell: object, mats_by_id: dict[str, object]) -> bool:
+        if getattr(cell, "fill_type", None) != "material" or getattr(cell, "fill_id", None) is None:
+            return False
+        m = mats_by_id.get(cell.fill_id)
+        if m is None:
+            return False
+        return classify_material_role(m) == "open"
+
+    universe_extents = collect_lattice_universe_extents(
+        target,
+        cells_by_id,
+        regions_by_id,
+        surfaces_by_id,
+        universes_by_id,
+        materials_by_id=materials_by_id,
+        is_open_cell_fn=_is_open_cell,
+    )
+
+    plan = derive_mass_conserving_outer_frame(
+        overlay_id=overlay.id,
+        target_lattice_id=target.id,
+        material_id=overlay.material_id,
+        z_min_cm=overlay.z_min_cm,
+        z_max_cm=overlay.z_max_cm,
+        total_mass_g=overlay.total_mass_g,
+        material_density_g_cm3=material_density,
+        lattice_cell_count=cell_count,
+        pitch_x_cm=pitch_x,
+        pitch_y_cm=pitch_y,
+        universe_max_extents=universe_extents,
+        mass_tolerance_rel=overlay.mass_tolerance_rel,
+    )
+
+    # Emit boundary surfaces and inner-square region.
+    hw = plan.inner_half_width_x_cm
+    xmin_var = _safe_name("frame_xmin", f"{overlay.id}__{target.id}")
+    xmax_var = _safe_name("frame_xmax", f"{overlay.id}__{target.id}")
+    ymin_var = _safe_name("frame_ymin", f"{overlay.id}__{target.id}")
+    ymax_var = _safe_name("frame_ymax", f"{overlay.id}__{target.id}")
+    for var, kind, coord in [
+        (xmin_var, "XPlane", -hw),
+        (xmax_var, "XPlane", hw),
+        (ymin_var, "YPlane", -hw),
+        (ymax_var, "YPlane", hw),
+    ]:
+        lines.append(
+            f"{var} = openmc.{kind}(x0={coord!r})" if kind == "XPlane"
+            else f"{var} = openmc.{kind}(y0={coord!r})"
+        )
+
+    inner_region_var = _safe_name("frame_inner_region", f"{overlay.id}__{target.id}")
+    lines.append(
+        f"{inner_region_var} = (+{xmin_var} & -{xmax_var} & "
+        f"+{ymin_var} & -{ymax_var})"
+    )
+    return plan, inner_region_var
+
+
+def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[tuple[str, str], str]]:
+    """Emit overlay-derived cells, universes and lattices.
+
+    Dispatches on ``geometry_mode``:
+
+    * ``homogenized_open_region`` — swap the open coolant cell fill for grid
+      material (Level 1).
+    * ``mass_conserving_outer_frame`` — add a thin square frame of grid alloy
+      per pitch cell (Level 2).
+
+    Returns ``(script_block, {(overlay_id, lattice_id): variable})``.
     """
     from openmc_agent.axial_overlay import (
         compute_axial_segments,
@@ -2647,6 +2776,13 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[tu
         effective_overlay = overlay.model_copy(update={"target_lattice_id": target.id})
         plans, _unresolved = derive_overlay_universe_plan(effective_overlay, spec)
 
+        # --- mass_conserving_outer_frame: compute plan + emit surfaces ---
+        frame_region_var: str | None = None
+        if overlay.geometry_mode == "mass_conserving_outer_frame":
+            _frame_plan, frame_region_var = _emit_outer_frame_plan(
+                overlay, target, spec, lines
+            )
+
         # Map base universe id -> id to fill the derived lattice with.
         derived_id_by_base: dict[str, str] = {}
         for plan in plans:
@@ -2656,59 +2792,124 @@ def _emit_overlay_derived_geometry(spec: ComplexModelSpec) -> tuple[str, dict[tu
                     derived_id_by_base[plan.base_universe_id] = plan.base_universe_id
                     continue
                 open_cell = cells_by_id.get(plan.open_cell_id)
-                region_expr = (
-                    f"regions[{open_cell.region_id!r}]"
-                    if open_cell is not None and open_cell.region_id is not None
-                    else "None"
-                )
-                overlay_cell_var = _safe_name("overlay_cell", f"{plan.open_cell_id}__{overlay.id}__{target.id}")
-                lines.append(
-                    f"{overlay_cell_var} = openmc.Cell("
-                    f"name={('overlay ' + plan.open_cell_id + ' ' + overlay.id)!r}, "
-                    f"fill=materials_by_id[{overlay.material_id!r}], "
-                    f"region={region_expr})"
-                )
-                # Clone every kept solid cell (fuel/clad/gap/tube) as a fresh
-                # openmc.Cell. In OpenMC a Cell belongs to exactly ONE Universe:
-                # reusing cells[<id>] by reference would reassign the solid out
-                # of the base universe, leaving base-lattice fuel positions as
-                # coolant-only -- a fissionable-volume loss that triggers
-                # 'too few source sites'. Each overlay universe owns its own cells.
-                clone_vars: list[str] = []
-                for cid in base_universe.cell_ids:
-                    if cid == plan.open_cell_id:
-                        continue
-                    base_cell = cells_by_id.get(cid)
-                    if base_cell is None:
-                        clone_vars.append(f"cells[{cid!r}]")
-                        continue
-                    clone_var = _safe_name("overlay_cell", f"{cid}__{overlay.id}__{target.id}")
-                    clone_fill = _cell_fill_expression(base_cell)
-                    clone_region = (
-                        f"regions[{base_cell.region_id!r}]"
-                        if base_cell.region_id is not None
+
+                if overlay.geometry_mode == "mass_conserving_outer_frame" and frame_region_var is not None:
+                    # Level 2: mass-conserving outer frame.
+                    # Open cell: keep moderator fill, restrict to inner square.
+                    overlay_cell_var = _safe_name("overlay_cell", f"{plan.open_cell_id}__{overlay.id}__{target.id}")
+                    if open_cell is not None and open_cell.region_id is not None:
+                        open_region_expr = f"regions[{open_cell.region_id!r}] & {frame_region_var}"
+                    else:
+                        open_region_expr = frame_region_var
+                    open_fill = (
+                        _cell_fill_expression(open_cell) if open_cell is not None
                         else "None"
                     )
                     lines.append(
-                        f"{clone_var} = openmc.Cell("
-                        f"name={('overlay ' + cid + ' ' + overlay.id)!r}, "
-                        f"fill={clone_fill}, region={clone_region})"
+                        f"{overlay_cell_var} = openmc.Cell("
+                        f"name={('overlay inner ' + plan.open_cell_id + ' ' + overlay.id)!r}, "
+                        f"fill={open_fill}, "
+                        f"region={open_region_expr})"
                     )
-                    if base_cell.temperature_k is not None:
-                        lines.append(f"{clone_var}.temperature = {base_cell.temperature_k!r}")
-                    clone_vars.append(clone_var)
-                cell_refs = ", ".join(clone_vars + [overlay_cell_var])
-                overlay_universe_var = _safe_name(
-                    "overlay_universe", f"{plan.base_universe_id}__{overlay.id}__{target.id}"
-                )
-                lines.append(
-                    f"{overlay_universe_var} = openmc.Universe("
-                    f"name={plan.derived_universe_id!r}, cells=[{cell_refs}])"
-                )
-                lines.append(
-                    f"universes[{plan.derived_universe_id!r}] = {overlay_universe_var}"
-                )
-                derived_id_by_base[plan.base_universe_id] = plan.derived_universe_id
+                    if open_cell is not None and open_cell.temperature_k is not None:
+                        lines.append(f"{overlay_cell_var}.temperature = {open_cell.temperature_k!r}")
+
+                    # Clone solid cells (same as homogenized mode).
+                    clone_vars: list[str] = []
+                    for cid in base_universe.cell_ids:
+                        if cid == plan.open_cell_id:
+                            continue
+                        base_cell = cells_by_id.get(cid)
+                        if base_cell is None:
+                            clone_vars.append(f"cells[{cid!r}]")
+                            continue
+                        clone_var = _safe_name("overlay_cell", f"{cid}__{overlay.id}__{target.id}")
+                        clone_fill = _cell_fill_expression(base_cell)
+                        clone_region = (
+                            f"regions[{base_cell.region_id!r}]"
+                            if base_cell.region_id is not None
+                            else "None"
+                        )
+                        lines.append(
+                            f"{clone_var} = openmc.Cell("
+                            f"name={('overlay ' + cid + ' ' + overlay.id)!r}, "
+                            f"fill={clone_fill}, region={clone_region})"
+                        )
+                        if base_cell.temperature_k is not None:
+                            lines.append(f"{clone_var}.temperature = {base_cell.temperature_k!r}")
+                        clone_vars.append(clone_var)
+
+                    # Frame cell: grid material outside the inner square.
+                    frame_cell_var = _safe_name("frame_cell", f"{plan.base_universe_id}__{overlay.id}__{target.id}")
+                    lines.append(
+                        f"{frame_cell_var} = openmc.Cell("
+                        f"name={('frame ' + plan.base_universe_id + ' ' + overlay.id)!r}, "
+                        f"fill=materials_by_id[{overlay.material_id!r}], "
+                        f"region=~{frame_region_var})"
+                    )
+
+                    cell_refs = ", ".join(clone_vars + [overlay_cell_var, frame_cell_var])
+                    overlay_universe_var = _safe_name(
+                        "overlay_universe", f"{plan.base_universe_id}__{overlay.id}__{target.id}"
+                    )
+                    lines.append(
+                        f"{overlay_universe_var} = openmc.Universe("
+                        f"name={plan.derived_universe_id!r}, cells=[{cell_refs}])"
+                    )
+                    lines.append(
+                        f"universes[{plan.derived_universe_id!r}] = {overlay_universe_var}"
+                    )
+                    derived_id_by_base[plan.base_universe_id] = plan.derived_universe_id
+
+                else:
+                    # Level 1: homogenized_open_region (original logic).
+                    region_expr = (
+                        f"regions[{open_cell.region_id!r}]"
+                        if open_cell is not None and open_cell.region_id is not None
+                        else "None"
+                    )
+                    overlay_cell_var = _safe_name("overlay_cell", f"{plan.open_cell_id}__{overlay.id}__{target.id}")
+                    lines.append(
+                        f"{overlay_cell_var} = openmc.Cell("
+                        f"name={('overlay ' + plan.open_cell_id + ' ' + overlay.id)!r}, "
+                        f"fill=materials_by_id[{overlay.material_id!r}], "
+                        f"region={region_expr})"
+                    )
+                    clone_vars: list[str] = []
+                    for cid in base_universe.cell_ids:
+                        if cid == plan.open_cell_id:
+                            continue
+                        base_cell = cells_by_id.get(cid)
+                        if base_cell is None:
+                            clone_vars.append(f"cells[{cid!r}]")
+                            continue
+                        clone_var = _safe_name("overlay_cell", f"{cid}__{overlay.id}__{target.id}")
+                        clone_fill = _cell_fill_expression(base_cell)
+                        clone_region = (
+                            f"regions[{base_cell.region_id!r}]"
+                            if base_cell.region_id is not None
+                            else "None"
+                        )
+                        lines.append(
+                            f"{clone_var} = openmc.Cell("
+                            f"name={('overlay ' + cid + ' ' + overlay.id)!r}, "
+                            f"fill={clone_fill}, region={clone_region})"
+                        )
+                        if base_cell.temperature_k is not None:
+                            lines.append(f"{clone_var}.temperature = {base_cell.temperature_k!r}")
+                        clone_vars.append(clone_var)
+                    cell_refs = ", ".join(clone_vars + [overlay_cell_var])
+                    overlay_universe_var = _safe_name(
+                        "overlay_universe", f"{plan.base_universe_id}__{overlay.id}__{target.id}"
+                    )
+                    lines.append(
+                        f"{overlay_universe_var} = openmc.Universe("
+                        f"name={plan.derived_universe_id!r}, cells=[{cell_refs}])"
+                    )
+                    lines.append(
+                        f"universes[{plan.derived_universe_id!r}] = {overlay_universe_var}"
+                    )
+                    derived_id_by_base[plan.base_universe_id] = plan.derived_universe_id
             else:
                 # Reuse the base universe (ambiguous open region or unknown).
                 derived_id_by_base[plan.base_universe_id] = plan.base_universe_id

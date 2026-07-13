@@ -403,15 +403,25 @@ def _assembly_diagnostics(
         errors.extend(_axial_assembly_modeling_errors(model))
         errors.extend(_core_renderability_errors(model))
 
-    # Level 1 overlay fidelity note: when a homogenized_open_region overlay is
-    # structurally renderable (no blocking issue above), record the approximation
-    # so the capability report states the fidelity honestly.
+    # Overlay fidelity note: record the rendering level so the capability
+    # report states the fidelity honestly.
     if not errors and _has_renderable_overlay(model):
-        warnings.append(
-            "Spacer/support grids rendered as Level 1 homogenized open-region "
-            "overlays: pin/tube through-paths preserved; grid straps and mixing "
-            "vanes not explicitly modeled; volume fraction not calibrated."
+        has_level2 = any(
+            o.geometry_mode == "mass_conserving_outer_frame"
+            for o in (model.core.axial_overlays if model.core else [])
         )
+        if has_level2:
+            warnings.append(
+                "Spacer/support grids rendered as Level 2 mass-conserving "
+                "outer-frame overlays: pin/tube through-paths preserved; "
+                "grid mass conserved via thin square frame per pitch cell."
+            )
+        else:
+            warnings.append(
+                "Spacer/support grids rendered as Level 1 homogenized open-region "
+                "overlays: pin/tube through-paths preserved; grid straps and mixing "
+                "vanes not explicitly modeled; volume fraction not calibrated."
+            )
 
     return errors, warnings
 

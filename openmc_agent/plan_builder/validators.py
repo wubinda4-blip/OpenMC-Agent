@@ -1110,6 +1110,67 @@ def _validate_axial_overlays(
                     path=f"overlays[{ov.overlay_id}].through_path_preserved",
                 ))
 
+        # Mass-conserving outer-frame requirements
+        if ov.geometry_mode == "mass_conserving_outer_frame":
+            if not ov.target_lattice_id:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.target_missing",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'mass_conserving_outer_frame' requires target_lattice_id"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].target_lattice_id",
+                ))
+            if not ov.material_id:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.material_missing",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'mass_conserving_outer_frame' requires material_id"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].material_id",
+                ))
+            elif context.known_material_ids:
+                resolved = resolve_material_id(
+                    ov.material_id,
+                    set(context.known_material_ids),
+                    context.material_aliases,
+                )
+                if not resolved.ok:
+                    issues.append(PatchValidationIssue(
+                        code="patch.axial_overlays.material_missing",
+                        severity="error",
+                        message=resolved.reason or (
+                            f"overlay {ov.overlay_id!r} references missing "
+                            f"material_id {ov.material_id!r}"
+                        ),
+                        path=f"overlays[{ov.overlay_id}].material_id",
+                        actual=ov.material_id,
+                    ))
+            if ov.total_mass_g is None or ov.total_mass_g <= 0:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.total_mass_missing",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'mass_conserving_outer_frame' requires total_mass_g > 0"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].total_mass_g",
+                ))
+            if ov.through_path_preserved is not True:
+                issues.append(PatchValidationIssue(
+                    code="patch.axial_overlays.through_path_not_preserved",
+                    severity="error",
+                    message=(
+                        f"overlay {ov.overlay_id!r} geometry_mode="
+                        "'mass_conserving_outer_frame' requires "
+                        "through_path_preserved=True"
+                    ),
+                    path=f"overlays[{ov.overlay_id}].through_path_preserved",
+                ))
+
         # Volume fraction calibrated requirements
         if ov.geometry_mode == "volume_fraction_calibrated":
             if ov.volume_fraction is None and ov.effective_density_g_cm3 is None:
