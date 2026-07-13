@@ -218,7 +218,7 @@ class RuntimeIterationRecord:
 # Patterns removed during normalization so that identical root causes produce
 # identical fingerprints regardless of the run directory or wall-clock time.
 _TIMESTAMP_RE = re.compile(
-    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b",
+    r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b",
     re.IGNORECASE,
 )
 _PID_RE = re.compile(r"\b(?:PID|pid|process id)\s*[:=]?\s*\d+\b")

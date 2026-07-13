@@ -218,6 +218,15 @@ class GraphState(TypedDict, total=False):
     supervisor_decision_count: int
     supervisor_retry_count_by_patch: dict[str, int]
     supervisor_no_progress_count: int
+    runtime_failures: list[dict[str, Any]]
+    runtime_primary_failure: dict[str, Any]
+    runtime_repair_request: dict[str, Any]
+    runtime_repair_proposal: dict[str, Any]
+    runtime_repair_evaluation: dict[str, Any]
+    runtime_repair_count: int
+    runtime_repair_applied: bool
+    runtime_repair_attempts_by_fingerprint: dict[str, int]
+    runtime_repair_candidate_hashes: list[str]
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -416,6 +425,14 @@ def build_plan_graph(
         ),
     )
     graph.add_node("save_record", _save_plan_record)
+    graph.add_node(
+        "classify_runtime_feedback",
+        _make_classify_runtime_feedback_node(),
+    )
+    graph.add_node(
+        "deterministic_runtime_repair",
+        _make_deterministic_runtime_repair_node(),
+    )
 
     graph.add_edge(START, "receive_requirement")
     graph.add_edge("receive_requirement", "retrieve_openmc_docs")
@@ -487,6 +504,23 @@ def build_plan_graph(
         {
             "ask": "ask_expert",
             "reflect": "reflect_plan",
+            "save": "save_record",
+            "runtime_repair": "classify_runtime_feedback",
+        },
+    )
+    graph.add_conditional_edges(
+        "classify_runtime_feedback",
+        _make_runtime_feedback_router(),
+        {
+            "repair": "deterministic_runtime_repair",
+            "save": "save_record",
+        },
+    )
+    graph.add_conditional_edges(
+        "deterministic_runtime_repair",
+        _make_runtime_repair_result_router(),
+        {
+            "render": "render_plan_script",
             "save": "save_record",
         },
     )
@@ -2705,7 +2739,7 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                     "retry_count": retry_count + 1,
                     "error": "",
                     "incremental_regeneration_pending": True,
-                    "plan_build_state": {},
+                    "plan_build_state": state.get("plan_build_state", {}),
                     "requirement": _incremental_regeneration_requirement(
                         state.get("requirement", ""), report
                     ),
@@ -3190,6 +3224,13 @@ def _make_plan_execution_router(max_retries: int):
         report = state.get("validation_report")
         if report is not None and report.is_valid:
             return "save"
+        # Check for deterministic runtime repair opportunity.
+        if (
+            state.get("runtime_repair_count", 0) == 0
+            and not state.get("runtime_repair_applied", False)
+            and _has_runtime_repairable_failure(state)
+        ):
+            return "runtime_repair"
         if report is not None and _report_should_ask_expert(report):
             return "ask"
         if report is not None and not _report_should_reflect(report):
@@ -3201,6 +3242,77 @@ def _make_plan_execution_router(max_retries: int):
             and state.get("retry_count", 0) < max_retries
         ):
             return "reflect"
+        return "save"
+
+    return _route
+
+
+def _has_runtime_repairable_failure(state: GraphState) -> bool:
+    """Check if any tool result failure is deterministically repairable."""
+    from openmc_agent.runtime_repair_policy import get_repair_policy
+
+    # Check validation_report issues (parsed from stdout/stderr).
+    report = state.get("validation_report")
+    if report is not None and not report.is_valid:
+        for issue in report.issues:
+            code = issue.code
+            policy = get_repair_policy(code)
+            if (
+                policy is not None
+                and policy.deterministic_repair_supported
+                and code not in (
+                    "runtime.cross_sections_missing",
+                    "runtime.cross_sections_invalid",
+                )
+            ):
+                return True
+
+    # Also check tool_results for structured issues.
+    tool_results = state.get("tool_results", [])
+    for tr in tool_results:
+        if isinstance(tr, dict) and not tr.get("ok", True):
+            for issue in tr.get("issues", []):
+                if isinstance(issue, dict):
+                    code = issue.get("code", "")
+                else:
+                    code = getattr(issue, "code", "")
+                policy = get_repair_policy(code)
+                if (
+                    policy is not None
+                    and policy.deterministic_repair_supported
+                    and code not in (
+                        "runtime.cross_sections_missing",
+                        "runtime.cross_sections_invalid",
+                    )
+                ):
+                    return True
+    return False
+
+
+def _make_runtime_feedback_router():
+    def _route(state: GraphState) -> str:
+        from openmc_agent.runtime_repair_policy import get_repair_policy
+
+        primary = state.get("runtime_primary_failure")
+        if not primary:
+            return "save"
+        code = primary.get("primary_issue_code", "")
+        policy = get_repair_policy(code)
+        if (
+            policy is not None
+            and policy.deterministic_repair_supported
+            and state.get("runtime_repair_count", 0) == 0
+        ):
+            return "repair"
+        return "save"
+
+    return _route
+
+
+def _make_runtime_repair_result_router():
+    def _route(state: GraphState) -> str:
+        if state.get("runtime_repair_applied", False):
+            return "render"
         return "save"
 
     return _route
@@ -4353,6 +4465,303 @@ def _make_execute_tools_node(
         }
 
     return _execute_tools
+
+
+# --------------------------------------------------------------------------- #
+# Runtime feedback classification + deterministic repair nodes (R2/R3)
+# --------------------------------------------------------------------------- #
+
+
+def _make_classify_runtime_feedback_node():
+    def _classify(state: GraphState) -> GraphState:
+        """Classify runtime tool failures and route to repair or stop."""
+        from openmc_agent.runtime_feedback import (
+            RuntimeFailure,
+            classify_runtime_tool_results,
+        )
+        from openmc_agent.runtime_repair_policy import get_repair_policy
+
+        tool_result_dicts = state.get("tool_results", [])
+        if not tool_result_dicts:
+            return {}
+
+        # Reconstruct ToolResult objects for classification.
+        tool_results: list[ToolResult] = []
+        for tr in tool_result_dicts:
+            if isinstance(tr, dict):
+                issues = [
+                    ValidationIssue.model_validate(i) if isinstance(i, dict) else i
+                    for i in tr.get("issues", [])
+                ]
+                tool_results.append(ToolResult(
+                    name=tr.get("name", ""),
+                    ok=tr.get("ok", False),
+                    command=tr.get("command", []),
+                    returncode=tr.get("returncode"),
+                    stdout=tr.get("stdout", ""),
+                    stderr=tr.get("stderr", ""),
+                    artifacts=tr.get("artifacts", []),
+                    error=tr.get("error", ""),
+                    issues=issues,
+                ))
+            else:
+                tool_results.append(tr)
+
+        plan = _coerce_simulation_plan(state.get("simulation_plan"))
+        plan_hash = None
+        if plan is not None:
+            plan_hash = stable_json_hash_from_plan(plan)
+
+        failures = classify_runtime_tool_results(
+            tool_results,
+            plan_hash=plan_hash,
+            stage="execute_tools",
+        )
+
+        if not failures:
+            return {}
+
+        primary = failures[0]
+        trace_update = _trace_event_update(
+            state,
+            "runtime_feedback_classified",
+            summary=f"Primary: {primary.primary_issue_code} ({primary.classification.value})",
+            metadata={
+                "failure_count": len(failures),
+                "primary_issue_code": primary.primary_issue_code,
+                "classification": primary.classification.value,
+                "fingerprint": primary.error_fingerprint,
+            },
+        )
+
+        policy = get_repair_policy(primary.primary_issue_code)
+        can_attempt_repair = (
+            policy is not None
+            and policy.deterministic_repair_supported
+            and policy.classification
+            in (RuntimeFailureClass.PLAN_FIXABLE,)
+            and state.get("runtime_repair_count", 0) == 0
+        )
+
+        if not can_attempt_repair:
+            return {
+                "runtime_failures": [f.to_dict() for f in failures],
+                "runtime_primary_failure": primary.to_dict(),
+                **trace_update,
+            }
+
+        return {
+            "runtime_failures": [f.to_dict() for f in failures],
+            "runtime_primary_failure": primary.to_dict(),
+            **trace_update,
+        }
+
+    return _classify
+
+
+def _make_deterministic_runtime_repair_node(*, max_runtime_repairs: int = 1):
+    def _repair(state: GraphState) -> GraphState:
+        """Attempt one-shot deterministic runtime repair."""
+        from openmc_agent.runtime_feedback import RuntimeFailure
+        from openmc_agent.runtime_repair import (
+            RuntimeRepairEvaluation,
+            build_runtime_repair_request,
+            commit_accepted_runtime_repair,
+            diagnose_source_runtime_failure,
+            evaluate_deterministic_runtime_repair,
+            propose_source_binding_repair,
+        )
+        from openmc_agent.runtime_repair_policy import get_repair_policy
+
+        primary_dict = state.get("runtime_primary_failure")
+        if not primary_dict:
+            return {}
+
+        repair_count = state.get("runtime_repair_count", 0)
+        if repair_count >= max_runtime_repairs:
+            trace_update = _trace_event_update(
+                state,
+                "runtime_repair_budget_exhausted",
+                summary=f"Runtime repair budget exhausted ({repair_count}/{max_runtime_repairs})",
+            )
+            return {**trace_update}
+
+        # Reconstruct RuntimeFailure.
+        failure = RuntimeFailure(
+            failure_id=primary_dict.get("failure_id", ""),
+            stage=primary_dict.get("stage", ""),
+            tool_name=primary_dict.get("tool_name", ""),
+            returncode=primary_dict.get("returncode"),
+            primary_issue_code=primary_dict.get("primary_issue_code", ""),
+            secondary_issue_codes=primary_dict.get("secondary_issue_codes", []),
+            normalized_message=primary_dict.get("normalized_message", ""),
+            raw_error_excerpt=primary_dict.get("raw_error_excerpt", ""),
+            error_fingerprint=primary_dict.get("error_fingerprint", ""),
+            plan_hash=primary_dict.get("plan_hash"),
+            artifact_paths=primary_dict.get("artifact_paths", []),
+            classification=RuntimeFailureClass(
+                primary_dict.get("classification", "unknown")
+            ),
+            owner_patch_types=primary_dict.get("owner_patch_types", []),
+            requires_human_confirmation=primary_dict.get(
+                "requires_human_confirmation", False
+            ),
+            environment_only=primary_dict.get("environment_only", False),
+            metadata=primary_dict.get("metadata", {}),
+        )
+
+        # Check fingerprint dedup.
+        fingerprint = failure.error_fingerprint
+        attempts = state.get("runtime_repair_attempts_by_fingerprint", {})
+        if attempts.get(fingerprint, 0) > 0:
+            trace_update = _trace_event_update(
+                state,
+                "runtime_repair_duplicate_candidate",
+                summary=f"Fingerprint {fingerprint} already attempted",
+            )
+            return {
+                "runtime_repair_count": repair_count + 1,
+                **trace_update,
+            }
+
+        plan = _coerce_simulation_plan(state.get("simulation_plan"))
+        build_state = state.get("plan_build_state", {})
+        output_dir = state.get("output_dir", "data/runs")
+
+        # Build repair request.
+        request_or_eval = build_runtime_repair_request(
+            failure, plan, build_state, state.get("tool_results", []), output_dir,
+        )
+
+        if isinstance(request_or_eval, RuntimeRepairEvaluation):
+            trace_update = _trace_event_update(
+                state,
+                "runtime_deterministic_repair_not_applicable",
+                summary=f"Repair not applicable: {request_or_eval.disposition}",
+                metadata={"disposition": request_or_eval.disposition},
+            )
+            return {
+                "runtime_repair_evaluation": request_or_eval.model_dump(mode="json"),
+                "runtime_repair_count": repair_count + 1,
+                "runtime_repair_attempts_by_fingerprint": {
+                    **attempts,
+                    fingerprint: attempts.get(fingerprint, 0) + 1,
+                },
+                **trace_update,
+            }
+
+        request = request_or_eval
+
+        # Source binding oracle.
+        policy = get_repair_policy(failure.primary_issue_code)
+        proposal_or_eval: Any = None
+        if policy and policy.preferred_patch_type == "settings":
+            diagnosis = diagnose_source_runtime_failure(failure, plan, build_state)
+            proposal_or_eval = propose_source_binding_repair(request, diagnosis)
+
+        if proposal_or_eval is None:
+            trace_update = _trace_event_update(
+                state,
+                "runtime_deterministic_repair_not_applicable",
+                summary=f"No oracle for {failure.primary_issue_code}",
+            )
+            return {
+                "runtime_repair_count": repair_count + 1,
+                **trace_update,
+            }
+
+        from openmc_agent.runtime_repair import DeterministicRuntimeRepairProposal
+
+        if isinstance(proposal_or_eval, RuntimeRepairEvaluation):
+            trace_update = _trace_event_update(
+                state,
+                "runtime_deterministic_repair_not_applicable",
+                summary=f"Oracle declined: {proposal_or_eval.disposition}",
+            )
+            return {
+                "runtime_repair_evaluation": proposal_or_eval.model_dump(mode="json"),
+                "runtime_repair_count": repair_count + 1,
+                **trace_update,
+            }
+
+        proposal = proposal_or_eval
+
+        _trace_event_update(
+            {**state},
+            "runtime_deterministic_repair_proposed",
+            summary=f"Proposed: {proposal.deterministic_rule_id}",
+        )
+
+        # Evaluate on clone.
+        prior_hashes = state.get("runtime_repair_candidate_hashes", [])
+        evaluation = evaluate_deterministic_runtime_repair(
+            request, proposal, build_state,
+            output_dir=output_dir,
+            prior_candidate_hashes=prior_hashes,
+        )
+
+        if evaluation.accepted:
+            # Commit to source state.
+            updated_state = commit_accepted_runtime_repair(
+                request, proposal, evaluation, build_state,
+            )
+            trace_update = _trace_event_update(
+                state,
+                "runtime_deterministic_repair_accepted",
+                summary=f"Accepted: {proposal.deterministic_rule_id}",
+                metadata={
+                    "changed_paths": proposal.changed_paths,
+                    "resolved": evaluation.resolved_issue_codes,
+                },
+            )
+            return {
+                "plan_build_state": updated_state.model_dump(mode="json"),
+                "simulation_plan": None,  # Force re-assembly
+                "runtime_repair_applied": True,
+                "runtime_repair_count": repair_count + 1,
+                "runtime_repair_evaluation": evaluation.model_dump(mode="json"),
+                "runtime_repair_candidate_hashes": [
+                    *prior_hashes, evaluation.patch_hash_after,
+                ] if evaluation.patch_hash_after else prior_hashes,
+                "runtime_repair_attempts_by_fingerprint": {
+                    **attempts,
+                    fingerprint: attempts.get(fingerprint, 0) + 1,
+                },
+                "tool_results": [],  # Clear stale results
+                "validation_report": ValidationReport(),
+                "error": "",
+                **trace_update,
+            }
+
+        trace_update = _trace_event_update(
+            state,
+            "runtime_deterministic_repair_rejected",
+            summary=f"Rejected: {evaluation.disposition}",
+            metadata={"reasons": evaluation.reasons},
+        )
+        return {
+            "runtime_repair_evaluation": evaluation.model_dump(mode="json"),
+            "runtime_repair_count": repair_count + 1,
+            "runtime_repair_attempts_by_fingerprint": {
+                **attempts,
+                fingerprint: attempts.get(fingerprint, 0) + 1,
+            },
+            **trace_update,
+        }
+
+    return _repair
+
+
+def _stable_json_hash_from_plan(plan: Any) -> str:
+    if hasattr(plan, "model_dump"):
+        import hashlib
+        import json
+        raw = json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return "none"
+
+
+stable_json_hash_from_plan = _stable_json_hash_from_plan
 
 
 # Number of consecutive patch failures (auto-repair or investigation) after which

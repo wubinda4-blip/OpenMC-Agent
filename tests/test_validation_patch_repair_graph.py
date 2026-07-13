@@ -186,7 +186,9 @@ def test_incremental_patch_generation_failure_schedules_regeneration() -> None:
     assert updates["incremental_regeneration_pending"] is True
     assert updates["retry_count"] == 1
     assert updates["simulation_plan"] is None
-    assert updates["plan_build_state"] == {}
+    # Valid patches must be preserved (not cleared) for incremental retry.
+    assert "patches" in updates["plan_build_state"]
+    assert "facts" in updates["plan_build_state"]["patches"]
     assert "Incremental planner correction required" in updates["requirement"]
 
 
