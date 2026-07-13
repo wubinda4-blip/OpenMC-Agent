@@ -650,9 +650,11 @@ def _material_completeness_messages(
         is_mixture = getattr(material, "is_mixture", False) or (
             len(getattr(material, "mixture_component_ids", [])) > 0
         )
+        is_sum_density = getattr(material, "density_unit", None) == "sum"
         missing_density = (
             not is_macroscopic
             and not is_mixture
+            and not is_sum_density
             and (material.density_unit is None or material.density_value is None)
         )
         missing_composition = (

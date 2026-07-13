@@ -313,7 +313,10 @@ class ComplexMaterialSpec(AgentBaseModel):
         # layer decides whether the gap blocks based on whether the material is
         # actually used by the default model (reachability), not here.
         if not self.macroscopic and (self.density_unit is None) != (self.density_value is None):
-            if not self.requires_human_confirmation:
+            # 'sum' density (absolute atom densities) doesn't need density_value.
+            if self.density_unit == "sum":
+                pass
+            elif not self.requires_human_confirmation:
                 raise ValueError("density_unit and density_value must be provided together")
         return self
 

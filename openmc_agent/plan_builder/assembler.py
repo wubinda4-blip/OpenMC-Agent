@@ -266,7 +266,12 @@ def _assemble_materials(
 
     for mat in rewritten_patches:
         composition: list[NuclideSpec] = []
-        percent_type = "ao" if mat.composition_basis == "atom_frac" else "wo"
+        if mat.composition_basis == "weight_frac":
+            percent_type = "wo"
+        elif mat.composition_basis == "atom_density_barn_cm":
+            percent_type = "ao"  # absolute densities, used with set_density('sum')
+        else:
+            percent_type = "ao"
         for name, fraction in mat.composition.items():
             if fraction <= 0:
                 continue
@@ -343,11 +348,19 @@ def _assemble_materials(
                     derivation_method=mat.derivation_method or "volume_fraction_mixture",
                 )
             else:
+                # For atom_density_barn_cm, use 'sum' density unit (OpenMC
+                # interprets percent values as absolute atom/barn-cm).
+                if mat.composition_basis == "atom_density_barn_cm":
+                    density_unit = "sum"
+                    density_value = None
+                else:
+                    density_unit = "g/cm3" if mat.density_g_cm3 is not None else None
+                    density_value = mat.density_g_cm3
                 mat_spec = ComplexMaterialSpec(
                     id=mat.material_id,
                     name=mat.name,
-                    density_value=mat.density_g_cm3,
-                    density_unit="g/cm3" if mat.density_g_cm3 is not None else None,
+                    density_value=density_value,
+                    density_unit=density_unit,
                     composition=composition,
                     temperature_k=mat.temperature_K,
                     source=mat.source_note,

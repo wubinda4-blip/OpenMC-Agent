@@ -910,7 +910,8 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
             if not getattr(material, "mixture_component_ids", []):
                 raise ValueError(f"material {material.id!r} is a mixture with no components")
             continue
-        if material.density_unit is None or material.density_value is None:
+        is_sum_density = getattr(material, "density_unit", None) == "sum"
+        if not is_sum_density and (material.density_unit is None or material.density_value is None):
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
             raise ValueError(
@@ -1039,16 +1040,29 @@ def _render_complex_enrichment_args(spec: ComplexMaterialSpec) -> str:
 _ATOMIC_MASSES: dict[str, float] = {
     "H1": 1.007825, "H": 1.00794, "He4": 4.002602,
     "B10": 10.012937, "B11": 11.009305, "B": 10.811,
-    "C": 12.0107, "N": 14.0067, "O16": 15.994915, "O": 15.9994,
+    "C": 12.0107, "C12": 12.000000,
+    "N": 14.0067, "N14": 14.003074,
+    "O16": 15.994915, "O": 15.9994,
     "F": 18.998403, "Na": 22.989769, "Mg": 24.3050,
-    "Al": 26.981539, "Si": 28.0855, "P": 30.973762,
+    "Al": 26.981539, "Si28": 27.976927, "Si29": 28.976495, "Si30": 29.973770, "Si": 28.0855,
+    "P31": 30.973762, "P": 30.973762,
     "S": 32.065, "Cl": 35.453, "K": 39.0983,
-    "Ca": 40.078, "Ti": 47.867, "V": 50.9415,
-    "Cr": 51.9961, "Mn": 54.938045, "Fe": 55.845,
-    "Co": 58.933195, "Ni": 58.6934, "Cu": 63.546,
-    "Zn": 65.38, "Zr": 91.224, "Nb": 92.906,
-    "Mo": 95.96, "Sn": 118.710,
-    "U235": 235.043930, "U238": 238.050788, "U": 238.02891,
+    "Ca": 40.078, "Ti46": 45.952627, "Ti47": 46.951758, "Ti48": 47.947946, "Ti49": 48.947870, "Ti50": 49.944791, "Ti": 47.867,
+    "V": 50.9415,
+    "Cr50": 49.946044, "Cr52": 51.940506, "Cr53": 52.940649, "Cr54": 53.938880, "Cr": 51.9961,
+    "Mn55": 54.938045, "Mn": 54.938045,
+    "Fe54": 53.939610, "Fe56": 55.934936, "Fe57": 56.935396, "Fe58": 57.933274, "Fe": 55.845,
+    "Co": 58.933195,
+    "Ni58": 57.935342, "Ni60": 59.930785, "Ni61": 60.931055, "Ni62": 61.928339, "Ni64": 63.927966, "Ni": 58.6934,
+    "Cu": 63.546, "Zn": 65.38,
+    "Zr90": 89.904704, "Zr91": 90.905649, "Zr92": 91.905040, "Zr94": 93.906316, "Zr96": 95.908273, "Zr": 91.224,
+    "Nb": 92.906, "Mo": 95.96,
+    "Sn112": 111.904818, "Sn114": 113.902779, "Sn115": 114.903342, "Sn116": 115.901741,
+    "Sn117": 116.902952, "Sn118": 117.901603, "Sn119": 118.903308, "Sn120": 119.902195,
+    "Sn122": 121.903437, "Sn124": 123.905274, "Sn": 118.710,
+    "Hf174": 173.940046, "Hf176": 175.941409, "Hf177": 176.943221, "Hf178": 177.943699,
+    "Hf179": 178.945817, "Hf180": 179.946557, "Hf": 178.490,
+    "U234": 234.040952, "U235": 235.043930, "U236": 236.045568, "U238": 238.050788, "U": 238.02891,
     "Pu239": 239.052163, "Pu240": 240.053814, "Pu": 239.0,
     "Xe135": 134.907231, "Cs133": 132.905452,
     "Gd155": 154.92263, "Gd157": 156.92396,
@@ -1192,7 +1206,9 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
     lines = [
         f"{variable_name} = openmc.Material(name={spec.name!r})",
     ]
-    if spec.density_unit is not None and spec.density_value is not None:
+    if spec.density_unit == "sum":
+        lines.append(f"{variable_name}.set_density('sum')")
+    elif spec.density_unit is not None and spec.density_value is not None:
         lines.append(f"{variable_name}.set_density({spec.density_unit!r}, {spec.density_value!r})")
     if spec.temperature_k is not None:
         lines.append(f"{variable_name}.temperature = {spec.temperature_k!r}")
@@ -2773,6 +2789,18 @@ def _resolve_material_density_g_cm3(material: object) -> float:
     """Resolve a material's density in g/cm3 from ComplexMaterialSpec."""
     density_value = getattr(material, "density_value", None)
     density_unit = getattr(material, "density_unit", None)
+    if density_unit == "sum":
+        # Absolute atom densities (atom/barn-cm): compute effective g/cm3.
+        # rho = (1e24 / N_A) * sum(N_i * A_i) = 1.66054 * sum(N_i * A_i)
+        composition = getattr(material, "composition", [])
+        total = 0.0
+        for comp in composition:
+            try:
+                am = _get_atomic_mass(comp.name)
+            except KeyError:
+                am = 0.0
+            total += comp.percent * am
+        return 1.66054 * total
     if density_value is None:
         raise ValueError(
             f"material {getattr(material, 'id', '?')!r} has no density_value"

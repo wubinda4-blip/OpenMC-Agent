@@ -49,152 +49,241 @@
       "patch_type": "materials",
       "materials": [
         {
-          "material_id": "uo2_fuel",
-          "name": "UO2 Fuel 3.1 enrich",
+          "material_id": "fuel_3a",
+          "name": "UO2 Fuel 3.1% (3A)",
           "role": "fuel",
-          "density_g_cm3": 10.257,
-          "temperature_K": 565.0,
+          "temperature_K": 600,
           "composition": {
-            "U235": 3.1,
-            "U238": 96.9,
-            "O16": 2.0
+            "O16": 0.0457642,
+            "U234": 6.11864e-06,
+            "U235": 0.000718132,
+            "U236": 3.29861e-06,
+            "U238": 0.0221546
           },
-          "composition_basis": "atom_frac",
-          "composition_status": "approximate",
-          "source_note": "VERA3 3A enrichment 3.1 wt%",
-          "warnings": [
-            "enrichment is approximate; exact composition needs nuclear library"
-          ]
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
+          "warnings": []
         },
         {
-          "material_id": "borated_water",
-          "name": "Borated Water",
+          "material_id": "borated_water_3a",
+          "name": "Borated Water 1300 ppm (3A)",
           "role": "coolant",
-          "density_g_cm3": 0.743,
-          "temperature_K": 565.0,
+          "temperature_K": 600,
           "composition": {
-            "B-10": 0.001,
-            "B-11": 0.004,
-            "H1": 0.666,
-            "O16": 0.329
+            "H1": 0.0496224,
+            "B10": 1.0707e-05,
+            "B11": 4.30971e-05,
+            "O16": 0.0248112
           },
-          "composition_basis": "atom_frac",
-          "composition_status": "approximate",
-          "warnings": [
-            "boron concentration is approximate"
-          ]
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
+          "warnings": []
+        },
+        {
+          "material_id": "helium",
+          "name": "Helium Gap",
+          "role": "gas_gap",
+          "temperature_K": null,
+          "composition": {
+            "He4": 2.68714e-05
+          },
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
+          "warnings": []
         },
         {
           "material_id": "zircaloy4",
           "name": "Zircaloy-4",
           "role": "cladding",
-          "density_g_cm3": 6.56,
+          "temperature_K": null,
           "composition": {
-            "Zr": 1.0
+            "Cr50": 3.30121e-06,
+            "Cr52": 6.36606e-05,
+            "Cr53": 7.2186e-06,
+            "Cr54": 1.79686e-06,
+            "Fe54": 8.68307e-06,
+            "Fe56": 0.000136306,
+            "Fe57": 3.14789e-06,
+            "Fe58": 4.18926e-07,
+            "Zr90": 0.0218865,
+            "Zr91": 0.00477292,
+            "Zr92": 0.00729551,
+            "Zr94": 0.00739335,
+            "Zr96": 0.0011911,
+            "Sn112": 4.68066e-06,
+            "Sn114": 3.18478e-06,
+            "Sn115": 1.64064e-06,
+            "Sn116": 7.01616e-05,
+            "Sn117": 3.70592e-05,
+            "Sn118": 0.000116872,
+            "Sn119": 4.14504e-05,
+            "Sn120": 0.000157212,
+            "Sn122": 2.23417e-05,
+            "Sn124": 2.79392e-05,
+            "Hf174": 3.54138e-09,
+            "Hf176": 1.16423e-07,
+            "Hf177": 4.11686e-07,
+            "Hf178": 6.03806e-07,
+            "Hf179": 3.0146e-07,
+            "Hf180": 7.76449e-07
           },
-          "composition_basis": "weight_frac",
-          "composition_status": "needs_library",
-          "warnings": [
-            "Zircaloy-4 stub: pure Zr placeholder pending alloy library substitution"
-          ]
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
+          "warnings": []
         },
         {
           "material_id": "inconel718",
           "name": "Inconel-718",
           "role": "grid_inconel",
-          "density_g_cm3": 8.19,
+          "temperature_K": null,
           "composition": {
-            "Ni": 1.0
+            "Si28": 0.00404885,
+            "Si29": 0.000205685,
+            "Si30": 0.000135748,
+            "Ti46": 0.000212518,
+            "Ti47": 0.000191652,
+            "Ti48": 0.00189901,
+            "Ti49": 0.00013936,
+            "Ti50": 0.000133435,
+            "Cr50": 0.000618222,
+            "Cr52": 0.0119218,
+            "Cr53": 0.00135184,
+            "Cr54": 0.000336501,
+            "Fe54": 0.000361353,
+            "Fe56": 0.00567247,
+            "Fe57": 0.000131002,
+            "Fe58": 1.7434e-05,
+            "Ni58": 0.0417608,
+            "Ni60": 0.0160862,
+            "Ni61": 0.000699255,
+            "Ni62": 0.00222953,
+            "Ni64": 0.000567796
           },
-          "composition_basis": "weight_frac",
-          "composition_status": "needs_library",
-          "warnings": [
-            "Inconel-718 stub: pure Ni placeholder pending alloy library substitution"
-          ]
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
+          "warnings": []
         },
         {
           "material_id": "ss304",
           "name": "SS-304",
           "role": "ss304",
-          "density_g_cm3": 8.0,
+          "temperature_K": null,
           "composition": {
-            "Fe": 1.0
+            "C": 0.000320895,
+            "Si28": 0.00158197,
+            "Si29": 8.03653e-05,
+            "Si30": 5.30394e-05,
+            "P31": 6.99938e-05,
+            "Cr50": 0.000764915,
+            "Cr52": 0.0147506,
+            "Cr53": 0.0016726,
+            "Cr54": 0.000416346,
+            "Mn55": 0.00175387,
+            "Fe54": 0.00344776,
+            "Fe56": 0.0541225,
+            "Fe57": 0.00124992,
+            "Fe58": 0.000166342,
+            "Ni58": 0.00530854,
+            "Ni60": 0.00204484,
+            "Ni61": 8.88879e-05,
+            "Ni62": 0.000283413,
+            "Ni64": 7.2177e-05
           },
-          "composition_basis": "weight_frac",
-          "composition_status": "needs_library",
-          "warnings": [
-            "SS-304 stub: pure Fe placeholder pending alloy library substitution"
-          ]
-        },
-        {
-          "material_id": "helium",
-          "name": "Helium",
-          "role": "helium",
-          "density_g_cm3": 0.001,
-          "composition": {
-            "He4": 1.0
-          },
-          "composition_basis": "atom_frac",
-          "composition_status": "confirmed"
-        },
-        {
-          "material_id": "lower_nozzle_mixture_3a",
-          "name": "Lower Nozzle Mixture 3a",
-          "role": "homogenized_mixture",
-          "composition_status": "derived_from_mixture",
-          "mixture_components": [
-            {
-              "material_id": "ss304",
-              "volume_fraction": 0.27921737291387766
-            },
-            {
-              "material_id": "borated_water",
-              "volume_fraction": 0.7207826270861224
-            }
-          ],
-          "variant_scope": "3A",
-          "derivation_method": "volume_fraction_mixture",
-          "source_note": "Lower nozzle homogenized mixture: SS304 (6250.0g) + coolant, height=6.053cm",
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
           "warnings": []
         },
         {
-          "material_id": "upper_nozzle_mixture_3a",
-          "name": "Upper Nozzle Mixture 3a",
-          "role": "homogenized_mixture",
-          "composition_status": "derived_from_mixture",
-          "mixture_components": [
-            {
-              "material_id": "ss304",
-              "volume_fraction": 0.1914696678653791
-            },
-            {
-              "material_id": "borated_water",
-              "volume_fraction": 0.8085303321346209
-            }
-          ],
-          "variant_scope": "3A",
-          "derivation_method": "volume_fraction_mixture",
-          "source_note": "Upper nozzle homogenized mixture: SS304 (6250.0g) + coolant, height=8.827cm",
+          "material_id": "lower_nozzle_3a",
+          "name": "Lower Nozzle Homogenized (3A)",
+          "role": "homogenized",
+          "temperature_K": 600,
+          "composition": {
+            "H1": 0.0357661,
+            "B10": 7.70514e-06,
+            "B11": 3.10142e-05,
+            "C": 8.96008e-05,
+            "O16": 0.017883,
+            "Si28": 0.000790985,
+            "Si29": 4.01826e-05,
+            "Si30": 2.65197e-05,
+            "P31": 3.49969e-05,
+            "Cr50": 0.000382458,
+            "Cr52": 0.00737532,
+            "Cr53": 0.000836302,
+            "Cr54": 0.000208173,
+            "Mn55": 0.000876936,
+            "Fe54": 0.00172388,
+            "Fe56": 0.0270613,
+            "Fe57": 0.000624963,
+            "Fe58": 8.3171e-05,
+            "Ni58": 0.00265427,
+            "Ni60": 0.00102242,
+            "Ni61": 4.44439e-05,
+            "Ni62": 0.000141707,
+            "Ni64": 3.60885e-05
+          },
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
           "warnings": []
         },
         {
-          "material_id": "core_plate_mixture_3a",
-          "name": "Core Plate Mixture 3a",
-          "role": "homogenized_mixture",
-          "composition_status": "derived_from_mixture",
-          "mixture_components": [
-            {
-              "material_id": "ss304",
-              "volume_fraction": 0.5
-            },
-            {
-              "material_id": "borated_water",
-              "volume_fraction": 0.5
-            }
-          ],
-          "variant_scope": "3A",
-          "derivation_method": "volume_fraction_mixture",
-          "source_note": "Core plate homogenized mixture: 50/50 SS304 + coolant",
+          "material_id": "upper_nozzle_3a",
+          "name": "Upper Nozzle Homogenized (3A)",
+          "role": "homogenized",
+          "temperature_K": 600,
+          "composition": {
+            "H1": 0.0401211,
+            "B10": 8.65222e-06,
+            "B11": 3.48263e-05,
+            "C": 6.14459e-05,
+            "O16": 0.0200606,
+            "Si28": 0.00030292,
+            "Si29": 1.53886e-05,
+            "Si30": 1.01561e-05,
+            "P31": 1.34026e-05,
+            "Cr50": 0.000146468,
+            "Cr52": 0.00282449,
+            "Cr53": 0.000320275,
+            "Cr54": 7.97232e-05,
+            "Mn55": 0.000335836,
+            "Fe54": 0.000660188,
+            "Fe56": 0.0103635,
+            "Fe57": 0.000239339,
+            "Fe58": 3.18517e-05,
+            "Ni58": 0.0010165,
+            "Ni60": 0.000391552,
+            "Ni61": 1.70205e-05,
+            "Ni62": 5.42688e-05,
+            "Ni64": 1.38207e-05
+          },
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
+          "warnings": []
+        },
+        {
+          "material_id": "core_plate_3a",
+          "name": "Core Plate Homogenized (3A)",
+          "role": "homogenized",
+          "temperature_K": 600,
+          "composition": {
+            "H1": 0.0248112,
+            "B10": 5.3304e-06,
+            "B11": 2.14555e-05,
+            "C": 0.000160447,
+            "O16": 0.0124056
+          },
+          "composition_basis": "atom_density_barn_cm",
+          "composition_status": "confirmed",
+          "source_note": "VERA3_reference.md Table P3-3 exact atom densities (atom/barn-cm)",
           "warnings": []
         }
       ],
@@ -212,7 +301,7 @@
             {
               "id": "fuel",
               "role": "fuel",
-              "material_id": "uo2_fuel",
+              "material_id": "fuel_3a",
               "region_kind": "cylinder",
               "r_max_cm": 0.4096
             },
@@ -236,7 +325,7 @@
             {
               "id": "water",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background"
             }
           ],
@@ -249,7 +338,7 @@
             {
               "id": "inner_water",
               "role": "inner_flow",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "cylinder",
               "r_max_cm": 0.561
             },
@@ -265,7 +354,7 @@
             {
               "id": "outer_water",
               "role": "outer_moderator",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background"
             }
           ],
@@ -278,7 +367,7 @@
             {
               "id": "inner_water",
               "role": "inner_flow",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "cylinder",
               "r_max_cm": 0.559
             },
@@ -294,7 +383,7 @@
             {
               "id": "outer_water",
               "role": "outer_moderator",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background"
             }
           ],
@@ -323,7 +412,7 @@
             {
               "id": "water",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background"
             }
           ],
@@ -352,7 +441,7 @@
             {
               "id": "water",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background"
             }
           ],
@@ -365,7 +454,7 @@
             {
               "id": "water",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background"
             }
           ],
@@ -378,7 +467,7 @@
             {
               "id": "water",
               "role": "coolant",
-              "material_id": "borated_water",
+              "material_id": "borated_water_3a",
               "region_kind": "background",
               "r_min_cm": null,
               "r_max_cm": null,
@@ -579,7 +668,7 @@
           "z_min_cm": -5.0,
           "z_max_cm": 0.0,
           "fill_type": "material",
-          "fill_id": "core_plate_mixture_3a"
+          "fill_id": "core_plate_3a"
         },
         {
           "layer_id": "lower_nozzle",
@@ -587,7 +676,7 @@
           "z_min_cm": 0.0,
           "z_max_cm": 6.053,
           "fill_type": "material",
-          "fill_id": "lower_nozzle_mixture_3a"
+          "fill_id": "lower_nozzle_3a"
         },
         {
           "layer_id": "lower_shoulder_gap",
@@ -648,7 +737,7 @@
           "z_min_cm": 397.51,
           "z_max_cm": 406.337,
           "fill_type": "material",
-          "fill_id": "upper_nozzle_mixture_3a"
+          "fill_id": "upper_nozzle_3a"
         },
         {
           "layer_id": "upper_core_plate",
@@ -656,7 +745,7 @@
           "z_min_cm": 406.337,
           "z_max_cm": 413.937,
           "fill_type": "material",
-          "fill_id": "core_plate_mixture_3a"
+          "fill_id": "core_plate_3a"
         },
         {
           "layer_id": "upper_moderator_buffer",
