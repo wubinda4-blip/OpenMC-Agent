@@ -137,6 +137,27 @@ def test_runtime_supervisor_graph_builds_with_feature_flag():
     assert graph is not None
 
 
+def test_accepted_fixture_bypasses_patch_llm_generation(tmp_path):
+    from openmc_agent.graph import build_plan_graph
+    from openmc_agent.runtime_faults import load_vera3b_accepted_state
+
+    state = load_vera3b_accepted_state()
+    graph = build_plan_graph(
+        enable_plots=False,
+        enable_smoke_test=False,
+        enable_runtime_supervisor=True,
+    )
+    result = graph.invoke({
+        "requirement": state.requirement_text,
+        "model": "fake",
+        "output_dir": str(tmp_path),
+        "records_path": str(tmp_path / "records.jsonl"),
+        "accepted_plan_build_state": state.model_dump(mode="json"),
+    })
+    assert "patch_client_unavailable" not in result.get("error", "")
+    assert result.get("simulation_plan") is not None
+
+
 def test_vera3b_runtime_loop_harness_marks_missing_real_key(tmp_path, monkeypatch):
     from scripts.evaluate_vera3b_runtime_loop import main
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)

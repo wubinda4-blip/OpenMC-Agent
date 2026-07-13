@@ -59,6 +59,18 @@ def test_geometry_debug_success_returns_ok(tmp_path: Path, monkeypatch) -> None:
     assert result.name == "run_geometry_debug"
 
 
+def test_geometry_debug_creates_relative_plot_output_dir(tmp_path: Path, monkeypatch) -> None:
+    _write_xml_artifacts(tmp_path)
+    (tmp_path / "plots.xml").write_text("<plots/>", encoding="utf-8")
+
+    _patch_openmc_only(
+        monkeypatch,
+        lambda command, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    run_geometry_debug(tmp_path, _fake_plan())
+    assert (tmp_path / "geometry_debug" / "plots").is_dir()
+
+
 def test_geometry_debug_detects_overlap(tmp_path: Path, monkeypatch) -> None:
     _write_xml_artifacts(tmp_path)
 

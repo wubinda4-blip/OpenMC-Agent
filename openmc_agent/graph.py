@@ -195,6 +195,9 @@ class GraphState(TypedDict, total=False):
     trace: dict[str, Any]
     planning_mode_decision: dict[str, Any]
     plan_build_state: dict[str, Any]
+    # Optional accepted source state for isolated runtime evaluation. Normal
+    # production planning never provides this field.
+    accepted_plan_build_state: dict[str, Any]
     incremental_execution_result: dict[str, Any]
     incremental_regeneration_pending: bool
     incremental_patch_repair_accepted: bool
@@ -1174,22 +1177,30 @@ def _receive_requirement(state: GraphState) -> GraphState:
         # require benchmark-specific text matching.  Instead, the executor
         # extracts them from the FactsPatch content (which the LLM generates
         # from the requirement).  This keeps graph.py benchmark-agnostic.
-        build_state = initialize_plan_build_state(
-            requirement=effective_requirement,
-            decision=decision,
-        )
-        build_state.add_event(
-            event_type="planning.incremental_recommended_but_not_executed",
-            message=(
-                "incremental planning selected; executor will synthesize input-driven structural patches"
-            ),
-            data={
-                "planning_mode": "incremental",
-                "reference_patch_policy": "off",
-                "monolithic_reflect_plan_allowed": False,
-                "requirement_resolution": resolved_summary,
-            },
-        )
+        # Evaluation runners may supply an already accepted incremental source
+        # state. Keep that state intact so it still passes through this graph's
+        # validation, renderer, execution, and runtime-supervisor nodes.
+        supplied_state = state.get("accepted_plan_build_state")
+        if supplied_state:
+            build_state = PlanBuildState.model_validate(supplied_state)
+        else:
+            build_state = initialize_plan_build_state(
+                requirement=effective_requirement,
+                decision=decision,
+            )
+        if not supplied_state:
+            build_state.add_event(
+                event_type="planning.incremental_recommended_but_not_executed",
+                message=(
+                    "incremental planning selected; executor will synthesize input-driven structural patches"
+                ),
+                data={
+                    "planning_mode": "incremental",
+                    "reference_patch_policy": "off",
+                    "monolithic_reflect_plan_allowed": False,
+                    "requirement_resolution": resolved_summary,
+                },
+            )
         updates["plan_build_state"] = build_state.model_dump(mode="json")
     return updates
 
@@ -1504,6 +1515,36 @@ def _run_incremental_plan_generation(
             state_id="pbs_incremental", requirement_text=requirement,
         )
 
+    # Accepted-fixture evaluation must exercise the production downstream
+    # workflow without regenerating its source patches.
+    if state.get("accepted_plan_build_state") and build_state.assembled_plan is not None:
+        plan = SimulationPlan.model_validate(build_state.assembled_plan)
+        artifact_paths = _write_final_simulation_plan(state, plan)
+        return {
+            "plan_build_state": build_state.model_dump(mode="json"),
+            "simulation_plan": plan,
+            "simulation_spec": plan.model_spec,
+            "incremental_execution_result": {
+                "ok": True,
+                "summary": {"accepted_fixture": True},
+                "issues": [],
+                "monolithic_fallback_attempted": False,
+                "planning_mode": "incremental",
+                "reference_patch_policy": reference_patch_policy,
+                "monolithic_reflect_plan_allowed": False,
+            },
+            "plan_artifacts": artifact_paths,
+            "needs_regeneration": False,
+            "error": "",
+            **_trace_event_update(
+                state,
+                "plan_generated",
+                summary="accepted incremental source state loaded for runtime evaluation",
+                plan=plan,
+                metadata={"accepted_fixture": True, "planning_mode": "incremental"},
+            ),
+        }
+
     # Propagate selected gold few-shot cases into each patch prompt.
     few_shot_case_ids = [
         ex.get("gold_case_id")
@@ -1698,6 +1739,18 @@ def _make_generate_plan_node(
 
         # Phase 6: route to incremental executor when mode=incremental.
         pmd = state.get("planning_mode_decision") or {}
+        if (
+            pmd.get("mode") == "incremental"
+            and use_incremental_executor
+            and state.get("accepted_plan_build_state")
+        ):
+            return _run_incremental_plan_generation(
+                state,
+                patch_llm_client=patch_llm_client or (lambda _prompt: ""),
+                allow_fallback=False,
+                reference_patch_policy=reference_patch_policy,
+                material_policy=material_policy,
+            )
         if (
             pmd.get("mode") == "incremental"
             and use_incremental_executor
@@ -3405,7 +3458,6 @@ def _has_runtime_repairable_failure(state: GraphState) -> bool:
 
 def _make_runtime_feedback_router(*, enable_llm_runtime_repair: bool = False, enable_runtime_supervisor: bool = False):
     def _route(state: GraphState) -> str:
-        from openmc_agent.runtime_repair import stable_json_hash
         from openmc_agent.runtime_repair_policy import get_repair_policy
 
         primary = state.get("runtime_primary_failure")
@@ -5329,6 +5381,7 @@ def _make_runtime_supervisor_node(
 ):
     def _supervise(state: GraphState) -> GraphState:
         """Choose a bounded post-execution action without altering patches."""
+        from openmc_agent.runtime_repair import stable_json_hash
         from openmc_agent.runtime_repair_policy import get_repair_policy
         from openmc_agent.runtime_supervisor import (
             RuntimeIterationState,

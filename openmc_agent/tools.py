@@ -217,6 +217,10 @@ def run_geometry_debug(
 
     gd_dir = path / "geometry_debug"
     gd_dir.mkdir(parents=True, exist_ok=True)
+    # Rendered plots.xml may reference the relative ``plots/`` output path.
+    # Geometry debug runs in an isolated cwd, so create it independently of
+    # the optional plotting stage.
+    (gd_dir / "plots").mkdir(exist_ok=True)
 
     # Copy the required XML artifacts into the geometry-debug subdirectory.
     for xml_name in ("materials.xml", "geometry.xml", "settings.xml", "tallies.xml", "plots.xml"):
