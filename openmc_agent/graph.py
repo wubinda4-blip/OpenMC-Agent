@@ -5012,6 +5012,7 @@ def _make_llm_runtime_diagnose_node(
 ):
     def _diagnose(state: GraphState) -> GraphState:
         """Run LLM diagnosis on the primary runtime failure."""
+        from openmc_agent.runtime_feedback import RuntimeFailure, RuntimeFailureClass
         from openmc_agent.runtime_diagnostician import (
             FakeRuntimeDiagnosticianClient,
             RuntimeDiagnosis,
@@ -5287,7 +5288,7 @@ def _make_llm_runtime_propose_node(
                 ),
             }
 
-        from openmc_agent.runtime_feedback import RuntimeFailure
+        from openmc_agent.runtime_feedback import RuntimeFailure, RuntimeFailureClass
         from openmc_agent.runtime_repair import (
             DeterministicRuntimeRepairProposal,
             RuntimeRepairEvaluation,

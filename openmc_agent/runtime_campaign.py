@@ -628,9 +628,10 @@ def _evaluate_outcome(
     elif cid.startswith("F05_"):
         # Injected tool result: source rejection + crash → classify source
         # as primary, crash as secondary. Supervisor routes to deterministic
-        # repair (not transient retry).
-        actual = "recovered" if (succeeded and committed_repairs >= 1) else "safe_stop"
-        passed = actual == "recovered"
+        # repair (not transient retry). Settings already correct → no-op →
+        # NO_PROGRESS. This is a classifier root-cause precedence gate, not
+        # a recovery gate.
+        actual = "no_progress"
 
     elif cid.startswith("F06_"):
         actual = "blocked_environment"

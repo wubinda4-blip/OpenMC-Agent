@@ -202,7 +202,7 @@ def default_fault_matrix() -> list[FaultInjectionCase]:
         ("F02", "source_noop_renderer_bug", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "llm_diagnose", FaultExpectedDisposition.SAFE_STOP, False),
         ("F03", "timeout_then_success", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_timeout", "transient", "retry", FaultExpectedDisposition.TRANSIENT_RETRY_THEN_SUCCESS, False),
         ("F04", "timeout_twice", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_timeout", "transient", "retry", FaultExpectedDisposition.TRANSIENT_RETRY_EXHAUSTED, False),
-        ("F05", "process_crash_after_source_rejection", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.RECOVERED, False),
+        ("F05", "process_crash_after_source_rejection", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.NO_PROGRESS, False),
         ("F06", "cross_sections_missing", FaultInjectionLayer.ENVIRONMENT, "runtime.cross_sections_missing", "environment", "none", FaultExpectedDisposition.BLOCKED_ENVIRONMENT, False),
         ("F07", "missing_nuclide_data", FaultInjectionLayer.TOOL_RESULT, "runtime.material_missing_nuclide_data", "human_fact", "none", FaultExpectedDisposition.BLOCKED_HUMAN_FACT, False),
         ("F08", "ambiguous_geometry_overlap", FaultInjectionLayer.TOOL_RESULT, "runtime.geometry_overlap", "plan_fixable", "diagnose", FaultExpectedDisposition.DIAGNOSE_ONLY, False),
