@@ -98,6 +98,7 @@ from openmc_agent.tools import (
     ToolResult,
     export_xml,
     parse_openmc_output,
+    run_geometry_debug,
     run_geometry_plots,
     run_smoke_test,
 )
@@ -128,6 +129,7 @@ RepairPlanFn = Callable[..., StructuredOutputResult[SimulationPlan]]
 ExportXmlToolFn = Callable[[str | Path], ToolResult]
 PlotToolFn = Callable[[str | Path], ToolResult]
 SmokeTestToolFn = Callable[[str | Path, SimulationPlan], ToolResult]
+GeometryDebugToolFn = Callable[..., ToolResult]
 RetrieveOpenMCDocsFn = Callable[[str], list[dict[str, str]]]
 SelectFewShotsFn = Callable[[str], list[dict[str, str]]]
 
@@ -271,6 +273,7 @@ def build_plan_graph(
     export_xml_tool: ExportXmlToolFn = export_xml,
     plot_tool: PlotToolFn = run_geometry_plots,
     smoke_test_tool: SmokeTestToolFn = run_smoke_test,
+    geometry_debug_tool: GeometryDebugToolFn = run_geometry_debug,
     retrieve_docs: RetrieveOpenMCDocsFn = retrieve_openmc_context,
     select_examples: SelectFewShotsFn = select_few_shots,
     investigation_llm: InvestigationLlmFn | None = None,
@@ -395,6 +398,7 @@ def build_plan_graph(
             export_xml_tool=export_xml_tool,
             plot_tool=plot_tool,
             smoke_test_tool=smoke_test_tool,
+            geometry_debug_tool=geometry_debug_tool,
             enable_plots=enable_plots,
             enable_smoke_test=enable_smoke_test,
         ),
@@ -4120,6 +4124,7 @@ def _make_execute_tools_node(
     export_xml_tool: ExportXmlToolFn,
     plot_tool: PlotToolFn,
     smoke_test_tool: SmokeTestToolFn,
+    geometry_debug_tool: GeometryDebugToolFn,
     enable_plots: bool,
     enable_smoke_test: bool,
 ):
@@ -4157,6 +4162,7 @@ def _make_execute_tools_node(
                 ),
             }
 
+        # ---- Stage 1: export_xml ----
         _progress(state, "execute_tools", "running export_xml")
         export_result = export_xml_tool(Path(model_path))
         results.append(export_result)
@@ -4178,6 +4184,17 @@ def _make_execute_tools_node(
             },
         )
 
+        # Export failure: stop — no geometry debug, no smoke.
+        if not export_result.ok:
+            report = _execution_report_from_tool_results(results)
+            return {
+                "tool_results": [result.model_dump() for result in results],
+                "validation_report": report,
+                "error": "; ".join(report.errors),
+                **trace_update,
+            }
+
+        # ---- Stage 2: optional plots ----
         if enable_plots and export_result.ok:
             _progress(state, "execute_tools", f"running run_geometry_plots requested_specs={len(plan.plot_specs)}")
             results.append(plot_tool(output_dir))
@@ -4185,9 +4202,54 @@ def _make_execute_tools_node(
         elif not enable_plots:
             _progress(state, "execute_tools", "skipping run_geometry_plots because --plot is disabled")
 
+        # ---- Stage 3: geometry debug (isolated subdirectory) ----
+        _progress(state, "execute_tools", "running run_geometry_debug")
+        geom_debug_result = geometry_debug_tool(output_dir, plan)
+        results.append(geom_debug_result)
+        _progress(state, "execute_tools", f"run_geometry_debug ok={geom_debug_result.ok}")
+        trace_update = _trace_event_update(
+            {**state, **trace_update},
+            "geometry_debug_completed",
+            summary=f"run_geometry_debug ok={geom_debug_result.ok}",
+            report=ValidationReport.from_issues(
+                geom_debug_result.issues,
+                is_valid=geom_debug_result.ok,
+            ),
+            capability=plan.capability_report,
+            metadata={
+                "success": geom_debug_result.ok,
+                "returncode": geom_debug_result.returncode,
+                "error": geom_debug_result.error,
+                "artifacts": geom_debug_result.artifacts,
+                "stage": "geometry_debug",
+            },
+        )
+
+        # Geometry-debug failure: do not run smoke test.
+        if not geom_debug_result.ok:
+            _progress(
+                state,
+                "execute_tools",
+                "skipping run_smoke_test: geometry_debug reported errors",
+            )
+            report = _execution_report_from_tool_results(results)
+            history = list(state.get("retry_history", []))
+            if history:
+                history[-1]["tool_results"] = [result.model_dump() for result in results]
+                history[-1]["execution_errors"] = report.errors
+            return {
+                "tool_results": [result.model_dump() for result in results],
+                "validation_report": report,
+                "retry_history": history,
+                "error": "; ".join(report.errors),
+                **trace_update,
+            }
+
+        # ---- Stage 4: smoke test (only if geometry debug passed) ----
         if (
             enable_smoke_test
             and export_result.ok
+            and geom_debug_result.ok
             and renderability == "runnable"
             and plan.execution_check.enabled
         ):

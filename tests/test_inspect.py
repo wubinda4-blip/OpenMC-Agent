@@ -341,6 +341,7 @@ def test_inspect_requirement_plan_mode_shows_tool_results(tmp_path: Path) -> Non
     assert [item["name"] for item in result.transcript_data["tool_results"]] == [
         "export_xml",
         "run_geometry_plots",
+        "run_geometry_debug",
         "run_smoke_test",
     ]
     assert "[9] 工具执行结果" in result.transcript

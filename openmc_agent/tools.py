@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from pathlib import Path
+from typing import Any
 
 from openmc_agent.error_catalog import issue_from_catalog
 from openmc_agent.schemas import RepairHint, SimulationPlan, ValidationIssue, ValidationReport
@@ -146,14 +147,33 @@ def run_smoke_test(
         )
 
     run_command = ["openmc"]
-    run_result = subprocess.run(
-        run_command,
-        cwd=path,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        run_result = subprocess.run(
+            run_command,
+            cwd=path,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return ToolResult(
+            name="run_smoke_test",
+            ok=False,
+            command=run_command,
+            returncode=None,
+            stdout=exc.stdout or "",
+            stderr=(exc.stderr or "") + f"\nTimed out after {timeout}s",
+            artifacts=[str(smoke_model_path), *_existing_xml_artifacts(path)],
+            error=f"OpenMC transport timed out after {timeout}s",
+            issues=[
+                issue_from_catalog(
+                    "runtime.openmc_timeout",
+                    message=f"OpenMC transport timed out after {timeout}s",
+                    grep_patterns=["timeout", "timed out"],
+                )
+            ],
+        )
     return ToolResult(
         name="run_smoke_test",
         ok=run_result.returncode == 0,
@@ -163,6 +183,123 @@ def run_smoke_test(
         stderr=run_result.stderr,
         artifacts=[str(smoke_model_path), *_existing_xml_artifacts(path), *_statepoint_artifacts(path)],
         error="" if run_result.returncode == 0 else (run_result.stderr or run_result.stdout).strip(),
+    )
+
+
+def run_geometry_debug(
+    run_dir: str | Path,
+    plan: SimulationPlan,
+    *,
+    max_particles: int = 2000,
+    timeout: float = 120.0,
+) -> ToolResult:
+    """Run OpenMC geometry-debug mode in an isolated subdirectory.
+
+    Executes ``openmc -g`` (geometry debugging) inside ``<run_dir>/geometry_debug/``
+    so it never overwrites the smoke-test statepoint or plots. Uses a low-cost
+    settings override (few particles, no inactive batches). Timeout is **not**
+    treated as a geometry overlap — it produces ``runtime.openmc_timeout``.
+    Source rejection remains the primary root cause when present.
+    """
+    path = Path(run_dir)
+
+    # If geometry.xml is absent there is nothing to debug (export was faked,
+    # skipped, or the model is not XML-based). Return ok so the pipeline can
+    # proceed — geometry debug is not applicable in this state.
+    if not (path / "geometry.xml").exists():
+        return ToolResult(
+            name="run_geometry_debug",
+            ok=True,
+            command=[],
+            error="",
+            issues=[],
+        )
+
+    gd_dir = path / "geometry_debug"
+    gd_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy the required XML artifacts into the geometry-debug subdirectory.
+    for xml_name in ("materials.xml", "geometry.xml", "settings.xml", "tallies.xml", "plots.xml"):
+        src = path / xml_name
+        if src.exists():
+            (gd_dir / xml_name).write_bytes(src.read_bytes())
+
+    # Write a low-cost settings.xml that overrides the original to keep the
+    # geometry-debug run cheap. OpenMC geometry-debug only samples particles
+    # for overlap detection; it does not need a real transport run.
+    settings_xml = gd_dir / "settings.xml"
+    settings_xml.write_text(
+        f"""<?xml version="1.0"?>
+<settings>
+  <run_mode>plot</run_mode>
+  <particles>{max_particles}</particles>
+  <batches>1</batches>
+  <inactive>0</inactive>
+  <source strength="1.0">
+    <space type="box">
+      <parameters>-1e99 -1e99 -1e99 1e99 1e99 1e99</parameters>
+    </space>
+  </source>
+  <geometry_debug>true</geometry_debug>
+</settings>
+""",
+        encoding="utf-8",
+    )
+
+    command = ["openmc", "-g"]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=gd_dir,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return ToolResult(
+            name="run_geometry_debug",
+            ok=False,
+            command=command,
+            returncode=None,
+            stdout=exc.stdout or "",
+            stderr=(exc.stderr or "") + f"\nTimed out after {timeout}s",
+            artifacts=[str(gd_dir / name) for name in ("geometry_debug.log",) if (gd_dir / name).exists()],
+            error=f"OpenMC geometry debug timed out after {timeout}s (not treated as overlap)",
+            issues=[
+                issue_from_catalog(
+                    "runtime.openmc_timeout",
+                    message=f"OpenMC geometry debug timed out after {timeout}s",
+                    grep_patterns=["timeout", "timed out"],
+                )
+            ],
+        )
+
+    combined = f"{result.stdout}\n{result.stderr}"
+    issues = parse_openmc_output(result.stdout, result.stderr).issues
+
+    error = ""
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout).strip()
+    elif issues:
+        error = "; ".join(i.message for i in issues if i.severity == "error")
+
+    artifacts = [
+        str(artifact)
+        for artifact in sorted(gd_dir.glob("*"))
+        if artifact.is_file()
+    ]
+
+    return ToolResult(
+        name="run_geometry_debug",
+        ok=result.returncode == 0 and not any(i.severity == "error" for i in issues),
+        command=command,
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        artifacts=artifacts,
+        error=error,
+        issues=issues,
     )
 
 
@@ -207,7 +344,7 @@ def parse_openmc_output(stdout: str, stderr: str) -> ValidationReport:
                 message="OpenMC reported an undefined region or geometry containment issue.",
             )
         )
-    if "overlap" in lowered:
+    if "overlap" in lowered and "no overlap" not in lowered and "no overlaps" not in lowered:
         issues.append(_runtime_issue("runtime.geometry_overlap", combined))
     if "lost particle" in lowered or "lost particles" in lowered:
         issues.append(_runtime_issue("runtime.lost_particle", combined))
@@ -215,6 +352,10 @@ def parse_openmc_output(stdout: str, stderr: str) -> ValidationReport:
         issues.append(_runtime_issue("runtime.material_missing_nuclide_data", combined))
     if _has_geometry_load_error(lowered):
         issues.append(_runtime_issue("runtime.dagmc_or_geometry_load_failed", combined))
+    if _has_process_crash(lowered):
+        issues.append(_runtime_issue("runtime.openmc_process_crash", combined))
+    if _has_timeout(lowered):
+        issues.append(_runtime_issue("runtime.openmc_timeout", combined))
     if "traceback (most recent call last)" in lowered:
         issues.append(
             _runtime_issue(
@@ -417,6 +558,29 @@ def _has_geometry_load_error(lowered_text: str) -> bool:
     return any(re.search(pattern, lowered_text) for pattern in patterns)
 
 
+def _has_process_crash(lowered_text: str) -> bool:
+    patterns = (
+        r"segmentation fault",
+        r"\bsegfault\b",
+        r"mpi_abort",
+        r"signal \d+",
+        r"core dumped",
+        r"double free",
+        r"abort\b",
+    )
+    return any(re.search(pattern, lowered_text) for pattern in patterns)
+
+
+def _has_timeout(lowered_text: str) -> bool:
+    patterns = (
+        r"\btimed? ?out\b",
+        r"timeoutexpired",
+        r"subprocess\.timeout",
+        r"deadline exceeded",
+    )
+    return any(re.search(pattern, lowered_text) for pattern in patterns)
+
+
 def _has_unknown_runtime_error(stdout: str, stderr: str) -> bool:
     text = f"{stdout}\n{stderr}".lower()
     if not (stdout.strip() or stderr.strip()):
@@ -436,11 +600,10 @@ def _runtime_issue(
     if summary:
         base = final_message or issue_from_catalog(code).message
         final_message = f"{base} Raw OpenMC summary: {summary}"
-    return issue_from_catalog(
-        code,
-        message=final_message,
-        grep_patterns=grep_patterns,
-    )
+    overrides: dict[str, Any] = {"grep_patterns": grep_patterns}
+    if final_message is not None:
+        overrides["message"] = final_message
+    return issue_from_catalog(code, **overrides)
 
 
 def _first_error_summary(text: str) -> str:

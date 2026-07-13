@@ -61,6 +61,7 @@ TraceEventType = Literal[
     "render_started",
     "render_completed",
     "export_xml_completed",
+    "geometry_debug_completed",
     "smoke_test_completed",
     "workflow_completed",
     "workflow_failed",

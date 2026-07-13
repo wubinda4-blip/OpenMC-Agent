@@ -1427,6 +1427,46 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
             )
         ],
     },
+    "runtime.openmc_timeout": {
+        "severity": "error",
+        "message": "OpenMC process exceeded the configured timeout and was terminated.",
+        "schema_path": "runtime.timeout",
+        "rule_id": "rule.runtime.openmc_timeout",
+        "concept_id": "openmc.runtime.diagnostics",
+        "knowledge_refs": [OPENMC_RUNTIME_GUIDE],
+        "grep_patterns": ["timeout", "timed out", "TimeoutExpired", "subprocess"],
+        "requires_human_confirmation": True,
+        "route_hint": "manual_review",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Investigate whether the timeout is transient (system load, large model) "
+                "or a hang (deadlock, infinite geometry traversal). Do not treat timeout "
+                "as a geometry overlap.",
+                target_path="runtime.timeout",
+            )
+        ],
+    },
+    "runtime.openmc_process_crash": {
+        "severity": "error",
+        "message": "OpenMC process crashed (segfault, MPI abort, or non-zero signal).",
+        "schema_path": "runtime.crash",
+        "rule_id": "rule.runtime.openmc_process_crash",
+        "concept_id": "openmc.runtime.diagnostics",
+        "knowledge_refs": [OPENMC_RUNTIME_GUIDE],
+        "grep_patterns": ["segmentation fault", "segfault", "MPI_ABORT", "signal", "core dumped"],
+        "requires_human_confirmation": True,
+        "route_hint": "manual_review",
+        "repair_hints": [
+            _hint(
+                "retrieve_docs",
+                "Investigate the crash. If a source rejection or cross-section error "
+                "preceded the crash, those are the primary root cause; the crash is "
+                "downstream noise.",
+                target_path="runtime.crash",
+            )
+        ],
+    },
     # ------------------------------------------------------------ source/settings
     "runtime.source_default_z_extent": {
         "severity": "error",

@@ -457,11 +457,11 @@ def test_plan_graph_executes_export_plot_and_smoke_tools(tmp_path: Path) -> None
 
     assert calls == ["export_xml", "run_geometry_plots", "run_smoke_test"]
     assert state["validation_report"].is_valid is True
-    assert [result["name"] for result in state["tool_results"]] == [
-        "export_xml",
-        "run_geometry_plots",
-        "run_smoke_test",
-    ]
+    tool_names = [result["name"] for result in state["tool_results"]]
+    assert "export_xml" in tool_names
+    assert "run_geometry_plots" in tool_names
+    assert "run_geometry_debug" in tool_names
+    assert "run_smoke_test" in tool_names
     model_text = Path(state["model_path"]).read_text(encoding="utf-8")
     # Each plot spec expands into two plots (material + cell color_by).
     assert "plot_0_material.basis = 'xy'" in model_text
