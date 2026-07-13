@@ -2773,37 +2773,84 @@ def _core_effective_root_bounds(
 
 
 def _render_source_block(spec: ComplexModelSpec) -> str:
-    """Emit the OpenMC initial-source block, binding z to the active-fuel region.
+    """Emit the OpenMC initial-source block, respecting source_strategy.
 
-    The full axial domain (nozzles, plena, moderator buffers) contains little
-    fissionable material, so a full-domain source box with
-    ``only_fissionable=True`` triggers 'too few source sites'. When a
-    lattice-filled axial layer exists, the source z-range is bound to it. x/y
-    keep the lattice/assembly footprint (assembly_x_min etc. defined above).
+    ``active_fuel_box``: z bound to active-fuel region (only_fissionable=True).
+    ``assembly_box``:    z spans full axial domain (only_fissionable per patch).
+    ``manual``:          use manual_source_bounds_cm from settings.
+    ``unknown``:         fallback to active_fuel_box (preflight will block it).
     """
-    from openmc_agent.source_settings import active_fuel_z_bounds
+    from openmc_agent.source_settings import active_fuel_z_bounds, source_bounds_for_plan
 
-    af = active_fuel_z_bounds(spec)
-    if af is not None:
-        z_lo, z_hi = af
-        lines = [
-            "# Initial source bound to the active-fuel z-region (not the full axial",
-            "# domain): avoids 'too few source sites' rejection with only_fissionable.",
-            f"source_z_min = {z_lo!r}",
-            f"source_z_max = {z_hi!r}",
-        ]
+    strategy = getattr(
+        getattr(spec, "settings", None), "source_strategy", "active_fuel_box",
+    )
+    only_fissile = getattr(
+        getattr(spec, "settings", None), "source_requires_fissionable_constraint", True,
+    )
+    manual_bounds = getattr(
+        getattr(spec, "settings", None), "manual_source_bounds_cm", None,
+    )
+
+    # Compute bounds via the shared implementation so renderer, validator
+    # and runtime repair all agree.
+    bounds = source_bounds_for_plan(
+        spec, source_strategy=strategy, manual_bounds=manual_bounds,
+    )
+
+    if bounds is not None:
+        z_lo = bounds.z_min
+        z_hi = bounds.z_max
+        x_lo, x_hi = bounds.x_min, bounds.x_max
+        y_lo, y_hi = bounds.y_min, bounds.y_max
     else:
-        lines = [
-            "# No lattice-filled active-fuel layer found; source spans the full axial domain.",
-            "source_z_min = assembly_z_min",
-            "source_z_max = assembly_z_max",
-        ]
+        # Fallback (preflight will have blocked this for manual/unknown).
+        af_fb = active_fuel_z_bounds(spec)
+        if af_fb is not None:
+            z_lo, z_hi = af_fb
+        else:
+            z_lo, z_hi = "assembly_z_min", "assembly_z_max"
+        x_lo, x_hi = "assembly_x_min", "assembly_x_max"
+        y_lo, y_hi = "assembly_y_min", "assembly_y_max"
+
+    if isinstance(z_lo, float):
+        z_lo_repr = repr(z_lo)
+        z_hi_repr = repr(z_hi)
+    else:
+        z_lo_repr = str(z_lo)
+        z_hi_repr = str(z_hi)
+
+    if isinstance(x_lo, float):
+        x_lo_repr, x_hi_repr = repr(x_lo), repr(x_hi)
+        y_lo_repr, y_hi_repr = repr(y_lo), repr(y_hi)
+    else:
+        x_lo_repr, x_hi_repr = str(x_lo), str(x_hi)
+        y_lo_repr, y_hi_repr = str(y_lo), str(y_hi)
+
+    lines = [
+        f"# Source strategy: {strategy}",
+    ]
+    if strategy == "active_fuel_box":
+        lines.append("# Initial source bound to the active-fuel z-region.")
+    elif strategy == "assembly_box":
+        lines.append("# Initial source spans the full axial domain.")
+    elif strategy == "manual":
+        lines.append("# Initial source uses manual bounds from settings.")
+    else:
+        lines.append("# WARNING: unknown source strategy; preflight should have blocked this.")
+
     lines.extend([
+        f"source_x_min = {x_lo_repr}",
+        f"source_x_max = {x_hi_repr}",
+        f"source_y_min = {y_lo_repr}",
+        f"source_y_max = {y_hi_repr}",
+        f"source_z_min = {z_lo_repr}",
+        f"source_z_max = {z_hi_repr}",
         "settings.source = openmc.IndependentSource(",
         "    space=openmc.stats.Box(",
-        "        (assembly_x_min, assembly_y_min, source_z_min),",
-        "        (assembly_x_max, assembly_y_max, source_z_max),",
-        "        only_fissionable=True,",
+        "        (source_x_min, source_y_min, source_z_min),",
+        "        (source_x_max, source_y_max, source_z_max),",
+        f"        only_fissionable={only_fissile},",
         "    )",
         ")",
     ])

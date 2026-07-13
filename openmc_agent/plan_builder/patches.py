@@ -360,6 +360,7 @@ class SettingsPatch(_PatchBase):
         "unknown",
     ] = "active_fuel_box"
     source_requires_fissionable_constraint: bool = True
+    manual_source_bounds_cm: list[float] | None = None
     plot_strategy: Literal[
         "full_assembly",
         "quarter_assembly",

@@ -1368,6 +1368,16 @@ def assemble_simulation_plan_from_patches(
         lattice_loadings=lattice_loadings,
         assemblies=[assembly],
         core=core,
+        settings=RunSettingsSpec(
+            source_strategy=(
+                settings_patch.source_strategy if settings_patch else "active_fuel_box"
+            ),
+            source_requires_fissionable_constraint=(
+                settings_patch.source_requires_fissionable_constraint
+                if settings_patch
+                else True
+            ),
+        ),
         assumptions=list(dict.fromkeys(all_assumptions)),
         requires_human_confirmation=list(dict.fromkeys(all_confirms)),
     )
@@ -1413,9 +1423,26 @@ def assemble_simulation_plan_from_patches(
         ]
 
     # 12. Build execution check.
+    source_strategy = (
+        settings_patch.source_strategy if settings_patch else "active_fuel_box"
+    )
+    source_fissile = (
+        settings_patch.source_requires_fissionable_constraint
+        if settings_patch
+        else True
+    )
+    manual_bounds = (
+        settings_patch.manual_source_bounds_cm if settings_patch else None
+    ) if hasattr(settings_patch, "manual_source_bounds_cm") else None
+    run_settings = RunSettingsSpec(
+        batches=5, inactive=1, particles=100,
+        source_strategy=source_strategy,
+        source_requires_fissionable_constraint=source_fissile,
+        manual_source_bounds_cm=manual_bounds,
+    )
     execution_check = ExecutionCheckSpec(
         enabled=True,
-        settings=RunSettingsSpec(batches=5, inactive=1, particles=100),
+        settings=run_settings,
     )
 
     # 13. Build capability report — non-executable skeleton until renderer

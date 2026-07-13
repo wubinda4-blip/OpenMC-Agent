@@ -1470,11 +1470,43 @@ class RunSettingsSpec(AgentBaseModel):
         retrieval_queries=["OpenMC Settings seed reproducible random"],
         common_errors=["Using seed=0 or a negative value"],
     )
+    source_strategy: Literal["active_fuel_box", "assembly_box", "manual", "unknown"] = Field(
+        default="active_fuel_box",
+        description=(
+            "How the initial neutron source box is derived. "
+            "'active_fuel_box' binds z to the active-fuel region (only_fissionable=True); "
+            "'assembly_box' spans the full axial domain; "
+            "'manual' uses manual_source_bounds_cm (validation blocker if absent); "
+            "'unknown' produces a validation blocker."
+        ),
+    )
+    source_requires_fissionable_constraint: bool = Field(
+        default=True,
+        description="If True, source space has only_fissionable=True.",
+    )
+    manual_source_bounds_cm: list[float] | None = Field(
+        default=None,
+        description=(
+            "Explicit source box [x_min, x_max, y_min, y_max, z_min, z_max] in cm. "
+            "Only used when source_strategy='manual'; ignored otherwise. "
+            "Protected scientific field: LLM runtime repair must not edit values."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_inactive_batches(self) -> "RunSettingsSpec":
         if self.inactive >= self.batches:
             raise ValueError("inactive must be less than batches")
+        return self
+
+    @model_validator(mode="after")
+    def validate_manual_source_bounds(self) -> "RunSettingsSpec":
+        b = self.manual_source_bounds_cm
+        if b is not None:
+            if len(b) != 6:
+                raise ValueError("manual_source_bounds_cm must have 6 elements")
+            if not (b[0] < b[1] and b[2] < b[3] and b[4] < b[5]):
+                raise ValueError("manual_source_bounds_cm requires min < max on each axis")
         return self
 
 

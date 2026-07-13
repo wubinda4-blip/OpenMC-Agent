@@ -63,8 +63,7 @@ def test_rendered_script_source_uses_active_fuel_z(tmp_path) -> None:
     script = RectAssemblyRenderer().render(plan, tmp_path).script
     assert "source_z_min = 11.951" in script
     assert "source_z_max = 377.711" in script
-    # not the default z=-1..1, not the full nozzle-to-nozzle domain.
-    assert "(assembly_x_min, assembly_y_min, source_z_min)" in script
+    assert "only_fissionable=True" in script
 
 
 # -- 3. default z extent triggers validator --------------------------------

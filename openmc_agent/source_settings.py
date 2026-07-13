@@ -53,7 +53,12 @@ _ALLOY_TOKENS: tuple[tuple[str, str, str], ...] = (
 
 @dataclass(frozen=True)
 class SourceBounds:
-    """Resolved initial-source box bounds (cm)."""
+    """Resolved initial-source box bounds (cm).
+
+    ``strategy`` records which source_strategy produced these bounds.
+    ``x_source`` / ``y_source`` / ``z_source`` record the origin of each axis
+    (``lattice_footprint``, ``active_fuel``, ``axial_domain``, ``manual``).
+    """
 
     x_min: float
     x_max: float
@@ -62,6 +67,12 @@ class SourceBounds:
     z_min: float
     z_max: float
     z_bound_to_active_fuel: bool
+    strategy: str = "active_fuel_box"
+    x_source: str = "lattice_footprint"
+    y_source: str = "lattice_footprint"
+    z_source: str = "active_fuel"
+    only_fissionable: bool = True
+    derived_from_plan: bool = True
 
 
 def _layer_is_active_fuel(layer: Any) -> bool:
@@ -160,32 +171,95 @@ def fissionable_material_ids(model: ComplexModelSpec) -> set[str]:
     return ids
 
 
-def source_bounds_for_plan(model: ComplexModelSpec) -> SourceBounds | None:
-    """Resolve the recommended initial-source box for a plan.
+def source_bounds_for_plan(
+    model: ComplexModelSpec,
+    *,
+    source_strategy: str | None = None,
+    manual_bounds: list[float] | None = None,
+) -> SourceBounds | None:
+    """Resolve the initial-source box for a plan, respecting source_strategy.
 
-    z is bound to the active-fuel region when one exists (the physically correct
-    choice and the fix for the source-rejection crash). x/y use the lattice
-    footprint. Returns None when no geometry is available to anchor the source.
+    ``active_fuel_box`` (default): xy = lattice footprint, z = active fuel.
+    ``assembly_box``:              xy = lattice footprint, z = full axial domain.
+    ``manual``:                    use manual_bounds (caller must supply).
+    ``unknown``:                   returns None (caller should produce a blocker).
+
+    When ``source_strategy`` is None, reads it from ``model.settings.source_strategy``
+    (defaulting to ``active_fuel_box``).
     """
+    if source_strategy is None:
+        source_strategy = getattr(
+            getattr(model, "settings", None), "source_strategy", "active_fuel_box",
+        )
+    if manual_bounds is None:
+        manual_bounds = getattr(
+            getattr(model, "settings", None), "manual_source_bounds_cm", None,
+        )
+
     xy = assembly_xy_bounds(model)
-    z = active_fuel_z_bounds(model)
-    if xy is None and z is None:
+    af = active_fuel_z_bounds(model)
+
+    # -- manual --------------------------------------------------------
+    if source_strategy == "manual":
+        if manual_bounds is None or len(manual_bounds) != 6:
+            return None
+        return SourceBounds(
+            manual_bounds[0], manual_bounds[1],
+            manual_bounds[2], manual_bounds[3],
+            manual_bounds[4], manual_bounds[5],
+            z_bound_to_active_fuel=False,
+            strategy="manual",
+            x_source="manual", y_source="manual", z_source="manual",
+            derived_from_plan=False,
+        )
+
+    # -- unknown -------------------------------------------------------
+    if source_strategy == "unknown":
         return None
-    # Fall back to permissive bounds when one axis family is missing.
-    x_min, y_min, x_max, y_max = xy if xy is not None else (-1.0, -1.0, 1.0, 1.0)
-    if z is not None:
-        z_min, z_max = z
-        bound = True
+
+    # Resolve xy.
+    if xy is not None:
+        x_min, y_min, x_max, y_max = xy
+        xy_src = "lattice_footprint"
     else:
-        # No lattice layer -> default unit slab (2D assembly); correct there.
+        x_min, y_min, x_max, y_max = -1.0, -1.0, 1.0, 1.0
+        xy_src = "fallback_unit"
+
+    # -- assembly_box --------------------------------------------------
+    if source_strategy == "assembly_box":
         if model.core is not None and model.core.axial_layers:
             z_mins = [L.z_min_cm for L in model.core.axial_layers]
             z_maxs = [L.z_max_cm for L in model.core.axial_layers]
             z_min, z_max = min(z_mins), max(z_maxs)
         else:
             z_min, z_max = -1.0, 1.0
+        return SourceBounds(
+            x_min, x_max, y_min, y_max, z_min, z_max,
+            z_bound_to_active_fuel=False,
+            strategy="assembly_box",
+            x_source=xy_src, y_source=xy_src, z_source="axial_domain",
+        )
+
+    # -- active_fuel_box (default) ------------------------------------
+    if af is not None:
+        z_min, z_max = af
+        z_src = "active_fuel"
+        bound = True
+    elif model.core is not None and model.core.axial_layers:
+        z_mins = [L.z_min_cm for L in model.core.axial_layers]
+        z_maxs = [L.z_max_cm for L in model.core.axial_layers]
+        z_min, z_max = min(z_mins), max(z_maxs)
+        z_src = "axial_domain"
         bound = False
-    return SourceBounds(x_min, x_max, y_min, y_max, z_min, z_max, bound)
+    else:
+        z_min, z_max = -1.0, 1.0
+        z_src = "fallback_unit"
+        bound = False
+    return SourceBounds(
+        x_min, x_max, y_min, y_max, z_min, z_max, bound,
+        strategy="active_fuel_box",
+        x_source=xy_src, y_source=xy_src, z_source=z_src,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,13 +293,37 @@ def validate_source_settings(
     if model is None:
         return issues
 
+    strategy = getattr(
+        getattr(model, "settings", None), "source_strategy", "active_fuel_box",
+    )
+    manual_bounds = getattr(
+        getattr(model, "settings", None), "manual_source_bounds_cm", None,
+    )
+
+    # Strategy-level blockers.
+    if strategy == "unknown":
+        issues.append(_issue(
+            "runtime.unknown_source_strategy",
+            "source_strategy is 'unknown'; cannot derive source bounds",
+            schema_path="complex_model.settings.source_strategy",
+        ))
+        return issues
+
+    if strategy == "manual" and not manual_bounds:
+        issues.append(_issue(
+            "runtime.manual_source_bounds_missing",
+            "source_strategy is 'manual' but manual_source_bounds_cm is not set",
+            schema_path="complex_model.settings.manual_source_bounds_cm",
+        ))
+        return issues
+
     bounds = source_bounds if source_bounds is not None else source_bounds_for_plan(model)
     af = active_fuel_z_bounds(model)
 
     has_axial_layers = model.core is not None and bool(model.core.axial_layers)
 
     # Active-fuel region missing entirely.
-    if has_axial_layers and af is None:
+    if has_axial_layers and af is None and strategy == "active_fuel_box":
         issues.append(_issue(
             "runtime.active_fuel_region_missing",
             "assembly has axial_layers but no lattice-filled active-fuel layer; the "
@@ -236,52 +334,56 @@ def validate_source_settings(
     if bounds is None:
         return issues
 
-    # Default z=-1..1 on a 3D axial plan.
-    if has_axial_layers and af is not None and _is_default_unit_z(bounds.z_min, bounds.z_max):
+    # Strategy mismatch: rendered bounds don't match declared strategy.
+    if bounds.strategy != strategy:
         issues.append(_issue(
-            "runtime.source_default_z_extent",
-            f"source z-range is the default -1..1 unit slab but the active fuel "
-            f"region is {af[0]}~{af[1]} cm; bind the source to the active fuel z-range",
-            schema_path="settings.source",
+            "runtime.source_strategy_not_rendered",
+            f"source_strategy={strategy!r} but bounds were derived with strategy={bounds.strategy!r}",
+            schema_path="complex_model.settings.source_strategy",
         ))
 
-    # Source does not overlap the active fuel region.
-    if af is not None and not (bounds.z_min < af[1] - _Z_TOL and bounds.z_max > af[0] + _Z_TOL):
-        issues.append(_issue(
-            "runtime.source_not_in_active_fuel_region",
-            f"source z-range {bounds.z_min}~{bounds.z_max} does not overlap the "
-            f"active fuel region {af[0]}~{af[1]} cm",
-            schema_path="settings.source",
-        ))
-
-    # Source covers large nonfuel axial regions when active fuel is known.
-    if af is not None and not _is_default_unit_z(bounds.z_min, bounds.z_max):
-        nonfuel_span = max(0.0, af[0] - bounds.z_min) + max(0.0, bounds.z_max - af[1])
-        fuel_height = af[1] - af[0]
-        # Warn when the source extends beyond the fuel by more than 10% of the
-        # fuel height (covers nozzles/plena/buffers with only_fissionable=True).
-        if fuel_height > _Z_TOL and nonfuel_span > 0.1 * fuel_height:
+    # For active_fuel_box: z must overlap the active fuel region.
+    if strategy == "active_fuel_box":
+        if has_axial_layers and af is not None and _is_default_unit_z(bounds.z_min, bounds.z_max):
             issues.append(_issue(
-                "runtime.source_covers_nonfuel_axial_regions",
-                f"source z-range {bounds.z_min}~{bounds.z_max} extends "
-                f"{nonfuel_span:.1f} cm beyond the active fuel region "
-                f"{af[0]}~{af[1]} cm; with only_fissionable=True this triggers "
-                f"source rejection. Bind the source to the active fuel z-range.",
-                severity="warning",
+                "runtime.source_default_z_extent",
+                f"source z-range is the default -1..1 unit slab but the active fuel "
+                f"region is {af[0]}~{af[1]} cm; bind the source to the active fuel z-range",
                 schema_path="settings.source",
             ))
+
+        if af is not None and not (bounds.z_min < af[1] - _Z_TOL and bounds.z_max > af[0] + _Z_TOL):
+            issues.append(_issue(
+                "runtime.source_not_in_active_fuel_region",
+                f"source z-range {bounds.z_min}~{bounds.z_max} does not overlap the "
+                f"active fuel region {af[0]}~{af[1]} cm",
+                schema_path="settings.source",
+            ))
+
+        if af is not None and not _is_default_unit_z(bounds.z_min, bounds.z_max):
+            nonfuel_span = max(0.0, af[0] - bounds.z_min) + max(0.0, bounds.z_max - af[1])
+            fuel_height = af[1] - af[0]
+            if fuel_height > _Z_TOL and nonfuel_span > 0.1 * fuel_height:
+                issues.append(_issue(
+                    "runtime.source_covers_nonfuel_axial_regions",
+                    f"source z-range {bounds.z_min}~{bounds.z_max} extends "
+                    f"{nonfuel_span:.1f} cm beyond the active fuel region "
+                    f"{af[0]}~{af[1]} cm; with only_fissionable=True this triggers "
+                    f"source rejection. Bind the source to the active fuel z-range.",
+                    severity="warning",
+                    schema_path="settings.source",
+                ))
 
     # Fuel material fissionability.
     fmat = fuel_material_ids(model)
     if not fmat:
         issues.append(_issue(
             "runtime.fuel_material_not_fissionable",
-            "no fuel material containing U235/U238/Pu with a density was found; the "
-            "source has no fissionable material to sample",
+            "no fuel material containing U235/U238/Pu with a density or atom-density "
+            "was found; the source has no fissionable material to sample",
             schema_path="complex_model.materials",
         ))
     else:
-        # Fuel material must be reachable from a material-filled cell.
         referenced = _cell_fuel_material_ids(model)
         if not (fmat & referenced):
             issues.append(_issue(
