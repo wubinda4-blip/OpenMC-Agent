@@ -78,6 +78,8 @@ class FaultInjectionCase(AgentBaseModel):
                 continue
             target = _single_valid_patch(injected, "settings")
             for key, value in (operation.get("set") or {}).items():
+                if key == "manual_source_bounds_cm" and value == "__DERIVED_NONFUEL__":
+                    value = _derive_nonfuel_manual_bounds(injected)
                 target.content[key] = copy.deepcopy(value)
         return injected
 
@@ -153,18 +155,57 @@ def _single_valid_patch(state: PlanBuildState, patch_type: str) -> PlanPatchEnve
     return patches[0]
 
 
+def _derive_nonfuel_manual_bounds(state: PlanBuildState) -> list[float]:
+    """Derive source bounds in a non-fuel axial region from the plan geometry.
+
+    Reads the active-fuel z-range and the full axial domain, then selects the
+    lower non-fuel region (below active fuel) as the manual source box.
+    Raises ValueError if no non-fuel region exists.
+    """
+    from openmc_agent.source_settings import active_fuel_z_bounds, assembly_xy_bounds
+    from openmc_agent.schemas import SimulationPlan
+
+    if not state.assembled_plan:
+        raise ValueError("cannot derive non-fuel bounds: no assembled plan")
+    plan = SimulationPlan.model_validate(state.assembled_plan)
+    model = plan.complex_model
+    af = active_fuel_z_bounds(model)
+    xy = assembly_xy_bounds(model)
+    if af is None:
+        raise ValueError("cannot derive non-fuel bounds: no active fuel region")
+    if xy is None:
+        raise ValueError("cannot derive non-fuel bounds: no lattice footprint")
+    x_min, y_min, x_max, y_max = xy
+    if model.core is None or not model.core.axial_layers:
+        raise ValueError("cannot derive non-fuel bounds: no axial layers")
+    all_z_min = min(L.z_min_cm for L in model.core.axial_layers)
+    # Lower non-fuel region (below active fuel).
+    if af[0] > all_z_min + 1.0:
+        z_lo = all_z_min
+        z_hi = af[0] - 0.01
+    else:
+        all_z_max = max(L.z_max_cm for L in model.core.axial_layers)
+        # Upper non-fuel region (above active fuel).
+        if af[1] < all_z_max - 1.0:
+            z_lo = af[1] + 0.01
+            z_hi = all_z_max
+        else:
+            raise ValueError("cannot derive non-fuel bounds: no non-fuel region available")
+    return [x_min, x_max, y_min, y_max, z_lo, z_hi]
+
+
 def default_fault_matrix() -> list[FaultInjectionCase]:
     """The R7/R8 immutable case registry; no case is silently omitted."""
     specs = [
         ("F00", "baseline_no_fault", FaultInjectionLayer.TOOL_RESULT, None, None, "none", FaultExpectedDisposition.RECOVERED, True),
-        ("F01", "source_strategy_fault", FaultInjectionLayer.SOURCE_PATCH, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.RECOVERED, True),
+        ("F01", "source_strategy_fault", FaultInjectionLayer.SOURCE_PATCH, "runtime.source_not_in_active_fuel_region", "plan_fixable", "deterministic", FaultExpectedDisposition.RECOVERED, True),
         ("F02", "source_noop_renderer_bug", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "llm_diagnose", FaultExpectedDisposition.SAFE_STOP, False),
         ("F03", "timeout_then_success", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_timeout", "transient", "retry", FaultExpectedDisposition.TRANSIENT_RETRY_THEN_SUCCESS, False),
         ("F04", "timeout_twice", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_timeout", "transient", "retry", FaultExpectedDisposition.TRANSIENT_RETRY_EXHAUSTED, False),
         ("F05", "process_crash_after_source_rejection", FaultInjectionLayer.TOOL_RESULT, "runtime.openmc_source_rejection_failure", "plan_fixable", "deterministic", FaultExpectedDisposition.RECOVERED, False),
         ("F06", "cross_sections_missing", FaultInjectionLayer.ENVIRONMENT, "runtime.cross_sections_missing", "environment", "none", FaultExpectedDisposition.BLOCKED_ENVIRONMENT, False),
         ("F07", "missing_nuclide_data", FaultInjectionLayer.TOOL_RESULT, "runtime.material_missing_nuclide_data", "human_fact", "none", FaultExpectedDisposition.BLOCKED_HUMAN_FACT, False),
-        ("F08", "ambiguous_geometry_overlap", FaultInjectionLayer.TOOL_RESULT, "runtime.geometry_overlap", "plan_fixable", "diagnose", FaultExpectedDisposition.DIAGNOSE_ONLY, True),
+        ("F08", "ambiguous_geometry_overlap", FaultInjectionLayer.TOOL_RESULT, "runtime.geometry_overlap", "plan_fixable", "diagnose", FaultExpectedDisposition.DIAGNOSE_ONLY, False),
         ("F09", "lost_particle_without_provenance", FaultInjectionLayer.TOOL_RESULT, "runtime.lost_particle", "plan_fixable", "diagnose", FaultExpectedDisposition.DIAGNOSE_ONLY, False),
         ("F10", "protected_geometry_fault", FaultInjectionLayer.LLM_RESPONSE, "runtime.geometry_overlap", "plan_fixable", "llm_propose", FaultExpectedDisposition.PROPOSAL_REJECTED, False),
         ("F11", "unsafe_material_proposal", FaultInjectionLayer.LLM_RESPONSE, "runtime.geometry_overlap", "plan_fixable", "llm_propose", FaultExpectedDisposition.PROPOSAL_REJECTED, False),
@@ -179,16 +220,27 @@ def default_fault_matrix() -> list[FaultInjectionCase]:
     ]
     cases: list[FaultInjectionCase] = []
     for prefix, name, layer, code, classification, channel, disposition, real_openmc in specs:
-        operations = []
-        if name in ("source_strategy_fault", "process_crash_after_source_rejection"):
-            operations = [{"patch_type": "settings", "set": {"source_strategy": "assembly_box", "source_requires_fissionable_constraint": False}}]
+        operations: list[dict[str, Any]] = []
+        if name == "source_strategy_fault":
+            # F01: inject source_strategy=manual with bounds in a non-fuel axial region.
+            # Bounds are derived at injection time from the accepted state's geometry
+            # (lower nozzle region), not hardcoded VERA3 constants.
+            operations = [{
+                "patch_type": "settings",
+                "set": {
+                    "source_strategy": "manual",
+                    "source_requires_fissionable_constraint": True,
+                    "manual_source_bounds_cm": "__DERIVED_NONFUEL__",
+                },
+            }]
         cases.append(FaultInjectionCase(
             case_id=f"{prefix}_{name}", title=name.replace("_", " "), description=name,
             injection_layer=layer, target_stage="execute_tools", injection_operations=operations,
             expected_primary_issue_code=code, expected_classification=classification,
-            expected_repair_channel=channel, expected_target_patch_type="settings" if channel == "deterministic" else None,
+            expected_repair_channel=channel,
+            expected_target_patch_type="settings" if channel == "deterministic" else None,
             expected_changed_paths=["/source_strategy", "/source_requires_fissionable_constraint"] if name == "source_strategy_fault" else [],
-            forbidden_changed_paths=["/density", "/composition", "/temperature", "/r", "/z_min_cm", "/z_max_cm"],
+            forbidden_changed_paths=["/density", "/composition", "/temperature", "/r", "/z_min_cm", "/z_max_cm", "/manual_source_bounds_cm"],
             expected_final_disposition=disposition, requires_real_openmc=real_openmc,
         ))
     return cases

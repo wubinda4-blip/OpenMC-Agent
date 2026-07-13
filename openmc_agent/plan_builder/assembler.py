@@ -1377,6 +1377,11 @@ def assemble_simulation_plan_from_patches(
                 if settings_patch
                 else True
             ),
+            manual_source_bounds_cm=(
+                settings_patch.manual_source_bounds_cm
+                if settings_patch and hasattr(settings_patch, "manual_source_bounds_cm")
+                else None
+            ),
         ),
         assumptions=list(dict.fromkeys(all_assumptions)),
         requires_human_confirmation=list(dict.fromkeys(all_confirms)),

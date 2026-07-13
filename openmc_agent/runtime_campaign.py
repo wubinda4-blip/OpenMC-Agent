@@ -41,8 +41,8 @@ class RuntimeCampaignConfig:
     mode: str = "apply_if_safe"
 
 
-# Cases that need real OpenMC export/geometry-debug/smoke.
-_REAL_OPENMC_CASES = {"F00_baseline_no_fault"}
+# Cases that need real OpenMC export/geometry-debug/smoke are derived from
+# FaultInjectionCase.requires_real_openmc — no separate hardcoded set.
 
 
 def run_fixture_case(
@@ -238,8 +238,8 @@ def _build_graph_injection(
             stdout="injected ok", stderr="", error="", issues=[], artifacts=[],
         )
 
-    # ---- F00/F01: real OpenMC ----
-    if cid in _REAL_OPENMC_CASES:
+    # ---- F00/F01: real OpenMC (cases with requires_real_openmc=True) ----
+    if case.requires_real_openmc:
         return GraphInjection()
 
     # For all non-real cases, inject no-op export_xml and geometry_debug so the
@@ -499,7 +499,7 @@ def _run_fixture_through_production_graph(
 ) -> dict[str, Any]:
     from openmc_agent.graph import build_plan_graph
 
-    is_real = case.case_id in _REAL_OPENMC_CASES
+    is_real = case.requires_real_openmc
 
     graph_kwargs: dict[str, Any] = {
         "enable_plots": False,
@@ -570,6 +570,8 @@ def _run_fixture_through_production_graph(
         (root / name).exists() for name in expected_artifacts
     )
     outcome["execution_kind"] = "real_openmc_production_graph" if is_real else "injected_tool_production_graph"
+    outcome["execution_backend"] = "real_openmc" if is_real else "injected_tool"
+    outcome["requires_real_openmc"] = case.requires_real_openmc
     outcome["error"] = error
     outcome["runtime_iterations"] = workflow_state.get("runtime_iteration_count", 0)
     outcome["primary_issue_code"] = primary_code
@@ -591,10 +593,6 @@ def _evaluate_outcome(
     cid = case.case_id
     succeeded = validation_ok and not error
 
-    # Default mapping
-    actual = "safe_stop"
-    passed = False
-
     # Safe-stop dispositions: the system correctly refused to repair.
     _SAFE_STOP_PASSES = {
         "blocked_environment", "blocked_human_fact", "diagnose_only",
@@ -602,23 +600,18 @@ def _evaluate_outcome(
         "user_cancelled", "safe_stop",
     }
 
-    if cid.startswith("F01_") or cid.startswith("F05_"):
-        # Source rejection injection requires renderer source-binding modification
-        # that is beyond the current fault injector scope. Marked pending.
-        return {
-            "final_disposition": "pending_real_openmc",
-            "passed": False,
-            "expected_disposition": expected.value,
-            "primary_issue_code_observed": "",
-            "committed_repairs": 0,
-            "validation_ok": False,
-        }
+    # Default mapping
+    actual = "safe_stop"
+    passed = False
 
     if cid.startswith("F00_"):
         actual = "recovered" if succeeded else "safe_stop"
         passed = succeeded
 
     elif cid.startswith("F01_"):
+        # Real OpenMC: source pre-flight blocks manual non-fuel source,
+        # deterministic repair switches to active_fuel_box, candidate
+        # evaluation with real OpenMC succeeds.
         actual = "recovered" if (succeeded and committed_repairs >= 1) else "safe_stop"
         passed = actual == "recovered"
 
@@ -633,6 +626,9 @@ def _evaluate_outcome(
         actual = "transient_retry_exhausted"
 
     elif cid.startswith("F05_"):
+        # Injected tool result: source rejection + crash → classify source
+        # as primary, crash as secondary. Supervisor routes to deterministic
+        # repair (not transient retry).
         actual = "recovered" if (succeeded and committed_repairs >= 1) else "safe_stop"
         passed = actual == "recovered"
 

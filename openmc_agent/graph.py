@@ -255,6 +255,8 @@ class GraphState(TypedDict, total=False):
     runtime_policy_summary: dict[str, Any]
     runtime_final_disposition: str
     runtime_last_committed_failure_fingerprint: str
+    runtime_supervisor_result: dict[str, Any]
+    runtime_user_cancelled: bool
 
 
 InvestigationLlmFn = Callable[[str], StructuredOutputResult]
@@ -607,6 +609,7 @@ def build_plan_graph(
             "render": "render_plan_script",
             "llm_diagnose": "llm_runtime_diagnose",
             "save": "save_record",
+            "runtime_supervisor": "runtime_supervisor",
         },
     )
     graph.add_conditional_edges(
@@ -4603,6 +4606,21 @@ def _make_execute_tools_node(
                     f"skipping run_smoke_test: {len(blocking_source)} blocking source issue(s)",
                 )
                 source_report = ValidationReport.from_issues(source_issues, is_valid=False)
+                # Inject a synthetic smoke_test ToolResult with the blocking source
+                # issues so the runtime classifier can route to deterministic repair.
+                from openmc_agent.tools import ToolResult
+                source_tr = ToolResult(
+                    name="run_smoke_test",
+                    ok=False,
+                    command=[],
+                    returncode=1,
+                    stdout="",
+                    stderr="; ".join(i.message for i in blocking_source),
+                    error="source/settings pre-flight blocked smoke test",
+                    issues=blocking_source,
+                    artifacts=[],
+                )
+                results.append(source_tr)
                 trace_update = _trace_event_update(
                     {**state, **trace_update},
                     "smoke_test_completed",
@@ -4775,7 +4793,7 @@ def _make_classify_runtime_feedback_node():
 def _make_deterministic_runtime_repair_node(*, max_runtime_repairs: int = 1):
     def _repair(state: GraphState) -> GraphState:
         """Attempt one-shot deterministic runtime repair."""
-        from openmc_agent.runtime_feedback import RuntimeFailure
+        from openmc_agent.runtime_feedback import RuntimeFailure, RuntimeFailureClass
         from openmc_agent.runtime_repair import (
             RuntimeRepairEvaluation,
             build_runtime_repair_request,
@@ -4944,7 +4962,7 @@ def _make_deterministic_runtime_repair_node(*, max_runtime_repairs: int = 1):
                     fingerprint: attempts.get(fingerprint, 0) + 1,
                 },
                 "tool_results": [],  # Clear stale results
-                "validation_report": ValidationReport(),
+                "validation_report": ValidationReport(is_valid=True),
                 "error": "",
                 **trace_update,
             }

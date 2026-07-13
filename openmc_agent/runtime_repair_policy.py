@@ -108,6 +108,10 @@ for _code in (
     "runtime.source_default_z_extent",
     "runtime.source_not_in_active_fuel_region",
     "runtime.source_covers_nonfuel_axial_regions",
+    "runtime.source_strategy_not_rendered",
+    "runtime.source_bounds_render_mismatch",
+    "runtime.manual_source_bounds_missing",
+    "runtime.unknown_source_strategy",
 ):
     _register(RuntimeRepairPolicy(
         issue_code=_code,

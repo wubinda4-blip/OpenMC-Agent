@@ -71,6 +71,37 @@ _CLASSIFICATION_PRECEDENCE: list[tuple[str, RuntimeFailureClass, list[str], bool
         ["settings.source"],
         False,
     ),
+    # --- source pre-flight issues: same classification as source rejection ---
+    (
+        "runtime.source_not_in_active_fuel_region",
+        RuntimeFailureClass.PLAN_FIXABLE,
+        ["settings.source"],
+        False,
+    ),
+    (
+        "runtime.source_default_z_extent",
+        RuntimeFailureClass.PLAN_FIXABLE,
+        ["settings.source"],
+        False,
+    ),
+    (
+        "runtime.manual_source_bounds_missing",
+        RuntimeFailureClass.PLAN_FIXABLE,
+        ["settings.source"],
+        False,
+    ),
+    (
+        "runtime.unknown_source_strategy",
+        RuntimeFailureClass.PLAN_FIXABLE,
+        ["settings.source"],
+        False,
+    ),
+    (
+        "runtime.source_strategy_not_rendered",
+        RuntimeFailureClass.PLAN_FIXABLE,
+        ["settings.source"],
+        False,
+    ),
     # --- geometry plan-fixable ---
     (
         "runtime.geometry_overlap",

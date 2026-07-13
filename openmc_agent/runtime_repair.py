@@ -740,6 +740,15 @@ def evaluate_deterministic_runtime_repair(
             reasons=[f"Plan schema validation failed: {exc}"],
         )
 
+    # Re-assess capability so the plan has an up-to-date capability_report
+    # (assemble_state_if_ready resets it to renderability="none").
+    from openmc_agent.renderers import choose_renderer
+    _r_renderer, _r_capability = choose_renderer(repaired_plan)
+    if _r_renderer is not None and _r_capability.renderability in {"exportable", "runnable"}:
+        repaired_plan = repaired_plan.model_copy(
+            update={"capability_report": _r_capability},
+        )
+
     repaired_report = validate_simulation_plan(repaired_plan)
     plan_hash_after = _plan_hash(repaired_plan)
 

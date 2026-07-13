@@ -374,14 +374,6 @@ def validate_source_settings(
                 schema_path="settings.source",
             ))
 
-        if af is not None and not (bounds.z_min < af[1] - _Z_TOL and bounds.z_max > af[0] + _Z_TOL):
-            issues.append(_issue(
-                "runtime.source_not_in_active_fuel_region",
-                f"source z-range {bounds.z_min}~{bounds.z_max} does not overlap the "
-                f"active fuel region {af[0]}~{af[1]} cm",
-                schema_path="settings.source",
-            ))
-
         if af is not None and not _is_default_unit_z(bounds.z_min, bounds.z_max):
             nonfuel_span = max(0.0, af[0] - bounds.z_min) + max(0.0, bounds.z_max - af[1])
             fuel_height = af[1] - af[0]
@@ -395,6 +387,19 @@ def validate_source_settings(
                     severity="warning",
                     schema_path="settings.source",
                 ))
+
+    # Universal: source must overlap active fuel when only_fissionable is set
+    # and active fuel is known. This catches manual/assembly_box strategies
+    # that place the source outside the fissionable region.
+    if af is not None and getattr(model.settings, "source_requires_fissionable_constraint", True):
+        if not (bounds.z_min < af[1] - _Z_TOL and bounds.z_max > af[0] + _Z_TOL):
+            issues.append(_issue(
+                "runtime.source_not_in_active_fuel_region",
+                f"source z-range {bounds.z_min}~{bounds.z_max} does not overlap the "
+                f"active fuel region {af[0]}~{af[1]} cm; with only_fissionable=True "
+                f"this will cause source rejection",
+                schema_path="settings.source",
+            ))
 
     # Fuel material fissionability.
     fmat = fuel_material_ids(model)

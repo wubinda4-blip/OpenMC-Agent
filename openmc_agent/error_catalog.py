@@ -1546,7 +1546,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         "concept_id": "openmc.settings.source",
         "knowledge_refs": [OPENMC_RUNTIME_GUIDE],
         "grep_patterns": ["manual_source_bounds_cm"],
-        "route_hint": "deterministic",
+        "route_hint": "auto_repair",
         "repair_hints": [
             _hint("edit_field", "Set source_strategy to active_fuel_box or provide manual_source_bounds_cm.",
                   target_path="complex_model.settings.source_strategy"),
@@ -1560,7 +1560,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         "concept_id": "openmc.settings.source",
         "knowledge_refs": [OPENMC_RUNTIME_GUIDE],
         "grep_patterns": ["source_strategy"],
-        "route_hint": "deterministic",
+        "route_hint": "auto_repair",
         "repair_hints": [
             _hint("edit_field", "Set source_strategy to active_fuel_box or assembly_box.",
                   target_path="complex_model.settings.source_strategy"),
@@ -1574,7 +1574,7 @@ ERROR_CATALOG: dict[str, CatalogEntry] = {
         "concept_id": "openmc.settings.source",
         "knowledge_refs": [OPENMC_RUNTIME_GUIDE],
         "grep_patterns": ["settings.xml"],
-        "route_hint": "deterministic",
+        "route_hint": "auto_repair",
         "repair_hints": [
             _hint("edit_field", "Verify the renderer re-exports settings.xml after source_strategy change.",
                   target_path="settings.source"),
