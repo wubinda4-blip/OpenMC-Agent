@@ -155,3 +155,73 @@ def test_malformed_operations_get_one_schema_only_correction(tmp_path) -> None:
     assert evaluation is not None and evaluation.status == "rejected_no_improvement"
     assert meta["format_correction_count"] == 1
     assert (tmp_path / "validation_repair" / "raw_response_0_format_correction_1.json").exists()
+
+
+def test_incremental_patch_generation_failure_schedules_regeneration() -> None:
+    """When incremental patch generation fails (plan=None), the workflow must
+    schedule a fresh regeneration instead of dead-ending."""
+    from openmc_agent.graph import _make_validate_plan_node
+
+    updates = _make_validate_plan_node(3)({
+        "simulation_plan": None,
+        "requirement": "VERA3B assembly model",
+        "retry_count": 0,
+        "error": "incremental.execution_failed: incremental.patch_generation_failed",
+        "plan_build_state": {"patches": {"facts": {"content": {}}}},
+        "incremental_execution_result": {
+            "planning_mode": "incremental",
+            "monolithic_reflect_plan_allowed": False,
+            "ok": False,
+            "issues": [
+                {
+                    "code": "incremental.patch_generation_failed",
+                    "severity": "error",
+                    "message": "universes generation failed",
+                    "patch_type": "universes",
+                }
+            ],
+        },
+    })
+
+    assert updates["incremental_regeneration_pending"] is True
+    assert updates["retry_count"] == 1
+    assert updates["simulation_plan"] is None
+    assert updates["plan_build_state"] == {}
+    assert "Incremental planner correction required" in updates["requirement"]
+
+
+def test_incremental_patch_generation_failure_respects_retry_budget() -> None:
+    """When retry_count >= max_retries, no regeneration is scheduled."""
+    from openmc_agent.graph import _make_validate_plan_node
+
+    updates = _make_validate_plan_node(3)({
+        "simulation_plan": None,
+        "requirement": "VERA3B assembly model",
+        "retry_count": 3,
+        "error": "incremental.execution_failed: incremental.patch_generation_failed",
+        "plan_build_state": {"patches": {"facts": {"content": {}}}},
+        "incremental_execution_result": {
+            "planning_mode": "incremental",
+            "monolithic_reflect_plan_allowed": False,
+            "ok": False,
+            "issues": [],
+        },
+    })
+
+    assert "incremental_regeneration_pending" not in updates or updates.get("incremental_regeneration_pending") is not True
+
+
+def test_non_incremental_failure_does_not_trigger_regeneration() -> None:
+    """A non-incremental plan=None failure must not trigger the regeneration path."""
+    from openmc_agent.graph import _make_validate_plan_node
+
+    updates = _make_validate_plan_node(3)({
+        "simulation_plan": None,
+        "requirement": "simple pin cell",
+        "retry_count": 0,
+        "error": "Could not validate model response",
+        "plan_build_state": {},
+        "incremental_execution_result": None,
+    })
+
+    assert not updates.get("incremental_regeneration_pending")

@@ -2651,6 +2651,42 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
         if not report.is_valid:
             _progress(state, "validate_plan", f"failed with {len(report.errors)} error(s)")
             if (
+                plan is None
+                and retry_count < max_retries
+                and _is_incremental_patch_generation_failure(state, report)
+            ):
+                _progress(
+                    state,
+                    "validate_plan",
+                    "incremental patch generation failed; scheduling fresh regeneration",
+                )
+                return {
+                    "simulation_plan": None,
+                    "simulation_spec": None,
+                    "validation_report": report,
+                    "retry_history": history,
+                    "retry_count": retry_count + 1,
+                    "error": "",
+                    "incremental_regeneration_pending": True,
+                    "plan_build_state": {},
+                    "requirement": _incremental_regeneration_requirement(
+                        state.get("requirement", ""), report
+                    ),
+                    **_trace_event_update(
+                        state,
+                        "incremental_regeneration_scheduled",
+                        summary=(
+                            "incremental patch generation failed; scheduling "
+                            "a fresh patch-planner pass"
+                        ),
+                        report=report,
+                        metadata={
+                            "retry_count": retry_count + 1,
+                            "reason": "patch_generation_failure",
+                        },
+                    ),
+                }
+            if (
                 plan is not None
                 and _incremental_reflect_plan_disabled(state)
                 and retry_count < max_retries
@@ -3161,6 +3197,28 @@ def _incremental_reflect_plan_disabled(state: GraphState) -> bool:
     return (
         inc.get("planning_mode") == "incremental"
         and inc.get("monolithic_reflect_plan_allowed") is False
+    )
+
+
+def _is_incremental_patch_generation_failure(
+    state: GraphState, report: ValidationReport
+) -> bool:
+    """Detect whether the incremental executor failed at patch-generation level.
+
+    Returns True only when the failure occurred *before* assembly (i.e. no plan
+    was produced), so the caller can schedule a fresh incremental pass instead
+    of dead-ending the workflow.
+    """
+    inc = state.get("incremental_execution_result")
+    if not isinstance(inc, dict):
+        return False
+    if inc.get("planning_mode") != "incremental":
+        return False
+    error_text = " ".join(report.errors).lower()
+    return (
+        "patch_generation_failed" in error_text
+        or "incremental.execution_failed" in error_text
+        or "incremental.assembled_plan_schema_invalid" in error_text
     )
 
 
