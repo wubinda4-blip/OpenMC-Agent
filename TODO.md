@@ -187,7 +187,7 @@ Pyrex poison segment 15.761–376.441 cm；upper helium region 376.441–397.510
 
 完成标准：grid material volume 与输入质量容差内一致；不再替换整个 moderator open region；through-path 保留。
 
-### P0-V4：Nozzle / core plate 均匀化材料 🚧
+### P0-V4：Nozzle / core plate 均匀化材料 ✅
 
 正确 volume fractions：lower nozzle 27.92% SS304 / 72.08% coolant；upper nozzle 19.15% / 80.85%；core plate 50% / 50%。3A/3B 使用各自 coolant。
 
@@ -359,7 +359,7 @@ audit → repair proposal → deterministic validation → targeted patch retry 
 - [ ] Zircaloy-4 composition policy 正确
 - [ ] SS304 composition policy 正确
 - [ ] Inconel-718 composition policy 正确
-- [ ] nozzle / plate mixture provenance 完整
+- [x] nozzle / plate mixture provenance 完整
 - [ ] 无 placeholder 被标为 confirmed
 
 ### Numerical

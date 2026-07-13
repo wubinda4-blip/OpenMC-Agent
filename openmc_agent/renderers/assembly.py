@@ -647,12 +647,17 @@ def _material_completeness_messages(
     warnings: list[str] = []
     for material in model.materials:
         is_macroscopic = material.macroscopic is not None
+        is_mixture = getattr(material, "is_mixture", False) or (
+            len(getattr(material, "mixture_component_ids", [])) > 0
+        )
         missing_density = (
             not is_macroscopic
+            and not is_mixture
             and (material.density_unit is None or material.density_value is None)
         )
         missing_composition = (
             not is_macroscopic
+            and not is_mixture
             and not material.composition
             and not material.chemical_formula
         )

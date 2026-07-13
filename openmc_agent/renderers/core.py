@@ -96,10 +96,13 @@ def _core_renderability_errors(model: Any) -> list[ValidationIssue]:
     for material in model.materials:
         if material.macroscopic is not None:
             continue
+        is_mixture = getattr(material, "is_mixture", False) or (
+            len(getattr(material, "mixture_component_ids", [])) > 0
+        )
         schema_path = f"complex_model.materials.{material.id}"
-        if material.density_unit is None or material.density_value is None:
+        if not is_mixture and (material.density_unit is None or material.density_value is None):
             errors.append(_iss("material.missing_density", f"material {material.id!r} is missing density", schema_path))
-        if not material.composition and not material.chemical_formula:
+        if not is_mixture and not material.composition and not material.chemical_formula:
             errors.append(_iss("material.missing_composition", f"material {material.id!r} is missing composition or chemical_formula", schema_path))
     if not model.cells and not _core_has_auto_materializable_missing_cells(model):
         errors.append(_iss("core.requires_cells", "core renderer requires cells", "complex_model.cells"))

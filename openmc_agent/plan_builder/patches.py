@@ -85,6 +85,13 @@ class FactsPatch(_PatchBase):
 # ---------------------------------------------------------------------------
 
 
+class MixtureComponentPatch(_PatchBase):
+    """A single component in a homogenized material mixture."""
+
+    material_id: str
+    volume_fraction: float = Field(gt=0, le=1.0)
+
+
 class MaterialSpecPatch(_PatchBase):
     """A single material entry in a MaterialsPatch."""
 
@@ -101,9 +108,13 @@ class MaterialSpecPatch(_PatchBase):
         "needs_library",
         "needs_confirmation",
         "placeholder",
+        "derived_from_mixture",
     ] = "needs_confirmation"
     source_note: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    mixture_components: list[MixtureComponentPatch] = Field(default_factory=list)
+    variant_scope: str | None = None
+    derivation_method: str | None = None
 
 
 class MaterialsPatch(_PatchBase):

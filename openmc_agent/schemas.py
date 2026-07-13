@@ -266,14 +266,43 @@ class ComplexMaterialSpec(AgentBaseModel):
     source: str | None = None
     assumptions: list[str] = Field(default_factory=list)
     requires_human_confirmation: list[str] = Field(default_factory=list)
+    # --- Homogenized mixture support ---
+    mixture_component_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Material IDs of component materials when this material is a "
+            "homogenized mixture. When non-empty, the executor emits "
+            "openmc.Material.mix_materials() instead of a direct composition."
+        ),
+    )
+    mixture_volume_fractions: list[float] = Field(
+        default_factory=list,
+        description="Volume fractions for each component in mixture_component_ids.",
+    )
+    variant_scope: str | None = Field(
+        default=None,
+        description="Variant scope tag for variant-specific derived materials.",
+    )
+    derivation_method: str | None = Field(
+        default=None,
+        description="How a derived/mixture material was computed (provenance).",
+    )
+
+    @property
+    def is_mixture(self) -> bool:
+        """True when this material is a homogenized mixture of other materials."""
+        return len(self.mixture_component_ids) > 0
 
     @model_validator(mode="after")
     def validate_material_has_source_or_uncertainty(self) -> "ComplexMaterialSpec":
-        has_material_definition = bool(self.macroscopic or self.composition or self.chemical_formula)
-        if not has_material_definition and not self.requires_human_confirmation:
+        has_material_definition = bool(
+            self.macroscopic or self.composition or self.chemical_formula
+        )
+        is_mixture = len(self.mixture_component_ids) > 0
+        if not has_material_definition and not is_mixture and not self.requires_human_confirmation:
             raise ValueError(
                 "complex material needs composition, chemical_formula, macroscopic, "
-                "or requires_human_confirmation"
+                "mixture_component_ids, or requires_human_confirmation"
             )
         if self.macroscopic and self.density_unit not in {None, "macro"}:
             raise ValueError("macroscopic materials must use density_unit='macro' or omit density")

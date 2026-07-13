@@ -156,6 +156,66 @@
           "warnings": [
             "Pyrex composition is approximate"
           ]
+        },
+        {
+          "material_id": "lower_nozzle_mixture_3b",
+          "name": "Lower Nozzle Mixture 3b",
+          "role": "homogenized_mixture",
+          "composition_status": "derived_from_mixture",
+          "mixture_components": [
+            {
+              "material_id": "ss304",
+              "volume_fraction": 0.27921737291387766
+            },
+            {
+              "material_id": "borated_water",
+              "volume_fraction": 0.7207826270861224
+            }
+          ],
+          "variant_scope": "3B",
+          "derivation_method": "volume_fraction_mixture",
+          "source_note": "Lower nozzle homogenized mixture: SS304 (6250.0g) + coolant, height=6.053cm",
+          "warnings": []
+        },
+        {
+          "material_id": "upper_nozzle_mixture_3b",
+          "name": "Upper Nozzle Mixture 3b",
+          "role": "homogenized_mixture",
+          "composition_status": "derived_from_mixture",
+          "mixture_components": [
+            {
+              "material_id": "ss304",
+              "volume_fraction": 0.1914696678653791
+            },
+            {
+              "material_id": "borated_water",
+              "volume_fraction": 0.8085303321346209
+            }
+          ],
+          "variant_scope": "3B",
+          "derivation_method": "volume_fraction_mixture",
+          "source_note": "Upper nozzle homogenized mixture: SS304 (6250.0g) + coolant, height=8.827cm",
+          "warnings": []
+        },
+        {
+          "material_id": "core_plate_mixture_3b",
+          "name": "Core Plate Mixture 3b",
+          "role": "homogenized_mixture",
+          "composition_status": "derived_from_mixture",
+          "mixture_components": [
+            {
+              "material_id": "ss304",
+              "volume_fraction": 0.5
+            },
+            {
+              "material_id": "borated_water",
+              "volume_fraction": 0.5
+            }
+          ],
+          "variant_scope": "3B",
+          "derivation_method": "volume_fraction_mixture",
+          "source_note": "Core plate homogenized mixture: 50/50 SS304 + coolant",
+          "warnings": []
         }
       ],
       "assumptions": [
@@ -874,7 +934,7 @@
           "z_min_cm": -5.0,
           "z_max_cm": 0.0,
           "fill_type": "material",
-          "fill_id": "ss304"
+          "fill_id": "core_plate_mixture_3b"
         },
         {
           "layer_id": "lower_nozzle",
@@ -882,7 +942,7 @@
           "z_min_cm": 0.0,
           "z_max_cm": 6.053,
           "fill_type": "material",
-          "fill_id": "ss304"
+          "fill_id": "lower_nozzle_mixture_3b"
         },
         {
           "layer_id": "lower_shoulder_gap",
@@ -995,7 +1055,7 @@
           "z_min_cm": 397.51,
           "z_max_cm": 406.337,
           "fill_type": "material",
-          "fill_id": "ss304"
+          "fill_id": "upper_nozzle_mixture_3b"
         },
         {
           "layer_id": "upper_core_plate",
@@ -1003,7 +1063,7 @@
           "z_min_cm": 406.337,
           "z_max_cm": 413.937,
           "fill_type": "material",
-          "fill_id": "ss304"
+          "fill_id": "core_plate_mixture_3b"
         },
         {
           "layer_id": "upper_moderator_buffer",

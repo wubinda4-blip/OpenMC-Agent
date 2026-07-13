@@ -31,6 +31,9 @@ from openmc_agent.lattice_transform import (
 
 import re
 
+# Module-level registry populated during rendering for mixture flattening.
+_ACTIVE_MATERIALS_BY_ID: dict[str, ComplexMaterialSpec] = {}
+
 # Matches element symbols (1-2 letters, no mass number): "He", "Zr", "U", "O".
 # Does NOT match nuclide names with mass numbers: "He4", "U235", "O16".
 _ELEMENT_SYMBOL_RE = re.compile(r"^[A-Z][a-z]?$")
@@ -478,6 +481,11 @@ def render_openmc_core_script(
     spec, mat_issues, mat_meta = materialize_axial_lattice_transformations(spec)
     _block_on_materialization_issues(mat_issues)
     _validate_renderable_core(spec)
+
+    # Populate material registry for mixture flattening.
+    global _ACTIVE_MATERIALS_BY_ID
+    _ACTIVE_MATERIALS_BY_ID = {m.id: m for m in spec.materials}
+
     settings = settings_override or spec.settings
     material_blocks = "\n\n".join(
         _render_complex_material_definition(material)
@@ -895,6 +903,13 @@ def _validate_renderable_core(spec: ComplexModelSpec) -> None:
     for material in spec.materials:
         if _material_is_macroscopic(material):
             continue
+        is_mixture = getattr(material, "is_mixture", False) or (
+            len(getattr(material, "mixture_component_ids", [])) > 0
+        )
+        if is_mixture:
+            if not getattr(material, "mixture_component_ids", []):
+                raise ValueError(f"material {material.id!r} is a mixture with no components")
+            continue
         if material.density_unit is None or material.density_value is None:
             raise ValueError(f"material {material.id!r} is missing density")
         if not material.composition and not material.chemical_formula:
@@ -1019,8 +1034,160 @@ def _render_complex_enrichment_args(spec: ComplexMaterialSpec) -> str:
     return "".join(f", {key}={value!r}" for key, value in kwargs.items())
 
 
+# Atomic masses for common nuclides/elements (g/mol).
+# Used for deterministic volume-fraction mixture flattening.
+_ATOMIC_MASSES: dict[str, float] = {
+    "H1": 1.007825, "H": 1.00794, "He4": 4.002602,
+    "B10": 10.012937, "B11": 11.009305, "B": 10.811,
+    "C": 12.0107, "N": 14.0067, "O16": 15.994915, "O": 15.9994,
+    "F": 18.998403, "Na": 22.989769, "Mg": 24.3050,
+    "Al": 26.981539, "Si": 28.0855, "P": 30.973762,
+    "S": 32.065, "Cl": 35.453, "K": 39.0983,
+    "Ca": 40.078, "Ti": 47.867, "V": 50.9415,
+    "Cr": 51.9961, "Mn": 54.938045, "Fe": 55.845,
+    "Co": 58.933195, "Ni": 58.6934, "Cu": 63.546,
+    "Zn": 65.38, "Zr": 91.224, "Nb": 92.906,
+    "Mo": 95.96, "Sn": 118.710,
+    "U235": 235.043930, "U238": 238.050788, "U": 238.02891,
+    "Pu239": 239.052163, "Pu240": 240.053814, "Pu": 239.0,
+    "Xe135": 134.907231, "Cs133": 132.905452,
+    "Gd155": 154.92263, "Gd157": 156.92396,
+    "Ag107": 106.905093, "In115": 114.903878,
+    "Cd113": 112.904408,
+}
+
+
+def _get_atomic_mass(name: str) -> float:
+    """Resolve atomic mass for a nuclide/element name."""
+    if name in _ATOMIC_MASSES:
+        return _ATOMIC_MASSES[name]
+    # Try GNDS normalization: strip hyphens
+    normalized = name.replace("-", "")
+    if normalized in _ATOMIC_MASSES:
+        return _ATOMIC_MASSES[normalized]
+    # Try lowercase element match
+    for key, val in _ATOMIC_MASSES.items():
+        if key.lower() == name.lower():
+            return val
+    raise KeyError(f"atomic mass not available for {name!r}")
+
+
+def _flatten_volume_mixture(
+    components: list[tuple[ComplexMaterialSpec, float]],
+) -> tuple[list[tuple[str, float, str]], float]:
+    """Flatten volume-fraction mixture into weight-fraction composition.
+
+    Returns ``(composition_list, mixed_density_g_cm3)`` where each composition
+    entry is ``(name, weight_fraction, percent_type='wo')``.
+
+    The formula for volume-fraction mixing:
+
+        rho_mix = sum_i(f_i * rho_i)
+        w_mix(j) = sum_i(f_i * rho_i * w_i_j) / rho_mix
+
+    When a component uses atom fractions, they are first converted to weight
+    fractions using atomic masses.
+    """
+    # Convert each component to weight fractions.
+    component_wfracs: list[tuple[float, dict[str, float]]] = []
+    component_densities: list[float] = []
+    for mat_spec, vol_frac in components:
+        rho = mat_spec.density_value or 0.0
+        component_densities.append(rho)
+
+        if not mat_spec.composition:
+            component_wfracs.append((vol_frac, {}))
+            continue
+
+        # Determine percent type from the first nuclide.
+        percent_type = mat_spec.composition[0].percent_type if mat_spec.composition else "ao"
+
+        if percent_type == "wo":
+            # Already weight fractions.
+            wfracs = {c.name: c.percent for c in mat_spec.composition}
+        else:
+            # Convert atom fractions to weight fractions.
+            total_weighted = sum(
+                c.percent * _get_atomic_mass(c.name) for c in mat_spec.composition
+            )
+            if total_weighted <= 0:
+                wfracs = {c.name: 1.0 / len(mat_spec.composition) for c in mat_spec.composition}
+            else:
+                wfracs = {
+                    c.name: c.percent * _get_atomic_mass(c.name) / total_weighted
+                    for c in mat_spec.composition
+                }
+        component_wfracs.append((vol_frac, wfracs))
+
+    # Compute mixed density.
+    rho_mix = sum(vf * rho for (vf, _), rho in zip(component_wfracs, component_densities))
+    if rho_mix <= 0:
+        rho_mix = 1.0
+
+    # Compute mixed weight fractions.
+    mixed_wfracs: dict[str, float] = {}
+    for (vol_frac, wfracs), rho in zip(component_wfracs, component_densities):
+        weight_per_vol = vol_frac * rho
+        for nuclide, wf in wfracs.items():
+            mixed_wfracs[nuclide] = mixed_wfracs.get(nuclide, 0.0) + weight_per_vol * wf
+
+    # Normalize by mixed density.
+    composition = [
+        (name, wf / rho_mix, "wo")
+        for name, wf in sorted(mixed_wfracs.items())
+    ]
+    return composition, rho_mix
+
+
+def _render_mixture_material_definition(
+    spec: ComplexMaterialSpec,
+    variable_name: str,
+) -> str:
+    """Render a mixture material by flattening its components.
+
+    Reads component materials from the executor's material registry, computes
+    the volume-fraction-weighted composition deterministically, and emits a
+    regular material definition.
+    """
+    # Component materials must already be rendered. We look them up from
+    # materials_by_id in the emitted script context, but for flattening we
+    # need the ComplexMaterialSpec objects. These are available via the
+    # module-level _active_materials_registry.
+    components: list[tuple[ComplexMaterialSpec, float]] = []
+    for cid, frac in zip(spec.mixture_component_ids, spec.mixture_volume_fractions):
+        comp = _ACTIVE_MATERIALS_BY_ID.get(cid)
+        if comp is None:
+            raise ValueError(
+                f"mixture material {spec.id!r} references unknown component {cid!r}"
+            )
+        components.append((comp, frac))
+
+    composition, rho_mix = _flatten_volume_mixture(components)
+
+    lines = [f"{variable_name} = openmc.Material(name={spec.name!r})"]
+    lines.append(f"{variable_name}.set_density('g/cm3', {rho_mix!r})")
+    if spec.temperature_k is not None:
+        lines.append(f"{variable_name}.temperature = {spec.temperature_k!r}")
+    for name, percent, ptype in composition:
+        if _is_element_symbol(name):
+            lines.append(
+                f"{variable_name}.add_element({name!r}, {percent!r}, {ptype!r})"
+            )
+        else:
+            lines.append(
+                f"{variable_name}.add_nuclide({name!r}, {percent!r}, {ptype!r})"
+            )
+    lines.append(f"materials_by_id[{spec.id!r}] = {variable_name}")
+    return "\n".join(lines)
+
+
 def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
     variable_name = _safe_name("material", spec.id)
+
+    # --- Mixture material: flatten and emit as regular material ---
+    if spec.is_mixture:
+        return _render_mixture_material_definition(spec, variable_name)
+
     enrichment_args = _render_complex_enrichment_args(spec)
     lines = [
         f"{variable_name} = openmc.Material(name={spec.name!r})",

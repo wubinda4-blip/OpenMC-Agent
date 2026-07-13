@@ -301,17 +301,59 @@ def _assemble_materials(
             )
 
         try:
-            mat_spec = ComplexMaterialSpec(
-                id=mat.material_id,
-                name=mat.name,
-                density_value=mat.density_g_cm3,
-                density_unit="g/cm3" if mat.density_g_cm3 is not None else None,
-                composition=composition,
-                temperature_k=mat.temperature_K,
-                source=mat.source_note,
-                assumptions=assumptions,
-                requires_human_confirmation=requires_conf,
-            )
+            # Mixture materials: no direct composition, use component references.
+            if mat.mixture_components:
+                comp_ids = [c.material_id for c in mat.mixture_components]
+                comp_fracs = [c.volume_fraction for c in mat.mixture_components]
+                # Validate fractions sum to ~1
+                frac_sum = sum(comp_fracs)
+                if abs(frac_sum - 1.0) > 1e-6:
+                    issues.append(PlanAssemblyIssue(
+                        code="assembly.mixture_fraction_sum",
+                        severity="error",
+                        message=(
+                            f"mixture material {mat.material_id!r} volume fractions "
+                            f"sum to {frac_sum:.6f}, expected 1.0"
+                        ),
+                        path=f"materials[{mat.material_id}].mixture_components",
+                    ))
+                # Check for duplicate component IDs
+                if len(set(comp_ids)) != len(comp_ids):
+                    issues.append(PlanAssemblyIssue(
+                        code="assembly.mixture_duplicate_component",
+                        severity="error",
+                        message=(
+                            f"mixture material {mat.material_id!r} has duplicate "
+                            f"component material IDs"
+                        ),
+                        path=f"materials[{mat.material_id}].mixture_components",
+                    ))
+                mat_spec = ComplexMaterialSpec(
+                    id=mat.material_id,
+                    name=mat.name,
+                    density_value=mat.density_g_cm3,
+                    density_unit="g/cm3" if mat.density_g_cm3 is not None else None,
+                    temperature_k=mat.temperature_K,
+                    source=mat.source_note,
+                    assumptions=assumptions + [f"mixture of {comp_ids} with fractions {comp_fracs}"],
+                    requires_human_confirmation=requires_conf,
+                    mixture_component_ids=comp_ids,
+                    mixture_volume_fractions=comp_fracs,
+                    variant_scope=mat.variant_scope,
+                    derivation_method=mat.derivation_method or "volume_fraction_mixture",
+                )
+            else:
+                mat_spec = ComplexMaterialSpec(
+                    id=mat.material_id,
+                    name=mat.name,
+                    density_value=mat.density_g_cm3,
+                    density_unit="g/cm3" if mat.density_g_cm3 is not None else None,
+                    composition=composition,
+                    temperature_k=mat.temperature_K,
+                    source=mat.source_note,
+                    assumptions=assumptions,
+                    requires_human_confirmation=requires_conf,
+                )
             materials.append(mat_spec)
         except Exception as exc:
             issues.append(PlanAssemblyIssue(
