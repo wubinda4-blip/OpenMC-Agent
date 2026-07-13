@@ -414,6 +414,15 @@ def validate_runtime_diagnosis(
 
     det_forbidden = list(policy.forbidden_path_patterns)
 
+    # An empty policy-derived allowlist is not permissive. It means Python has
+    # not yet proven a concrete patch-relative path from provenance/evidence.
+    # The LLM must never supply that missing authority.
+    if not det_allowed:
+        reasons.append(
+            "No concrete deterministic patch-relative allowlist exists for this diagnosis"
+        )
+        proposal_allowed = False
+
     return ValidatedRuntimeDiagnosis(
         accepted=accepted,
         rejection_codes=rejection_codes,

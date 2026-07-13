@@ -108,7 +108,8 @@ class TestDiagnosisValidation:
         diagnosis = _make_diagnosis(failure)
         result = validate_runtime_diagnosis(diagnosis, failure, {})
         assert result.accepted is True
-        assert result.proposal_allowed is True
+        assert result.proposal_allowed is False
+        assert "No concrete deterministic patch-relative allowlist" in result.reasons[0]
 
     def test_failure_id_mismatch_rejected(self):
         failure = _make_failure()
@@ -324,6 +325,21 @@ class TestProposalValidation:
         result = validate_llm_runtime_proposal(raw, validated, {})
         assert result.accepted is False
         assert any("not_in_allowlist" in c for c in result.rejection_codes)
+
+    def test_replace_without_prior_test_rejected(self):
+        validated = _make_validated_diagnosis(allowed_paths=["/name"])
+        raw = {
+            "proposal_id": "rp_008",
+            "diagnosis_id": "rf_test_001",
+            "failure_id": "rf_test_001",
+            "target_patch_type": "universes",
+            "operations": [
+                {"op": "replace", "path": "/name", "value": "new_name"},
+            ],
+        }
+        result = validate_llm_runtime_proposal(raw, validated, {"name": "old_name"})
+        assert result.accepted is False
+        assert "op_0_missing_prior_test" in result.rejection_codes
 
 
 # --------------------------------------------------------------------------- #

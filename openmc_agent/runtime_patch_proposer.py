@@ -133,6 +133,7 @@ def validate_llm_runtime_proposal(
     # 6. Validate each operation.
     allowed_patterns = validated_diagnosis.deterministically_allowed_paths
     forbidden_patterns = validated_diagnosis.deterministically_forbidden_paths
+    tested_paths: set[str] = set()
 
     for idx, raw_op in enumerate(proposal.operations):
         op_action = raw_op.get("op", "")
@@ -193,6 +194,14 @@ def validate_llm_runtime_proposal(
             except Exception:
                 rejection_codes.append(f"op_{idx}_test_path_not_found")
                 reasons.append(f"Operation {idx}: test path {op_path} not found")
+            else:
+                tested_paths.add(op_path)
+
+        if op_action in {"replace", "remove"} and op_path not in tested_paths:
+            rejection_codes.append(f"op_{idx}_missing_prior_test")
+            reasons.append(
+                f"Operation {idx}: {op_action} requires a preceding matching test"
+            )
 
     accepted = not rejection_codes
     return ProposalValidationResult(

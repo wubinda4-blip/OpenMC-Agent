@@ -162,6 +162,10 @@ def build_runtime_repair_request(
     plan_build_state: dict[str, Any] | Any,
     tool_results: list[ToolResult] | list[dict[str, Any]],
     output_dir: str | Path | None = None,
+    *,
+    target_patch_type: str | None = None,
+    target_patch_id: str | None = None,
+    allow_llm_policy: bool = False,
 ) -> RuntimeRepairRequest | RuntimeRepairEvaluation:
     """Locate the owning patch and build a repair request.
 
@@ -191,17 +195,26 @@ def build_runtime_repair_request(
         }[policy.classification]
         return _blocked_eval(failure, disposition, policy.description)
 
-    if not policy.deterministic_repair_supported:
+    if not policy.deterministic_repair_supported and not (
+        allow_llm_policy and policy.llm_proposal_supported
+    ):
         return _blocked_eval(
             failure, "no_safe_repair",
             f"Deterministic repair not supported for {failure.primary_issue_code}",
         )
 
-    # Must have a preferred patch type.
-    if not policy.preferred_patch_type:
+    # Deterministic repairs use the policy preferred patch; LLM proposals must
+    # provide a diagnosis-validated concrete owner.
+    effective_patch_type = target_patch_type or policy.preferred_patch_type
+    if not effective_patch_type:
         return _blocked_eval(
             failure, "ambiguous_owner",
             "No preferred patch type; diagnosis required.",
+        )
+    if effective_patch_type not in policy.candidate_patch_types:
+        return _blocked_eval(
+            failure, "ambiguous_owner",
+            f"Patch type '{effective_patch_type}' is outside policy candidates",
         )
 
     # Locate the target patch in PlanBuildState.
@@ -215,11 +228,13 @@ def build_runtime_repair_request(
     else:
         return _blocked_eval(failure, "no_safe_repair", "No PlanBuildState available")
 
-    target_patches = build_state.get_valid_patches(policy.preferred_patch_type)
+    target_patches = build_state.get_valid_patches(effective_patch_type)
+    if target_patch_id:
+        target_patches = [p for p in target_patches if p.patch_id == target_patch_id]
     if not target_patches:
         return _blocked_eval(
             failure, "no_safe_repair",
-            f"No valid '{policy.preferred_patch_type}' patch to repair",
+            f"No valid '{effective_patch_type}' patch to repair",
         )
     if len(target_patches) > 1:
         return _blocked_eval(
@@ -238,7 +253,7 @@ def build_runtime_repair_request(
         runtime_failure=failure.to_dict(),
         source_plan_hash=source_hash,
         source_build_state_hash=bs_hash,
-        target_patch_type=policy.preferred_patch_type,
+        target_patch_type=effective_patch_type,
         target_patch_id=target_envelope.patch_id,
         allowed_paths=list(policy.allowed_path_patterns),
         forbidden_paths=list(policy.forbidden_path_patterns),
@@ -417,6 +432,11 @@ def propose_source_binding_repair(
 
     if current_strategy != "active_fuel_box":
         operations.append({
+            "op": "test",
+            "path": "/source_strategy",
+            "value": current_strategy,
+        })
+        operations.append({
             "op": "replace",
             "path": "/source_strategy",
             "value": "active_fuel_box",
@@ -424,6 +444,11 @@ def propose_source_binding_repair(
         changed_paths.append("/source_strategy")
 
     if current_fiss is not True:
+        operations.append({
+            "op": "test",
+            "path": "/source_requires_fissionable_constraint",
+            "value": current_fiss,
+        })
         operations.append({
             "op": "replace",
             "path": "/source_requires_fissionable_constraint",
@@ -527,23 +552,15 @@ def _apply_operations_to_clone(
     content: dict[str, Any],
     operations: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Apply simple JSON-pointer replace/add operations to a deep clone."""
-    cloned = copy.deepcopy(content)
-    for op in operations:
-        path = op.get("path", "")
-        value = op.get("value")
-        action = op.get("op", "replace")
+    """Apply operations atomically via the repository-wide RFC6902 engine."""
+    from openmc_agent.repair_proposal import apply_json_patch_to_clone
 
-        # Simple top-level key operations for flat settings patches.
-        if path.startswith("/") and "/" not in path[1:]:
-            key = path[1:]
-            if action in ("replace", "add"):
-                cloned[key] = value
-            elif action == "remove" and key in cloned:
-                del cloned[key]
-        else:
-            raise ValueError(f"Unsupported operation path: {path}")
-    return cloned
+    result = apply_json_patch_to_clone(content, operations)
+    if not result.ok or result.plan is None:
+        raise ValueError(result.error or "RFC6902 patch application failed")
+    if not isinstance(result.plan, dict):
+        raise ValueError("RFC6902 patch result is not an object")
+    return result.plan
 
 
 # --------------------------------------------------------------------------- #
@@ -662,6 +679,21 @@ def evaluate_deterministic_runtime_repair(
             reasons=[f"Patch parse failed: {exc}"],
         )
 
+    patch_validation = validate_patch(parsed)
+    if not patch_validation.ok:
+        return RuntimeRepairEvaluation(
+            accepted=False,
+            disposition="candidate_rejected",
+            request_id=request.request_id,
+            proposal_id=proposal.proposal_id,
+            patch_hash_before=patch_hash_before,
+            patch_hash_after=patch_hash_after,
+            reasons=[
+                "Patch validation failed: "
+                + "; ".join(issue.message for issue in patch_validation.issues)
+            ],
+        )
+
     # Replace the patch in cloned state.
     cloned_env = target_envelope.model_copy(
         update={"content": repaired_content, "source": "repair"}
@@ -744,9 +776,58 @@ def evaluate_deterministic_runtime_repair(
                 reasons.append(f"Non-target patch {pid} ({env.patch_type}) was modified")
                 break
 
+    # A runtime repair is only acceptable after isolated candidate rendering
+    # and the minimum OpenMC check for the failure family.
+    candidate_artifacts: list[str] = []
+    runtime_recheck_ok = False
+    if output_dir is None:
+        reasons.append("No output_dir for isolated candidate runtime check")
+    else:
+        candidate_dir = Path(output_dir) / "runtime_repair" / "iteration_000" / "candidate"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from openmc_agent.renderers import choose_renderer
+            from openmc_agent.tools import export_xml, run_geometry_debug, run_smoke_test
+
+            renderer, capability = choose_renderer(repaired_plan)
+            if renderer is None or capability.renderability not in {"exportable", "runnable"}:
+                reasons.append("Candidate has no executable renderer")
+            else:
+                render_result = renderer.render(repaired_plan, candidate_dir)
+                if render_result.errors:
+                    reasons.extend(render_result.errors)
+                else:
+                    export_result = export_xml(candidate_dir / "model.py")
+                    candidate_artifacts.extend(export_result.artifacts)
+                    if not export_result.ok:
+                        reasons.append(export_result.error or "Candidate XML export failed")
+                    else:
+                        debug_result = run_geometry_debug(candidate_dir, repaired_plan)
+                        candidate_artifacts.extend(debug_result.artifacts)
+                        if not debug_result.ok:
+                            reasons.append(debug_result.error or "Candidate geometry debug failed")
+                        elif primary_code in {
+                            "runtime.openmc_source_rejection_failure",
+                            "runtime.source_default_z_extent",
+                            "runtime.source_not_in_active_fuel_region",
+                            "runtime.source_covers_nonfuel_axial_regions",
+                            "runtime.lost_particle",
+                        }:
+                            smoke_result = run_smoke_test(candidate_dir, repaired_plan)
+                            candidate_artifacts.extend(smoke_result.artifacts)
+                            if smoke_result.ok:
+                                runtime_recheck_ok = True
+                            else:
+                                reasons.append(smoke_result.error or "Candidate smoke test failed")
+                        else:
+                            runtime_recheck_ok = True
+        except Exception as exc:
+            reasons.append(f"Candidate runtime check failed: {exc}")
+
     # Acceptance conditions.
     accepted = (
         resolved
+        and runtime_recheck_ok
         and not new_blockers
         and plan_hash_after != request.source_plan_hash
         and facts_unchanged
@@ -779,8 +860,31 @@ def evaluate_deterministic_runtime_repair(
         remaining_issue_codes=[] if resolved else [primary_code],
         introduced_issue_codes=new_blockers,
         validation_after=repaired_report.model_dump(mode="json") if hasattr(repaired_report, "model_dump") else None,
+        artifacts=candidate_artifacts,
         reasons=reasons,
         duration_ms=elapsed,
+    )
+
+
+def evaluate_runtime_repair_candidate(
+    request: RuntimeRepairRequest,
+    proposal: DeterministicRuntimeRepairProposal,
+    state: Any,
+    *,
+    output_dir: str | Path | None = None,
+    prior_candidate_hashes: list[str] | None = None,
+) -> RuntimeRepairEvaluation:
+    """Unified runtime candidate evaluator for deterministic and LLM proposals.
+
+    Kept as the public R4 entry point. The legacy deterministic name remains
+    for compatibility with R2/R3 call sites.
+    """
+    return evaluate_deterministic_runtime_repair(
+        request,
+        proposal,
+        state,
+        output_dir=output_dir,
+        prior_candidate_hashes=prior_candidate_hashes,
     )
 
 
@@ -834,9 +938,13 @@ def commit_accepted_runtime_repair(
     # Mark status back to valid after repair (so assembly picks it up).
     build_state.mark_patch_status(target_id, "valid")
 
-    # Clear assembled plan to force re-assembly.
+    # Reassemble immediately from the repaired source patch. The graph must
+    # never render a stale assembled plan after a committed runtime repair.
+    from openmc_agent.plan_builder.state import assemble_state_if_ready
+
     build_state.assembled_plan = None
     build_state.validation_issues = []
+    build_state = assemble_state_if_ready(build_state, strict=True)
 
     # Record repair history.
     build_state.validation_repair_history.append({

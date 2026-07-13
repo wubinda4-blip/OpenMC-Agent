@@ -4665,7 +4665,7 @@ def _make_deterministic_runtime_repair_node(*, max_runtime_repairs: int = 1):
             build_runtime_repair_request,
             commit_accepted_runtime_repair,
             diagnose_source_runtime_failure,
-            evaluate_deterministic_runtime_repair,
+            evaluate_runtime_repair_candidate,
             propose_source_binding_repair,
         )
         from openmc_agent.runtime_repair_policy import get_repair_policy
@@ -4791,7 +4791,7 @@ def _make_deterministic_runtime_repair_node(*, max_runtime_repairs: int = 1):
 
         # Evaluate on clone.
         prior_hashes = state.get("runtime_repair_candidate_hashes", [])
-        evaluation = evaluate_deterministic_runtime_repair(
+        evaluation = evaluate_runtime_repair_candidate(
             request, proposal, build_state,
             output_dir=output_dir,
             prior_candidate_hashes=prior_hashes,
@@ -5126,14 +5126,127 @@ def _make_llm_runtime_propose_node(
             }
 
         proposal = validation.proposal
+        if proposal is None:
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+                **_trace_event_update(
+                    state,
+                    "runtime_llm_proposal_rejected",
+                    summary="Static validation produced no proposal",
+                ),
+            }
+
+        # A static LLM proposal is never sufficient. Reuse the deterministic
+        # clone evaluator, which renders and executes the isolated candidate.
+        if mode != "apply_if_safe":
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+                "runtime_llm_proposal": proposal.model_dump(mode="json"),
+                "runtime_llm_proposal_validation": validation.model_dump(mode="json"),
+                **_trace_event_update(
+                    state,
+                    "runtime_llm_proposal_accepted",
+                    summary="Static validation passed; mode does not permit commit",
+                ),
+            }
+
+        from openmc_agent.runtime_feedback import RuntimeFailure
+        from openmc_agent.runtime_repair import (
+            DeterministicRuntimeRepairProposal,
+            RuntimeRepairEvaluation,
+            build_runtime_repair_request,
+            commit_accepted_runtime_repair,
+            evaluate_runtime_repair_candidate,
+        )
+
+        primary = state.get("runtime_primary_failure", {})
+        failure = RuntimeFailure(
+            failure_id=primary.get("failure_id", ""),
+            stage=primary.get("stage", "execute_tools"),
+            tool_name=primary.get("tool_name", ""),
+            returncode=primary.get("returncode"),
+            primary_issue_code=primary.get("primary_issue_code", ""),
+            secondary_issue_codes=primary.get("secondary_issue_codes", []),
+            normalized_message=primary.get("normalized_message", ""),
+            raw_error_excerpt=primary.get("raw_error_excerpt", ""),
+            error_fingerprint=primary.get("error_fingerprint", ""),
+            classification=RuntimeFailureClass(primary.get("classification", "unknown")),
+        )
+        request_or_eval = build_runtime_repair_request(
+            failure,
+            _coerce_simulation_plan(state.get("simulation_plan")),
+            build_state,
+            state.get("tool_results", []),
+            state.get("output_dir"),
+            target_patch_type=validated.target_patch_type,
+            target_patch_id=validated.target_patch_id,
+            allow_llm_policy=True,
+        )
+        if isinstance(request_or_eval, RuntimeRepairEvaluation):
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+                "runtime_llm_evaluation": request_or_eval.model_dump(mode="json"),
+                **_trace_event_update(
+                    state,
+                    "runtime_llm_proposal_rejected",
+                    summary=f"Candidate request rejected: {request_or_eval.disposition}",
+                ),
+            }
+
+        repair_proposal = DeterministicRuntimeRepairProposal(
+            proposal_id=proposal.proposal_id,
+            request_id=request_or_eval.request_id,
+            target_patch_type=proposal.target_patch_type,
+            operations=proposal.operations,
+            diagnosis=proposal.rationale,
+            changed_paths=[
+                op["path"] for op in proposal.operations
+                if op.get("op") in {"add", "replace", "remove"}
+            ],
+            expected_effect=proposal.expected_effect,
+            provenance="llm_runtime_patch_proposer",
+            confidence=proposal.confidence,
+            deterministic_rule_id=proposal.repair_kind,
+        )
+        evaluation = evaluate_runtime_repair_candidate(
+            request_or_eval,
+            repair_proposal,
+            build_state,
+            output_dir=state.get("output_dir"),
+            prior_candidate_hashes=state.get("runtime_llm_candidate_hashes", []),
+        )
+        if not evaluation.accepted:
+            return {
+                "runtime_llm_proposal_count": proposal_count + 1,
+                "runtime_llm_proposal": proposal.model_dump(mode="json"),
+                "runtime_llm_proposal_validation": validation.model_dump(mode="json"),
+                "runtime_llm_evaluation": evaluation.model_dump(mode="json"),
+                **_trace_event_update(
+                    state,
+                    "runtime_llm_proposal_rejected",
+                    summary=f"Candidate OpenMC acceptance failed: {evaluation.disposition}",
+                    metadata={"artifacts": evaluation.artifacts},
+                ),
+            }
+
+        committed = commit_accepted_runtime_repair(
+            request_or_eval, repair_proposal, evaluation, build_state,
+        )
         return {
             "runtime_llm_proposal_count": proposal_count + 1,
             "runtime_llm_proposal": proposal.model_dump(mode="json") if proposal else {},
             "runtime_llm_proposal_validation": validation.model_dump(mode="json"),
+            "runtime_llm_evaluation": evaluation.model_dump(mode="json"),
+            "plan_build_state": committed.model_dump(mode="json"),
+            "simulation_plan": SimulationPlan.model_validate(committed.assembled_plan),
+            "runtime_repair_applied": True,
+            "runtime_committed_repair_count": state.get("runtime_committed_repair_count", 0) + 1,
+            "runtime_reexecution_count": state.get("runtime_reexecution_count", 0) + 1,
             **_trace_event_update(
                 state,
-                "runtime_llm_proposal_accepted",
-                summary=f"Static validation passed: {proposal.repair_kind if proposal else 'unknown'}",
+                "runtime_llm_repair_committed",
+                summary=f"Candidate accepted and committed: {proposal.repair_kind}",
+                metadata={"artifacts": evaluation.artifacts},
             ),
         }
 
