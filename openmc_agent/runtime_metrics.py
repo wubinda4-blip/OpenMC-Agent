@@ -259,6 +259,15 @@ def aggregate_real_campaign(
     vera3_acceptance = sum(1 for r in completed if r.get("vera3_acceptance_passed"))
     artifact_complete = sum(1 for r in completed if r.get("artifact_complete"))
 
+    # Artifact completeness for successful runs only (spec: all successful runs must have artifacts)
+    successful_artifact_complete = sum(
+        1 for r in successes if r.get("artifact_complete")
+    )
+    # Verification rates for successful runs only
+    successful_real_llm = sum(1 for r in successes if r.get("real_llm_verified"))
+    successful_real_openmc = sum(1 for r in successes if r.get("real_openmc_verified"))
+    successful_vera3 = sum(1 for r in successes if r.get("vera3_acceptance_passed"))
+
     # Cost metrics
     total_llm_calls = sum(int(r.get("llm_call_count", 0)) for r in completed)
     planning_calls = sum(int(r.get("planning_network_call_count", 0)) for r in completed)
@@ -330,6 +339,10 @@ def aggregate_real_campaign(
         "real_openmc_verification_rate": real_openmc_verified / denom if denom else 0.0,
         "vera3_acceptance_rate": vera3_acceptance / denom if denom else 0.0,
         "artifact_completeness_rate": artifact_complete / denom if denom else 0.0,
+        "successful_artifact_completeness_rate": successful_artifact_complete / max(1, len(successes)),
+        "successful_real_llm_rate": successful_real_llm / max(1, len(successes)),
+        "successful_real_openmc_rate": successful_real_openmc / max(1, len(successes)),
+        "successful_vera3_rate": successful_vera3 / max(1, len(successes)),
         "safe_stop_correctness_rate": len(safe_stops) / max(1, len(safe_stops) + len(infra_failures)),
         "unsafe_acceptance_rate": unsafe_accepted / denom if denom else 0.0,
         # Statistical intervals
@@ -401,6 +414,7 @@ def real_campaign_status(
     final_rate = metrics.get("final_success_rate", 0.0)
     unsafe_rate = metrics.get("unsafe_acceptance_rate", 1.0)
     artifact_rate = metrics.get("artifact_completeness_rate", 0.0)
+    successful_artifact_rate = metrics.get("successful_artifact_completeness_rate", artifact_rate)
 
     if completed == 0:
         return "VERA3B_REAL_LLM_PILOT_PENDING"
@@ -415,7 +429,7 @@ def real_campaign_status(
         accepted = (
             completed >= 10
             and final_rate >= 0.7
-            and artifact_rate == 1.0
+            and successful_artifact_rate == 1.0
         )
         return (
             "VERA3B_REAL_LLM_STABILITY_ACCEPTED"
@@ -424,7 +438,7 @@ def real_campaign_status(
         )
 
     # Pilot (N < 10): need at least 3 successful runs.
-    if completed >= 3 and final_rate >= 1.0 and artifact_rate == 1.0:
+    if completed >= 3 and final_rate >= 1.0 and successful_artifact_rate == 1.0:
         return "VERA3B_REAL_LLM_PILOT_PASSED"
     if completed >= 3:
         return "VERA3B_REAL_LLM_PILOT_FAILED"

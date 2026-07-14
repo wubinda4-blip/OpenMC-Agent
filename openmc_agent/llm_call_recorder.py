@@ -154,7 +154,12 @@ class LLMCallRecorder:
     # ------------------------------------------------------------------ #
 
     def wrap_planning_client(self, client: Any, client_instance_id: str) -> Any:
-        """Wrap a patch LLM client to record planning calls."""
+        """Wrap a patch LLM client to record planning calls.
+
+        The graph calls the client as a callable ``client(prompt) -> str``
+        or via ``generate_patch_json(prompt=..., patch_type=..., json_schema=...)``.
+        We intercept both paths.
+        """
         recorder = self
 
         class _PlanningWrapper:
@@ -165,9 +170,32 @@ class LLMCallRecorder:
             def __getattr__(self, name: str) -> Any:
                 return getattr(self._inner, name)
 
-            def generate_patch(
-                self, *args: Any, **kwargs: Any
-            ) -> Any:
+            def _record(self, started_iso: str, ts: float, success: bool,
+                        result: Any, err: str, prompt_text: str) -> None:
+                import time as _time
+                te = _time.perf_counter()
+                resp_chars = 0
+                if isinstance(result, str):
+                    resp_chars = len(result)
+                elif isinstance(result, dict):
+                    resp_chars = len(json.dumps(result, default=str))
+                elif result is not None:
+                    resp_chars = len(str(result))
+                recorder.record_call(
+                    role="planning_patch",
+                    task_name="patch",
+                    client_instance_id=self._client_id,
+                    started_at=started_iso,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    duration_ms=round((te - ts) * 1000, 1),
+                    success=success,
+                    response_chars=resp_chars,
+                    error_type=err,
+                    prompt_hash=hashlib.sha256(prompt_text.encode()).hexdigest()[:16],
+                    network_call_verified=success and not recorder._is_fake_provider(),
+                )
+
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 recorder.check_budget()
                 t0 = datetime.now(timezone.utc)
                 started = t0.isoformat()
@@ -177,7 +205,7 @@ class LLMCallRecorder:
                 err = ""
                 result: Any = None
                 try:
-                    result = self._inner.generate_patch(*args, **kwargs)
+                    result = self._inner(*args, **kwargs)
                     return result
                 except LLMBudgetExhausted:
                     raise
@@ -186,28 +214,33 @@ class LLMCallRecorder:
                     err = type(exc).__name__
                     raise
                 finally:
-                    te = _time.perf_counter()
-                    resp_chars = 0
-                    if isinstance(result, str):
-                        resp_chars = len(result)
-                    elif isinstance(result, dict):
-                        resp_chars = len(json.dumps(result, default=str))
-                    elif result is not None:
-                        resp_chars = len(str(result))
                     prompt_text = str(args) + str(kwargs)
-                    recorder.record_call(
-                        role="planning_patch",
-                        task_name=kwargs.get("patch_type", "patch"),
-                        client_instance_id=self._client_id,
-                        started_at=started,
-                        completed_at=datetime.now(timezone.utc).isoformat(),
-                        duration_ms=round((te - ts) * 1000, 1),
-                        success=success,
-                        response_chars=resp_chars,
-                        error_type=err,
-                        prompt_hash=hashlib.sha256(prompt_text.encode()).hexdigest()[:16],
-                        network_call_verified=success and not recorder._is_fake_provider(),
-                    )
+                    self._record(started, ts, success, result, err, prompt_text)
+
+            def generate_patch_json(self, *args: Any, **kwargs: Any) -> Any:
+                recorder.check_budget()
+                t0 = datetime.now(timezone.utc)
+                started = t0.isoformat()
+                import time as _time
+                ts = _time.perf_counter()
+                success = True
+                err = ""
+                result: Any = None
+                try:
+                    result = self._inner.generate_patch_json(*args, **kwargs)
+                    return result
+                except LLMBudgetExhausted:
+                    raise
+                except Exception as exc:
+                    success = False
+                    err = type(exc).__name__
+                    raise
+                finally:
+                    prompt_text = str(kwargs.get("prompt", ""))
+                    self._record(started, ts, success, result, err, prompt_text)
+
+            def generate_patch(self, *args: Any, **kwargs: Any) -> Any:
+                return self.__call__(*args, **kwargs)
 
         return _PlanningWrapper(client)
 
