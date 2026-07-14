@@ -1213,10 +1213,11 @@ def _validate_axial_overlays(
             if ov.total_mass_g is None or ov.total_mass_g <= 0:
                 issues.append(PatchValidationIssue(
                     code="patch.axial_overlays.total_mass_missing",
-                    severity="error",
+                    severity="warning",
                     message=(
                         f"overlay {ov.overlay_id!r} geometry_mode="
-                        "'mass_conserving_outer_frame' requires total_mass_g > 0"
+                        "'mass_conserving_outer_frame' has no total_mass_g; "
+                        "renderer will compute from frame geometry"
                     ),
                     path=f"overlays[{ov.overlay_id}].total_mass_g",
                 ))
