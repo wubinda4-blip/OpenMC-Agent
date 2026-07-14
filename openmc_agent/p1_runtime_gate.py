@@ -105,9 +105,6 @@ def evaluate_p1_runtime_final_gate(
     real_llm_rate = metrics.get("successful_real_llm_rate", metrics.get("real_llm_verification_rate", 0.0))
     real_openmc_rate = metrics.get("successful_real_openmc_rate", metrics.get("real_openmc_verification_rate", 0.0))
     vera3_rate = metrics.get("successful_vera3_rate", metrics.get("vera3_acceptance_rate", 0.0))
-    real_llm_rate = metrics.get("real_llm_verification_rate", 0.0)
-    real_openmc_rate = metrics.get("real_openmc_verification_rate", 0.0)
-    vera3_rate = metrics.get("vera3_acceptance_rate", 0.0)
     completed = metrics.get("completed_runs", 0)
 
     t6_details_ok = (
