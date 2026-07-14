@@ -225,13 +225,26 @@ def derive_localized_insert_loadings(
         loading_id = f"localized_insert_{intent.insert_id}"
         derived_lattice_id = f"assembly_lattice_{loading_id}"
 
-        # Check if loading already exists.
-        if any(l.loading_id == loading_id for l in all_loadings):
+        # Check if loading already exists (either from LLM or from previous derivation).
+        existing_loading = next(
+            (l for l in all_loadings
+             if l.loading_id == loading_id
+             or any(
+                 t.replacement_universe_id == intent.insert_universe_id
+                 for t in l.transformations
+             )
+             or intent.insert_universe_id in l.overrides),
+            None,
+        )
+        if existing_loading:
             issues.append({
                 "code": "localized_insert.loading_already_exists",
                 "severity": "info",
-                "message": f"Loading {loading_id!r} already exists",
+                "message": f"Loading for {intent.insert_id!r} (universe={intent.insert_universe_id!r}) "
+                           f"already exists as {existing_loading.loading_id!r}",
             })
+            # Use the existing loading_id for layer attachment.
+            loading_id = existing_loading.loading_id
         else:
             # Build transformation.
             transformation = LatticeTransformationPatchItem(

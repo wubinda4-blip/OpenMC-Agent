@@ -239,6 +239,11 @@ Rules:
 - Use sparse coordinate_override only for localized positions.
 - Use nested_component_override when an insert occupies the inside of an existing
   tube and the tube wall must remain.
+- IMPORTANT: If localized_insert_intents are declared in the pin_map, do NOT
+  create separate lattice_loadings for those inserts. The assembler automatically
+  derives loadings from localized_insert_intents. Only create lattice_loadings
+  for fuel-component-profile transformations (replace_universe_family) and
+  for inserts NOT declared as localized_insert_intents.
 - Use loading_ids when an axial layer requires more than one localized loading.
 - Spacer grids remain axial_overlays, not lattice transformations.
 - Component-profile layers (end_plug, plenum, gas_gap, shoulder_gap) must use lattice fill
