@@ -646,6 +646,133 @@ def render_openmc_smoke_test_script(plan: SimulationPlan) -> str:
     )
 
 
+def _reconcile_uo2_oxygen_scale(
+    composition: list,
+) -> list:
+    """Reconcile UO2 fuel composition when U and O percents are on different scales.
+
+    LLM-generated fuel commonly specifies enrichment as per-100-uranium-atom
+    values (e.g., U235=2.619, U238=97.381) while specifying oxygen as a
+    molecular ratio (O16=2.0, meaning 2 O atoms per U atom).  When OpenMC
+    normalises these ``ao`` values together, the effective O/U ratio becomes
+    ~0.02 instead of 2.0, producing uranium-metal-like fuel instead of UO2.
+
+    This function detects the mismatch (U percents sum ≈ 100, O16 ≈ 2.0)
+    and multiplies O16 by 100 to bring it onto the same scale.
+    """
+    _URANIUM_NUCLIDES = {"U233", "U234", "U235", "U236", "U238"}
+
+    percent_types = {c.percent_type for c in composition}
+    if len(percent_types) != 1:
+        return composition
+
+    u_entries = [c for c in composition if c.name in _URANIUM_NUCLIDES]
+    o_entries = [c for c in composition if c.name == "O16"]
+
+    if not u_entries or not o_entries:
+        return composition
+
+    u_sum = sum(c.percent for c in u_entries)
+    o_value = o_entries[0].percent
+
+    if u_sum > 50 and o_value < 10:
+        scale = u_sum / 100.0
+        corrected = []
+        for c in composition:
+            if c.name == "O16":
+                corrected.append(c.model_copy(update={"percent": o_value * scale * 100}))
+            else:
+                corrected.append(c)
+        return corrected
+
+    return composition
+
+
+def _reconcile_borated_water_boron(
+    composition: list,
+    density_value: float,
+    density_unit: str,
+) -> list:
+    """Correct boron atom fractions that encode ppm directly.
+
+    LLM-generated coolant commonly writes B10 ao=0.001066 when the intent is
+    "1066 ppm boron by weight".  This is 9× too high as an atom fraction.
+
+    Detection: water-like material (H1 ≈ 0.667, O16 ≈ 0.333) with B10 ao > 5e-4.
+    Correction: convert ppm → mass fraction → atom density → atom fraction.
+    """
+    if density_unit not in ("g/cm3", "g/cm³"):
+        return composition
+
+    percent_types = {c.percent_type for c in composition}
+    if percent_types != {"ao"}:
+        return composition
+
+    nuclide_map = {c.name: c for c in composition}
+    h1 = nuclide_map.get("H1")
+    o16 = nuclide_map.get("O16")
+    b10 = nuclide_map.get("B10")
+    b11 = nuclide_map.get("B11")
+
+    if not h1 or not o16 or not b10:
+        return composition
+
+    # Check water-like stoichiometry.
+    total_ao = sum(c.percent for c in composition)
+    h1_frac = h1.percent / total_ao
+    o16_frac = o16.percent / total_ao
+    if not (0.60 < h1_frac < 0.70 and 0.25 < o16_frac < 0.40):
+        return composition
+
+    # Check if B10 is implausibly high (> 5e-4 atom fraction is > 500 ppm).
+    b10_frac = b10.percent / total_ao
+    if b10_frac < 5e-4:
+        return composition  # Already reasonable.
+
+    # Decode ppm: the B10 ao value likely encodes ppm directly.
+    ppm_value = b10.percent * 1e6  # e.g., 0.001066 → 1066
+    if not (100 < ppm_value < 10000):
+        return composition  # Not a plausible ppm range.
+
+    # Compute correct atom fractions from ppm.
+    # ρ_water ≈ density_value g/cm³
+    # Boron mass per cm³ = ρ × ppm × 1e-6
+    # Total boron atom density = boron_mass / M_B × N_A × 1e-24
+    # Water atom density = ρ / M_H2O × 3 × N_A × 1e-24
+    N_A = 0.6022  # atoms/(barn·cm) per (g/cm³)/(g/mol)
+    M_B = 10.81
+    M_H2O = 18.015
+    B10_NATURAL = 0.199
+    B11_NATURAL = 0.801
+
+    boron_mass_frac = ppm_value * 1e-6
+    boron_atom_density = density_value * boron_mass_frac * N_A / M_B
+    b10_density = boron_atom_density * B10_NATURAL
+    b11_density = boron_atom_density * B11_NATURAL
+
+    # Total water atom density (without boron).
+    water_mass = density_value * (1 - boron_mass_frac)
+    water_atom_density = water_mass * N_A * 3 / M_H2O
+
+    total_atom_density = water_atom_density + boron_atom_density
+    b10_correct_frac = b10_density / total_atom_density
+    b11_correct_frac = b11_density / total_atom_density
+
+    # Scale B10 and B11 to correct atom fractions.
+    corrected = []
+    for c in composition:
+        if c.name == "B10":
+            corrected.append(c.model_copy(update={"percent": b10_correct_frac * total_ao}))
+        elif c.name == "B11":
+            if b11:
+                corrected.append(c.model_copy(update={"percent": b11_correct_frac * total_ao}))
+            else:
+                corrected.append(c)
+        else:
+            corrected.append(c)
+    return corrected
+
+
 def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
     lines = [
         f'{variable_name} = openmc.Material(name={spec.name!r})',
@@ -664,7 +791,10 @@ def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
             f"{spec.chemical_formula!r}{enrichment_args})"
         )
     else:
-        for component in spec.composition:
+        reconciled = _reconcile_uo2_oxygen_scale(spec.composition)
+        reconciled = _reconcile_borated_water_boron(
+            reconciled, spec.density_value, spec.density_unit)
+        for component in reconciled:
             if component.kind == "element" or _is_element_symbol(component.name):
                 lines.append(
                     f"{variable_name}.add_element("
@@ -1250,7 +1380,10 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
             f"{enrichment_args})"
         )
     elif spec.composition:
-        for component in spec.composition:
+        reconciled = _reconcile_uo2_oxygen_scale(spec.composition)
+        reconciled = _reconcile_borated_water_boron(
+            reconciled, spec.density_value, spec.density_unit)
+        for component in reconciled:
             if component.kind == "element" or _is_element_symbol(component.name):
                 lines.append(
                     f"{variable_name}.add_element("
