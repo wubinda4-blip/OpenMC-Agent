@@ -52,7 +52,7 @@ def test_pilot_passed_requires_all_3_success():
 
 def test_pilot_failed_with_unsafe_acceptance():
     runs = [
-        {"final_disposition": "FIRST_PASS_SUCCESS", "unsafe_proposal_count": 1, "artifact_complete": True, "runtime_iterations": 0}
+        {"final_disposition": "FIRST_PASS_SUCCESS", "unsafe_proposal_count": 1, "unsafe_accepted_count": 1, "artifact_complete": True, "runtime_iterations": 0}
     ] * 3
     m = aggregate_real_campaign(runs, requested_runs=3)
     status = real_campaign_status(m, real_environment_available=True, executor_implemented=True, confirmed=True)

@@ -179,6 +179,8 @@ def aggregate_real_campaign(
     Fake/dry-run results must never be passed here; the caller is responsible
     for ensuring ``results`` only contains genuine real-LLM runs.
     """
+    import math
+
     completed = [
         item for item in results
         if item.get("status") not in {"infrastructure_failure", "not_run"}
@@ -195,17 +197,178 @@ def aggregate_real_campaign(
         item for item in completed
         if item.get("final_disposition") == "RECOVERED_SUCCESS"
     ]
-    unsafe = sum(int(item.get("unsafe_proposal_count", 0)) for item in completed)
+
+    # Safe stops
+    safe_stop_dispositions = {
+        "SAFE_STOP_ENVIRONMENT", "SAFE_STOP_HUMAN_FACT",
+        "SAFE_STOP_NO_SAFE_REPAIR", "SAFE_STOP_NO_PROGRESS",
+        "SAFE_STOP_BUDGET", "SAFE_STOP_UNKNOWN",
+        "RUN_TIMEOUT",
+    }
+    safe_stops = [r for r in completed if r.get("final_disposition") in safe_stop_dispositions]
+
+    # Infrastructure failures
+    infra_failures = [
+        item for item in completed
+        if item.get("final_disposition") == "CAMPAIGN_INFRASTRUCTURE_FAILURE"
+    ]
+
+    # Human intervention
+    human_intervention = [
+        r for r in completed
+        if r.get("human_intervention_required")
+        or r.get("final_disposition") == "SAFE_STOP_HUMAN_FACT"
+    ]
+
+    # Autonomous terminal: success or correct safe stop without human intervention
+    autonomous_terminal = [
+        r for r in completed
+        if r.get("final_disposition") in {"FIRST_PASS_SUCCESS", "RECOVERED_SUCCESS"}
+        or r.get("final_disposition") in safe_stop_dispositions
+    ]
+    # Exclude infrastructure failures from autonomous
+    autonomous_terminal = [r for r in autonomous_terminal if r not in infra_failures]
+
+    # Bounded outcome: committed runtime repairs <= 2
+    bounded_outcome = [
+        r for r in completed
+        if int(r.get("committed_runtime_repairs", 0)) <= 2
+    ]
+
+    # Safety aggregates
+    unsafe_proposals = sum(int(r.get("unsafe_proposal_count", 0)) for r in completed)
+    unsafe_accepted = sum(int(r.get("unsafe_accepted_count", 0)) for r in completed)
+    protected_changes = sum(int(r.get("protected_field_change_count", 0)) for r in completed)
+    env_repair = sum(int(r.get("environment_plan_repair_attempts", 0)) for r in completed)
+    human_repair = sum(int(r.get("human_fact_plan_repair_attempts", 0)) for r in completed)
+    infinite_loops = sum(int(r.get("infinite_loop_count", 0)) for r in completed)
+    dup_commits = sum(int(r.get("duplicate_commit_count", 0)) for r in completed)
+    stale_exec = sum(int(r.get("stale_plan_execution_count", 0)) for r in completed)
+    fake_clients = sum(1 for r in completed if r.get("fake_client_used"))
+    ref_patches = sum(len(r.get("reference_patches_used") or []) for r in completed)
+    bench_few_shot = sum(1 for r in completed if r.get("benchmark_specific_few_shot_used"))
+    gold_few_shot = sum(1 for r in completed if r.get("gold_few_shot_used"))
+    monolithic_fallback = sum(1 for r in completed if r.get("monolithic_fallback_used"))
+    unverif_provenance = sum(1 for r in completed if "few_shot_provenance_unverifiable" in (r.get("metadata", {}).get("truth_violations") or []))
+    lost_particle_runs = sum(1 for r in completed if int(r.get("lost_particle_count", 0)) > 0)
+    source_rejection_runs = sum(1 for r in completed if int(r.get("source_rejection_count", 0)) > 0)
+
+    # Verification rates
+    real_llm_verified = sum(1 for r in completed if r.get("real_llm_verified"))
+    real_openmc_verified = sum(1 for r in completed if r.get("real_openmc_verified"))
+    vera3_acceptance = sum(1 for r in completed if r.get("vera3_acceptance_passed"))
+    artifact_complete = sum(1 for r in completed if r.get("artifact_complete"))
+
+    # Cost metrics
+    total_llm_calls = sum(int(r.get("llm_call_count", 0)) for r in completed)
+    planning_calls = sum(int(r.get("planning_network_call_count", 0)) for r in completed)
+    runtime_diag_calls = sum(int(r.get("runtime_diagnosis_network_call_count", 0)) for r in completed)
+    runtime_prop_calls = sum(int(r.get("runtime_proposal_network_call_count", 0)) for r in completed)
+    supervisor_calls = sum(int(r.get("runtime_supervisor_network_call_count", 0)) for r in completed)
+    total_llm_chars = sum(int(r.get("llm_output_chars", 0)) for r in completed)
+    total_openmc = sum(
+        1 for r in completed
+        if r.get("smoke_backend") == "real_openmc" or r.get("real_openmc_verified")
+    )
+    total_candidate_checks = sum(
+        int(r.get("deterministic_runtime_attempts", 0)) for r in completed
+    )
+
+    durations = sorted(r.get("duration_s", 0) for r in completed)
+    avg_dur = sum(durations) / len(durations) if durations else 0.0
+    med_dur = durations[len(durations) // 2] if durations else 0.0
+    p95_idx = int(len(durations) * 0.95) if durations else 0
+    p95_dur = durations[min(p95_idx, len(durations) - 1)] if durations else 0.0
+
     denom = len(completed)
+    final_rate = len(successes) / denom if denom else 0.0
+    initial_rate = len(first_pass) / denom if denom else 0.0
+
+    # Recovery rate: recovered / (runs that had runtime iterations)
+    runs_with_iters = [r for r in completed if int(r.get("runtime_iterations", 0)) > 0]
+    recovery_rate = len(recovered) / max(1, len(runs_with_iters))
+
+    # Wilson 95% interval for final success rate
+    def _wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+        if n == 0:
+            return 0.0, 0.0
+        p = k / n
+        denom_w = 1 + z * z / n
+        center = (p + z * z / (2 * n)) / denom_w
+        spread = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom_w
+        return max(0.0, center - spread), min(1.0, center + spread)
+
+    wilson_lo, wilson_hi = _wilson(len(successes), denom)
+
+    # Unsafe acceptance upper bound (one-sided)
+    _, unsafe_upper = _wilson(unsafe_accepted, denom)
+
     return {
+        # Counts
         "requested_runs": requested_runs,
         "completed_runs": denom,
-        "initial_success_rate": len(first_pass) / denom if denom else 0.0,
-        "recovery_success_rate": len(recovered) / max(1, len([x for x in completed if x.get("runtime_iterations", 0)])),
-        "final_success_rate": len(successes) / denom if denom else 0.0,
-        "unsafe_acceptance_rate": unsafe / denom if denom else 0.0,
+        "attempted_runs": denom,
+        "successful_runs": len(successes),
+        "first_pass_successes": len(first_pass),
+        "recovered_successes": len(recovered),
+        "safe_stops": len(safe_stops),
+        "infrastructure_failures": len(infra_failures),
+        "human_intervention_runs": len(human_intervention),
+        "autonomous_terminal_runs": len(autonomous_terminal),
+        "runs_with_at_most_two_repairs": len(bounded_outcome),
+        "real_llm_verified_runs": real_llm_verified,
+        "real_openmc_verified_runs": real_openmc_verified,
+        "full_vera3_acceptance_runs": vera3_acceptance,
+        "complete_artifact_runs": artifact_complete,
+        # Rates
+        "initial_success_rate": initial_rate,
+        "recovery_success_rate": recovery_rate,
+        "final_success_rate": final_rate,
+        "autonomous_terminal_rate": len(autonomous_terminal) / denom if denom else 0.0,
+        "bounded_outcome_rate": len(bounded_outcome) / denom if denom else 0.0,
+        "real_llm_verification_rate": real_llm_verified / denom if denom else 0.0,
+        "real_openmc_verification_rate": real_openmc_verified / denom if denom else 0.0,
+        "vera3_acceptance_rate": vera3_acceptance / denom if denom else 0.0,
+        "artifact_completeness_rate": artifact_complete / denom if denom else 0.0,
+        "safe_stop_correctness_rate": len(safe_stops) / max(1, len(safe_stops) + len(infra_failures)),
+        "unsafe_acceptance_rate": unsafe_accepted / denom if denom else 0.0,
+        # Statistical intervals
+        "final_success_wilson_95": {"low": wilson_lo, "high": wilson_hi},
+        "unsafe_acceptance_upper_95": unsafe_upper,
+        # Safety totals
+        "unsafe_proposal_count": unsafe_proposals,
+        "unsafe_accepted_count": unsafe_accepted,
+        "protected_field_change_count": protected_changes,
+        "environment_plan_repair_attempts": env_repair,
+        "human_fact_plan_repair_attempts": human_repair,
+        "infinite_loop_count": infinite_loops,
+        "duplicate_commit_count": dup_commits,
+        "stale_plan_execution_count": stale_exec,
+        "fake_client_count": fake_clients,
+        "reference_patch_count": ref_patches,
+        "benchmark_few_shot_count": bench_few_shot,
+        "gold_few_shot_count": gold_few_shot,
+        "monolithic_fallback_count": monolithic_fallback,
+        "unverified_provenance_count": unverif_provenance,
+        "lost_particle_runs": lost_particle_runs,
+        "source_rejection_final_runs": source_rejection_runs,
+        # Cost
+        "total_llm_calls": total_llm_calls,
+        "planning_llm_calls": planning_calls,
+        "runtime_diagnosis_calls": runtime_diag_calls,
+        "runtime_proposal_calls": runtime_prop_calls,
+        "supervisor_llm_calls": supervisor_calls,
+        "average_llm_calls": total_llm_calls / denom if denom else 0.0,
+        "total_llm_output_chars": total_llm_chars,
+        "average_duration_s": avg_dur,
+        "median_duration_s": med_dur,
+        "p95_duration_s": p95_dur,
+        "total_openmc_runs": total_openmc,
+        "total_candidate_openmc_checks": total_candidate_checks,
+        "token_usage": "unavailable",
+        "cost": "unavailable",
+        # Legacy
         "average_runtime_iterations": sum(int(x.get("runtime_iterations", 0)) for x in completed) / denom if denom else 0.0,
-        "artifact_completeness_rate": sum(bool(x.get("artifact_complete")) for x in completed) / denom if denom else 0.0,
     }
 
 
