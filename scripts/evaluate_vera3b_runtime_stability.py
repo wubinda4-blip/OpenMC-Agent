@@ -31,24 +31,35 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--full-acceptance", action="store_true",
-                        help="Use full VERA3B acceptance check (default: basic)")
+                        help="Use full VERA3B acceptance check (auto-forced for qualification)")
     args = parser.parse_args()
 
     default_runs = {"pilot": 3, "qualification": 10, "extended": 30}[args.profile]
     runs = args.runs or default_runs
 
-    # Build VERA3 acceptance callback.
+    # Full acceptance is mandatory for qualification profile.
+    require_full_acceptance = args.profile == "qualification"
+    use_full_acceptance = args.full_acceptance or require_full_acceptance
+
     vera3_callback = None
-    if args.full_acceptance:
+    if use_full_acceptance:
         try:
             from openmc_agent.campaign_eval.vera3_campaign_acceptance import (
                 make_vera3b_acceptance_callback,
+                FullAcceptanceLoadError,
             )
             vera3_callback = make_vera3b_acceptance_callback()
-        except Exception:
-            pass
+        except FullAcceptanceLoadError as exc:
+            if require_full_acceptance:
+                print(f"ERROR: Full acceptance is mandatory for qualification but failed to load: {exc}",
+                      file=sys.stderr)
+                return 2
+        except Exception as exc:
+            if require_full_acceptance:
+                print(f"ERROR: Full acceptance load error: {exc}", file=sys.stderr)
+                return 2
 
-    if vera3_callback is None:
+    if vera3_callback is None and not use_full_acceptance:
         def vera3_callback(plan):
             if plan is None:
                 return False, ["no_plan"]

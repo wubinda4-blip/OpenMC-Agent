@@ -1,8 +1,8 @@
 """Evaluation-only VERA3B campaign acceptance adapter.
 
-This module bridges the test-only ``tests/helpers/vera3_acceptance.py``
-helpers into the evaluation pipeline. It provides a callback that can be
-passed to ``run_real_campaign`` without importing test code into production.
+Bridges the test-only ``tests/helpers/vera3_acceptance.py`` helpers into
+the evaluation pipeline. Provides a callback that can be passed to
+``run_real_campaign`` without importing test code into production.
 
 The acceptance check covers three levels:
   A. Plan-level (pin map, lattice, axial layers, materials)
@@ -15,12 +15,29 @@ never from production prompts or hardcoded rules.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 
-_ACCEPTANCE_CONTRACT_VERSION = "1.0.0"
+_ACCEPTANCE_CONTRACT_VERSION = "2.0.0"
+
+
+class FullAcceptanceLoadError(RuntimeError):
+    """Raised when full VERA3B acceptance cannot be loaded."""
+
+
+def _ensure_test_helpers_importable() -> None:
+    """Ensure tests.helpers.vera3_acceptance is importable.
+
+    Uses the repo root (computed from this file's location) rather than a
+    fragile relative ``Path("tests/helpers")`` lookup.
+    """
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
 
 
 def make_vera3b_acceptance_callback(
@@ -29,19 +46,24 @@ def make_vera3b_acceptance_callback(
     """Create a VERA3B acceptance callback for use in real campaigns.
 
     Returns a ``(plan) -> (passed, issue_codes)`` callable.
+
+    Raises :class:`FullAcceptanceLoadError` if the test helpers cannot be
+    imported (instead of silently falling back to a basic check).
     """
-    import sys
+    _ensure_test_helpers_importable()
 
-    tests_helpers = Path("tests/helpers")
-    if tests_helpers.exists() and str(tests_helpers.parent) not in sys.path:
-        sys.path.insert(0, str(tests_helpers.parent))
-
-    def _callback(plan: Any) -> tuple[bool, list[str]]:
-        from tests.helpers.vera3_acceptance import (
+    try:
+        from tests.helpers.vera3_acceptance import (  # noqa: F401
             validate_vera3_plan_structure,
             load_vera3_reference,
         )
+    except ImportError as exc:
+        raise FullAcceptanceLoadError(
+            f"Cannot import tests.helpers.vera3_acceptance: {exc}. "
+            "Full acceptance requires the test infrastructure to be available."
+        ) from exc
 
+    def _callback(plan: Any) -> tuple[bool, list[str]]:
         if plan is None:
             return False, ["no_plan"]
 
@@ -77,11 +99,7 @@ def evaluate_vera3_acceptance(
     xml_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Full VERA3B acceptance evaluation returning structured output."""
-    import sys
-
-    tests_helpers = Path("tests/helpers")
-    if tests_helpers.exists() and str(tests_helpers.parent) not in sys.path:
-        sys.path.insert(0, str(tests_helpers.parent))
+    _ensure_test_helpers_importable()
 
     from tests.helpers.vera3_acceptance import (
         validate_vera3_plan_structure,

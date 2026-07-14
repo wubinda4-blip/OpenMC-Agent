@@ -48,6 +48,14 @@ class SeedRunResult:
     geometry_hash: str
     materials_hash: str
     settings_hash: str
+    canonical_settings_hash_excluding_seed: str = ""
+    requested_seed: int = 0
+    effective_seed: int = 0
+    requested_batches: int = 0
+    effective_batches: int = 0
+    requested_particles: int = 0
+    effective_particles: int = 0
+    settings_diff_summary: str = ""
     error: str = ""
 
 
@@ -71,6 +79,41 @@ class TransportSeedStabilityResult:
 
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def canonical_settings_hash_excluding_seed(settings_path: Path) -> str:
+    """Compute a canonical SHA-256 of settings.xml ignoring the <seed> element.
+
+    Parses the XML, removes or normalises the ``<seed>`` element, serialises
+    canonically, and hashes. Two settings files that differ only in ``<seed>``
+    will produce the same hash.
+    """
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(settings_path)
+    root = tree.getroot()
+
+    seed_elem = root.find("seed")
+    if seed_elem is not None:
+        root.remove(seed_elem)
+
+    canonical = ET.tostring(root, encoding="unicode")
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _read_settings_int(settings_path: Path, tag: str) -> int:
+    """Read an integer setting from settings.xml, return 0 if absent."""
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(settings_path)
+    root = tree.getroot()
+    elem = root.find(tag)
+    if elem is not None and elem.text:
+        try:
+            return int(elem.text)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _select_seed_model(
@@ -149,7 +192,18 @@ def run_single_seed(
     batches: int = 20,
     particles: int = 10000,
 ) -> SeedRunResult:
-    """Run OpenMC with a specific seed on a fixed model."""
+    """Run OpenMC with a specific seed on a fixed model.
+
+    Explicitly writes ``seed``, ``batches``, and ``particles`` into
+    ``settings.xml`` so that the effective settings are deterministic and
+    verifiable across seed runs.
+
+    The random seed comes from ``<seed>`` in ``settings.xml``.
+    ``OMP_NUM_THREADS=4`` controls OpenMP threads; the ``openmc`` command
+    is invoked **without** ``-s`` to avoid parameter confusion.
+    """
+    import xml.etree.ElementTree as ET
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy XML files.
@@ -159,27 +213,47 @@ def run_single_seed(
         if src.exists():
             shutil.copy2(src, dst)
 
-    # Modify settings.xml to change seed.
+    # Modify settings.xml: set seed, batches, particles, inactive.
     settings_path = output_dir / "settings.xml"
     if settings_path.exists():
-        import xml.etree.ElementTree as ET
         tree = ET.parse(settings_path)
         root = tree.getroot()
+
+        # Seed.
         seed_elem = root.find("seed")
         if seed_elem is None:
             seed_elem = ET.SubElement(root, "seed")
         seed_elem.text = str(seed)
+
+        # Batches.
+        batches_elem = root.find("batches")
+        if batches_elem is None:
+            batches_elem = ET.SubElement(root, "batches")
+        batches_elem.text = str(batches)
+
+        # Particles.
+        particles_elem = root.find("particles")
+        if particles_elem is None:
+            particles_elem = ET.SubElement(root, "particles")
+        particles_elem.text = str(particles)
+
+        # Inactive (keep existing or default to 5).
+        inactive_elem = root.find("inactive")
+        if inactive_elem is None:
+            inactive_elem = ET.SubElement(root, "inactive")
+            inactive_elem.text = "5"
+
         tree.write(settings_path)
 
     started = datetime.now(timezone.utc).isoformat()
     t0 = time.perf_counter()
 
-    # Run OpenMC with limited threads to avoid resource exhaustion.
-    # The seed is already set in settings.xml; -s controls threads.
+    # Run OpenMC.  OMP_NUM_THREADS controls threads.
+    # We do NOT use ``-s`` (which means threads, not seed) to avoid confusion.
     env = os.environ.copy()
     env["OMP_NUM_THREADS"] = "4"
 
-    cmd = ["openmc", "-s", "4"]
+    cmd = ["openmc"]
     proc = subprocess.run(
         cmd,
         cwd=str(output_dir),
@@ -196,7 +270,6 @@ def run_single_seed(
     log_path.write_text(proc.stdout + proc.stderr, encoding="utf-8")
 
     # Extract results.
-    # Find statepoint file dynamically (batches may differ from requested).
     sp_files = sorted(output_dir.glob("statepoint.*.h5"))
     sp_path = sp_files[-1] if sp_files else Path()
 
@@ -207,10 +280,16 @@ def run_single_seed(
     lost = _count_lost_particles(log_path)
     rejections = _count_source_rejections(log_path)
 
-    # Compute hashes (excluding settings which differs by seed).
+    # Compute hashes.
     geo_hash = _file_sha256(output_dir / "geometry.xml") if (output_dir / "geometry.xml").exists() else ""
     mat_hash = _file_sha256(output_dir / "materials.xml") if (output_dir / "materials.xml").exists() else ""
     set_hash = _file_sha256(output_dir / "settings.xml") if (output_dir / "settings.xml").exists() else ""
+    canon_hash = canonical_settings_hash_excluding_seed(settings_path) if settings_path.exists() else ""
+
+    # Read effective settings back from the (possibly rewritten) file.
+    effective_seed = _read_settings_int(settings_path, "seed") if settings_path.exists() else 0
+    effective_batches = _read_settings_int(settings_path, "batches") if settings_path.exists() else 0
+    effective_particles = _read_settings_int(settings_path, "particles") if settings_path.exists() else 0
 
     return SeedRunResult(
         seed=seed,
@@ -227,6 +306,17 @@ def run_single_seed(
         geometry_hash=geo_hash,
         materials_hash=mat_hash,
         settings_hash=set_hash,
+        canonical_settings_hash_excluding_seed=canon_hash,
+        requested_seed=seed,
+        effective_seed=effective_seed,
+        requested_batches=batches,
+        effective_batches=effective_batches,
+        requested_particles=particles,
+        effective_particles=effective_particles,
+        settings_diff_summary=(
+            f"requested: seed={seed}, batches={batches}, particles={particles}; "
+            f"effective: seed={effective_seed}, batches={effective_batches}, particles={effective_particles}"
+        ),
         error="" if proc.returncode == 0 and keff > 0 else f"returncode={proc.returncode}, keff={keff}",
     )
 
@@ -336,6 +426,14 @@ def evaluate_transport_seed_stability(
     result.geometry_hashes_match = len(geo_hashes) <= 1
     result.materials_hashes_match = len(mat_hashes) <= 1
 
+    # Canonical settings hash (excluding seed) must also match.
+    canon_hashes = {
+        r.canonical_settings_hash_excluding_seed
+        for r in result.seed_results
+        if r.canonical_settings_hash_excluding_seed
+    }
+    result.settings_hashes_match = len(canon_hashes) <= 1
+
     # Compute statistics.
     keffs = [r.keff for r in result.seed_results if r.keff > 0]
     if keffs:
@@ -400,14 +498,14 @@ def _write_result(output_dir: Path, result: TransportSeedStabilityResult) -> Non
         "",
         "## Per-Seed Results",
         "",
-        "| Seed | keff | std | Lost | Rej | RC | Duration |",
-        "|------|------|-----|------|-----|-----|----------|",
+        "| Seed | keff | std | Lost | Rej | RC | Batches | Particles | Duration |",
+        "|------|------|-----|------|-----|-----|---------|-----------|----------|",
     ]
     for r in result.seed_results:
         lines.append(
             f"| {r.seed} | {r.keff:.5f} | {r.keff_std:.5f} | "
             f"{r.lost_particles} | {r.source_rejections} | "
-            f"{r.returncode} | {r.duration_s:.0f}s |"
+            f"{r.returncode} | {r.effective_batches} | {r.effective_particles} | {r.duration_s:.0f}s |"
         )
 
     lines.extend([
@@ -419,6 +517,7 @@ def _write_result(output_dir: Path, result: TransportSeedStabilityResult) -> Non
         f"- Max pairwise z: {result.max_pairwise_z:.2f}",
         f"- Geometry hashes match: {result.geometry_hashes_match}",
         f"- Materials hashes match: {result.materials_hashes_match}",
+        f"- Canonical settings hashes match (excl seed): {result.settings_hashes_match}",
         "",
         "## Pairwise z-scores",
         "",
