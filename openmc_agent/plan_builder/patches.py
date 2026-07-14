@@ -196,13 +196,73 @@ class CoordinateConvention(_PatchBase):
     ordering: Literal["row_col", "x_y", "unknown"] = "row_col"
 
 
+class LocalizedInsertIntentPatchItem(_PatchBase):
+    """Declares a finite axial insert that replaces part of a host path
+    within a specific z interval.
+
+    Unlike base pin-map groups (guide_tube_coords, etc.) which persist for
+    the full assembly height, a localized insert only affects its declared
+    z range.  Outside that range the host path keeps its base universe.
+
+    Examples: Pyrex poison rods, thimble plugs, control-rod inserts,
+    discrete absorbers.
+    """
+
+    insert_id: str
+    insert_kind: Literal[
+        "pyrex_rod",
+        "thimble_plug",
+        "absorber_insert",
+        "control_rod",
+        "instrumentation_insert",
+        "custom",
+    ]
+    host_kind: Literal["guide_tube", "instrument_tube", "custom"] = "guide_tube"
+    host_universe_id: str | None = None
+    insert_universe_id: str
+
+    coordinates: list[tuple[int, int]] = Field(default_factory=list)
+
+    z_min_cm: float | None = None
+    z_max_cm: float | None = None
+
+    application_mode: Literal[
+        "nested_component_override",
+        "coordinate_override",
+    ] = "nested_component_override"
+
+    component_role: str | None = None
+    component_path_id: str | None = None
+    preserve_component_roles: list[str] = Field(default_factory=list)
+    preserve_path_ids: list[str] = Field(default_factory=list)
+
+    priority: int = 0
+
+    source_note: str | None = None
+    requires_human_confirmation: bool = False
+    assumptions: list[str] = Field(default_factory=list)
+
+
 class PinMapPatch(_PatchBase):
     """Pin map replacement rules (not a full expanded lattice).
 
     Instead of a 17×17 = 289-entry ``universe_pattern``, this patch only lists
-    the *special* positions (guide tubes, pyrex rods, ...).  The default
+    the *special* positions (guide tubes, instrument tubes, ...).  The default
     universe fills everything else.  The assembler (Phase 3) will expand this
     into the full lattice.
+
+    **Base path groups** (``guide_tube_coords``, ``instrument_tube_coords``,
+    ``water_cell_coords``) define persistent paths that exist for the full
+    assembly height.
+
+    **Localized insert intents** (``localized_insert_intents``) declare
+    finite-height inserts (Pyrex, thimble plugs, absorbers) that only affect
+    a specific z range within a host path.  Their coordinates must be a subset
+    of a base path group (typically guide_tube_coords).
+
+    Legacy fields ``pyrex_rod_coords`` and ``thimble_plug_coords`` are kept
+    for backward compatibility but should not be used for new Lane B output.
+    Use ``localized_insert_intents`` instead.
     """
 
     patch_type: Literal["pin_map"] = "pin_map"
@@ -213,11 +273,27 @@ class PinMapPatch(_PatchBase):
         default_factory=CoordinateConvention
     )
 
+    # --- Base path groups (persistent, full-height) ---
     guide_tube_coords: list[tuple[int, int]] = Field(default_factory=list)
     instrument_tube_coords: list[tuple[int, int]] = Field(default_factory=list)
-    pyrex_rod_coords: list[tuple[int, int]] = Field(default_factory=list)
-    thimble_plug_coords: list[tuple[int, int]] = Field(default_factory=list)
     water_cell_coords: list[tuple[int, int]] = Field(default_factory=list)
+
+    # --- Localized insert intents (finite-height, within a host path) ---
+    localized_insert_intents: list[LocalizedInsertIntentPatchItem] = Field(
+        default_factory=list,
+        description="Finite axial inserts (Pyrex, thimble plugs, etc.). "
+        "Coordinates must be a subset of a base path group.",
+    )
+
+    # --- Legacy fields (backward compat, not for new Lane B output) ---
+    pyrex_rod_coords: list[tuple[int, int]] = Field(
+        default_factory=list,
+        description="[LEGACY] Use localized_insert_intents with insert_kind='pyrex_rod' instead.",
+    )
+    thimble_plug_coords: list[tuple[int, int]] = Field(
+        default_factory=list,
+        description="[LEGACY] Use localized_insert_intents with insert_kind='thimble_plug' instead.",
+    )
 
     assumptions: list[str] = Field(default_factory=list)
     source_note: str | None = None

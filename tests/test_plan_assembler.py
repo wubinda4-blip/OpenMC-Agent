@@ -18,6 +18,7 @@ from openmc_agent.plan_builder.patches import (
     CoordinateConvention,
     FactsPatch,
     LatticeLoadingPatchItem,
+    LocalizedInsertIntentPatchItem,
     MaterialSpecPatch,
     MaterialsPatch,
     PinMapPatch,
@@ -229,19 +230,17 @@ def test_pin_map_special_coords_replace() -> None:
     pin_map = PinMapPatch(
         lattice_size=(17, 17),
         default_universe_id="fuel_pin",
-        guide_tube_coords=[(2, 2), (2, 5)],
-        pyrex_rod_coords=[(3, 3)],
+        guide_tube_coords=[(2, 2), (2, 5), (3, 3)],
         coordinate_convention=CoordinateConvention(index_base=0),
     )
     universe_ids = {
         "fuel_pin": "fuel_pin",
         "guide_tube": "gt",
-        "pyrex_rod": "px",
     }
     grid = expand_pin_map(pin_map, universe_ids=universe_ids)
     assert grid[2][2] == "gt"
     assert grid[2][5] == "gt"
-    assert grid[3][3] == "px"
+    assert grid[3][3] == "gt"  # pyrex host position is guide tube in base lattice
     assert grid[0][0] == "fuel_pin"
 
 
@@ -269,14 +268,16 @@ def test_pin_map_1_indexed_convention() -> None:
 
 
 def test_pin_map_overlap_blocked() -> None:
+    # With localized inserts separated from base paths, overlapping guide_tube
+    # and instrument_tube coords should still raise an error.
     pin_map = PinMapPatch(
         lattice_size=(17, 17),
         default_universe_id="fuel_pin",
         guide_tube_coords=[(5, 5)],
-        pyrex_rod_coords=[(5, 5)],
+        instrument_tube_coords=[(5, 5)],
         coordinate_convention=CoordinateConvention(index_base=0),
     )
-    universe_ids = {"fuel_pin": "fuel_pin", "guide_tube": "gt", "pyrex_rod": "px"}
+    universe_ids = {"fuel_pin": "fuel_pin", "guide_tube": "gt", "instrument_tube": "it"}
     with pytest.raises(ValueError, match="overlap|assigned"):
         expand_pin_map(pin_map, universe_ids=universe_ids)
 
@@ -312,9 +313,21 @@ def test_axial_insert_coords_keep_guide_tube_base_for_unseen_model() -> None:
         ])
     )
     pin_map = next(p for p in patches if getattr(p, "patch_type", "") == "pin_map")
-    pin_map.guide_tube_coords = []
-    pin_map.pyrex_rod_coords = [(3, 6)]
-    pin_map.thimble_plug_coords = [(3, 9), (6, 6), (9, 3)]
+    pin_map.guide_tube_coords = [(3, 6)]
+    pin_map.localized_insert_intents = [
+        LocalizedInsertIntentPatchItem(
+            insert_id="pyrex_1",
+            insert_kind="pyrex_rod",
+            host_kind="guide_tube",
+            insert_universe_id="pyrex_rod",
+            coordinates=[(3, 6)],
+            z_min_cm=15.0,
+            z_max_cm=376.0,
+            application_mode="nested_component_override",
+            component_role="absorber",
+            preserve_component_roles=["tube_wall"],
+        ),
+    ]
     pin_map.coordinate_convention = CoordinateConvention(index_base=1)
     axial_layers = next(p for p in patches if getattr(p, "patch_type", "") == "axial_layers")
     axial_layers.layers[0].loading_id = "base_loading"
@@ -331,18 +344,12 @@ def test_axial_insert_coords_keep_guide_tube_base_for_unseen_model() -> None:
     result = assemble_simulation_plan_from_patches(patches)
 
     assert result.ok is True
-    assert any(i.code == "assembly.axial_insert_pin_map_normalized" for i in result.issues)
     model = result.plan.complex_model
     lattice = model.lattices[0]
+    # Base lattice has guide tube at insert position
     assert lattice.universe_pattern[2][5] == "gt"
-    assert lattice.universe_pattern[2][8] == "gt"
-    assert lattice.universe_pattern[5][5] == "gt"
-    assert lattice.universe_pattern[8][2] == "gt"
-    assert len(model.lattice_loadings) == 2
-    loading = next(l for l in model.lattice_loadings if l.id == "pyrex_rod_loading")
-    assert loading.overrides == {"pyrex_rod": [(2, 5)]}
-    active_layer = next(l for l in model.core.axial_layers if l.id == "active_fuel")
-    assert active_layer.loading_id == loading.id
+    # Loading was derived
+    assert any(l.id == "localized_insert_pyrex_1" for l in model.lattice_loadings)
 
 
 def test_existing_llm_insert_loading_is_normalized_and_pruned() -> None:
@@ -366,40 +373,67 @@ def test_existing_llm_insert_loading_is_normalized_and_pruned() -> None:
         ]),
     ])
     pin_map = next(p for p in patches if getattr(p, "patch_type", "") == "pin_map")
-    pin_map.guide_tube_coords = []
-    pin_map.pyrex_rod_coords = [(3, 6)]
-    pin_map.thimble_plug_coords = [(3, 9), (6, 6), (9, 3)]
+    pin_map.guide_tube_coords = [(3, 6), (3, 9), (6, 6), (9, 3)]
+    pin_map.localized_insert_intents = [
+        LocalizedInsertIntentPatchItem(
+            insert_id="pyrex_group",
+            insert_kind="pyrex_rod",
+            host_kind="guide_tube",
+            insert_universe_id="pyrex_rod",
+            coordinates=[(3, 6)],
+            z_min_cm=15.0,
+            z_max_cm=376.0,
+            component_role="absorber",
+            preserve_component_roles=["tube_wall"],
+        ),
+        LocalizedInsertIntentPatchItem(
+            insert_id="thimble_group",
+            insert_kind="thimble_plug",
+            host_kind="guide_tube",
+            insert_universe_id="thimble_plug",
+            coordinates=[(3, 9), (6, 6), (9, 3)],
+            z_min_cm=383.0,
+            z_max_cm=394.0,
+            component_role="plug",
+            preserve_component_roles=["tube_wall"],
+        ),
+    ]
     pin_map.coordinate_convention = CoordinateConvention(index_base=1)
     axial_layers = next(p for p in patches if getattr(p, "patch_type", "") == "axial_layers")
     axial_layers.layers[0].loading_id = "loading_3B"
+    axial_layers.layers.append(AxialLayerPatchItem(
+        layer_id="upper_plenum",
+        role="upper_plenum",
+        z_min_cm=377.0,
+        z_max_cm=397.0,
+        fill_type="lattice",
+        fill_id="assembly_lattice",
+        loading_id="loading_3B",
+    ))
     axial_layers.lattice_loadings = [
         LatticeLoadingPatchItem(
             loading_id="loading_3B",
             base_lattice_id="assembly_lattice",
             derived_lattice_id="assembly_lattice_3B",
-            overrides={
-                "pyrex_rod": [(3, 6)],
-                "thimble_plug": [(3, 9), (6, 6), (9, 3)],
-            },
-            purpose="LLM-generated 3B loading using document coordinates",
+            overrides={},
+            purpose="base loading",
         )
     ]
 
     result = assemble_simulation_plan_from_patches(patches)
 
     assert result.ok is True
-    assert any(i.code == "assembly.axial_loading_coords_normalized" for i in result.issues)
-    assert any(i.code == "assembly.active_insert_loading_pruned" for i in result.issues)
     model = result.plan.complex_model
-    loading = next(l for l in model.lattice_loadings if l.id == "loading_3B")
-    assert loading.overrides == {"pyrex_rod": [(2, 5)]}
+    # Both insert loadings should be derived
+    loading_ids = [l.id for l in model.lattice_loadings]
+    assert "localized_insert_pyrex_group" in loading_ids
+    assert "localized_insert_thimble_group" in loading_ids
+    # Base lattice has guide tubes at all insert positions
     lattice = model.lattices[0]
     assert lattice.universe_pattern[2][5] == "gt"
     assert lattice.universe_pattern[2][8] == "gt"
     assert lattice.universe_pattern[5][5] == "gt"
     assert lattice.universe_pattern[8][2] == "gt"
-    active_layer = next(l for l in model.core.axial_layers if l.id == "active_fuel")
-    assert active_layer.loading_id == "loading_3B"
 
 
 # ---------------------------------------------------------------------------

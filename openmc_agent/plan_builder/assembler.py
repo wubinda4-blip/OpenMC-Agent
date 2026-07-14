@@ -182,8 +182,6 @@ def expand_pin_map(
     coord_groups: dict[str, list[tuple[int, int]]] = {
         "guide_tube": pin_map.guide_tube_coords,
         "instrument_tube": pin_map.instrument_tube_coords,
-        "pyrex_rod": pin_map.pyrex_rod_coords,
-        "thimble_plug": pin_map.thimble_plug_coords,
         "water_cell": pin_map.water_cell_coords,
     }
 
@@ -1329,10 +1327,22 @@ def assemble_simulation_plan_from_patches(
     issues.extend(univ_issues)
     universe_ids = {u.id for u in plan_universes}
 
-    pin_map_patch, axial_layers_patch, normalize_issues = _normalize_axial_insert_pin_map(
-        pin_map_patch, axial_layers_patch, universes_patch,
-    )
-    issues.extend(normalize_issues)
+    # 3a. Derive localized insert loadings (replaces old _normalize_axial_insert_pin_map).
+    if pin_map_patch is not None:
+        from openmc_agent.plan_builder.localized_insert_derivation import (
+            derive_localized_insert_loadings,
+        )
+        pin_map_patch, axial_layers_patch, insert_issues_dict, _insert_report = (
+            derive_localized_insert_loadings(
+                pin_map_patch, axial_layers_patch, universes_patch,
+            )
+        )
+        for ii in insert_issues_dict:
+            issues.append(PlanAssemblyIssue(
+                code=ii["code"],
+                severity=ii.get("severity", "warning"),
+                message=ii.get("message", ""),
+            ))
 
     # 4. Assemble lattice from pin map.
     lattice_id = "assembly_lattice"

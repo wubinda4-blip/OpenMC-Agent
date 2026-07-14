@@ -159,8 +159,12 @@ Schema: {{"patch_type": "pin_map", "variant", "lattice_size": [int,int],
   "default_universe_id", "coordinate_convention": {{"index_base", "row_origin",
   "col_origin", "ordering"}},
   "guide_tube_coords": [[int,int]], "instrument_tube_coords": [[int,int]],
-  "pyrex_rod_coords": [[int,int]], "thimble_plug_coords": [[int,int]],
-  "water_cell_coords": [[int,int]], "assumptions": [], "source_note"}}
+  "water_cell_coords": [[int,int]],
+  "localized_insert_intents": [{{"insert_id", "insert_kind",
+  "host_kind", "insert_universe_id", "coordinates": [[int,int]],
+  "z_min_cm", "z_max_cm", "application_mode", "component_role",
+  "preserve_component_roles": [], "priority", "requires_human_confirmation"}}],
+  "assumptions": [], "source_note"}}
 
 CRITICAL RULES:
 - Do NOT output the full 17x17 lattice. Do NOT enumerate all 289 cells.
@@ -169,17 +173,37 @@ CRITICAL RULES:
 - lattice_size is [rows, cols], e.g. [17, 17].
 - coordinate_convention.index_base must be 0 or 1.
 - Each coordinate is [row, col] using the stated convention.
-- pin_map describes the persistent/base repeated radial geometry only.
-- If a coordinate is a guide tube that may contain a finite axial insert
-  (for example a pyrex rod, plug, absorber, or other rod present only over
-  part of z), keep that coordinate in guide_tube_coords in the base pin_map.
-  Put the insert universe in axial_layers.lattice_loadings instead of replacing
-  the base pin_map position.
+- guide_tube_coords lists ALL persistent guide tube paths (full assembly height).
+  This includes positions that will host localized inserts (Pyrex, thimble plugs, etc.).
+  A guide tube coordinate that hosts an insert is still a guide_tube_coord —
+  the insert only affects a specific z range within that guide tube.
+- localized_insert_intents declares finite-height inserts (Pyrex rods, thimble plugs,
+  absorbers, control rods). Each intent specifies:
+  * insert_kind: pyrex_rod | thimble_plug | absorber_insert | control_rod | custom
+  * host_kind: guide_tube (the host path whose inner component is replaced)
+  * insert_universe_id: the universe to use inside the host for this z range
+  * coordinates: positions affected (must be a subset of guide_tube_coords)
+  * z_min_cm, z_max_cm: the axial interval where the insert is active
+  * application_mode: "nested_component_override" (default, preserves host wall)
+  * component_role: role of the replaced inner component (e.g. "internal_coolant")
+  * preserve_component_roles: roles to keep (e.g. ["tube_wall", "outer_coolant"])
+- Coordinates of localized inserts MUST also appear in guide_tube_coords.
+- Do NOT put insert universes as base lattice positions.
+- Do NOT stretch a finite insert over the full assembly height.
 
-Minimal example (only special positions, NOT 289 entries):
+Minimal example:
 {{"patch_type": "pin_map", "lattice_size": [17, 17], "default_universe_id": "fuel_pin",
   "coordinate_convention": {{"index_base": 1, "row_origin": "top", "col_origin": "left", "ordering": "row_col"}},
-  "guide_tube_coords": [[3,6], [3,9]], "instrument_tube_coords": [[9,9]]}}""",
+  "guide_tube_coords": [[3,6], [3,9], [6,6], [9,3]],
+  "instrument_tube_coords": [[9,9]],
+  "localized_insert_intents": [
+    {{"insert_id": "absorber_group_1", "insert_kind": "absorber_insert",
+      "host_kind": "guide_tube", "insert_universe_id": "absorber_inner_profile",
+      "coordinates": [[3,6], [6,6]], "z_min_cm": 20.0, "z_max_cm": 200.0,
+      "application_mode": "nested_component_override",
+      "component_role": "internal_coolant",
+      "preserve_component_roles": ["tube_wall", "outer_coolant"], "priority": 0}}
+  ]}}""",
 
     "axial_layers": """\
 Requested patch type: axial_layers

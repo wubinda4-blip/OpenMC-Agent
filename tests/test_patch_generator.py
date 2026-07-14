@@ -105,7 +105,7 @@ def test_pin_map_generation_no_full_lattice() -> None:
 
 
 def test_pin_map_overlap_repaired_no_retry_needed() -> None:
-    """Overlap is deterministically repaired → patch validates on first attempt."""
+    """Overlap is detected and reported → patch validates on first attempt."""
     overlap_raw = json.dumps({
         "patch_type": "pin_map",
         "lattice_size": [17, 17],
@@ -122,11 +122,11 @@ def test_pin_map_overlap_repaired_no_retry_needed() -> None:
         max_attempts=2,
     )
     assert result.ok is True
-    assert len(result.attempts) == 1  # repaired on first attempt, no retry needed
+    assert len(result.attempts) == 1  # overlap detected, not blocking
     assert result.attempts[0].validated is True
-    # First attempt should have coord_overlap_repaired warning
+    # First attempt should have coord_overlap_detected warning
     first_codes = [i["code"] for i in result.attempts[0].issues]
-    assert "patch.pin_map.coord_overlap_repaired" in first_codes
+    assert "patch.pin_map.coord_overlap_detected" in first_codes
 
 
 # ---------------------------------------------------------------------------

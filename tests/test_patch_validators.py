@@ -287,13 +287,14 @@ def test_pin_map_overlap() -> None:
         pyrex_rod_coords=[(5, 5)],
     )
     result = validate_patch(patch)
-    # Overlap is now deterministically repaired (warning, not error)
+    # Overlap is detected and reported (warning, not error)
+    # The assembler's derive_localized_insert_loadings handles normalization.
     codes = _codes(result)
-    assert "patch.pin_map.coord_overlap_repaired" in codes
-    assert result.ok is True  # repaired, not blocking
-    # Verify the overlap was resolved
-    assert patch.guide_tube_coords == []  # removed from lower-priority group
-    assert patch.pyrex_rod_coords == [(5, 5)]  # kept in higher-priority group
+    assert "patch.pin_map.coord_overlap_detected" in codes
+    assert result.ok is True  # detected, not blocking
+    # Verify the patch was NOT modified in-place by the validator
+    assert patch.guide_tube_coords == [(5, 5)]  # unchanged
+    assert patch.pyrex_rod_coords == [(5, 5)]  # unchanged
 
 
 # ---------------------------------------------------------------------------

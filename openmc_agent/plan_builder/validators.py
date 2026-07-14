@@ -611,29 +611,15 @@ def _validate_pin_map(
     removed: list[str] = []
 
     if overlaps:
-        # Deterministic repair: remove overlapping coords from lower-priority groups.
-        _priority = [
-            "instrument_tube", "pyrex_rod", "thimble_plug",
-            "guide_tube", "water_cell",
-        ]
-        removed: list[str] = []  # noqa: F811 — re-uses outer scope variable
+        # Report overlaps but do NOT modify the patch in-place.
+        # The assembler's derive_localized_insert_loadings handles normalization.
         for coord, groups in overlaps.items():
-            winner = min(groups, key=lambda g: _priority.index(g) if g in _priority else 99)
-            losers = [g for g in groups if g != winner]
-            raw_coord = (coord[0] + conv.index_base, coord[1] + conv.index_base)
-            for loser in losers:
-                attr = f"{loser}_coords"
-                current = getattr(patch, attr, [])
-                if raw_coord in current:
-                    current.remove(raw_coord)
-                    removed.append(f"{coord} from {loser} (kept {winner})")
-        if removed:
             issues.append(PatchValidationIssue(
-                code="patch.pin_map.coord_overlap_repaired",
+                code="patch.pin_map.coord_overlap_detected",
                 severity="warning",
                 message=(
-                    f"deterministically repaired {len(removed)} overlapping "
-                    f"coordinate(s): {removed[:5]}{'...' if len(removed) > 5 else ''}"
+                    f"coordinate {coord} appears in multiple groups: {groups}. "
+                    f"The assembler will resolve this during localized insert derivation."
                 ),
                 path="*_coords",
             ))
@@ -644,14 +630,7 @@ def _validate_pin_map(
     # Note: counts are computed AFTER overlap repair, so they reflect the
     # final resolved assignment.  Groups that lost coordinates due to repair
     # should not be penalised by a stale expected count from FactsPatch.
-    repaired_groups: set[str] = set()
-    if removed:
-        for r in removed:
-            # r looks like "(2, 5) from guide_tube (kept pyrex_rod)"
-            parts = r.split(" from ")
-            if len(parts) >= 2:
-                loser = parts[1].split(" ")[0]
-                repaired_groups.add(loser)
+    # No repaired_groups needed — validator no longer modifies patches.
 
     special_counts = {
         "guide_tube": len(patch.guide_tube_coords),
@@ -690,13 +669,8 @@ def _validate_pin_map(
     for item, expected_val in expected_counts.items():
         count = actual_counts.get(item, 0)
         if expected_val is not None and count != expected_val:
-            # Skip count mismatch for groups that lost coordinates due to
-            # deterministic overlap repair — the repair already resolved the
-            # assignment, and the expected count from FactsPatch may be stale
-            # (e.g. 3B has guide_tube_coords=0 after repair, but FactsPatch
-            # still carries expected_guide_tube_count=24 from 3A description).
-            if item in repaired_groups:
-                continue
+            # No repaired_groups tracking — validator no longer modifies patches.
+            # Count mismatch is evaluated on the raw input.
             severity: Literal["error", "warning", "info"] = (
                 "error" if context.strict_benchmark else "warning"
             )
