@@ -249,7 +249,8 @@ def classify_real_campaign_run(
 
     # Success cases
     if validation_ok and not error and result.smoke_passed and result.real_openmc_verified:
-        if committed_repairs == 0 and runtime_iters == 0:
+        rfd = (ws.get("runtime_final_disposition") or "").lower()
+        if committed_repairs == 0 and ("finish" in rfd or not rfd):
             return "FIRST_PASS_SUCCESS"
         if committed_repairs >= 1:
             return "RECOVERED_SUCCESS"
@@ -546,6 +547,15 @@ def _extract_results(
         for pid, env in patches.items():
             if isinstance(env, dict):
                 result.patch_statuses[pid] = env.get("status", "unknown")
+
+    # Count LLM calls from patch attempt artifacts.
+    workflow_dir = run_dir / "workflow" / "incremental" / "patch_attempts"
+    if workflow_dir.exists():
+        raw_files = list(workflow_dir.glob("*_raw.txt"))
+        result.llm_call_count = len(raw_files)
+        result.llm_output_chars = sum(
+            f.stat().st_size for f in raw_files
+        )
 
     # Reference patch usage.
     result.reference_patches_used = []  # Always off in Lane B
