@@ -245,6 +245,13 @@ def derive_localized_insert_loadings(
             })
             # Use the existing loading_id for layer attachment.
             loading_id = existing_loading.loading_id
+
+            # Upgrade coordinate_override to nested_component_override if the
+            # intent declares nested mode and the existing loading uses coordinate_override.
+            if intent.application_mode == "nested_component_override":
+                _upgrade_to_nested_override(
+                    existing_loading, intent, norm_coords,
+                )
         else:
             # Build transformation.
             transformation = LatticeTransformationPatchItem(
@@ -304,6 +311,40 @@ def derive_localized_insert_loadings(
 # --------------------------------------------------------------------------- #
 # Internal helpers
 # --------------------------------------------------------------------------- #
+
+
+def _upgrade_to_nested_override(
+    loading: LatticeLoadingPatchItem,
+    intent: LocalizedInsertIntentPatchItem,
+    norm_coords: list[tuple[int, int]],
+) -> None:
+    """Upgrade a coordinate_override transformation to nested_component_override.
+
+    This is a deterministic upgrade: when a localized_insert_intent declares
+    ``application_mode='nested_component_override'`` but the LLM-generated
+    loading uses ``coordinate_override``, we convert it to preserve the host
+    tube wall.
+    """
+    new_transforms: list[LatticeTransformationPatchItem] = []
+    upgraded = False
+    for t in loading.transformations:
+        if (
+            t.operation_kind == "coordinate_override"
+            and t.replacement_universe_id == intent.insert_universe_id
+        ):
+            new_transforms.append(t.model_copy(update={
+                "operation_kind": "nested_component_override",
+                "component_role": intent.component_role or t.component_role,
+                "component_path_id": intent.component_path_id or t.component_path_id,
+                "preserve_component_roles": list(intent.preserve_component_roles) or list(t.preserve_component_roles),
+                "preserve_path_ids": list(intent.preserve_path_ids) or list(t.preserve_path_ids),
+                "target_coordinates": [tuple(c) for c in norm_coords],
+            }))
+            upgraded = True
+        else:
+            new_transforms.append(t)
+    if upgraded:
+        loading.transformations = new_transforms
 
 
 def _build_kind_to_universe_id(
