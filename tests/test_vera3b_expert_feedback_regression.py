@@ -47,6 +47,10 @@ def test_fixture_exists_and_records_real_blocker() -> None:
     assert fixture["legacy_empty_input_expert_feedback_action"] == "continue"
 
 
+@pytest.mark.skipif(
+    not DIAGNOSIS.exists(),
+    reason="diagnosis JSON is a local run artifact (data/runs/VERA_3B is gitignored)",
+)
 def test_diagnosis_records_supervisor_and_empty_input_state() -> None:
     assert DIAGNOSIS.exists(), "diagnosis JSON must be generated"
     diag = json.loads(DIAGNOSIS.read_text())
