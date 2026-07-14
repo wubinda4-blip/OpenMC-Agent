@@ -118,14 +118,22 @@ def _read_settings_int(settings_path: Path, tag: str) -> int:
 
 def _select_seed_model(
     results: list[dict[str, Any]],
+    *,
+    allow_unaccepted_for_diagnostic: bool = False,
 ) -> dict[str, Any] | None:
     """Deterministically select the model for seed stability.
 
     Primary rule: lowest run_index FIRST_PASS_SUCCESS with full acceptance,
     real OpenMC, no lost particles, and complete artifacts.
-    Fallback: if no accepted runs exist, lowest run_index FIRST_PASS_SUCCESS
-    with real OpenMC, no lost particles, and complete artifacts (documents
-    that acceptance was not met but transport stability is still valid).
+
+    When ``allow_unaccepted_for_diagnostic=False`` (default):
+      If no accepted runs exist, returns None → status becomes
+      VERA3B_TRANSPORT_SEED_STABILITY_NOT_RUN_NO_ACCEPTED_MODEL.
+
+    When ``allow_unaccepted_for_diagnostic=True``:
+      Falls back to lowest-index FIRST_PASS_SUCCESS with real OpenMC,
+      no lost particles, and complete artifacts. Status includes
+      DIAGNOSTIC_ONLY and does not satisfy final gate.
     """
     for disposition in ("FIRST_PASS_SUCCESS", "RECOVERED_SUCCESS"):
         candidates = sorted(
@@ -380,7 +388,10 @@ def evaluate_transport_seed_stability(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Select model.
-    selected = _select_seed_model(campaign_results)
+    selected = _select_seed_model(
+        campaign_results,
+        allow_unaccepted_for_diagnostic=False,
+    )
     if selected is None:
         result = TransportSeedStabilityResult(
             selected_run_id="",
