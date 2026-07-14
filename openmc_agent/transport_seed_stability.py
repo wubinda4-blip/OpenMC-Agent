@@ -118,11 +118,27 @@ def _count_lost_particles(log_path: Path) -> int:
 
 
 def _count_source_rejections(log_path: Path) -> int:
-    """Count source rejection warnings from OpenMC log."""
+    """Count actual source rejection errors from OpenMC log.
+
+    Only counts genuine rejection errors, not normal performance timing
+    lines like "Sampling source sites".
+    """
     if not log_path.exists():
         return 0
-    text = log_path.read_text(errors="replace")
-    return text.lower().count("source rejection") + text.lower().count("source sites")
+    text = log_path.read_text(errors="replace").lower()
+    count = 0
+    for line in text.split("\n"):
+        if "sampling source sites" in line:
+            continue  # Normal timing line
+        if "send/recv source sites" in line:
+            continue  # Normal timing line
+        if "source rejection" in line:
+            count += 1
+        if "could not find any acceptable source" in line:
+            count += 1
+        if "unable to sample sufficient source" in line:
+            count += 1
+    return count
 
 
 def run_single_seed(
@@ -158,14 +174,19 @@ def run_single_seed(
     started = datetime.now(timezone.utc).isoformat()
     t0 = time.perf_counter()
 
-    # Run OpenMC.
-    cmd = ["openmc", "-s", str(seed)]
+    # Run OpenMC with limited threads to avoid resource exhaustion.
+    # The seed is already set in settings.xml; -s controls threads.
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = "4"
+
+    cmd = ["openmc", "-s", "4"]
     proc = subprocess.run(
         cmd,
         cwd=str(output_dir),
         capture_output=True,
         text=True,
         timeout=600,
+        env=env,
     )
 
     elapsed = time.perf_counter() - t0
@@ -175,14 +196,14 @@ def run_single_seed(
     log_path.write_text(proc.stdout + proc.stderr, encoding="utf-8")
 
     # Extract results.
-    sp_path = output_dir / "statepoint." + f"{batches}.h5"
-    if not sp_path.exists():
-        # Try finding any statepoint file.
-        sp_files = sorted(output_dir.glob("statepoint.*.h5"))
-        if sp_files:
-            sp_path = sp_files[-1]
+    # Find statepoint file dynamically (batches may differ from requested).
+    sp_files = sorted(output_dir.glob("statepoint.*.h5"))
+    sp_path = sp_files[-1] if sp_files else Path()
 
-    keff, keff_std = _extract_keff(sp_path) if sp_path.exists() else (0.0, 0.0)
+    if sp_path and sp_path.exists():
+        keff, keff_std = _extract_keff(sp_path)
+    else:
+        keff, keff_std = 0.0, 0.0
     lost = _count_lost_particles(log_path)
     rejections = _count_source_rejections(log_path)
 
@@ -202,11 +223,11 @@ def run_single_seed(
         keff_std=keff_std,
         lost_particles=lost,
         source_rejections=rejections,
-        statepoint_path=str(sp_path) if sp_path.exists() else "",
+        statepoint_path=str(sp_path) if sp_path else "",
         geometry_hash=geo_hash,
         materials_hash=mat_hash,
         settings_hash=set_hash,
-        error="" if proc.returncode == 0 else f"returncode={proc.returncode}",
+        error="" if proc.returncode == 0 and keff > 0 else f"returncode={proc.returncode}, keff={keff}",
     )
 
 
