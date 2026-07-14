@@ -1,6 +1,47 @@
+from __future__ import annotations
+
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class CompositionValueBasis(str, Enum):
+    """How a material composition vector should be interpreted.
+
+    Distinct from ``NuclideSpec.percent_type`` (which is the OpenMC rendering
+    basis: 'ao' or 'wo'), this describes the *scientific semantics* of the
+    numbers the upstream source provided.
+    """
+
+    ATOM_FRACTION = "atom_fraction"
+    WEIGHT_FRACTION = "weight_fraction"
+    ATOM_DENSITY_BARN_CM = "atom_density_barn_cm"
+    STOICHIOMETRIC_RATIO = "stoichiometric_ratio"
+    ELEMENTAL_ENRICHMENT = "elemental_enrichment"
+    PPM_BY_WEIGHT = "ppm_by_weight"
+    PPM_BY_ATOM = "ppm_by_atom"
+    MASS_DENSITY_COMPONENT = "mass_density_component"
+    UNKNOWN = "unknown"
+
+
+class NormalizationStatus(str, Enum):
+    """Status of material composition normalization.
+
+    - ``not_required``: composition is already in a directly renderable form.
+    - ``deterministically_normalized``: a deterministic, unambiguous transform
+      was applied and recorded.
+    - ``ambiguous``: the composition basis cannot be determined with certainty;
+      rendering must be blocked.
+    - ``invalid``: the composition is physically impossible or contradictory.
+    - ``human_confirmed``: a human expert has confirmed the interpretation.
+    """
+
+    NOT_REQUIRED = "not_required"
+    DETERMINISTICALLY_NORMALIZED = "deterministically_normalized"
+    AMBIGUOUS = "ambiguous"
+    INVALID = "invalid"
+    HUMAN_CONFIRMED = "human_confirmed"
 
 
 Renderability = Literal["none", "skeleton", "exportable", "runnable"]
@@ -199,6 +240,39 @@ class MaterialSpec(AgentBaseModel):
         default_factory=list,
         description="Material fields that must be confirmed by a human expert.",
     )
+    # --- Material semantics contract ---
+    composition_basis: CompositionValueBasis | None = Field(
+        default=None,
+        description="Scientific meaning of the composition values (distinct from percent_type).",
+    )
+    normalization_status: NormalizationStatus | None = Field(
+        default=None,
+        description="Whether and how this material's composition was normalized.",
+    )
+    normalization_version: str | None = Field(
+        default=None,
+        description="Version of the normalization contract applied.",
+    )
+    normalization_operations: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Recorded operations applied during normalization.",
+    )
+    original_composition: list[NuclideSpec] | None = Field(
+        default=None,
+        description="Original composition before normalization (for provenance).",
+    )
+    normalized_composition: list[NuclideSpec] | None = Field(
+        default=None,
+        description="Composition after normalization (may differ from original).",
+    )
+    semantic_assumptions: list[str] = Field(
+        default_factory=list,
+        description="Assumptions made during semantic classification.",
+    )
+    provenance_refs: list[str] = Field(
+        default_factory=list,
+        description="References to evidence sources for this material.",
+    )
 
 
 class ComplexMaterialSpec(AgentBaseModel):
@@ -266,6 +340,39 @@ class ComplexMaterialSpec(AgentBaseModel):
     source: str | None = None
     assumptions: list[str] = Field(default_factory=list)
     requires_human_confirmation: list[str] = Field(default_factory=list)
+    # --- Material semantics contract ---
+    composition_basis: CompositionValueBasis | None = Field(
+        default=None,
+        description="Scientific meaning of the composition values (distinct from percent_type).",
+    )
+    normalization_status: NormalizationStatus | None = Field(
+        default=None,
+        description="Whether and how this material's composition was normalized.",
+    )
+    normalization_version: str | None = Field(
+        default=None,
+        description="Version of the normalization contract applied.",
+    )
+    normalization_operations: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Recorded operations applied during normalization.",
+    )
+    original_composition: list[NuclideSpec] | None = Field(
+        default=None,
+        description="Original composition before normalization (for provenance).",
+    )
+    normalized_composition: list[NuclideSpec] | None = Field(
+        default=None,
+        description="Composition after normalization (may differ from original).",
+    )
+    semantic_assumptions: list[str] = Field(
+        default_factory=list,
+        description="Assumptions made during semantic classification.",
+    )
+    provenance_refs: list[str] = Field(
+        default_factory=list,
+        description="References to evidence sources for this material.",
+    )
     # --- Homogenized mixture support ---
     mixture_component_ids: list[str] = Field(
         default_factory=list,
