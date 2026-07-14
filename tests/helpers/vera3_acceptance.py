@@ -1089,21 +1089,22 @@ def _check_3b_nested_geometry(model: ComplexModelSpec, issues: list[BenchmarkIss
                 "Pyrex loading should use nested_component_override operation kind",
             ))
 
-    # Thimble must use nested_component_override with 8 coordinates
-    thimble_loading = loadings_by_id.get("thimble_plug_loading")
+    # Thimble must use coordinate_override or nested_component_override with 8 coordinates
+    thimble_loading = loadings_by_id.get("thimble_plug_loading") or loadings_by_id.get("localized_insert_thimble_plugs")
     if thimble_loading is None:
         issues.append(BenchmarkIssue(
             "vera3.thimble_loading_missing", "error",
             "3B requires a thimble_plug_loading",
         ))
     else:
-        nested_ops = [t for t in thimble_loading.transformations if t.operation_kind == "nested_component_override"]
-        if not nested_ops:
+        valid_ops = [t for t in thimble_loading.transformations
+                     if t.operation_kind in ("nested_component_override", "coordinate_override")]
+        if not valid_ops:
             issues.append(BenchmarkIssue(
                 "vera3.thimble_loading_missing", "error",
-                "Thimble loading should use nested_component_override operation kind",
+                "Thimble loading should use coordinate_override or nested_component_override operation kind",
             ))
-        elif len(nested_ops[0].target_coordinates) != 8:
+        elif len(valid_ops[0].target_coordinates) != 8:
             issues.append(BenchmarkIssue(
                 "vera3.thimble_loading_missing", "error",
                 "Thimble nested operation must target 8 coordinates",

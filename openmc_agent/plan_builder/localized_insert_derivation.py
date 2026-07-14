@@ -245,13 +245,6 @@ def derive_localized_insert_loadings(
             })
             # Use the existing loading_id for layer attachment.
             loading_id = existing_loading.loading_id
-
-            # Upgrade coordinate_override to nested_component_override if the
-            # intent declares nested mode and the existing loading uses coordinate_override.
-            if intent.application_mode == "nested_component_override":
-                _upgrade_to_nested_override(
-                    existing_loading, intent, norm_coords,
-                )
         else:
             # Build transformation.
             transformation = LatticeTransformationPatchItem(
