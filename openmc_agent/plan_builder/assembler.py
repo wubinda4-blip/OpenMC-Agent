@@ -356,6 +356,20 @@ def _assemble_materials(
                 else:
                     density_unit = "g/cm3" if mat.density_g_cm3 is not None else None
                     density_value = mat.density_g_cm3
+
+                # Map patch composition_basis to schema CompositionValueBasis.
+                from openmc_agent.schemas import CompositionValueBasis as _Basis
+                _PATCH_BASIS_MAP = {
+                    "atom_frac": _Basis.ATOM_FRACTION,
+                    "weight_frac": _Basis.WEIGHT_FRACTION,
+                    "atom_density_barn_cm": _Basis.ATOM_DENSITY_BARN_CM,
+                    "stoichiometric_ratio": _Basis.STOICHIOMETRIC_RATIO,
+                    "ppm_by_weight": _Basis.PPM_BY_WEIGHT,
+                    "ppm_by_atom": _Basis.PPM_BY_ATOM,
+                    "unknown": _Basis.UNKNOWN,
+                }
+                mapped_basis = _PATCH_BASIS_MAP.get(mat.composition_basis, _Basis.UNKNOWN)
+
                 mat_spec = ComplexMaterialSpec(
                     id=mat.material_id,
                     name=mat.name,
@@ -366,7 +380,41 @@ def _assemble_materials(
                     source=mat.source_note,
                     assumptions=assumptions,
                     requires_human_confirmation=requires_conf,
+                    composition_basis=mapped_basis,
                 )
+            # Apply deterministic normalization for materials with declared basis.
+            from openmc_agent.material_normalization import normalize_material_semantics
+            from openmc_agent.schemas import NormalizationStatus
+
+            if mat_spec.composition and not mat_spec.is_mixture and mat_spec.macroscopic is None:
+                try:
+                    normalized_spec, norm_result = normalize_material_semantics(mat_spec)
+                    if norm_result.normalization_status == NormalizationStatus.AMBIGUOUS:
+                        issues.append(PlanAssemblyIssue(
+                            code="material.normalization_ambiguous",
+                            severity="error",
+                            message=(
+                                f"material {mat_spec.name!r} composition basis is ambiguous. "
+                                f"Declare composition_basis explicitly (stoichiometric_ratio, "
+                                f"ppm_by_weight, atom_frac, etc.)."
+                            ),
+                            path=f"materials[{mat.material_id}]",
+                        ))
+                    elif norm_result.normalization_status == NormalizationStatus.DETERMINISTICALLY_NORMALIZED:
+                        mat_spec = normalized_spec
+                        issues.append(PlanAssemblyIssue(
+                            code="material.deterministically_normalized",
+                            severity="info",
+                            message=(
+                                f"material {mat_spec.name!r} normalized: "
+                                f"{norm_result.original_basis.value} → "
+                                f"{norm_result.normalized_basis.value}"
+                            ),
+                            path=f"materials[{mat.material_id}]",
+                        ))
+                except Exception:
+                    pass  # Don't block assembly on normalization errors.
+
             materials.append(mat_spec)
         except Exception as exc:
             issues.append(PlanAssemblyIssue(

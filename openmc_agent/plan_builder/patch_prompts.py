@@ -87,11 +87,31 @@ Rules:
   coolant for the structural slab.
 - Cross section paths do NOT belong here.
 
+composition_basis semantics (MUST declare for every material with a composition):
+- "atom_frac": each value is an atom fraction (e.g., U235=3.1 means 3.1 at% U-235).
+- "weight_frac": each value is a weight fraction (e.g., Zr=98.2 means 98.2 wt% Zr).
+- "atom_density_barn_cm": each value is an absolute atom density in atoms/barn-cm
+  (use this when the source gives values like 2.233e-2).
+- "stoichiometric_ratio": the fuel nuclides sum to ~100 (enrichment vector)
+  and the oxygen entry gives the O/U ratio (e.g., O16=2.0 means O/U=2 for UO2).
+  Use this when the source specifies enrichment per-100-uranium and oxygen as
+  a molecular ratio.
+- "ppm_by_weight": a coolant entry like B10=1066 means 1066 ppm total boron
+  by weight (NOT an atom fraction).  Use this when the source gives boron
+  concentration in ppm.
+- "unknown": only if truly unclear; this will BLOCK rendering and require retry.
+
 Minimal example:
 {{"patch_type": "materials", "materials": [
-  {{"material_id": "fuel", "name": "UO2", "role": "fuel", "density_g_cm3": 10.257,
-    "composition": {{"U235": 3.1, "U238": 96.9}}, "composition_status": "approximate",
-    "warnings": ["enrichment approximate"]}}
+ {{"material_id": "fuel", "name": "UO2", "role": "fuel", "density_g_cm3": 10.257,
+   "composition": {{"U235": 3.1, "U238": 96.9, "O16": 2.0}},
+   "composition_basis": "stoichiometric_ratio",
+   "composition_status": "approximate",
+   "warnings": ["enrichment approximate"]}},
+ {{"material_id": "coolant", "name": "Borated water", "role": "coolant",
+   "density_g_cm3": 0.743, "composition": {{"B10": 1066, "H1": 2.0, "O16": 1.0}},
+   "composition_basis": "ppm_by_weight",
+   "composition_status": "confirmed"}}
 ]}}""",
 
     "universes": """\

@@ -101,7 +101,15 @@ class MaterialSpecPatch(_PatchBase):
     density_g_cm3: float | None = None
     temperature_K: float | None = None
     composition: dict[str, float] = Field(default_factory=dict)
-    composition_basis: Literal["atom_frac", "weight_frac", "atom_density_barn_cm", "unknown"] = "unknown"
+    composition_basis: Literal[
+        "atom_frac",
+        "weight_frac",
+        "atom_density_barn_cm",
+        "stoichiometric_ratio",
+        "ppm_by_weight",
+        "ppm_by_atom",
+        "unknown",
+    ] = "unknown"
     composition_status: Literal[
         "confirmed",
         "approximate",
