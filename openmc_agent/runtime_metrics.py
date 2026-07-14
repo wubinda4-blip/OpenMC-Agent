@@ -242,11 +242,16 @@ def real_campaign_status(
     if completed == 0:
         return "VERA3B_REAL_LLM_PILOT_PENDING"
 
+    # Check for unsafe acceptance first — always fails regardless of count.
+    if unsafe_rate > 0.0:
+        if requested >= 10 or completed >= 10:
+            return "VERA3B_REAL_LLM_STABILITY_FAILED"
+        return "VERA3B_REAL_LLM_PILOT_FAILED"
+
     if requested >= 10 or completed >= 10:
         accepted = (
             completed >= 10
             and final_rate >= 0.7
-            and unsafe_rate == 0.0
             and artifact_rate == 1.0
         )
         return (
@@ -255,7 +260,10 @@ def real_campaign_status(
             else "VERA3B_REAL_LLM_STABILITY_FAILED"
         )
 
-    if completed >= 3:
+    # Pilot (N < 10): need at least 3 successful runs.
+    if completed >= 3 and final_rate >= 1.0 and artifact_rate == 1.0:
         return "VERA3B_REAL_LLM_PILOT_PASSED"
+    if completed >= 3:
+        return "VERA3B_REAL_LLM_PILOT_FAILED"
 
     return "VERA3B_REAL_LLM_PILOT_PENDING"

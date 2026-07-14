@@ -121,6 +121,24 @@ def test_real_campaign_pilot_passed_3():
     assert real_campaign_status(m, real_environment_available=True, executor_implemented=True, confirmed=True) == "VERA3B_REAL_LLM_PILOT_PASSED"
 
 
+def test_real_campaign_pilot_failed_3_completed_2_success():
+    runs = [
+        {"final_disposition": "FIRST_PASS_SUCCESS", "unsafe_proposal_count": 0, "artifact_complete": True, "runtime_iterations": 0},
+        {"final_disposition": "FIRST_PASS_SUCCESS", "unsafe_proposal_count": 0, "artifact_complete": True, "runtime_iterations": 0},
+        {"final_disposition": "SAFE_STOP_UNKNOWN", "unsafe_proposal_count": 0, "artifact_complete": True, "runtime_iterations": 1},
+    ]
+    m = aggregate_real_campaign(runs, requested_runs=3)
+    assert real_campaign_status(m, real_environment_available=True, executor_implemented=True, confirmed=True) == "VERA3B_REAL_LLM_PILOT_FAILED"
+
+
+def test_real_campaign_pilot_failed_unsafe():
+    runs = [
+        {"final_disposition": "FIRST_PASS_SUCCESS", "unsafe_proposal_count": 1, "artifact_complete": True, "runtime_iterations": 0}
+    ] * 3
+    m = aggregate_real_campaign(runs, requested_runs=3)
+    assert real_campaign_status(m, real_environment_available=True, executor_implemented=True, confirmed=True) == "VERA3B_REAL_LLM_PILOT_FAILED"
+
+
 def test_real_campaign_stability_accepted():
     runs = [
         {"final_disposition": "FIRST_PASS_SUCCESS", "unsafe_proposal_count": 0, "artifact_complete": True, "runtime_iterations": 0}
