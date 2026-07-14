@@ -628,23 +628,45 @@ def _validate_pin_map(
     # from FactsPatch/LLM extraction; only reference/explicit-complete counts
     # are allowed to enforce full lattice sums.
     # Note: counts are computed AFTER overlap repair, so they reflect the
-    # final resolved assignment.  Groups that lost coordinates due to repair
-    # should not be penalised by a stale expected count from FactsPatch.
-    # No repaired_groups needed — validator no longer modifies patches.
+    # Base path counts (persistent, full-height positions in the lattice).
+    # When localized_insert_intents are used, legacy coords are NOT base paths.
+    # When only legacy coords exist (backward compat), they ARE treated as
+    # base path positions (old behavior).
+    has_modern_intents = bool(patch.localized_insert_intents)
 
-    special_counts = {
+    base_path_counts = {
         "guide_tube": len(patch.guide_tube_coords),
         "instrument_tube": len(patch.instrument_tube_coords),
-        "pyrex_rod": len(patch.pyrex_rod_coords),
-        "thimble_plug": len(patch.thimble_plug_coords),
+        "water_cell": len(patch.water_cell_coords),
     }
-    special_total = sum(special_counts.values()) + len(patch.water_cell_coords)
+
+    if has_modern_intents:
+        # Modern mode: localized_insert_intents are insert counts.
+        # Legacy coords (if any) are ignored — they should be empty.
+        insert_counts: dict[str, int] = {}
+        for intent in patch.localized_insert_intents:
+            kind = intent.insert_kind
+            insert_counts[kind] = insert_counts.get(kind, 0) + len(intent.coordinates)
+        combined_insert_counts = insert_counts
+        # Fuel pin = total - base path positions (inserts are within base paths).
+        base_total = sum(base_path_counts.values())
+    else:
+        # Legacy mode: pyrex_rod_coords/thimble_plug_coords are base positions.
+        combined_insert_counts = {
+            "pyrex_rod": len(patch.pyrex_rod_coords),
+            "thimble_plug": len(patch.thimble_plug_coords),
+        }
+        # Fuel pin = total - base - legacy insert positions (old behavior).
+        base_total = sum(base_path_counts.values()) + sum(combined_insert_counts.values())
+
+    special_counts = {
+        **base_path_counts,
+        **combined_insert_counts,
+    }
     actual_counts = {
-        "fuel_pin": nx * ny - special_total,
+        "fuel_pin": nx * ny - base_total,
         **special_counts,
-        "guide_tube": special_counts["guide_tube"],
     }
-    actual_counts["water_cell"] = len(patch.water_cell_coords)
 
     raw_expected = dict(context.reference_expected_counts or context.expected_counts)
     expected_counts: dict[str, int] = {}
