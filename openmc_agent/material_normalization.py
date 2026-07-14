@@ -181,8 +181,9 @@ def _normalize_stoichiometric_uo2(
     u_sum = sum(c.percent for c in u_entries)
     o_value = o_entries[0].percent
 
-    # The stoichiometric ratio is O/U.
-    o_per_u = o_value / 1.0 if u_sum > 50 else (o_value / u_sum if u_sum > 0 else 2.0)
+    # The stoichiometric ratio: O/U.
+    # When U isotopes sum to ~100, O16=2.0 means O/U=2.
+    o_per_u = o_value if u_sum > 50 else (o_value / u_sum if u_sum > 0 else 2.0)
 
     input_summary = {c.name: c.percent for c in composition}
 
@@ -226,8 +227,10 @@ def _normalize_ppm_borated_water(
 ) -> tuple[MaterialSpec | ComplexMaterialSpec, list[MaterialNormalizationOperation]]:
     """Convert ppm boron by weight to atom fractions.
 
-    The ppm value is encoded as the B10 percent value in the composition
-    (e.g., B10 = 0.001066 means 1066 ppm total boron).
+    Handles two input formats:
+    1. Patch format (``composition_basis='ppm_by_weight'``):
+       B10=1066.0 means 1066 ppm total boron; H1=2.0, O16=1.0 are atom ratios.
+    2. Legacy format: B10=0.001066 (atom fraction encoding ppm).
     """
     composition = material.composition
     density_value = getattr(material, "density_value", None) or 1.0
@@ -238,8 +241,12 @@ def _normalize_ppm_borated_water(
     if b10 is None:
         return material.model_copy(), []
 
-    # Extract ppm from B10 value.
-    ppm_value = b10.percent * 1e6
+    # Detect ppm encoding: if B10 > 0.1, it's a raw ppm value (patch format).
+    # If B10 < 0.01, it's an atom fraction encoding ppm (legacy format).
+    if b10.percent > 0.1:
+        ppm_value = b10.percent
+    else:
+        ppm_value = b10.percent * 1e6
 
     input_summary = {c.name: c.percent for c in composition}
 
@@ -255,16 +262,20 @@ def _normalize_ppm_borated_water(
     total_atom_density = water_atom_density + boron_atom_density
     b10_correct_frac = b10_density / total_atom_density
     b11_correct_frac = b11_density / total_atom_density
+    h1_correct_frac = water_atom_density * 2 / 3 / total_atom_density
+    o16_correct_frac = water_atom_density / 3 / total_atom_density
 
-    # Preserve the original sum so OpenMC sees the same normalization.
-    total_ao = sum(c.percent for c in composition)
-
+    # Reconstruct full composition with correct atom fractions.
     new_composition = []
     for c in composition:
         if c.name == "B10":
-            new_composition.append(c.model_copy(update={"percent": b10_correct_frac * total_ao}))
+            new_composition.append(c.model_copy(update={"percent": b10_correct_frac}))
         elif c.name == "B11":
-            new_composition.append(c.model_copy(update={"percent": b11_correct_frac * total_ao}))
+            new_composition.append(c.model_copy(update={"percent": b11_correct_frac}))
+        elif c.name == "H1":
+            new_composition.append(c.model_copy(update={"percent": h1_correct_frac}))
+        elif c.name == "O16":
+            new_composition.append(c.model_copy(update={"percent": o16_correct_frac}))
         else:
             new_composition.append(c.model_copy())
 

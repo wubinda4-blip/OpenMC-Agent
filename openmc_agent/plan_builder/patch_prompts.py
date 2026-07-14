@@ -92,10 +92,12 @@ composition_basis semantics (MUST declare for every material with a composition)
 - "weight_frac": each value is a weight fraction (e.g., Zr=98.2 means 98.2 wt% Zr).
 - "atom_density_barn_cm": each value is an absolute atom density in atoms/barn-cm
   (use this when the source gives values like 2.233e-2).
-- "stoichiometric_ratio": the fuel nuclides sum to ~100 (enrichment vector)
-  and the oxygen entry gives the O/U ratio (e.g., O16=2.0 means O/U=2 for UO2).
+- "stoichiometric_ratio": the fuel nuclides sum to ~100 (enrichment vector,
+  e.g., U235=3.1 means 3.1 at% of the uranium) and the oxygen entry gives the
+  O/U ratio (e.g., O16=2.0 means O/U=2 for UO2).
   Use this when the source specifies enrichment per-100-uranium and oxygen as
-  a molecular ratio.
+  a molecular ratio. If U isotopes sum to ~100 and O16 is a small number
+  like 2.0, this is ALWAYS stoichiometric_ratio, NEVER weight_frac.
 - "ppm_by_weight": a coolant entry like B10=1066 means 1066 ppm total boron
   by weight (NOT an atom fraction).  Use this when the source gives boron
   concentration in ppm.
