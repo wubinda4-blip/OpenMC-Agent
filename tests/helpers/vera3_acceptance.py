@@ -130,7 +130,11 @@ def collect_base_lattice_counts(plan: SimulationPlan | dict[str, Any]) -> dict[s
 def collect_loading_override_counts(
     plan: SimulationPlan | dict[str, Any], loading_id: str | None = None
 ) -> dict[str, int]:
-    """Count override coordinates in one loading or across all loadings."""
+    """Count override coordinates in one loading or across all loadings.
+
+    Counts both legacy ``overrides`` dict entries and ``coordinate_override``
+    transformation ``target_coordinates``.
+    """
     model = plan.complex_model if isinstance(plan, SimulationPlan) else plan.get("complex_model", plan)
     loadings = model.lattice_loadings if isinstance(model, ComplexModelSpec) else model.get("lattice_loadings", [])
     counts: dict[str, int] = {}
@@ -138,9 +142,18 @@ def collect_loading_override_counts(
         current_id = loading.id if isinstance(loading, LatticeLoadingSpec) else loading.get("id")
         if loading_id is not None and current_id != loading_id:
             continue
+        # Count legacy overrides dict.
         overrides = loading.overrides if isinstance(loading, LatticeLoadingSpec) else loading.get("overrides", {})
         for universe_id, coordinates in overrides.items():
             counts[universe_id] = counts.get(universe_id, 0) + len(coordinates)
+        # Count coordinate_override transformations.
+        transforms = loading.transformations if isinstance(loading, LatticeLoadingSpec) else loading.get("transformations", [])
+        for t in transforms:
+            kind = t.operation_kind if hasattr(t, "operation_kind") else t.get("operation_kind")
+            if kind == "coordinate_override":
+                repl = t.replacement_universe_id if hasattr(t, "replacement_universe_id") else t.get("replacement_universe_id")
+                coords = t.target_coordinates if hasattr(t, "target_coordinates") else t.get("target_coordinates", [])
+                counts[repl] = counts.get(repl, 0) + len(coords)
     return counts
 
 
