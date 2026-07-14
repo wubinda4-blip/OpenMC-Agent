@@ -121,18 +121,31 @@ def _select_seed_model(
 ) -> dict[str, Any] | None:
     """Deterministically select the model for seed stability.
 
-    Rule: lowest run_index FIRST_PASS_SUCCESS;
-          else lowest run_index RECOVERED_SUCCESS.
+    Primary rule: lowest run_index FIRST_PASS_SUCCESS with full acceptance,
+    real OpenMC, no lost particles, and complete artifacts.
+    Fallback: if no accepted runs exist, lowest run_index FIRST_PASS_SUCCESS
+    with real OpenMC, no lost particles, and complete artifacts (documents
+    that acceptance was not met but transport stability is still valid).
     """
     for disposition in ("FIRST_PASS_SUCCESS", "RECOVERED_SUCCESS"):
         candidates = sorted(
             [r for r in results if r.get("final_disposition") == disposition],
             key=lambda r: r.get("run_id", ""),
         )
+        # Primary: with acceptance.
         for c in candidates:
             if (
                 c.get("vera3_acceptance_passed")
                 and c.get("real_openmc_verified")
+                and int(c.get("lost_particle_count", 0)) == 0
+                and c.get("artifact_complete")
+            ):
+                return c
+        # Fallback: without acceptance (transport stability is independent
+        # of structural acceptance).
+        for c in candidates:
+            if (
+                c.get("real_openmc_verified")
                 and int(c.get("lost_particle_count", 0)) == 0
                 and c.get("artifact_complete")
             ):
