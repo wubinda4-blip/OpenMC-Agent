@@ -245,6 +245,11 @@ def derive_localized_insert_loadings(
             })
             # Use the existing loading_id for layer attachment.
             loading_id = existing_loading.loading_id
+
+            # Downgrade nested_component_override to coordinate_override when the
+            # LLM generated it directly. This avoids renderer failures when the
+            # insert universe doesn't have the declared component_role cells.
+            _downgrade_nested_to_coordinate(existing_loading, intent)
         else:
             # Build transformation.
             transformation = LatticeTransformationPatchItem(
@@ -304,6 +309,30 @@ def derive_localized_insert_loadings(
 # --------------------------------------------------------------------------- #
 # Internal helpers
 # --------------------------------------------------------------------------- #
+
+
+def _downgrade_nested_to_coordinate(
+    loading: LatticeLoadingPatchItem,
+    intent: LocalizedInsertIntentPatchItem,
+) -> None:
+    """Downgrade nested_component_override to coordinate_override.
+
+    The renderer may not support nested_component_override when the insert
+    universe lacks the declared component_role cells. coordinate_override
+    is always safe when the insert universe is structurally complete.
+    """
+    new_transforms: list[LatticeTransformationPatchItem] = []
+    for t in loading.transformations:
+        if (
+            t.operation_kind == "nested_component_override"
+            and t.replacement_universe_id == intent.insert_universe_id
+        ):
+            new_transforms.append(t.model_copy(update={
+                "operation_kind": "coordinate_override",
+            }))
+        else:
+            new_transforms.append(t)
+    loading.transformations = new_transforms
 
 
 def _upgrade_to_nested_override(
