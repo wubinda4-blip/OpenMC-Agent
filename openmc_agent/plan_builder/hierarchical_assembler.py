@@ -357,6 +357,18 @@ def assemble_core_lattice(
     core_width_x = n_cols * pitch
     core_width_y = n_rows * pitch
 
+    boundary = layout.boundary if layout.boundary in ("reflective", "vacuum", "periodic") else "reflective"
+
+    # For reflective/vacuum boundaries, the root cell region matches the lattice
+    # footprint exactly, so the outer universe is dead geometry.  Clear it to
+    # avoid renderer flags.  For other boundaries (e.g. with reflector slab),
+    # keep the outer.
+    effective_outer = outer_universe_id
+    if boundary in ("reflective", "vacuum") and outer_universe_id not in {
+        uid for row in universe_pattern for uid in row
+    }:
+        effective_outer = None
+
     return LatticeSpec(
         id=layout.core_lattice_id,
         name="core assembly lattice",
@@ -364,7 +376,7 @@ def assemble_core_lattice(
         pitch_cm=(pitch, pitch),
         lower_left_cm=(-core_width_x / 2.0, -core_width_y / 2.0),
         center_cm=(0.0, 0.0),
-        outer_universe_id=outer_universe_id,
+        outer_universe_id=effective_outer,
         universe_pattern=universe_pattern,
         shape=(n_rows, n_cols),
         purpose="Expanded from CoreLayoutPatch by hierarchical assembler (centered)",
