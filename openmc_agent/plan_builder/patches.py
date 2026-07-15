@@ -222,6 +222,7 @@ class UniverseSpecPatch(_PatchBase):
         "instrument_tube",
         "pyrex_rod",
         "thimble_plug",
+        "control_rod",
         "water_cell",
         "custom",
     ]

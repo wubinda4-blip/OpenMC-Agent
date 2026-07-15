@@ -68,13 +68,35 @@ def _expand_base_pin_pattern(
     return _expand_assembly_pin_map(pm, kind_to_universe=kind_to_universe)
 
 
+def _normalize_insert_coords(
+    coords: list[tuple[int, int]],
+    pm: AssemblyPinMapPatchItem,
+) -> list[tuple[int, int]]:
+    """Normalize insert coordinates to 0-based IR using the pin map convention.
+
+    P2-FULLCORE-2D-A: The materializer must not assume coordinates are
+    already 0-based.  Conversion happens exactly once here.
+    """
+    base = pm.coordinate_convention.index_base
+    if base == 0:
+        return list(coords)
+    return [(r - base, c - base) for r, c in coords]
+
+
 def _apply_insert_overrides(
     base_pattern: list[list[str]],
     intent: LocalizedInsertIntentPatchItem,
+    *,
+    pm: AssemblyPinMapPatchItem | None = None,
 ) -> list[list[str]]:
     """Return a copy of base_pattern with insert overrides applied."""
     result = [row[:] for row in base_pattern]
-    for r, c in intent.coordinates:
+    coords = (
+        _normalize_insert_coords(intent.coordinates, pm)
+        if pm is not None
+        else intent.coordinates
+    )
+    for r, c in coords:
         if 0 <= r < len(result) and 0 <= c < len(result[r]):
             result[r][c] = intent.insert_universe_id
     return result
@@ -84,20 +106,23 @@ def _get_active_inserts_for_segment(
     segment: AxialSegment,
     catalog: AssemblyCatalogPatch,
     resolved_profiles: list[ResolvedLocalizedInsertProfile] | None = None,
-) -> dict[str, list[tuple[str, str, list[tuple[int, int]]]]]:
+) -> dict[str, list[tuple[str, str, list[tuple[int, int]], AssemblyPinMapPatchItem]]]:
     """For a given segment, return active inserts per assembly type.
 
     Returns
     -------
-    dict[assembly_type_id, list[(insert_id, insert_universe_id, coordinates)]]
+    dict[assembly_type_id, list[(insert_id, insert_universe_id, coordinates_0based, pin_map)]]
     """
-    result: dict[str, list[tuple[str, str, list[tuple[int, int]]]]] = {}
+    result: dict[str, list[tuple[str, str, list[tuple[int, int]], AssemblyPinMapPatchItem]]] = {}
 
     for atype in catalog.assembly_types:
         type_id = atype.assembly_type_id
-        active: list[tuple[str, str, list[tuple[int, int]]]] = []
+        pm = atype.pin_map
+        active: list[tuple[str, str, list[tuple[int, int]], AssemblyPinMapPatchItem]] = []
 
-        for intent in atype.pin_map.localized_insert_intents:
+        for intent in pm.localized_insert_intents:
+            norm_coords = _normalize_insert_coords(intent.coordinates, pm)
+
             if intent.axial_profile_id is not None:
                 if resolved_profiles:
                     for rp in resolved_profiles:
@@ -110,7 +135,8 @@ def _get_active_inserts_for_segment(
                                     active.append((
                                         f"{intent.insert_id}::{rseg.segment_id}",
                                         rseg.universe_id,
-                                        list(intent.coordinates),
+                                        norm_coords,
+                                        pm,
                                     ))
                                     break
                 continue
@@ -133,7 +159,8 @@ def _get_active_inserts_for_segment(
                 active.append((
                     intent.insert_id,
                     intent.insert_universe_id,
-                    list(intent.coordinates),
+                    norm_coords,
+                    pm,
                 ))
 
         if active:
@@ -316,7 +343,7 @@ def materialize_concrete_axial_states(
 
                         base_pattern = base_pin_lattices[type_id].universe_pattern
                         derived_pattern = [r[:] for r in base_pattern]
-                        for insert_id, insert_uv, coords in acts:
+                        for insert_id, insert_uv, coords, _pm in acts:
                             for r, c in coords:
                                 if 0 <= r < len(derived_pattern) and 0 <= c < len(derived_pattern[r]):
                                     derived_pattern[r][c] = insert_uv

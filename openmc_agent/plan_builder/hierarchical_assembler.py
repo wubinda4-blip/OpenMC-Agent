@@ -520,6 +520,16 @@ def compile_global_axial_segments(
     if len(sorted_bps) < 2:
         return []
 
+    # P2-FULLCORE-2D-A: Clip breakpoints to domain boundaries.
+    domain_lo = float("-inf")
+    domain_hi = float("inf")
+    if facts and facts.axial_domain_cm:
+        domain_lo = facts.axial_domain_cm[0]
+        domain_hi = facts.axial_domain_cm[1]
+    sorted_bps = [bp for bp in sorted_bps if domain_lo - tolerance_cm <= bp <= domain_hi + tolerance_cm]
+    if len(sorted_bps) < 2:
+        return []
+
     segments: list[AxialSegment] = []
     for i in range(len(sorted_bps) - 1):
         z_min = sorted_bps[i]
