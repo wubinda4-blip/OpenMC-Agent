@@ -41,9 +41,9 @@ def test_template_count_equals_type_count():
     result = build_hierarchical_core_plan(catalog, layout, facts=None)
     # 3 types → 3 pin lattices, 3 assemblies
     # But 9 core positions
-    assert len(result["pin_lattices"]) == 3
-    assert len(result["assemblies"]) == 3
-    assert result["core_count_aggregation"].total_assembly_instances == 9
+    assert len(result.pin_lattices) == 3
+    assert len(result.assembly_specs) == 3
+    assert result.core_count_aggregation.total_assembly_instances == 9
 
 
 def test_reuse_ratio_heterogeneous_2x2():
@@ -72,8 +72,8 @@ def test_reuse_ratio_heterogeneous_2x2():
         boundary="reflective",
     )
     result = build_hierarchical_core_plan(catalog, layout, facts=None)
-    assert len(result["pin_lattices"]) == 2
-    assert result["core_count_aggregation"].total_assembly_instances == 4
+    assert len(result.pin_lattices) == 2
+    assert result.core_count_aggregation.total_assembly_instances == 4
     # Reuse: 4 instances / 2 templates = 2x reuse
     reuse_ratio = 4 / 2
     assert reuse_ratio == 2.0
@@ -98,5 +98,5 @@ def test_no_duplicate_lattice_ids():
         boundary="reflective",
     )
     result = build_hierarchical_core_plan(catalog, layout, facts=None)
-    lattice_ids = [lat.id for lat in result["pin_lattices"]]
+    lattice_ids = [lat.id for lat in result.pin_lattices]
     assert len(lattice_ids) == len(set(lattice_ids))  # no duplicates

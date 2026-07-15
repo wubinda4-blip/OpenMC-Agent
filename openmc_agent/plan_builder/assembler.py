@@ -63,12 +63,14 @@ from ..material_policy import (
     policy_from_value,
 )
 from .patches import (
+    AssemblyCatalogPatch,
     AxialLayerPatchItem,
     AxialLayersPatch,
     AxialOverlayPatchItem,
     AxialOverlaysPatch,
     CellLayerPatch,
     CoordinateConvention,
+    CoreLayoutPatch,
     FactsPatch,
     LatticeLoadingPatchItem,
     MaterialSpecPatch,
@@ -1311,6 +1313,17 @@ def assemble_simulation_plan_from_patches(
     axial_layers_patch: AxialLayersPatch | None = indexed.get("axial_layers")
     axial_overlays_patch: AxialOverlaysPatch | None = indexed.get("axial_overlays")
     settings_patch: SettingsPatch | None = indexed.get("settings")
+    assembly_catalog_patch: AssemblyCatalogPatch | None = indexed.get("assembly_catalog")
+    core_layout_patch: CoreLayoutPatch | None = indexed.get("core_layout")
+
+    # Detect multi-assembly path.
+    is_multi_assembly = False
+    if assembly_catalog_patch is not None and core_layout_patch is not None:
+        is_multi_assembly = True
+    elif facts is not None:
+        scope = getattr(facts, "model_scope", "single_assembly")
+        if scope in ("multi_assembly_core", "full_core"):
+            is_multi_assembly = True
 
     # 1. Check required patches.
     missing_issues = _check_required_patches(indexed, facts)
@@ -1341,6 +1354,191 @@ def assemble_simulation_plan_from_patches(
     )
     issues.extend(univ_issues)
     universe_ids = {u.id for u in plan_universes}
+
+    # =====================================================================
+    # MULTI-ASSEMBLY CORE PATH (P2-FULLCORE-2A)
+    # =====================================================================
+    if is_multi_assembly and assembly_catalog_patch is not None and core_layout_patch is not None:
+        from openmc_agent.plan_builder.hierarchical_assembler import (
+            build_hierarchical_core_plan,
+        )
+
+        pitch = (facts.pin_pitch_cm if facts and facts.pin_pitch_cm else 1.26)
+        outer_mod = _outer_moderator_material_id(materials_patch) or "water"
+
+        kind_to_universe_map: dict[str, str] = {}
+        if universes_patch is not None:
+            for univ in universes_patch.universes:
+                kind_to_universe_map[univ.kind] = univ.universe_id
+
+        hier = build_hierarchical_core_plan(
+            assembly_catalog_patch,
+            core_layout_patch,
+            facts,
+            pitch_cm=pitch,
+            kind_to_universe=kind_to_universe_map or None,
+            outer_moderator_universe=outer_mod,
+        )
+
+        for rpt in hier.localized_insert_reports:
+            if isinstance(rpt, dict) and rpt.get("assembly_type_id"):
+                pass
+
+        all_lattices = list(hier.pin_lattices) + list(hier.core_lattices)
+        all_universes = list(plan_universes) + list(hier.assembly_universes)
+        all_cells = list(plan_cells) + list(hier.assembly_wrapper_cells)
+        all_assemblies = list(hier.assembly_specs)
+
+        for uv_id in hier.assembly_universe_ids.values():
+            if uv_id not in {u.id for u in all_universes}:
+                issues.append(PlanAssemblyIssue(
+                    code="fullcore.assembly_universe_missing",
+                    severity="error",
+                    message=f"Assembly wrapper universe {uv_id!r} not in universe catalog",
+                ))
+
+        if axial_layers_patch is not None:
+            axial_layers, lattice_loadings, al_issues, axial_layer_aliases = _assemble_axial_layers(
+                axial_layers_patch, "core_lattice", material_ids,
+            )
+            issues.extend(al_issues)
+        else:
+            axial_layers = []
+            lattice_loadings = []
+
+        if axial_overlays_patch is not None:
+            axial_overlays, ao_issues, overlay_aliases = _assemble_axial_overlays(
+                axial_overlays_patch, "core_lattice", material_ids,
+            )
+            issues.extend(ao_issues)
+        else:
+            axial_overlays = []
+
+        core_spec = hier.core_spec
+        if core_spec is not None:
+            core_spec = core_spec.model_copy(update={
+                "axial_layers": axial_layers,
+                "axial_overlays": axial_overlays,
+            })
+
+        all_assumptions: list[str] = []
+        all_confirms: list[str] = []
+        for mat in plan_materials:
+            all_assumptions.extend(mat.assumptions)
+            all_confirms.extend(mat.requires_human_confirmation)
+        if facts and facts.assumptions:
+            all_assumptions.extend(facts.assumptions)
+        if facts and facts.missing_facts:
+            all_confirms.extend(f"missing fact: {f}" for f in facts.missing_facts)
+
+        assembly_pitch = (
+            facts.assembly_pitch_cm if facts and facts.assembly_pitch_cm
+            else (core_layout_patch.assembly_pitch_cm or 21.50)
+        )
+
+        complex_model = ComplexModelSpec(
+            name="hierarchical core model",
+            kind="core",
+            materials=plan_materials,
+            cells=all_cells,
+            surfaces=pin_surfaces,
+            regions=pin_regions,
+            universes=all_universes,
+            lattices=all_lattices,
+            lattice_loadings=lattice_loadings,
+            assemblies=all_assemblies,
+            core=core_spec,
+            settings=RunSettingsSpec(
+                source_strategy=(
+                    settings_patch.source_strategy if settings_patch else "active_fuel_box"
+                ),
+                source_requires_fissionable_constraint=(
+                    settings_patch.source_requires_fissionable_constraint
+                    if settings_patch else True
+                ),
+                manual_source_bounds_cm=(
+                    settings_patch.manual_source_bounds_cm
+                    if settings_patch and hasattr(settings_patch, "manual_source_bounds_cm")
+                    else None
+                ),
+            ),
+            assumptions=list(dict.fromkeys(all_assumptions)),
+            requires_human_confirmation=list(dict.fromkeys(all_confirms)),
+        )
+
+        plot_specs = [
+            PlotSpec(
+                basis="xy",
+                origin=(0.0, 0.0, 0.0),
+                width_cm=(assembly_pitch * 3, assembly_pitch * 3),
+                filename="full_core_xy.png",
+            ),
+            PlotSpec(
+                basis="xz",
+                origin=(0.0, 0.0, 0.0),
+                width_cm=(assembly_pitch * 3, 400.0),
+                filename="full_core_xz.png",
+            ),
+        ]
+
+        run_settings = RunSettingsSpec(
+            batches=5, inactive=1, particles=100,
+            source_strategy=(
+                settings_patch.source_strategy if settings_patch else "active_fuel_box"
+            ),
+        )
+        execution_check = ExecutionCheckSpec(
+            enabled=True,
+            settings=run_settings,
+        )
+
+        capability = RenderCapabilityReport(
+            renderability="none",
+            is_executable=False,
+            supported_renderer="none",
+            reasons=["assembled from multi-assembly patches; awaiting capability assessment"],
+        )
+
+        plan = SimulationPlan(
+            schema_version="simulation_plan.v2",
+            complex_model=complex_model,
+            capability_report=capability,
+            plot_specs=plot_specs,
+            execution_check=execution_check,
+            expert_assumptions=list(dict.fromkeys(all_assumptions)),
+        )
+
+        errors = [i for i in issues if i.severity == "error"]
+        warnings = [i for i in issues if i.severity == "warning"]
+        infos = [i for i in issues if i.severity == "info"]
+
+        return PlanAssemblyResult(
+            ok=len(errors) == 0,
+            plan=plan,
+            plan_dict=plan.model_dump(),
+            issues=issues,
+            material_composition_report=material_composition_report,
+            summary={
+                "path": "multi_assembly_core",
+                "kind": "core",
+                "error_count": len(errors),
+                "warning_count": len(warnings),
+                "info_count": len(infos),
+                "material_count": len(plan_materials),
+                "universe_count": len(all_universes),
+                "cell_count": len(all_cells),
+                "lattice_count": len(all_lattices),
+                "assembly_type_count": len(all_assemblies),
+                "core_total_fuel": hier.core_count_aggregation.core_total_for_role("fuel_pin") if hier.core_count_aggregation else 0,
+                "core_total_guide_tube": hier.core_count_aggregation.core_total_for_role("guide_tube") if hier.core_count_aggregation else 0,
+                "localized_inserts_in_base_lattice": False,
+                "internal_assembly_boundary": "transmission",
+            },
+        )
+
+    # =====================================================================
+    # SINGLE-ASSEMBLY PATH (existing VERA3 path)
+    # =====================================================================
 
     # 3a. Derive localized insert loadings (replaces old _normalize_axial_insert_pin_map).
     if pin_map_patch is not None:

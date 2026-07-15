@@ -47,7 +47,7 @@ def test_inserts_scoped_to_type():
             ),
         ],
     )
-    _, _, summaries, _ = assemble_assembly_templates(catalog)
+    _, _, _, _, _, summaries, _ = assemble_assembly_templates(catalog)
     assert summaries["type_a"].localized_insert_counts.get("pyrex_rod") == 1
     assert "pyrex_rod" not in summaries["type_b"].localized_insert_counts
 
@@ -76,7 +76,7 @@ def test_insert_aggregation_respects_type():
                     ),
                 ],
             ),
-        )[2]["type_a"],
+        )[5]["type_a"],
         "type_b": assemble_assembly_templates(
             AssemblyCatalogPatch(
                 assembly_types=[
@@ -104,7 +104,7 @@ def test_insert_aggregation_respects_type():
                     ),
                 ],
             ),
-        )[2]["type_b"],
+        )[5]["type_b"],
     }
     multiplicities = {"type_a": 2, "type_b": 2}
     agg = aggregate_core_counts(summaries_dict, multiplicities)

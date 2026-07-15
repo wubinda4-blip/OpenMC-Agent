@@ -272,10 +272,10 @@ def run_diagnostic():
     # 5. Build hierarchical core plan
     print("\n5. Hierarchical Core Plan...")
     hier = build_hierarchical_core_plan(catalog, layout, facts, pitch_cm=1.26)
-    pin_lattices = hier["pin_lattices"]
-    assemblies = hier["assemblies"]
-    core_lattice = hier["core_lattice"]
-    aggregation = hier["core_count_aggregation"]
+    pin_lattices = hier.pin_lattices
+    assemblies = hier.assembly_specs
+    core_lattice = hier.core_lattices[0]
+    aggregation = hier.core_count_aggregation
     print(f"   pin_lattices={len(pin_lattices)}")
     print(f"   assemblies={len(assemblies)}")
     print(f"   core_lattice shape={core_lattice.shape}")
@@ -301,7 +301,7 @@ def run_diagnostic():
 
     # 7. Verify per-type local counts
     print("\n7. Per-Type Local Counts...")
-    for type_id, summary in hier["count_summaries"].items():
+    for type_id, summary in hier.count_summaries.items():
         print(f"   {type_id}: fuel={summary.fuel_pin_count}, "
               f"gt={summary.guide_tube_count}, inst={summary.instrument_tube_count}")
         assert summary.fuel_pin_count == 264, f"Expected 264 fuel per type, got {summary.fuel_pin_count}"
@@ -349,7 +349,7 @@ def run_diagnostic():
                         "total_cells": s.total_cells,
                         "localized_insert_counts": s.localized_insert_counts,
                     }
-                    for tid, s in hier["count_summaries"].items()
+                    for tid, s in hier.count_summaries.items()
                 },
             }.items() if not isinstance(v, type)
             }, indent=2, default=str
