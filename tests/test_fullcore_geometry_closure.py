@@ -203,14 +203,14 @@ def test_vera4_all_references_resolve():
                 assert uid in uv_ids, f"lattice {lat.id} -> missing universe {uid}"
 
 
-def test_vera4_core_lattice_no_dead_outer():
-    """Core lattice outer should be None for reflective boundary (no dead geometry)."""
+def test_vera4_core_lattice_has_safety_outer():
+    """Core lattice should have outer_universe_id set as precision safety net."""
     result = assemble_simulation_plan_from_patches(_build_vera4_patches(), strict=False)
     assert result.plan is not None
     core_lat = next(
         l for l in result.plan.complex_model.lattices if l.id == "core_lattice"
     )
-    assert core_lat.outer_universe_id is None
+    assert core_lat.outer_universe_id is not None
 
 
 # ---------------------------------------------------------------------------

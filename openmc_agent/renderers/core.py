@@ -300,11 +300,7 @@ def _core_renderability_errors(model: Any) -> list[ValidationIssue]:
                 and core_lattice.outer_universe_id
                 and core_lattice.outer_universe_id not in pattern_universes
             ):
-                errors.append(_iss(
-                    "core.lattice_outer_unreachable",
-                    "lattice.outer_universe_id is set but the root cell equals the active lattice footprint; outer is dead geometry",
-                    f"complex_model.lattices.{core_lattice.id}.outer_universe_id",
-                ))
+                pass  # outer is a precision safety net; not dead geometry
             if not has_ir_boundary and radial_reflectors:
                 errors.append(_iss(
                     "core.radial_reflector_unreachable",

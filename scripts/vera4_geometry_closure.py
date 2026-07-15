@@ -1,13 +1,15 @@
-"""VERA4 deterministic geometry closure diagnostic (P2-FULLCORE-2C-A).
+"""VERA4 deterministic physical geometry closure (P2-FULLCORE-2C-B).
 
 Builds deterministic VERA4 patches with full material compositions,
-runs through the production assembler, tests CoreRenderer capability,
-renders to model.py, exports XML, and runs OpenMC geometry debug.
+distinct replacement universes (pyrex_rod, rcca_absorber), profile
+registry, and concrete per-segment axial-state materialization.
+Runs through the production assembler, CoreRenderer, model.py, XML
+export, OpenMC geometry debug, and low-cost transport smoke.
 
-This is NOT a real-LLM canary — it verifies the deterministic geometry
-pipeline end-to-end.
+This is NOT a real-LLM canary — it verifies the deterministic physical
+geometry pipeline end-to-end.
 
-Target status: VERA4_DETERMINISTIC_GEOMETRY_DEBUG_PASSED
+Target status: VERA4_DETERMINISTIC_PHYSICAL_CLOSURE_PASSED
 """
 
 from __future__ import annotations
@@ -79,6 +81,24 @@ def build_vera4_materials():
             composition_status="approximate",
             source_note="deterministic fixture for geometry testing",
         ),
+        MaterialSpecPatch(
+            material_id="pyrex_glass", name="pyrex glass", role="absorber",
+            density_g_cm3=2.23,
+            composition={"B11": 0.0403, "O16": 0.5356, "Na23": 0.0282,
+                         "Al27": 0.0116, "Si28": 0.3770, "Si29": 0.0192},
+            composition_basis="atom_frac",
+            composition_status="approximate",
+            source_note="deterministic fixture: Pyrex replacement for guide tube in burnable poison",
+        ),
+        MaterialSpecPatch(
+            material_id="rcca_absorber_mat", name="RCCA absorber", role="absorber",
+            density_g_cm3=10.2,
+            composition={"Ag107": 0.4173, "In115": 0.1491, "Cd114": 0.0529,
+                         "Ag109": 0.3827},
+            composition_basis="atom_frac",
+            composition_status="approximate",
+            source_note="deterministic fixture: Ag-In-Cd absorber for RCCA",
+        ),
     ])
 
 
@@ -88,31 +108,70 @@ def build_vera4_universes():
             universe_id="fuel_cell_r1",
             kind="fuel_pin",
             cells=[
-                CellLayerPatch(id="pellet", role="fuel_internal", material_id="fuel_r1"),
-                CellLayerPatch(id="clad", role="cladding", material_id="zircaloy4"),
+                CellLayerPatch(id="pellet", role="fuel_internal", material_id="fuel_r1",
+                               region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.4096),
+                CellLayerPatch(id="clad", role="cladding", material_id="zircaloy4",
+                               region_kind="cylinder", r_min_cm=0.4096, r_max_cm=0.4750),
+                CellLayerPatch(id="coolant", role="coolant", material_id="water",
+                               region_kind="background"),
             ],
         ),
         UniverseSpecPatch(
             universe_id="fuel_cell_r2",
             kind="fuel_pin",
             cells=[
-                CellLayerPatch(id="pellet", role="fuel_internal", material_id="fuel_r2"),
-                CellLayerPatch(id="clad", role="cladding", material_id="zircaloy4"),
+                CellLayerPatch(id="pellet", role="fuel_internal", material_id="fuel_r2",
+                               region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.4096),
+                CellLayerPatch(id="clad", role="cladding", material_id="zircaloy4",
+                               region_kind="cylinder", r_min_cm=0.4096, r_max_cm=0.4750),
+                CellLayerPatch(id="coolant", role="coolant", material_id="water",
+                               region_kind="background"),
             ],
         ),
         UniverseSpecPatch(
             universe_id="guide_tube",
             kind="guide_tube",
             cells=[
-                CellLayerPatch(id="inner", role="inner_flow", material_id="water"),
-                CellLayerPatch(id="wall", role="cladding", material_id="zircaloy4"),
+                CellLayerPatch(id="inner", role="inner_flow", material_id="water",
+                               region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.5615),
+                CellLayerPatch(id="wall", role="cladding", material_id="zircaloy4",
+                               region_kind="cylinder", r_min_cm=0.5615, r_max_cm=0.6121),
+                CellLayerPatch(id="coolant", role="coolant", material_id="water",
+                               region_kind="background"),
             ],
         ),
         UniverseSpecPatch(
             universe_id="inst_tube",
             kind="instrument_tube",
             cells=[
-                CellLayerPatch(id="inner", role="inner_flow", material_id="water"),
+                CellLayerPatch(id="inner", role="inner_flow", material_id="water",
+                               region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.5615),
+                CellLayerPatch(id="coolant", role="coolant", material_id="water",
+                               region_kind="background"),
+            ],
+        ),
+        UniverseSpecPatch(
+            universe_id="pyrex_rod",
+            kind="custom",
+            cells=[
+                CellLayerPatch(id="pyrex_inner", role="absorber", material_id="pyrex_glass",
+                               region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.4180),
+                CellLayerPatch(id="clad", role="cladding", material_id="zircaloy4",
+                               region_kind="cylinder", r_min_cm=0.4180, r_max_cm=0.4750),
+                CellLayerPatch(id="coolant", role="coolant", material_id="water",
+                               region_kind="background"),
+            ],
+        ),
+        UniverseSpecPatch(
+            universe_id="rcca_absorber",
+            kind="custom",
+            cells=[
+                CellLayerPatch(id="absorber_inner", role="absorber", material_id="rcca_absorber_mat",
+                               region_kind="cylinder", r_min_cm=0.0, r_max_cm=0.3860),
+                CellLayerPatch(id="clad", role="cladding", material_id="zircaloy4",
+                               region_kind="cylinder", r_min_cm=0.3860, r_max_cm=0.4750),
+                CellLayerPatch(id="coolant", role="coolant", material_id="water",
+                               region_kind="background"),
             ],
         ),
     ])
@@ -211,7 +270,7 @@ def build_vera4_patches():
                     insert_id="edge_pyrex",
                     insert_kind="pyrex_rod",
                     host_kind="guide_tube",
-                    insert_universe_id="guide_tube",
+                    insert_universe_id="pyrex_rod",
                     coordinates=gt_coords[:20],
                     z_min_cm=0.0, z_max_cm=50.0,
                 ),
@@ -227,7 +286,7 @@ def build_vera4_patches():
                     insert_id="rcca",
                     insert_kind="control_rod",
                     host_kind="guide_tube",
-                    insert_universe_id="guide_tube",
+                    insert_universe_id="rcca_absorber",
                     coordinates=gt_coords,
                     z_min_cm=257.9, z_max_cm=365.76,
                 ),
@@ -254,7 +313,7 @@ def build_vera4_patches():
 
 def run_diagnostic():
     print("=" * 70)
-    print("VERA4 Deterministic Geometry Closure (P2-FULLCORE-2C-A)")
+    print("VERA4 Deterministic Physical Geometry Closure (P2-FULLCORE-2C-B)")
     print("=" * 70)
 
     patches = build_vera4_patches()
@@ -313,8 +372,10 @@ def run_diagnostic():
 
     checks.append(("kind=core", model.kind == "core"))
     checks.append(("has core_lattice", "core_lattice" in lattice_ids))
-    checks.append(("has 3 pin lattices", sum(1 for l in model.lattices if l.id.startswith("assembly_lattice__")) == 3))
-    checks.append(("has 3 wrapper universes", sum(1 for u in model.universes if u.id.startswith("assembly_universe__")) == 3))
+    n_pin_lattices = sum(1 for l in model.lattices if l.id.startswith("assembly_lattice__"))
+    checks.append((f"has >=3 pin lattices ({n_pin_lattices})", n_pin_lattices >= 3))
+    n_wrapper_uvs = sum(1 for u in model.universes if u.id.startswith("assembly_universe__"))
+    checks.append((f"has >=3 wrapper universes ({n_wrapper_uvs})", n_wrapper_uvs >= 3))
     checks.append(("has moderator_outer", "moderator_outer" in uv_ids))
     checks.append(("core boundary=reflective", model.core and model.core.boundary == "reflective"))
     checks.append(("transmission assemblies", all(a.boundary == "transmission" for a in model.assemblies)))
@@ -343,6 +404,28 @@ def run_diagnostic():
             lat_ref_ok = False
             print(f"   BROKEN: lattice {lat.id} -> outer {lat.outer_universe_id}")
     checks.append(("all lattice refs resolve", lat_ref_ok))
+
+    # ---- Concrete insert state checks ----
+    has_pyrex_uv = "pyrex_rod" in uv_ids
+    checks.append(("has pyrex_rod replacement universe", has_pyrex_uv))
+    has_rcca_uv = "rcca_absorber" in uv_ids
+    checks.append(("has rcca_absorber replacement universe", has_rcca_uv))
+
+    n_seg_lattices = sum(1 for l in model.lattices if "__seg" in l.id)
+    checks.append((f"has segment-specific lattices ({n_seg_lattices})", n_seg_lattices > 0))
+
+    n_axial_layers = len(model.core.axial_layers) if model.core else 0
+    checks.append((f"core has >1 axial layers ({n_axial_layers})", n_axial_layers > 1))
+
+    # Check derived lattices use replacement universes
+    derived_with_insert = False
+    for lat in model.lattices:
+        if "__seg" in lat.id:
+            for row in lat.universe_pattern:
+                for uid in row:
+                    if uid in ("pyrex_rod", "rcca_absorber"):
+                        derived_with_insert = True
+    checks.append(("derived lattices contain insert universes", derived_with_insert))
 
     # ---- Material composition ----
     mat_ok = all(
@@ -415,6 +498,46 @@ def run_diagnostic():
                         if geo_result.returncode == 0:
                             print(f"   {geo_result.stdout.strip()}")
                             checks.append(("geometry loads", True))
+
+                            # ---- Low-cost transport smoke ----
+                            print("\n8. Low-cost transport smoke (1 batch, 10 particles)...")
+                            smoke_script = tmpdir_str + "/smoke.py" if False else str(Path(tmpdir) / "smoke.py")
+                            smoke_code = '''import openmc
+import sys
+mats = openmc.Materials.from_xml("materials.xml")
+geom = openmc.Geometry.from_xml("geometry.xml", mats)
+sett = openmc.Settings.from_xml("settings.xml")
+sett.batches = 5
+sett.inactive = 1
+sett.particles = 100
+model = openmc.Model(materials=mats, geometry=geom, settings=sett)
+try:
+    sp_filename = model.run(cwd=".")
+    sp = openmc.StatePoint(sp_filename)
+    print(f"TRANSPORT_SMOKE_KEFF={sp.k_combined.nominal_value:.5f}+/-{sp.k_combined.std_dev:.5f}")
+except RuntimeError as e:
+    print(f"TRANSPORT_SMOKE_FAILED: {e}", file=sys.stderr)
+    sys.exit(1)
+'''
+                            Path(smoke_script).write_text(smoke_code)
+                            smoke_result = subprocess.run(
+                                [sys.executable, str(smoke_script)],
+                                capture_output=True, text=True,
+                                timeout=120,
+                                cwd=tmpdir,
+                                env={
+                                    "OPENMC_CROSS_SECTIONS": "/home/wbd/openmc_data/endfb-vii.1-hdf5/cross_sections.xml",
+                                    "PATH": "/home/wbd/miniconda3/envs/openmc-env/bin:/usr/bin:/bin",
+                                    "HOME": str(Path.home()),
+                                },
+                            )
+                            if smoke_result.returncode == 0:
+                                keff_line = [l for l in smoke_result.stdout.splitlines() if "keff" in l]
+                                print(f"   {' '.join(keff_line) if keff_line else 'Transport OK (no keff line)'}")
+                                checks.append(("transport smoke", True))
+                            else:
+                                print(f"   transport smoke FAILED: {smoke_result.stderr[:500]}")
+                                checks.append(("transport smoke", False))
                         else:
                             print(f"   geometry load FAILED: {geo_result.stderr[:500]}")
                             checks.append(("geometry loads", False))
@@ -435,7 +558,7 @@ def run_diagnostic():
 
     all_passed = all(c for _, c in checks)
     if all_passed:
-        print(f"\nVERA4_DETERMINISTIC_GEOMETRY_DEBUG_PASSED")
+        print(f"\nVERA4_DETERMINISTIC_PHYSICAL_CLOSURE_PASSED")
     else:
         failed = [n for n, c in checks if not c]
         print(f"\nBLOCKED: {failed}")

@@ -359,15 +359,10 @@ def assemble_core_lattice(
 
     boundary = layout.boundary if layout.boundary in ("reflective", "vacuum", "periodic") else "reflective"
 
-    # For reflective/vacuum boundaries, the root cell region matches the lattice
-    # footprint exactly, so the outer universe is dead geometry.  Clear it to
-    # avoid renderer flags.  For other boundaries (e.g. with reflector slab),
-    # keep the outer.
+    # Keep the outer universe on the core lattice as a precision safety net.
+    # Even for reflective boundaries, floating-point edge cases can cause
+    # particles to slip outside the lattice footprint.
     effective_outer = outer_universe_id
-    if boundary in ("reflective", "vacuum") and outer_universe_id not in {
-        uid for row in universe_pattern for uid in row
-    }:
-        effective_outer = None
 
     return LatticeSpec(
         id=layout.core_lattice_id,

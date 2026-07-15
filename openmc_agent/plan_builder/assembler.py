@@ -1315,6 +1315,7 @@ def assemble_simulation_plan_from_patches(
     settings_patch: SettingsPatch | None = indexed.get("settings")
     assembly_catalog_patch: AssemblyCatalogPatch | None = indexed.get("assembly_catalog")
     core_layout_patch: CoreLayoutPatch | None = indexed.get("core_layout")
+    profiles_patch = indexed.get("localized_insert_profiles")
 
     # Detect multi-assembly path.
     is_multi_assembly = False
@@ -1361,6 +1362,13 @@ def assemble_simulation_plan_from_patches(
     if is_multi_assembly and assembly_catalog_patch is not None and core_layout_patch is not None:
         from openmc_agent.plan_builder.hierarchical_assembler import (
             build_hierarchical_core_plan,
+            compile_global_axial_segments,
+        )
+        from openmc_agent.plan_builder.localized_insert_profiles import (
+            resolve_all_profiles_for_catalog,
+        )
+        from openmc_agent.plan_builder.axial_state_materializer import (
+            materialize_concrete_axial_states,
         )
 
         pitch = (facts.pin_pitch_cm if facts and facts.pin_pitch_cm else 1.26)
@@ -1385,10 +1393,77 @@ def assemble_simulation_plan_from_patches(
             if isinstance(rpt, dict) and rpt.get("assembly_type_id"):
                 pass
 
+        # Resolve profiles if available
+        resolved_profiles = None
+        if profiles_patch is not None:
+            resolved_profiles = resolve_all_profiles_for_catalog(
+                assembly_catalog_patch, profiles_patch,
+            )
+
+        # Compile global axial segments
+        has_simple_inserts = any(
+            intent.axial_profile_id is None
+            for atype in assembly_catalog_patch.assembly_types
+            for intent in atype.pin_map.localized_insert_intents
+        )
+        has_profile_inserts = resolved_profiles is not None and len(resolved_profiles) > 0
+
+        axial_layer_boundaries = None
+        if axial_layers_patch is not None and facts is not None:
+            axial_layer_boundaries = [
+                (lyr.z_min_cm, lyr.z_max_cm)
+                for lyr in axial_layers_patch.layers
+            ]
+
+        if has_simple_inserts or has_profile_inserts:
+            global_segments = compile_global_axial_segments(
+                facts,
+                assembly_catalog_patch,
+                axial_layer_boundaries=axial_layer_boundaries,
+                resolved_profiles=resolved_profiles,
+            )
+        else:
+            global_segments = []
+
+        # Materialize concrete per-segment geometry if there are inserts
+        concrete_result = None
+        if global_segments:
+            base_pin_lattice_map = {l.id.replace("assembly_lattice__", ""): l for l in hier.pin_lattices}
+            # Build proper type_id → lattice mapping
+            base_pin_lattice_by_type: dict[str, LatticeSpec] = {}
+            for atype in assembly_catalog_patch.assembly_types:
+                lat_id = f"assembly_lattice__{atype.assembly_type_id}"
+                lat = next((l for l in hier.pin_lattices if l.id == lat_id), None)
+                if lat is not None:
+                    base_pin_lattice_by_type[atype.assembly_type_id] = lat
+
+            concrete_result = materialize_concrete_axial_states(
+                assembly_catalog_patch,
+                core_layout_patch,
+                global_segments,
+                base_pin_lattice_by_type,
+                hier.assembly_universe_ids,
+                kind_to_universe=kind_to_universe_map or None,
+                resolved_profiles=resolved_profiles,
+                pitch_cm=pitch,
+                moderator_universe_id="moderator_outer",
+                core_lattice_id_base="core_lattice",
+            )
+
         all_lattices = list(hier.pin_lattices) + list(hier.core_lattices)
         all_universes = list(plan_universes) + list(hier.assembly_universes)
         all_cells = list(plan_cells) + list(hier.assembly_wrapper_cells)
         all_assemblies = list(hier.assembly_specs)
+
+        # Merge concrete segment-specific geometry
+        if concrete_result is not None:
+            all_lattices = (
+                all_lattices
+                + concrete_result.derived_pin_lattices
+                + concrete_result.segment_core_lattices
+            )
+            all_universes = list(all_universes) + list(concrete_result.derived_wrapper_universes)
+            all_cells = list(all_cells) + list(concrete_result.derived_wrapper_cells)
 
         for uv_id in hier.assembly_universe_ids.values():
             if uv_id not in {u.id for u in all_universes}:
@@ -1398,14 +1473,17 @@ def assemble_simulation_plan_from_patches(
                     message=f"Assembly wrapper universe {uv_id!r} not in universe catalog",
                 ))
 
-        if axial_layers_patch is not None:
+        # Determine axial layers: use concrete layers if available, else patch-based
+        lattice_loadings = []
+        if concrete_result is not None and concrete_result.axial_layers:
+            axial_layers = concrete_result.axial_layers
+        elif axial_layers_patch is not None:
             axial_layers, lattice_loadings, al_issues, axial_layer_aliases = _assemble_axial_layers(
                 axial_layers_patch, "core_lattice", material_ids,
             )
             issues.extend(al_issues)
         else:
             axial_layers = []
-            lattice_loadings = []
 
         if axial_overlays_patch is not None:
             axial_overlays, ao_issues, overlay_aliases = _assemble_axial_overlays(

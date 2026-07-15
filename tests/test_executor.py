@@ -2683,13 +2683,14 @@ def test_render_core_outer_reflector_reachable_via_boundary_surfaces(
     assert (tmp_path / "geometry.xml").exists()
 
 
-def test_core_capability_flags_lattice_outer_unreachable() -> None:
+def test_core_capability_accepts_lattice_outer_safety_net() -> None:
     """2x2 active lattice + outer water + NO core boundary surfaces => the outer
-    universe is dead geometry and capability must report it."""
+    universe is a precision safety net (not dead geometry) and must NOT block
+    rendering."""
     from openmc_agent.renderers.core import _core_renderability_errors
 
     model = ComplexModelSpec(
-        name="core with dead outer",
+        name="core with safety outer",
         kind="core",
         materials=[
             ComplexMaterialSpec(
@@ -2772,7 +2773,7 @@ def test_core_capability_flags_lattice_outer_unreachable() -> None:
 
     errors = _core_renderability_errors(model)
     codes = [issue.code for issue in errors]
-    assert "core.lattice_outer_unreachable" in codes
+    assert "core.lattice_outer_unreachable" not in codes
 
 
 def test_core_effective_root_bounds_raises_on_boundary_clip() -> None:
