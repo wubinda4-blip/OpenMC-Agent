@@ -252,9 +252,12 @@ def derive_localized_insert_loadings(
             _downgrade_nested_to_coordinate(existing_loading, intent)
         else:
             # Build transformation.
+            # Use coordinate_override for renderer safety. The insert universe
+            # should be structurally complete (includes host wall), making
+            # coordinate_override equivalent to nested_component_override.
             transformation = LatticeTransformationPatchItem(
                 operation_id=f"{intent.insert_id}_transform",
-                operation_kind=intent.application_mode,
+                operation_kind="coordinate_override",
                 replacement_universe_id=intent.insert_universe_id,
                 target_coordinates=[tuple(c) for c in norm_coords],
                 component_role=intent.component_role,
