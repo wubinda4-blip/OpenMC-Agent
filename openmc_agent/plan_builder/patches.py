@@ -296,6 +296,35 @@ class LocalizedInsertIntentPatchItem(_PatchBase):
     requires_human_confirmation: bool = False
     assumptions: list[str] = Field(default_factory=list)
 
+    # P2-FULLCORE-2B: multi-segment axial profile support (e.g., RCCA)
+    axial_profile_id: str | None = None
+    anchor_z_cm: float | None = None
+    control_state_id: str | None = None
+
+
+class LocalizedInsertAxialSegmentPatchItem(_PatchBase):
+    """A single axial segment within a multi-segment insert profile (P2-FULLCORE-2B)."""
+
+    segment_id: str
+    relative_z_min_cm: float
+    relative_z_max_cm: float
+    universe_id: str
+    role: str = ""
+    material_role: str | None = None
+    source_note: str | None = None
+
+
+class LocalizedInsertAxialProfilePatchItem(_PatchBase):
+    """A reusable axial profile for multi-segment localized inserts (P2-FULLCORE-2B)."""
+
+    profile_id: str
+    anchor_kind: Literal["absolute", "bottom", "top", "center"] = "absolute"
+    anchor_z_cm: float | None = None
+    segments: list[LocalizedInsertAxialSegmentPatchItem] = Field(default_factory=list)
+    source_note: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    requires_human_confirmation: bool = False
+
 
 class PinMapPatch(_PatchBase):
     """Pin map replacement rules (not a full expanded lattice).
@@ -756,6 +785,8 @@ __all__ = [
     "UniversesPatch",
     "CoordinateConvention",
     "LocalizedInsertIntentPatchItem",
+    "LocalizedInsertAxialSegmentPatchItem",
+    "LocalizedInsertAxialProfilePatchItem",
     "PinMapPatch",
     "AssemblyPinMapPatchItem",
     "AssemblyTypePatchItem",
