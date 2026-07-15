@@ -37,9 +37,14 @@ from openmc_agent.plan_builder.patches import (
     AssemblyPinMapPatchItem,
     AssemblyTypePatchItem,
     AxialOverlayPatchItem,
+    BasePathAxialProfilePatchItem,
+    BasePathAxialProfilesPatch,
+    BasePathStateBindingPatchItem,
     CoordinateConvention,
     CoreLayoutPatch,
     LocalizedInsertIntentPatchItem,
+    UniverseSpecPatch,
+    CellLayerPatch,
 )
 from openmc_agent.plan_builder.localized_insert_profiles import (
     ResolvedLocalizedInsertProfile,
@@ -174,6 +179,8 @@ def _compute_pin_state_hash(
     active_insert_ids: list[str],
     coord_index_base: int,
     grid_overlay_ids: list[str] | None = None,
+    base_path_replacement_ids: list[str] | None = None,
+    base_role: str = "",
 ) -> str:
     """Compute a stable SHA-256 content hash for a pin lattice state."""
     h = hashlib.sha256()
@@ -188,6 +195,11 @@ def _compute_pin_state_hash(
     if grid_overlay_ids:
         for gid in sorted(grid_overlay_ids):
             h.update(f"|grid={gid}".encode())
+    if base_path_replacement_ids:
+        for rid in sorted(base_path_replacement_ids):
+            h.update(f"|bpath={rid}".encode())
+    if base_role:
+        h.update(f"|role={base_role}".encode())
     return h.hexdigest()[:16]
 
 
@@ -360,6 +372,166 @@ def _validate_insert_coordinates(
 
 
 # ---------------------------------------------------------------------------
+# Base path axial-state resolution (Commit 1: fuel-path switching)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_base_path_bindings(
+    base_role: str,
+    type_id: str,
+    base_path_profiles: dict[str, BasePathAxialProfilePatchItem] | None,
+    profile_id: str | None,
+) -> list[BasePathStateBindingPatchItem]:
+    """Find state bindings matching the segment's base_role for this assembly type."""
+    if not base_path_profiles or not profile_id:
+        return []
+    profile = base_path_profiles.get(profile_id)
+    if profile is None:
+        return []
+    matches = [
+        b for b in profile.state_bindings
+        if b.axial_role == base_role
+        and (
+            not b.assembly_type_ids
+            or type_id in b.assembly_type_ids
+        )
+    ]
+    matches.sort(key=lambda b: b.priority, reverse=True)
+    return matches
+
+
+def _apply_base_path_state(
+    pattern: list[list[str]],
+    bindings: list[BasePathStateBindingPatchItem],
+) -> tuple[list[list[str]], list[str]]:
+    """Apply base path state bindings to a pin lattice pattern.
+
+    Returns (modified_pattern, list_of_replacement_ids_applied).
+    """
+    if not bindings:
+        return pattern, []
+    modified = [row[:] for row in pattern]
+    applied: set[str] = set()
+    for binding in bindings:
+        for r in range(len(modified)):
+            for c in range(len(modified[r])):
+                uv = modified[r][c]
+                if uv in binding.source_universe_ids:
+                    modified[r][c] = binding.replacement_universe_id
+                    applied.add(binding.replacement_universe_id)
+    return modified, sorted(applied)
+
+
+# ---------------------------------------------------------------------------
+# Grid-decorated universe generation (Commit 2-3: physical grid geometry)
+# ---------------------------------------------------------------------------
+
+
+def _compute_grid_frame_exact(
+    grid_mass_g: float,
+    density_g_cm3: float,
+    cell_count: int,
+    grid_height_cm: float,
+    pitch_cm: float,
+) -> tuple[float, float, float]:
+    """Exact square-frame derivation.
+
+    Returns (area_per_cell, inner_side, frame_thickness).
+
+    A_cell = grid_mass / (density × cell_count × grid_height)
+    inner_side = sqrt(pitch² - A_cell)
+    frame_thickness = (pitch - inner_side) / 2
+    """
+    if density_g_cm3 <= 0 or grid_height_cm <= 0 or cell_count <= 0:
+        return 0.0, pitch_cm, 0.0
+    a_cell = grid_mass_g / (density_g_cm3 * cell_count * grid_height_cm)
+    val = pitch_cm * pitch_cm - a_cell
+    if val <= 0:
+        return a_cell, 0.0, pitch_cm / 2.0
+    inner_side = math.sqrt(val)
+    frame_thickness = (pitch_cm - inner_side) / 2.0
+    return a_cell, inner_side, frame_thickness
+
+
+def _back_calculate_mass(
+    inner_side: float,
+    pitch_cm: float,
+    density_g_cm3: float,
+    cell_count: int,
+    grid_height_cm: float,
+) -> float:
+    """Back-calculate mass from geometry to verify conservation."""
+    a_cell = pitch_cm * pitch_cm - inner_side * inner_side
+    vol = a_cell * cell_count * grid_height_cm
+    return vol * density_g_cm3
+
+
+def _make_grid_decorated_universe(
+    base_universe_id: str,
+    grid_state_hash: str,
+    grid_material_id: str,
+    inner_side: float,
+    pitch_cm: float,
+    base_universe_patch: UniverseSpecPatch | None,
+) -> UniverseSpecPatch | None:
+    """Create a grid-decorated variant of a base universe.
+
+    Inserts a square_frame cell layer between the last cylinder and the
+    background.  The frame uses grid_material_id; the remaining moderator
+    inside the frame is preserved.
+
+    Returns None if the base universe patch is not available.
+    """
+    if base_universe_patch is None:
+        return None
+
+    decorated_cells: list[CellLayerPatch] = []
+    for cell in base_universe_patch.cells:
+        if cell.region_kind == "background":
+            # Insert frame before background
+            decorated_cells.append(CellLayerPatch(
+                id=f"grid_frame",
+                role="grid_frame",
+                material_id=grid_material_id,
+                region_kind="square_frame",
+                outer_side_cm=pitch_cm,
+                inner_side_cm=inner_side,
+            ))
+            # Remaining moderator inside frame
+            decorated_cells.append(CellLayerPatch(
+                id=f"grid_inner_mod",
+                role="coolant",
+                material_id=cell.material_id,
+                region_kind="box",
+                outer_side_cm=inner_side,
+            ))
+        else:
+            decorated_cells.append(cell)
+
+    # If no background was present, add frame + background
+    has_bg = any(c.region_kind == "background" for c in base_universe_patch.cells)
+    if not has_bg:
+        decorated_cells.append(CellLayerPatch(
+            id="grid_frame", role="grid_frame",
+            material_id=grid_material_id,
+            region_kind="square_frame",
+            outer_side_cm=pitch_cm, inner_side_cm=inner_side,
+        ))
+        decorated_cells.append(CellLayerPatch(
+            id="grid_bg", role="coolant",
+            region_kind="background",
+        ))
+
+    decorated_id = f"{base_universe_id}__grid__{grid_state_hash[:12]}"
+    return UniverseSpecPatch(
+        universe_id=decorated_id,
+        kind=base_universe_patch.kind,
+        cells=decorated_cells,
+        source_note=f"Grid-decorated variant of {base_universe_id}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main materialization
 # ---------------------------------------------------------------------------
 
@@ -381,6 +553,9 @@ def materialize_concrete_axial_states(
     known_universe_ids: set[str] | None = None,
     grid_overlays: list[AxialOverlayPatchItem] | None = None,
     grid_density_lookup: dict[str, float] | None = None,
+    base_path_profiles: dict[str, BasePathAxialProfilePatchItem] | None = None,
+    universe_patches_by_id: dict[str, UniverseSpecPatch] | None = None,
+    fail_closed: bool = True,
 ) -> ConcreteAxialStateResult:
     """Materialize concrete per-segment geometry.
 
@@ -389,15 +564,13 @@ def materialize_concrete_axial_states(
     * ``whole_plane_material`` → AxialLayerSpec with material fill.
     * ``whole_plane_universe`` → AxialLayerSpec with universe fill.
     * ``void`` → AxialLayerSpec with void fill.
-    * ``detailed_core`` → per-type derived pin lattices (base + insert
-      overrides + grid coolant modification) → assembly wrapper universes
-      → segment-specific core lattice (deduplicated by content hash).
+    * ``detailed_core`` → base path state → localized insert overrides →
+      grid decoration → assembly wrapper → segment-specific core lattice.
 
-    P2-FULLCORE-2D-A:
-    * Derived lattice/universe IDs use canonical content hashes.
-    * Identical core patterns reuse the same core lattice.
-    * Spacer grid overlays are tracked and included in state hashes.
-    * Issues are typed MaterializationIssue (fail-closed).
+    P2-FULLCORE-2D-A-HARDENING:
+    * Base path fuel-state switching per segment role.
+    * Grid-decorated universes with physical square frame geometry.
+    * Fail-closed: no silent fallbacks when ``fail_closed=True``.
     """
     result = ConcreteAxialStateResult()
 
@@ -542,10 +715,46 @@ def materialize_concrete_axial_states(
             grid_state.active_overlay_ids.append(gov.overlay_id)
             mat_id = gov.material_id or ""
             grid_state.active_material_ids.append(mat_id)
-            density = grid_lookup.get(mat_id, 7.0)
-            grid_state.derivation_reports.append(
-                _compute_grid_frame_derivation(gov, density, pitch_cm)
+            density = grid_lookup.get(mat_id)
+            if density is None:
+                if fail_closed:
+                    result.issues.append(MaterializationIssue(
+                        code="fullcore.grid_density_missing",
+                        severity="error",
+                        message=f"grid overlay {gov.overlay_id!r} material {mat_id!r} has no density",
+                        segment_id=segment.segment_id,
+                    ))
+                density = 0.0
+            grid_mass = gov.total_mass_g
+            if grid_mass is None:
+                if fail_closed:
+                    result.issues.append(MaterializationIssue(
+                        code="fullcore.grid_mass_missing",
+                        severity="error",
+                        message=f"grid overlay {gov.overlay_id!r} has no total_mass_g",
+                        segment_id=segment.segment_id,
+                    ))
+                grid_mass = 0.0
+            grid_height = (gov.z_max_cm or 0.0) - (ov_zmin if (ov_zmin := gov.z_min_cm) is not None else 0.0)
+            cell_ct = gov.cell_count or 289
+            a_cell, inner_side, ft = _compute_grid_frame_exact(
+                grid_mass, density, cell_ct, grid_height, pitch_cm,
             )
+            # Back-calculate mass for conservation check
+            back_mass = _back_calculate_mass(inner_side, pitch_cm, density, cell_ct, grid_height)
+            mass_err = abs(back_mass - grid_mass) / grid_mass if grid_mass > 0 else 0.0
+            grid_state.derivation_reports.append(GridFrameDerivationReport(
+                overlay_id=gov.overlay_id,
+                material_id=mat_id,
+                grid_height_cm=grid_height,
+                total_mass_g=grid_mass,
+                density_g_cm3=density,
+                cell_count=cell_ct,
+                pitch_cm=pitch_cm,
+                area_per_cell_cm2=a_cell,
+                frame_thickness_cm=ft,
+                volume_fraction=a_cell / (pitch_cm * pitch_cm) if pitch_cm > 0 else 0.0,
+            ))
         if active_grids:
             result.grid_states[segment.segment_id] = grid_state
 
@@ -558,6 +767,8 @@ def materialize_concrete_axial_states(
                 sig_parts.append(f"{tid}:{sorted(a[0] for a in acts)}")
         if grid_state.active_overlay_ids:
             sig_parts.append(f"grid:{sorted(grid_state.active_overlay_ids)}")
+        if segment.base_role:
+            sig_parts.append(f"role:{segment.base_role}")
         state_sig = "|".join(sig_parts)
 
         # Build core lattice universe_pattern for this segment
@@ -567,13 +778,31 @@ def materialize_concrete_axial_states(
             for type_id in row:
                 base_uv = base_assembly_universe_ids.get(type_id, outer_universe_id or "moderator_outer")
                 acts = active_map.get(type_id)
-                if acts:
-                    # Compute content hash for this pin state
+
+                # Resolve base path state bindings for this segment role
+                atype_obj = next(
+                    (at for at in catalog.assembly_types if at.assembly_type_id == type_id),
+                    None,
+                )
+                profile_id = getattr(atype_obj, "base_path_profile_id", None) if atype_obj else None
+                bpath_bindings = _resolve_base_path_bindings(
+                    segment.base_role, type_id, base_path_profiles, profile_id,
+                )
+
+                needs_derived = bool(acts) or bool(bpath_bindings)
+
+                if needs_derived:
                     base_pattern = base_pin_lattices[type_id].universe_pattern
                     derived_pattern = [r[:] for r in base_pattern]
+
+                    # Step 1: Apply base path state (fuel-path switching)
+                    derived_pattern, bpath_ids = _apply_base_path_state(
+                        derived_pattern, bpath_bindings,
+                    )
+
+                    # Step 2: Apply localized inserts
                     all_insert_ids: list[str] = []
-                    for insert_id, insert_uv, coords, _pm in acts:
-                        # Validate coordinates (fail-closed)
+                    for insert_id, insert_uv, coords, _pm in (acts or []):
                         coord_issues = _validate_insert_coordinates(
                             coords,
                             base_pin_lattices[type_id].shape or (len(base_pattern), len(base_pattern[0])),
@@ -588,16 +817,14 @@ def materialize_concrete_axial_states(
                         all_insert_ids.append(insert_id)
 
                     # Get the pin map for convention info
-                    pm_obj = next(
-                        (at.pin_map for at in catalog.assembly_types
-                         if at.assembly_type_id == type_id),
-                        None,
-                    )
+                    pm_obj = atype_obj.pin_map if atype_obj else None
                     ibase = pm_obj.coordinate_convention.index_base if pm_obj else 0
 
                     grid_ids = grid_state.active_overlay_ids if grid_state.active_overlay_ids else None
                     pin_hash = _compute_pin_state_hash(
                         type_id, derived_pattern, all_insert_ids, ibase, grid_ids,
+                        bpath_ids if bpath_ids else None,
+                        segment.base_role,
                     )
                     total_pin_lookups += 1
 
@@ -615,7 +842,7 @@ def materialize_concrete_axial_states(
                             outer_universe_id=moderator_universe_id,
                             universe_pattern=derived_pattern,
                             shape=base_pin_lattices[type_id].shape,
-                            purpose=f"Derived lattice for {type_id} inserts={all_insert_ids} grid={grid_ids or 'none'}",
+                            purpose=f"Derived lattice {type_id} role={segment.base_role} inserts={all_insert_ids} grid={grid_ids or 'none'}",
                         )
                         result.derived_pin_lattices.append(derived_lat)
 

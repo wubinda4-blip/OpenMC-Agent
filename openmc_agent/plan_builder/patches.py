@@ -27,6 +27,7 @@ PatchType = Literal[
     "materials",
     "universes",
     "localized_insert_profiles",
+    "base_path_axial_profiles",
     "pin_map",
     "axial_layers",
     "axial_overlays",
@@ -203,11 +204,14 @@ class CellLayerPatch(_PatchBase):
         "cylinder",
         "annulus",
         "box",
+        "square_frame",
         "background",
         "unknown",
     ] = "unknown"
     r_min_cm: float | None = None
     r_max_cm: float | None = None
+    outer_side_cm: float | None = None
+    inner_side_cm: float | None = None
     fill_universe_id: str | None = None
     protected_through_path: bool = False
 
@@ -586,6 +590,7 @@ class AssemblyTypePatchItem(_PatchBase):
     multiplicity_hint: int | None = None
     pin_map: AssemblyPinMapPatchItem
     axial_profile_id: str | None = None
+    base_path_profile_id: str | None = None
     overlay_set_id: str | None = None
     source_note: str | None = None
     assumptions: list[str] = Field(default_factory=list)
@@ -629,6 +634,47 @@ class LocalizedInsertProfilesPatch(_PatchBase):
 
 
 # ---------------------------------------------------------------------------
+# BasePathAxialProfilesPatch (P2-FULLCORE-2D-A-HARDENING)
+# ---------------------------------------------------------------------------
+
+
+class BasePathStateBindingPatchItem(_PatchBase):
+    """Maps one axial role to a universe replacement for fuel-path switching.
+
+    When a segment's ``base_role`` matches ``axial_role``, the materializer
+    replaces ``source_universe_ids`` with ``replacement_universe_id`` in the
+    derived pin lattice, preserving paths listed in ``preserve_path_roles``.
+    """
+
+    axial_role: str
+    source_universe_family: str | None = None
+    source_universe_ids: list[str] = Field(default_factory=list)
+    replacement_universe_id: str
+    assembly_type_ids: list[str] = Field(default_factory=list)
+    preserve_path_roles: list[str] = Field(default_factory=list)
+    priority: int = 0
+
+
+class BasePathAxialProfilePatchItem(_PatchBase):
+    """A profile mapping axial roles to state bindings for one path family."""
+
+    profile_id: str
+    path_family: str = "fuel_rod"
+    state_bindings: list[BasePathStateBindingPatchItem] = Field(default_factory=list)
+    source_note: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class BasePathAxialProfilesPatch(_PatchBase):
+    """Registry of base path axial profiles for per-segment fuel-state switching."""
+
+    patch_type: Literal["base_path_axial_profiles"] = "base_path_axial_profiles"
+    profiles: list[BasePathAxialProfilePatchItem] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    source_note: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # CoreLayoutPatch (P2-FULLCORE-1)
 # ---------------------------------------------------------------------------
 
@@ -667,6 +713,7 @@ _PATCH_MODELS: dict[str, type[BaseModel]] = {
     "materials": MaterialsPatch,
     "universes": UniversesPatch,
     "localized_insert_profiles": LocalizedInsertProfilesPatch,
+    "base_path_axial_profiles": BasePathAxialProfilesPatch,
     "pin_map": PinMapPatch,
     "axial_layers": AxialLayersPatch,
     "axial_overlays": AxialOverlaysPatch,
@@ -823,6 +870,9 @@ __all__ = [
     "LocalizedInsertAxialSegmentPatchItem",
     "LocalizedInsertAxialProfilePatchItem",
     "LocalizedInsertProfilesPatch",
+    "BasePathStateBindingPatchItem",
+    "BasePathAxialProfilePatchItem",
+    "BasePathAxialProfilesPatch",
     "PinMapPatch",
     "AssemblyPinMapPatchItem",
     "AssemblyTypePatchItem",

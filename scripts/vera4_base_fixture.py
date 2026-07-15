@@ -25,6 +25,9 @@ from openmc_agent.plan_builder.patches import (
     AxialLayersPatch,
     AxialOverlayPatchItem,
     AxialOverlaysPatch,
+    BasePathAxialProfilePatchItem,
+    BasePathAxialProfilesPatch,
+    BasePathStateBindingPatchItem,
     CoreLayoutPatch,
     FactsPatch,
     LocalizedInsertAxialProfilePatchItem,
@@ -672,6 +675,7 @@ def build_vera4_assembly_catalog() -> AssemblyCatalogPatch:
                 name="corner assembly (2.11%)",
                 role="fuel",
                 multiplicity_hint=4,
+                base_path_profile_id="vera4_fuel_path",
                 pin_map=AssemblyPinMapPatchItem(
                     lattice_size=(17, 17),
                     default_universe_id="fuel_active_r1",
@@ -687,6 +691,7 @@ def build_vera4_assembly_catalog() -> AssemblyCatalogPatch:
                 name="edge assembly (2.619%)",
                 role="fuel",
                 multiplicity_hint=4,
+                base_path_profile_id="vera4_fuel_path",
                 pin_map=AssemblyPinMapPatchItem(
                     lattice_size=(17, 17),
                     default_universe_id="fuel_active_r2",
@@ -702,6 +707,7 @@ def build_vera4_assembly_catalog() -> AssemblyCatalogPatch:
                 name="center RCCA assembly (2.11%)",
                 role="fuel",
                 multiplicity_hint=1,
+                base_path_profile_id="vera4_fuel_path",
                 pin_map=AssemblyPinMapPatchItem(
                     lattice_size=(17, 17),
                     default_universe_id="fuel_active_r1",
@@ -785,6 +791,60 @@ def build_vera4_spacer_grids() -> AxialOverlaysPatch:
     return AxialOverlaysPatch(overlays=overlays)
 
 
+def build_vera4_base_path_profiles() -> BasePathAxialProfilesPatch:
+    """Build VERA4 base fuel-path axial-state profiles.
+
+    Maps axial roles to fuel-path universe replacements:
+    - lower_shoulder_gap → water_pin (no fuel rod above nozzle)
+    - lower_fuel_endplug → fuel_endplug (solid Zircaloy rod)
+    - upper_fuel_endplug → fuel_endplug
+    - fuel_upper_plenum → fuel_plenum (helium + cladding)
+    - upper_shoulder_gap → water_pin
+    """
+    fuel_sources = ["fuel_active_r1", "fuel_active_r2"]
+    return BasePathAxialProfilesPatch(
+        profiles=[
+            BasePathAxialProfilePatchItem(
+                profile_id="vera4_fuel_path",
+                path_family="fuel_rod",
+                state_bindings=[
+                    BasePathStateBindingPatchItem(
+                        axial_role="lower_shoulder_gap",
+                        source_universe_ids=fuel_sources,
+                        replacement_universe_id="water_pin",
+                        preserve_path_roles=["guide_tube", "instrument_tube"],
+                    ),
+                    BasePathStateBindingPatchItem(
+                        axial_role="lower_fuel_endplug",
+                        source_universe_ids=fuel_sources,
+                        replacement_universe_id="fuel_endplug",
+                        preserve_path_roles=["guide_tube", "instrument_tube"],
+                    ),
+                    BasePathStateBindingPatchItem(
+                        axial_role="upper_fuel_endplug",
+                        source_universe_ids=fuel_sources,
+                        replacement_universe_id="fuel_endplug",
+                        preserve_path_roles=["guide_tube", "instrument_tube"],
+                    ),
+                    BasePathStateBindingPatchItem(
+                        axial_role="fuel_upper_plenum",
+                        source_universe_ids=fuel_sources,
+                        replacement_universe_id="fuel_plenum",
+                        preserve_path_roles=["guide_tube", "instrument_tube"],
+                    ),
+                    BasePathStateBindingPatchItem(
+                        axial_role="upper_shoulder_gap",
+                        source_universe_ids=fuel_sources,
+                        replacement_universe_id="water_pin",
+                        preserve_path_roles=["guide_tube", "instrument_tube"],
+                    ),
+                ],
+                source_note="VERA4 fuel-path axial-state switching",
+            ),
+        ],
+    )
+
+
 def build_vera4_settings() -> SettingsPatch:
     return SettingsPatch(
         source_strategy="active_fuel_box",
@@ -799,6 +859,7 @@ def build_all_vera4_patches() -> list:
         build_vera4_materials(),
         build_vera4_universes(),
         build_vera4_rcca_profile(),
+        build_vera4_base_path_profiles(),
         build_vera4_axial_layers(),
         build_vera4_assembly_catalog(),
         build_vera4_core_layout(),

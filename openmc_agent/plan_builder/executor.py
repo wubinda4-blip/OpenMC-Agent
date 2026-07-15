@@ -304,6 +304,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "materials",
     "universes",
     "localized_insert_profiles",
+    "base_path_axial_profiles",
     "pin_map",
     "assembly_catalog",
     "axial_layers",
@@ -317,6 +318,7 @@ _DEPENDENCIES: dict[str, list[str]] = {
     "materials": ["facts"],
     "universes": ["facts", "materials"],
     "localized_insert_profiles": ["facts", "universes"],
+    "base_path_axial_profiles": ["facts", "universes"],
     "pin_map": ["facts", "universes"],
     "assembly_catalog": ["facts", "universes", "localized_insert_profiles"],
     "axial_layers": ["facts"],
@@ -338,6 +340,10 @@ def default_patch_task_order(state: PlanBuildState) -> list[str]:
     has_profiles = _state_has_feature(state, "has_localized_insert_profiles")
     if not has_profiles:
         order = [t for t in order if t != "localized_insert_profiles"]
+    # Remove base_path_axial_profiles unless explicitly requested.
+    has_base_path = _state_has_feature(state, "has_base_path_profiles")
+    if not has_base_path:
+        order = [t for t in order if t != "base_path_axial_profiles"]
     if is_multi:
         # Multi-assembly core: use assembly_catalog + core_layout path.
         # Remove top-level pin_map (each assembly type has its own pin map

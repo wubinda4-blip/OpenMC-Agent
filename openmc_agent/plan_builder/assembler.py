@@ -492,6 +492,92 @@ def _assemble_universes(
                         purpose=f"Outside region for {cell_id}",
                     ))
 
+            elif cell_patch.region_kind == "square_frame" and cell_patch.outer_side_cm is not None:
+                # P2-FULLCORE-2D-A-HARDENING: Spacer grid square frame.
+                # Creates 8 plane surfaces (4 outer + 4 inner) and a frame region.
+                half_outer = cell_patch.outer_side_cm / 2.0
+                inner_side = cell_patch.inner_side_cm or 0.0
+                half_inner = inner_side / 2.0
+
+                # Outer planes
+                surf_ids_outer = []
+                for axis, sign, val in [
+                    ("xplane", "-", -half_outer), ("xplane", "+", half_outer),
+                    ("yplane", "-", -half_outer), ("yplane", "+", half_outer),
+                ]:
+                    s_id = f"surf_{cell_id}_o_{axis}_{sign}"
+                    param_key = "x0" if axis == "xplane" else "y0"
+                    all_surfaces.append(SurfaceSpec(
+                        id=s_id, kind=axis, parameters={param_key: val},
+                        purpose=f"Grid frame outer {axis} {sign} for {cell_id}",
+                    ))
+                    surf_ids_outer.append(s_id)
+
+                # Inner planes
+                surf_ids_inner = []
+                for axis, sign, val in [
+                    ("xplane", "-", -half_inner), ("xplane", "+", half_inner),
+                    ("yplane", "-", -half_inner), ("yplane", "+", half_inner),
+                ]:
+                    s_id = f"surf_{cell_id}_i_{axis}_{sign}"
+                    param_key = "x0" if axis == "xplane" else "y0"
+                    all_surfaces.append(SurfaceSpec(
+                        id=s_id, kind=axis, parameters={param_key: val},
+                        purpose=f"Grid frame inner {axis} {sign} for {cell_id}",
+                    ))
+                    surf_ids_inner.append(s_id)
+
+                # Frame = inside outer box AND NOT inside inner box
+                # Expression: +surf_xmin_o -surf_xmax_o +surf_ymin_o -surf_ymax_o
+                #             ~ ( +surf_xmin_i -surf_xmax_i +surf_ymin_i -surf_ymax_i )
+                expr_parts = [
+                    f"+{surf_ids_outer[0]}", f"-{surf_ids_outer[1]}",
+                    f"+{surf_ids_outer[2]}", f"-{surf_ids_outer[3]}",
+                    "~", "(",
+                    f"+{surf_ids_inner[0]}", f"-{surf_ids_inner[1]}",
+                    f"+{surf_ids_inner[2]}", f"-{surf_ids_inner[3]}",
+                    ")",
+                ]
+                region_id = f"reg_{cell_id}_frame"
+                all_surfaces_ids = surf_ids_outer + surf_ids_inner
+                all_regions.append(RegionSpec(
+                    id=region_id,
+                    expression=" ".join(expr_parts),
+                    surface_ids=all_surfaces_ids,
+                    purpose=f"Square frame for {cell_id}",
+                ))
+                # Reset prev_surface_id — frame is not concentric with cylinders
+                prev_surface_id = None
+
+            elif cell_patch.region_kind == "box" and cell_patch.outer_side_cm is not None:
+                # P2-FULLCORE-2D-A-HARDENING: Inner moderator box (inside grid frame).
+                half = cell_patch.outer_side_cm / 2.0
+                surf_ids_box = []
+                for axis, sign, val in [
+                    ("xplane", "-", -half), ("xplane", "+", half),
+                    ("yplane", "-", -half), ("yplane", "+", half),
+                ]:
+                    s_id = f"surf_{cell_id}_{axis}_{sign}"
+                    param_key = "x0" if axis == "xplane" else "y0"
+                    all_surfaces.append(SurfaceSpec(
+                        id=s_id, kind=axis, parameters={param_key: val},
+                        purpose=f"Inner box {axis} {sign} for {cell_id}",
+                    ))
+                    surf_ids_box.append(s_id)
+
+                region_id = f"reg_{cell_id}_box"
+                expr = " ".join([
+                    f"+{surf_ids_box[0]}", f"-{surf_ids_box[1]}",
+                    f"+{surf_ids_box[2]}", f"-{surf_ids_box[3]}",
+                ])
+                all_regions.append(RegionSpec(
+                    id=region_id,
+                    expression=expr,
+                    surface_ids=surf_ids_box,
+                    purpose=f"Inner moderator box for {cell_id}",
+                ))
+                prev_surface_id = None
+
             try:
                 cell = CellSpec(
                     id=cell_id,
@@ -1316,6 +1402,7 @@ def assemble_simulation_plan_from_patches(
     assembly_catalog_patch: AssemblyCatalogPatch | None = indexed.get("assembly_catalog")
     core_layout_patch: CoreLayoutPatch | None = indexed.get("core_layout")
     profiles_patch = indexed.get("localized_insert_profiles")
+    base_path_profiles_patch = indexed.get("base_path_axial_profiles")
 
     # Detect multi-assembly path.
     is_multi_assembly = False
@@ -1454,6 +1541,20 @@ def assemble_simulation_plan_from_patches(
                     if mat.density_value:
                         _grid_density_lookup[mat.id] = mat.density_value
 
+            # Build base path profiles lookup
+            _base_path_profiles_map = None
+            if base_path_profiles_patch is not None:
+                _base_path_profiles_map = {
+                    p.profile_id: p for p in base_path_profiles_patch.profiles
+                }
+
+            # Build universe patches lookup for grid decoration
+            _universe_patches_by_id = None
+            if universes_patch is not None:
+                _universe_patches_by_id = {
+                    u.universe_id: u for u in universes_patch.universes
+                }
+
             concrete_result = materialize_concrete_axial_states(
                 assembly_catalog_patch,
                 core_layout_patch,
@@ -1469,6 +1570,8 @@ def assemble_simulation_plan_from_patches(
                 known_universe_ids=_known_uv_ids,
                 grid_overlays=_grid_overlays,
                 grid_density_lookup=_grid_density_lookup,
+                base_path_profiles=_base_path_profiles_map,
+                universe_patches_by_id=_universe_patches_by_id,
             )
 
             # Propagate materialization issues (fail-closed)
