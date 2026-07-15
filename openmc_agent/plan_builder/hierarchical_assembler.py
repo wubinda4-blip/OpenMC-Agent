@@ -403,13 +403,33 @@ def build_core_count_summary(
 
 @dataclass
 class AxialSegment:
-    """A compiled global axial segment."""
+    """A compiled global axial segment with base-layer semantics (P2-FULLCORE-2D-A).
+
+    Each segment is mapped to exactly one base axial layer and classified
+    into a fill_mode that determines how the materializer builds its geometry.
+
+    fill_mode values:
+    - ``detailed_core``: per-type pin lattices + assembly wrappers + core lattice
+    - ``whole_plane_material``: uniform material slab across the full core footprint
+    - ``whole_plane_universe``: uniform universe fill across the full core footprint
+    - ``void``: empty / vacuum
+    """
 
     segment_id: str
     z_min_cm: float
     z_max_cm: float
     role: str = "active"
     active_inserts: dict[str, list[str]] = field(default_factory=dict)
+
+    # P2-FULLCORE-2D-A: Base-layer semantics
+    base_axial_layer_id: str | None = None
+    base_role: str = ""
+    fill_mode: str = "detailed_core"
+    base_fill_id: str | None = None
+    detailed_path_state: dict[str, str] = field(default_factory=dict)
+    active_overlay_ids: list[str] = field(default_factory=list)
+    state_signature: str = ""
+    provenance: str = ""
 
 
 def compile_global_axial_segments(
@@ -420,38 +440,70 @@ def compile_global_axial_segments(
     *,
     profiles_patch: LocalizedInsertProfilesPatch | None = None,
     resolved_profiles: list[Any] | None = None,
+    base_axial_layers: list[Any] | None = None,
     tolerance_cm: float = 1e-6,
 ) -> list[AxialSegment]:
     """Compile a global list of non-overlapping axial segments.
 
     Breakpoints come from:
     1. Axial domain boundaries (from facts).
-    2. Shared axial layer z boundaries.
+    2. Base axial layer z boundaries (from ``base_axial_layers`` or
+       ``axial_layer_boundaries``).
     3. Simple insert z_min/z_max (per assembly type).
     4. Resolved profile segment absolute boundaries.
     5. Spacer grid z boundaries.
 
+    Each compiled segment is mapped to exactly one base axial layer and
+    classified into a fill_mode based on that layer's ``fill_type``:
+
+    - ``lattice`` → ``detailed_core``
+    - ``material`` → ``whole_plane_material``
+    - ``universe`` → ``whole_plane_universe``
+    - ``void`` → ``void``
+
     Returns sorted, non-overlapping segments with no gaps.
     """
+    from openmc_agent.plan_builder.patches import AxialLayerPatchItem
+
     breakpoints: set[float] = set()
 
     if facts and facts.axial_domain_cm:
         breakpoints.add(facts.axial_domain_cm[0])
         breakpoints.add(facts.axial_domain_cm[1])
 
-    if axial_layer_boundaries:
-        for z_min, z_max in axial_layer_boundaries:
-            breakpoints.add(z_min)
-            breakpoints.add(z_max)
+    # Use base_axial_layers if provided (P2-FULLCORE-2D-A), else fall back.
+    effective_layers: list[Any] = []
+    if base_axial_layers is not None:
+        effective_layers = list(base_axial_layers)
+    elif axial_layer_boundaries:
+        effective_layers = [
+            AxialLayerPatchItem(
+                layer_id=f"boundary_layer_{i}",
+                role="custom",
+                z_min_cm=z_min,
+                z_max_cm=z_max,
+                fill_type="lattice",
+                fill_id="core_lattice",
+            )
+            for i, (z_min, z_max) in enumerate(axial_layer_boundaries)
+        ]
+
+    for layer in effective_layers:
+        if layer.z_min_cm is not None:
+            breakpoints.add(layer.z_min_cm)
+        if layer.z_max_cm is not None:
+            breakpoints.add(layer.z_max_cm)
 
     for atype in catalog.assembly_types:
         for intent in atype.pin_map.localized_insert_intents:
             if intent.axial_profile_id is not None:
                 continue
-            if intent.z_min_cm is not None:
-                breakpoints.add(intent.z_min_cm)
-            if intent.z_max_cm is not None:
-                breakpoints.add(intent.z_max_cm)
+            z_min_val = intent.z_min_cm if intent.z_min_cm is not None else None
+            z_max_val = intent.z_max_cm if intent.z_max_cm is not None else None
+            if z_min_val is not None:
+                breakpoints.add(z_min_val)
+            if z_max_val is not None:
+                breakpoints.add(z_max_val)
 
     if spacer_grid_z:
         for z_min, z_max in spacer_grid_z:
@@ -475,11 +527,54 @@ def compile_global_axial_segments(
         if z_max - z_min < tolerance_cm:
             continue
 
+        # Map to base layer.
+        base_layer_id: str | None = None
+        base_role = ""
+        fill_mode = "detailed_core"
+        base_fill_id: str | None = None
+        matched_layers: list[Any] = []
+
+        for layer in effective_layers:
+            ly_z_min = layer.z_min_cm if layer.z_min_cm is not None else float("-inf")
+            ly_z_max = layer.z_max_cm if layer.z_max_cm is not None else float("inf")
+            if (
+                z_min >= ly_z_min - tolerance_cm
+                and z_max <= ly_z_max + tolerance_cm
+            ):
+                matched_layers.append(layer)
+
+        if len(matched_layers) > 1:
+            fill_mode = "detailed_core"
+            base_role = "ambiguous"
+        elif len(matched_layers) == 1:
+            ml = matched_layers[0]
+            base_layer_id = ml.layer_id
+            base_role = ml.role
+            base_fill_id = ml.fill_id
+            ft = getattr(ml, "fill_type", "lattice")
+            if ft == "lattice":
+                fill_mode = "detailed_core"
+            elif ft == "material":
+                fill_mode = "whole_plane_material"
+            elif ft == "universe":
+                fill_mode = "whole_plane_universe"
+            elif ft == "void":
+                fill_mode = "void"
+            else:
+                fill_mode = "detailed_core"
+        else:
+            fill_mode = "detailed_core"
+            base_role = "unmapped"
+
         seg = AxialSegment(
             segment_id=f"segment_{i}",
             z_min_cm=z_min,
             z_max_cm=z_max,
-            role="active",
+            role=base_role if base_role else "active",
+            base_axial_layer_id=base_layer_id,
+            base_role=base_role,
+            fill_mode=fill_mode,
+            base_fill_id=base_fill_id,
         )
 
         for atype in catalog.assembly_types:
@@ -487,8 +582,16 @@ def compile_global_axial_segments(
             for intent in atype.pin_map.localized_insert_intents:
                 if intent.axial_profile_id is not None:
                     continue
-                intent_zmin = intent.z_min_cm or float("-inf")
-                intent_zmax = intent.z_max_cm or float("inf")
+                intent_zmin = (
+                    intent.z_min_cm
+                    if intent.z_min_cm is not None
+                    else float("-inf")
+                )
+                intent_zmax = (
+                    intent.z_max_cm
+                    if intent.z_max_cm is not None
+                    else float("inf")
+                )
                 if z_min >= intent_zmin - tolerance_cm and z_max <= intent_zmax + tolerance_cm:
                     active_ids.append(intent.insert_id)
             if active_ids:

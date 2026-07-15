@@ -115,8 +115,17 @@ def _get_active_inserts_for_segment(
                                     break
                 continue
 
-            z_min = intent.z_min_cm or float("-inf")
-            z_max = intent.z_max_cm or float("inf")
+            # P2-FULLCORE-2D-A: Fix 0.0 truthiness bug (z_min=0.0 is valid).
+            z_min = (
+                intent.z_min_cm
+                if intent.z_min_cm is not None
+                else float("-inf")
+            )
+            z_max = (
+                intent.z_max_cm
+                if intent.z_max_cm is not None
+                else float("inf")
+            )
             if (
                 segment.z_min_cm >= z_min - _Z_TOL
                 and segment.z_max_cm <= z_max + _Z_TOL
@@ -146,16 +155,20 @@ def materialize_concrete_axial_states(
     moderator_universe_id: str = "moderator_outer",
     outer_universe_id: str | None = None,
     core_lattice_id_base: str = "core_lattice",
+    known_material_ids: set[str] | None = None,
+    known_universe_ids: set[str] | None = None,
 ) -> ConcreteAxialStateResult:
     """Materialize concrete per-segment geometry.
 
-    For each global axial segment:
-    1. Determine active inserts per assembly type.
-    2. Create derived pin lattices for types with active inserts.
-    3. Create derived wrapper universes/cells.
-    4. Create a segment-specific core lattice.
+    For each global axial segment, the fill_mode determines the pipeline:
 
-    Segments with identical states reuse the same derived geometry.
+    * ``whole_plane_material`` → AxialLayerSpec with material fill.
+    * ``whole_plane_universe`` → AxialLayerSpec with universe fill.
+    * ``void`` → AxialLayerSpec with void fill.
+    * ``detailed_core`` → per-type derived pin lattices (base + insert
+      overrides) → assembly wrapper universes → segment-specific core lattice.
+
+    Segments with identical detailed-core states reuse the same derived geometry.
     """
     result = ConcreteAxialStateResult()
 
@@ -172,6 +185,99 @@ def materialize_concrete_axial_states(
     seg_counter = 0
 
     for seg_idx, segment in enumerate(segments):
+        fm = segment.fill_mode
+
+        # ---- Whole-plane material fill ----
+        if fm == "whole_plane_material":
+            fill_id = segment.base_fill_id
+            if fill_id is None:
+                result.issues.append({
+                    "code": "fullcore.whole_plane_fill_missing",
+                    "severity": "error",
+                    "message": f"segment {segment.segment_id} fill_mode=whole_plane_material but base_fill_id is None",
+                })
+                fill_id = "water"
+            if known_material_ids is not None and fill_id not in known_material_ids:
+                result.issues.append({
+                    "code": "fullcore.whole_plane_ref_missing",
+                    "severity": "error",
+                    "message": f"segment {segment.segment_id} material {fill_id!r} not in material catalog",
+                })
+            layer = AxialLayerSpec(
+                id=f"layer_seg{seg_idx}",
+                name=f"axial layer segment {seg_idx} ({segment.base_role})",
+                z_min_cm=segment.z_min_cm,
+                z_max_cm=segment.z_max_cm,
+                fill=FillRefSpec(type="material", id=fill_id),
+                purpose=f"Whole-plane material slab z=[{segment.z_min_cm:.3f}, {segment.z_max_cm:.3f}]",
+            )
+            result.axial_layers.append(layer)
+            result.segment_index.append({
+                "segment_id": segment.segment_id,
+                "z_min_cm": segment.z_min_cm,
+                "z_max_cm": segment.z_max_cm,
+                "fill_mode": fm,
+                "base_role": segment.base_role,
+                "fill_id": fill_id,
+            })
+            continue
+
+        # ---- Whole-plane universe fill ----
+        if fm == "whole_plane_universe":
+            fill_id = segment.base_fill_id
+            if fill_id is None:
+                result.issues.append({
+                    "code": "fullcore.whole_plane_fill_missing",
+                    "severity": "error",
+                    "message": f"segment {segment.segment_id} fill_mode=whole_plane_universe but base_fill_id is None",
+                })
+                fill_id = moderator_universe_id
+            if known_universe_ids is not None and fill_id not in known_universe_ids:
+                result.issues.append({
+                    "code": "fullcore.whole_plane_ref_missing",
+                    "severity": "error",
+                    "message": f"segment {segment.segment_id} universe {fill_id!r} not in universe catalog",
+                })
+            layer = AxialLayerSpec(
+                id=f"layer_seg{seg_idx}",
+                name=f"axial layer segment {seg_idx} ({segment.base_role})",
+                z_min_cm=segment.z_min_cm,
+                z_max_cm=segment.z_max_cm,
+                fill=FillRefSpec(type="universe", id=fill_id),
+                purpose=f"Whole-plane universe slab z=[{segment.z_min_cm:.3f}, {segment.z_max_cm:.3f}]",
+            )
+            result.axial_layers.append(layer)
+            result.segment_index.append({
+                "segment_id": segment.segment_id,
+                "z_min_cm": segment.z_min_cm,
+                "z_max_cm": segment.z_max_cm,
+                "fill_mode": fm,
+                "base_role": segment.base_role,
+                "fill_id": fill_id,
+            })
+            continue
+
+        # ---- Void fill ----
+        if fm == "void":
+            layer = AxialLayerSpec(
+                id=f"layer_seg{seg_idx}",
+                name=f"axial layer segment {seg_idx} (void)",
+                z_min_cm=segment.z_min_cm,
+                z_max_cm=segment.z_max_cm,
+                fill=FillRefSpec(type="void"),
+                purpose=f"Void slab z=[{segment.z_min_cm:.3f}, {segment.z_max_cm:.3f}]",
+            )
+            result.axial_layers.append(layer)
+            result.segment_index.append({
+                "segment_id": segment.segment_id,
+                "z_min_cm": segment.z_min_cm,
+                "z_max_cm": segment.z_max_cm,
+                "fill_mode": fm,
+                "base_role": segment.base_role,
+            })
+            continue
+
+        # ---- Detailed core fill (existing behavior) ----
         active_map = _get_active_inserts_for_segment(
             segment, catalog, resolved_profiles,
         )
@@ -209,7 +315,7 @@ def materialize_concrete_axial_states(
                             continue
 
                         base_pattern = base_pin_lattices[type_id].universe_pattern
-                        derived_pattern = [row[:] for row in base_pattern]
+                        derived_pattern = [r[:] for r in base_pattern]
                         for insert_id, insert_uv, coords in acts:
                             for r, c in coords:
                                 if 0 <= r < len(derived_pattern) and 0 <= c < len(derived_pattern[r]):
@@ -258,11 +364,6 @@ def materialize_concrete_axial_states(
         # Create segment-specific core lattice
         seg_core_id = f"{core_lattice_id_base}__seg{seg_idx}"
 
-        # Check if this segment's core pattern is identical to base
-        base_core_pattern = None
-        for lat_id_check in [core_lattice_id_base]:
-            base_core = next((l for l in base_pin_lattices.values() if l.id == core_lattice_id_base), None)
-
         # For dedup: if no active inserts, reuse base core lattice
         if not active_map:
             seg_core_id_final = core_lattice_id_base
@@ -297,6 +398,8 @@ def materialize_concrete_axial_states(
             "segment_id": segment.segment_id,
             "z_min_cm": segment.z_min_cm,
             "z_max_cm": segment.z_max_cm,
+            "fill_mode": fm,
+            "base_role": segment.base_role,
             "core_lattice_id": seg_core_id_final,
             "active_types": list(active_map.keys()),
             "state_signature": state_sig,

@@ -1408,24 +1408,24 @@ def assemble_simulation_plan_from_patches(
         )
         has_profile_inserts = resolved_profiles is not None and len(resolved_profiles) > 0
 
-        axial_layer_boundaries = None
-        if axial_layers_patch is not None and facts is not None:
-            axial_layer_boundaries = [
-                (lyr.z_min_cm, lyr.z_max_cm)
-                for lyr in axial_layers_patch.layers
-            ]
+        # P2-FULLCORE-2D-A: Pass actual base axial layers for fill-mode classification
+        base_axial_layers_list = None
+        if axial_layers_patch is not None:
+            base_axial_layers_list = list(axial_layers_patch.layers)
 
-        if has_simple_inserts or has_profile_inserts:
+        # Always compile segments if we have base axial layers (even without inserts)
+        # so whole-plane segments get properly classified.
+        if has_simple_inserts or has_profile_inserts or base_axial_layers_list:
             global_segments = compile_global_axial_segments(
                 facts,
                 assembly_catalog_patch,
-                axial_layer_boundaries=axial_layer_boundaries,
+                base_axial_layers=base_axial_layers_list,
                 resolved_profiles=resolved_profiles,
             )
         else:
             global_segments = []
 
-        # Materialize concrete per-segment geometry if there are inserts
+        # Materialize concrete per-segment geometry
         concrete_result = None
         if global_segments:
             base_pin_lattice_map = {l.id.replace("assembly_lattice__", ""): l for l in hier.pin_lattices}
@@ -1436,6 +1436,9 @@ def assemble_simulation_plan_from_patches(
                 lat = next((l for l in hier.pin_lattices if l.id == lat_id), None)
                 if lat is not None:
                     base_pin_lattice_by_type[atype.assembly_type_id] = lat
+
+            _known_mat_ids = set(material_ids) if material_ids else None
+            _known_uv_ids = {u.id for u in (list(plan_universes) + list(hier.assembly_universes))} or None
 
             concrete_result = materialize_concrete_axial_states(
                 assembly_catalog_patch,
@@ -1448,6 +1451,8 @@ def assemble_simulation_plan_from_patches(
                 pitch_cm=pitch,
                 moderator_universe_id="moderator_outer",
                 core_lattice_id_base="core_lattice",
+                known_material_ids=_known_mat_ids,
+                known_universe_ids=_known_uv_ids,
             )
 
         all_lattices = list(hier.pin_lattices) + list(hier.core_lattices)
