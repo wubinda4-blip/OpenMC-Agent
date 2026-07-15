@@ -47,7 +47,7 @@ def test_inserts_scoped_to_type():
             ),
         ],
     )
-    _, _, _, _, _, summaries, _ = assemble_assembly_templates(catalog)
+    _, _, _, _, _, summaries, _, _, _ = assemble_assembly_templates(catalog)
     assert summaries["type_a"].localized_insert_counts.get("pyrex_rod") == 1
     assert "pyrex_rod" not in summaries["type_b"].localized_insert_counts
 

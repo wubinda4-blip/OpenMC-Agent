@@ -145,6 +145,38 @@ def _expand_assembly_pin_map(
 
 
 # ---------------------------------------------------------------------------
+# Moderator outer universe helpers
+# ---------------------------------------------------------------------------
+
+
+def ensure_moderator_outer_universe(
+    *,
+    moderator_universe_id: str = "moderator_outer",
+    coolant_material_id: str = "water",
+) -> tuple[UniverseSpec, CellSpec]:
+    """Create a moderator wrapper universe + cell for pin lattice outer.
+
+    The outer universe fills the gap between the pin lattice edge and
+    the assembly pitch boundary with coolant material.
+    """
+    cell = CellSpec(
+        id=f"{moderator_universe_id}_cell",
+        name="moderator outer cell",
+        fill_type="material",
+        fill_id=coolant_material_id,
+        component_role="coolant",
+        purpose="Fill assembly gap with coolant moderator",
+    )
+    universe = UniverseSpec(
+        id=moderator_universe_id,
+        name="moderator outer universe",
+        cell_ids=[cell.id],
+        purpose="Pin lattice outer (assembly gap fill)",
+    )
+    return universe, cell
+
+
+# ---------------------------------------------------------------------------
 # Assembly wrapper universe + cell creation
 # ---------------------------------------------------------------------------
 
@@ -188,7 +220,8 @@ def assemble_assembly_templates(
     pitch_cm: float = 1.26,
     *,
     kind_to_universe: dict[str, str] | None = None,
-    outer_moderator_universe: str = "water",
+    moderator_universe_id: str = "moderator_outer",
+    coolant_material_id: str = "water",
 ) -> tuple[
     list[LatticeSpec],
     list[AssemblySpec],
@@ -196,22 +229,30 @@ def assemble_assembly_templates(
     list[CellSpec],
     dict[str, str],
     dict[str, AssemblyTypeCountSummary],
-    list[dict[str, str]],
+    list[dict[str, Any]],
+    UniverseSpec | None,
+    CellSpec | None,
 ]:
     """Build per-type pin lattices, wrapper universes, and assembly specs.
 
     Returns
     -------
     pin_lattices, assembly_specs, wrapper_universes, wrapper_cells,
-    assembly_universe_ids, count_summaries, issues
+    assembly_universe_ids, count_summaries, insert_reports,
+    moderator_universe, moderator_cell
     """
-    issues: list[dict[str, str]] = []
+    issues: list[dict[str, Any]] = []
     pin_lattices: list[LatticeSpec] = []
     assembly_specs: list[AssemblySpec] = []
     wrapper_universes: list[UniverseSpec] = []
     wrapper_cells: list[CellSpec] = []
     assembly_universe_ids: dict[str, str] = {}
     summaries: dict[str, AssemblyTypeCountSummary] = {}
+
+    mod_universe, mod_cell = ensure_moderator_outer_universe(
+        moderator_universe_id=moderator_universe_id,
+        coolant_material_id=coolant_material_id,
+    )
 
     for atype in catalog.assembly_types:
         type_id = atype.assembly_type_id
@@ -226,15 +267,15 @@ def assemble_assembly_templates(
             name=f"pin lattice for {type_id}",
             kind="rect",
             pitch_cm=(pitch_cm, pitch_cm),
-            outer_universe_id=pm.default_universe_id,
+            outer_universe_id=moderator_universe_id,
             universe_pattern=universe_pattern,
             shape=(nx, ny),
-            purpose=f"Base pin lattice for {type_id} (no localized inserts)",
+            purpose=f"Base pin lattice for {type_id} (moderator outer, no localized inserts)",
         )
         pin_lattices.append(lattice)
 
         w_universe, w_cell, w_universe_id = _create_assembly_wrapper(
-            type_id, pin_lattice_id, outer_moderator_universe,
+            type_id, pin_lattice_id, moderator_universe_id,
         )
         wrapper_universes.append(w_universe)
         wrapper_cells.append(w_cell)
@@ -280,6 +321,8 @@ def assemble_assembly_templates(
         assembly_universe_ids,
         summaries,
         issues,
+        mod_universe,
+        mod_cell,
     )
 
 
@@ -444,7 +487,8 @@ def build_hierarchical_core_plan(
     *,
     pitch_cm: float = 1.26,
     kind_to_universe: dict[str, str] | None = None,
-    outer_moderator_universe: str = "water",
+    moderator_universe_id: str = "moderator_outer",
+    coolant_material_id: str = "water",
 ) -> HierarchicalCoreAssemblyResult:
     """Build all hierarchical core components as typed schema objects.
 
@@ -452,7 +496,6 @@ def build_hierarchical_core_plan(
     UniverseSpec, CellSpec, LatticeSpec, AssemblySpec, and CoreSpec objects.
     """
     result = HierarchicalCoreAssemblyResult()
-    issues: list[dict[str, str]] = []
 
     (
         pin_lattices,
@@ -462,21 +505,30 @@ def build_hierarchical_core_plan(
         assembly_universe_ids,
         summaries,
         insert_reports,
+        mod_universe,
+        mod_cell,
     ) = assemble_assembly_templates(
         catalog,
         pitch_cm=pitch_cm,
         kind_to_universe=kind_to_universe,
-        outer_moderator_universe=outer_moderator_universe,
+        moderator_universe_id=moderator_universe_id,
+        coolant_material_id=coolant_material_id,
     )
     result.pin_lattices = pin_lattices
     result.assembly_specs = assembly_specs
-    result.assembly_universes = wrapper_universes
-    result.assembly_wrapper_cells = wrapper_cells
+    result.assembly_universes = list(wrapper_universes)
+    result.assembly_wrapper_cells = list(wrapper_cells)
     result.assembly_universe_ids = assembly_universe_ids
     result.count_summaries = summaries
     result.localized_insert_reports = insert_reports
 
-    outer = layout.outer_assembly_type_id or outer_moderator_universe
+    # Add moderator universe/cell to result
+    if mod_universe is not None:
+        result.assembly_universes.append(mod_universe)
+    if mod_cell is not None:
+        result.assembly_wrapper_cells.append(mod_cell)
+
+    outer = layout.outer_assembly_type_id or moderator_universe_id
     if layout.outer_assembly_type_id and layout.outer_assembly_type_id in assembly_universe_ids:
         outer = assembly_universe_ids[layout.outer_assembly_type_id]
 
@@ -492,24 +544,34 @@ def build_hierarchical_core_plan(
         lattice_id=layout.core_lattice_id,
         assembly_ids=[a.id for a in assembly_specs],
         boundary=boundary,
-        purpose="Assembled from hierarchical core patches (P2-FULLCORE-2A)",
+        purpose="Assembled from hierarchical core patches (P2-FULLCORE-2B)",
     )
     result.core_spec = core_spec
 
     aggregation = build_core_count_summary(catalog, layout, summaries)
     result.core_count_aggregation = aggregation
 
+    # Assembly gap calculation
+    nx_pm, ny_pm = catalog.assembly_types[0].pin_map.lattice_size if catalog.assembly_types else (0, 0)
+    pin_lattice_width = nx_pm * pitch_cm
+    assembly_pitch = layout.assembly_pitch_cm or 21.50
+    gap = assembly_pitch - pin_lattice_width
+
     result.summary = {
         "assembly_type_count": len(assembly_specs),
         "total_instances": aggregation.total_assembly_instances,
         "pin_lattice_count": len(pin_lattices),
         "wrapper_universe_count": len(wrapper_universes),
+        "moderator_universe_id": moderator_universe_id,
         "core_lattice_count": len(result.core_lattices),
         "core_boundary": boundary,
         "internal_assembly_boundary": "transmission",
         "core_total_fuel": aggregation.core_total_for_role("fuel_pin"),
         "core_total_guide_tube": aggregation.core_total_for_role("guide_tube"),
         "localized_inserts_in_base_lattice": False,
+        "pin_lattice_outer_is_fuel": False,
+        "assembly_gap_cm": round(gap, 4),
+        "assembly_half_gap_cm": round(gap / 2.0, 4),
     }
 
     result.ok = True

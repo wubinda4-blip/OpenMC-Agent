@@ -92,9 +92,11 @@ def test_assembly_wrapper_universes_created():
     catalog = _make_catalog()
     layout = _make_layout()
     result = build_hierarchical_core_plan(catalog, layout, facts=None)
-    assert len(result.assembly_universes) == 2
-    assert len(result.assembly_wrapper_cells) == 2
-    uv_ids = {u.id for u in result.assembly_universes}
+    # 2 assembly types + 1 moderator outer universe
+    wrapper_uvs = [u for u in result.assembly_universes if u.id.startswith("assembly_universe__")]
+    assert len(wrapper_uvs) == 2
+    assert len(result.assembly_wrapper_cells) >= 2
+    uv_ids = {u.id for u in wrapper_uvs}
     assert "assembly_universe__type_a" in uv_ids
     assert "assembly_universe__type_b" in uv_ids
     cell_ids = {c.id for c in result.assembly_wrapper_cells}
@@ -140,13 +142,15 @@ def test_lift_single_pin_map_to_catalog():
 
 def test_assemble_assembly_templates_returns_summaries():
     catalog = _make_catalog()
-    lattices, assemblies, w_universes, w_cells, uv_ids, summaries, reports = (
+    lattices, assemblies, w_universes, w_cells, uv_ids, summaries, reports, mod_uv, mod_cell = (
         assemble_assembly_templates(catalog)
     )
     assert len(lattices) == 2
     assert len(assemblies) == 2
     assert len(w_universes) == 2
     assert len(w_cells) == 2
+    assert mod_uv is not None
+    assert mod_cell is not None
     assert "type_a" in summaries
     assert "type_b" in summaries
     assert summaries["type_a"].fuel_pin_count == 8

@@ -1364,7 +1364,7 @@ def assemble_simulation_plan_from_patches(
         )
 
         pitch = (facts.pin_pitch_cm if facts and facts.pin_pitch_cm else 1.26)
-        outer_mod = _outer_moderator_material_id(materials_patch) or "water"
+        coolant_material = _outer_moderator_material_id(materials_patch) or "water"
 
         kind_to_universe_map: dict[str, str] = {}
         if universes_patch is not None:
@@ -1377,7 +1377,8 @@ def assemble_simulation_plan_from_patches(
             facts,
             pitch_cm=pitch,
             kind_to_universe=kind_to_universe_map or None,
-            outer_moderator_universe=outer_mod,
+            moderator_universe_id="moderator_outer",
+            coolant_material_id=coolant_material,
         )
 
         for rpt in hier.localized_insert_reports:
