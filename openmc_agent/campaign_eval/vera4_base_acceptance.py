@@ -240,7 +240,7 @@ def check_geometry_level(plan: Any) -> list[AcceptanceCheck]:
     # Check RCCA universes are reachable in derived lattices
     rcca_in_lattices = False
     for lat in model.lattices:
-        if "__seg" in lat.id and lat.universe_pattern:
+        if lat.universe_pattern and lat.id not in {"core_lattice"}:
             for row in lat.universe_pattern:
                 for uid in row:
                     if uid in ("rcca_aic", "rcca_b4c"):
@@ -255,7 +255,7 @@ def check_geometry_level(plan: Any) -> list[AcceptanceCheck]:
     # Pyrex reachable
     pyrex_in_lattices = False
     for lat in model.lattices:
-        if "__seg" in lat.id and lat.universe_pattern:
+        if lat.universe_pattern and lat.id not in {"core_lattice"}:
             for row in lat.universe_pattern:
                 for uid in row:
                     if uid in ("pyrex_poison", "pyrex_plenum"):

@@ -1440,6 +1440,20 @@ def assemble_simulation_plan_from_patches(
             _known_mat_ids = set(material_ids) if material_ids else None
             _known_uv_ids = {u.id for u in (list(plan_universes) + list(hier.assembly_universes))} or None
 
+            # Build grid overlay list and density lookup
+            _grid_overlays = None
+            _grid_density_lookup = None
+            if axial_overlays_patch is not None:
+                _grid_overlays = [
+                    ov for ov in axial_overlays_patch.overlays
+                    if ov.overlay_kind == "spacer_grid"
+                ]
+                # Build density lookup from material catalog
+                _grid_density_lookup = {}
+                for mat in plan_materials:
+                    if mat.density_value:
+                        _grid_density_lookup[mat.id] = mat.density_value
+
             concrete_result = materialize_concrete_axial_states(
                 assembly_catalog_patch,
                 core_layout_patch,
@@ -1453,7 +1467,17 @@ def assemble_simulation_plan_from_patches(
                 core_lattice_id_base="core_lattice",
                 known_material_ids=_known_mat_ids,
                 known_universe_ids=_known_uv_ids,
+                grid_overlays=_grid_overlays,
+                grid_density_lookup=_grid_density_lookup,
             )
+
+            # Propagate materialization issues (fail-closed)
+            for mi in concrete_result.issues:
+                issues.append(PlanAssemblyIssue(
+                    code=mi.code,
+                    severity=mi.severity,
+                    message=mi.message,
+                ))
 
         all_lattices = list(hier.pin_lattices) + list(hier.core_lattices)
         all_universes = list(plan_universes) + list(hier.assembly_universes)

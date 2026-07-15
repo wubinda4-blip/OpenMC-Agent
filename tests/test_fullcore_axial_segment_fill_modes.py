@@ -335,5 +335,5 @@ class TestMaterializerWholePlane:
             catalog, layout, segments, base_lats, base_uvs,
         )
 
-        issue_codes = [i["code"] for i in result.issues]
+        issue_codes = [i.code for i in result.issues]
         assert "fullcore.whole_plane_fill_missing" in issue_codes

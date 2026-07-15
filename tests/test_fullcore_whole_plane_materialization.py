@@ -125,5 +125,5 @@ class TestWholePlaneMaterialization:
             _catalog(), _layout(), segments, _base_lats(), _base_uvs(),
             known_material_ids={"water", "fuel_r1"},
         )
-        codes = [i["code"] for i in result.issues]
+        codes = [i.code for i in result.issues]
         assert "fullcore.whole_plane_ref_missing" in codes

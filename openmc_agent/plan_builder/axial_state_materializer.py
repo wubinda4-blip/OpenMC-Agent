@@ -1,23 +1,33 @@
-"""Concrete localized-insert state materializer (P2-FULLCORE-2C-B).
+"""Concrete localized-insert state materializer (P2-FULLCORE-2D-A).
 
-Transforms abstract localized-insert intents + resolved profiles into
-concrete per-segment pin lattices, assembly wrapper universes, core
-lattices, and CoreSpec.axial_layers.
+Transforms abstract localized-insert intents + resolved profiles + spacer
+grid overlays into concrete per-segment pin lattices, assembly wrapper
+universes, core lattices, and CoreSpec.axial_layers.
 
-Pipeline:
-    global axial segments
-    → per-segment derived pin lattices (base + insert overrides)
-    → per-segment wrapper universes
-    → per-segment core lattices
-    → CoreSpec.axial_layers with segment-specific lattice fills
+Pipeline per segment:
+    fill_mode == whole_plane_material → material slab (no lattices)
+    fill_mode == whole_plane_universe → universe slab (no lattices)
+    fill_mode == void                 → void slab
+    fill_mode == detailed_core:
+        base pin lattice
+        → localized insert overrides
+        → spacer-grid coolant modification
+        → assembly wrapper universe
+        → segment-specific core lattice (deduplicated by content hash)
+        → AxialLayerSpec
 
-All objects are *concrete* — no runtime lattice-loading derivation needed
-by the renderer.  The CoreRenderer simply stacks segment-specific core
-lattices at the correct z intervals.
+P2-FULLCORE-2D-A additions:
+    * MaterializationIssue typed issues (replaces dict)
+    * Canonical content-hash IDs (replaces seg_counter)
+    * Core-state reuse (identical core patterns share one lattice)
+    * Spacer-grid assembly-instance materialization
+    * Fail-closed validation
 """
 
 from __future__ import annotations
 
+import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +36,7 @@ from openmc_agent.plan_builder.patches import (
     AssemblyCatalogPatch,
     AssemblyPinMapPatchItem,
     AssemblyTypePatchItem,
+    AxialOverlayPatchItem,
     CoordinateConvention,
     CoreLayoutPatch,
     LocalizedInsertIntentPatchItem,
@@ -44,6 +55,58 @@ from openmc_agent.schemas import (
 
 
 _Z_TOL: float = 1e-6
+_MATERIALIZATION_CONTRACT_VERSION: str = "2.1.0"
+
+
+# ---------------------------------------------------------------------------
+# Typed issue (Commit 9)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MaterializationIssue:
+    """Structured materialization issue (fail-closed)."""
+
+    code: str
+    severity: str  # "error" | "warning"
+    message: str
+    segment_id: str | None = None
+    assembly_type_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Grid state types (Commit 6)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GridFrameDerivationReport:
+    """Mass-derived spacer grid frame parameters."""
+
+    overlay_id: str
+    material_id: str
+    grid_height_cm: float
+    total_mass_g: float
+    density_g_cm3: float
+    cell_count: int
+    pitch_cm: float
+    area_per_cell_cm2: float
+    frame_thickness_cm: float
+    volume_fraction: float
+
+
+@dataclass
+class AssemblyGridState:
+    """Spacer grid overlay state for a segment."""
+
+    active_overlay_ids: list[str] = field(default_factory=list)
+    active_material_ids: list[str] = field(default_factory=list)
+    derivation_reports: list[GridFrameDerivationReport] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -56,27 +119,25 @@ class ConcreteAxialStateResult:
     segment_core_lattices: list[LatticeSpec] = field(default_factory=list)
     axial_layers: list[AxialLayerSpec] = field(default_factory=list)
     segment_index: list[dict[str, Any]] = field(default_factory=list)
-    issues: list[dict[str, str]] = field(default_factory=list)
+    issues: list[MaterializationIssue] = field(default_factory=list)
+    grid_states: dict[str, AssemblyGridState] = field(default_factory=dict)
+    state_reuse_report: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_errors(self) -> bool:
+        return any(i.severity == "error" for i in self.issues)
 
 
-def _expand_base_pin_pattern(
-    pm: AssemblyPinMapPatchItem,
-    kind_to_universe: dict[str, str] | None = None,
-) -> list[list[str]]:
-    """Expand a sparse pin map to a full base universe_pattern."""
-    from openmc_agent.plan_builder.hierarchical_assembler import _expand_assembly_pin_map
-    return _expand_assembly_pin_map(pm, kind_to_universe=kind_to_universe)
+# ---------------------------------------------------------------------------
+# Coordinate normalization
+# ---------------------------------------------------------------------------
 
 
 def _normalize_insert_coords(
     coords: list[tuple[int, int]],
     pm: AssemblyPinMapPatchItem,
 ) -> list[tuple[int, int]]:
-    """Normalize insert coordinates to 0-based IR using the pin map convention.
-
-    P2-FULLCORE-2D-A: The materializer must not assume coordinates are
-    already 0-based.  Conversion happens exactly once here.
-    """
+    """Normalize insert coordinates to 0-based IR using the pin map convention."""
     base = pm.coordinate_convention.index_base
     if base == 0:
         return list(coords)
@@ -102,17 +163,121 @@ def _apply_insert_overrides(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Canonical content hashing (Commit 8)
+# ---------------------------------------------------------------------------
+
+
+def _compute_pin_state_hash(
+    type_id: str,
+    derived_pattern: list[list[str]],
+    active_insert_ids: list[str],
+    coord_index_base: int,
+    grid_overlay_ids: list[str] | None = None,
+) -> str:
+    """Compute a stable SHA-256 content hash for a pin lattice state."""
+    h = hashlib.sha256()
+    h.update(_MATERIALIZATION_CONTRACT_VERSION.encode())
+    h.update(f"|type={type_id}".encode())
+    for row in derived_pattern:
+        h.update(b"|")
+        h.update("|".join(row).encode())
+    for iid in sorted(active_insert_ids):
+        h.update(f"|ins={iid}".encode())
+    h.update(f"|ibase={coord_index_base}".encode())
+    if grid_overlay_ids:
+        for gid in sorted(grid_overlay_ids):
+            h.update(f"|grid={gid}".encode())
+    return h.hexdigest()[:16]
+
+
+def _compute_core_state_hash(
+    core_pattern: list[list[str]],
+    layout_id: str,
+) -> str:
+    """Compute a stable content hash for a core lattice pattern."""
+    h = hashlib.sha256()
+    h.update(_MATERIALIZATION_CONTRACT_VERSION.encode())
+    h.update(f"|layout={layout_id}".encode())
+    for row in core_pattern:
+        h.update(b"|")
+        h.update("|".join(row).encode())
+    return h.hexdigest()[:16]
+
+
+# ---------------------------------------------------------------------------
+# Spacer grid frame derivation (Commit 6)
+# ---------------------------------------------------------------------------
+
+
+def _compute_grid_frame_derivation(
+    overlay: AxialOverlayPatchItem,
+    density_g_cm3: float,
+    pitch_cm: float,
+) -> GridFrameDerivationReport:
+    """Derive grid frame parameters from mass conservation.
+
+    A_cell = grid_mass / (density × cell_count × grid_height)
+    frame_thickness ≈ A_cell / (4 × pitch)  (frame on 4 sides per cell)
+    volume_fraction = A_cell / pitch²
+    """
+    grid_mass = overlay.total_mass_g or 0.0
+    cell_count = overlay.cell_count or 289
+    grid_height = (overlay.z_max_cm or 0.0) - (overlay.z_min_cm or 0.0)
+
+    if density_g_cm3 <= 0 or grid_height <= 0:
+        area_per_cell = 0.0
+        frame_thickness = 0.0
+        vf = 0.0
+    else:
+        area_per_cell = grid_mass / (density_g_cm3 * cell_count * grid_height)
+        frame_thickness = area_per_cell / (4.0 * pitch_cm) if pitch_cm > 0 else 0.0
+        vf = area_per_cell / (pitch_cm * pitch_cm) if pitch_cm > 0 else 0.0
+
+    return GridFrameDerivationReport(
+        overlay_id=overlay.overlay_id,
+        material_id=overlay.material_id or "",
+        grid_height_cm=grid_height,
+        total_mass_g=grid_mass,
+        density_g_cm3=density_g_cm3,
+        cell_count=cell_count,
+        pitch_cm=pitch_cm,
+        area_per_cell_cm2=area_per_cell,
+        frame_thickness_cm=frame_thickness,
+        volume_fraction=vf,
+    )
+
+
+def _get_active_grids_for_segment(
+    segment: AxialSegment,
+    grid_overlays: list[AxialOverlayPatchItem] | None,
+) -> list[AxialOverlayPatchItem]:
+    """Return grid overlays active in the given segment's z range."""
+    if not grid_overlays:
+        return []
+    active: list[AxialOverlayPatchItem] = []
+    for ov in grid_overlays:
+        ov_zmin = ov.z_min_cm if ov.z_min_cm is not None else float("-inf")
+        ov_zmax = ov.z_max_cm if ov.z_max_cm is not None else float("inf")
+        if (
+            segment.z_min_cm >= ov_zmin - _Z_TOL
+            and segment.z_max_cm <= ov_zmax + _Z_TOL
+        ):
+            active.append(ov)
+    return active
+
+
+# ---------------------------------------------------------------------------
+# Active inserts for segment
+# ---------------------------------------------------------------------------
+
+
 def _get_active_inserts_for_segment(
     segment: AxialSegment,
     catalog: AssemblyCatalogPatch,
     resolved_profiles: list[ResolvedLocalizedInsertProfile] | None = None,
 ) -> dict[str, list[tuple[str, str, list[tuple[int, int]], AssemblyPinMapPatchItem]]]:
-    """For a given segment, return active inserts per assembly type.
-
-    Returns
-    -------
-    dict[assembly_type_id, list[(insert_id, insert_universe_id, coordinates_0based, pin_map)]]
-    """
+    """For a given segment, return active inserts per assembly type."""
     result: dict[str, list[tuple[str, str, list[tuple[int, int]], AssemblyPinMapPatchItem]]] = {}
 
     for atype in catalog.assembly_types:
@@ -141,7 +306,6 @@ def _get_active_inserts_for_segment(
                                     break
                 continue
 
-            # P2-FULLCORE-2D-A: Fix 0.0 truthiness bug (z_min=0.0 is valid).
             z_min = (
                 intent.z_min_cm
                 if intent.z_min_cm is not None
@@ -169,6 +333,37 @@ def _get_active_inserts_for_segment(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Coordinate validation (fail-closed)
+# ---------------------------------------------------------------------------
+
+
+def _validate_insert_coordinates(
+    coords: list[tuple[int, int]],
+    lattice_size: tuple[int, int],
+    type_id: str,
+    segment_id: str,
+) -> list[MaterializationIssue]:
+    """Validate that insert coordinates are within lattice bounds."""
+    issues: list[MaterializationIssue] = []
+    nx, ny = lattice_size
+    for r, c in coords:
+        if r < 0 or r >= nx or c < 0 or c >= ny:
+            issues.append(MaterializationIssue(
+                code="fullcore.coordinate_out_of_bounds",
+                severity="error",
+                message=f"coordinate ({r},{c}) outside lattice {lattice_size} for type {type_id}",
+                segment_id=segment_id,
+                assembly_type_id=type_id,
+            ))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Main materialization
+# ---------------------------------------------------------------------------
+
+
 def materialize_concrete_axial_states(
     catalog: AssemblyCatalogPatch,
     layout: CoreLayoutPatch,
@@ -184,6 +379,8 @@ def materialize_concrete_axial_states(
     core_lattice_id_base: str = "core_lattice",
     known_material_ids: set[str] | None = None,
     known_universe_ids: set[str] | None = None,
+    grid_overlays: list[AxialOverlayPatchItem] | None = None,
+    grid_density_lookup: dict[str, float] | None = None,
 ) -> ConcreteAxialStateResult:
     """Materialize concrete per-segment geometry.
 
@@ -193,9 +390,14 @@ def materialize_concrete_axial_states(
     * ``whole_plane_universe`` → AxialLayerSpec with universe fill.
     * ``void`` → AxialLayerSpec with void fill.
     * ``detailed_core`` → per-type derived pin lattices (base + insert
-      overrides) → assembly wrapper universes → segment-specific core lattice.
+      overrides + grid coolant modification) → assembly wrapper universes
+      → segment-specific core lattice (deduplicated by content hash).
 
-    Segments with identical detailed-core states reuse the same derived geometry.
+    P2-FULLCORE-2D-A:
+    * Derived lattice/universe IDs use canonical content hashes.
+    * Identical core patterns reuse the same core lattice.
+    * Spacer grid overlays are tracked and included in state hashes.
+    * Issues are typed MaterializationIssue (fail-closed).
     """
     result = ConcreteAxialStateResult()
 
@@ -205,11 +407,30 @@ def materialize_concrete_axial_states(
     core_width_y = n_rows * pitch
     lower_left = (-core_width_x / 2.0, -core_width_y / 2.0)
 
-    boundary = layout.boundary if layout.boundary in ("reflective", "vacuum", "periodic") else "reflective"
+    # Fail-closed: base lattice must exist for each type
+    for atype in catalog.assembly_types:
+        tid = atype.assembly_type_id
+        if tid not in base_pin_lattices:
+            result.issues.append(MaterializationIssue(
+                code="fullcore.base_lattice_missing",
+                severity="error",
+                message=f"base pin lattice for type {tid!r} not found",
+                assembly_type_id=tid,
+            ))
 
-    # Cache: (type_id, frozenset of active overrides) → (lattice_id, wrapper_universe_id)
-    derived_cache: dict[tuple[str, frozenset], tuple[str, str]] = {}
-    seg_counter = 0
+    # Caches for deduplication
+    # pin_cache: content_hash → (lattice_id, wrapper_universe_id)
+    pin_cache: dict[str, tuple[str, str]] = {}
+    # core_cache: content_hash → core_lattice_id
+    core_cache: dict[str, str] = {}
+
+    # State reuse tracking
+    unique_pin_states: set[str] = set()
+    unique_core_states: set[str] = set()
+    reused_pin_count = 0
+    reused_core_count = 0
+    total_pin_lookups = 0
+    total_core_lookups = 0
 
     for seg_idx, segment in enumerate(segments):
         fm = segment.fill_mode
@@ -218,18 +439,20 @@ def materialize_concrete_axial_states(
         if fm == "whole_plane_material":
             fill_id = segment.base_fill_id
             if fill_id is None:
-                result.issues.append({
-                    "code": "fullcore.whole_plane_fill_missing",
-                    "severity": "error",
-                    "message": f"segment {segment.segment_id} fill_mode=whole_plane_material but base_fill_id is None",
-                })
+                result.issues.append(MaterializationIssue(
+                    code="fullcore.whole_plane_fill_missing",
+                    severity="error",
+                    message=f"segment {segment.segment_id} fill_mode=whole_plane_material but base_fill_id is None",
+                    segment_id=segment.segment_id,
+                ))
                 fill_id = "water"
-            if known_material_ids is not None and fill_id not in known_material_ids:
-                result.issues.append({
-                    "code": "fullcore.whole_plane_ref_missing",
-                    "severity": "error",
-                    "message": f"segment {segment.segment_id} material {fill_id!r} not in material catalog",
-                })
+            elif known_material_ids is not None and fill_id not in known_material_ids:
+                result.issues.append(MaterializationIssue(
+                    code="fullcore.whole_plane_ref_missing",
+                    severity="error",
+                    message=f"segment {segment.segment_id} material {fill_id!r} not in material catalog",
+                    segment_id=segment.segment_id,
+                ))
             layer = AxialLayerSpec(
                 id=f"layer_seg{seg_idx}",
                 name=f"axial layer segment {seg_idx} ({segment.base_role})",
@@ -253,18 +476,20 @@ def materialize_concrete_axial_states(
         if fm == "whole_plane_universe":
             fill_id = segment.base_fill_id
             if fill_id is None:
-                result.issues.append({
-                    "code": "fullcore.whole_plane_fill_missing",
-                    "severity": "error",
-                    "message": f"segment {segment.segment_id} fill_mode=whole_plane_universe but base_fill_id is None",
-                })
+                result.issues.append(MaterializationIssue(
+                    code="fullcore.whole_plane_fill_missing",
+                    severity="error",
+                    message=f"segment {segment.segment_id} fill_mode=whole_plane_universe but base_fill_id is None",
+                    segment_id=segment.segment_id,
+                ))
                 fill_id = moderator_universe_id
-            if known_universe_ids is not None and fill_id not in known_universe_ids:
-                result.issues.append({
-                    "code": "fullcore.whole_plane_ref_missing",
-                    "severity": "error",
-                    "message": f"segment {segment.segment_id} universe {fill_id!r} not in universe catalog",
-                })
+            elif known_universe_ids is not None and fill_id not in known_universe_ids:
+                result.issues.append(MaterializationIssue(
+                    code="fullcore.whole_plane_ref_missing",
+                    severity="error",
+                    message=f"segment {segment.segment_id} universe {fill_id!r} not in universe catalog",
+                    segment_id=segment.segment_id,
+                ))
             layer = AxialLayerSpec(
                 id=f"layer_seg{seg_idx}",
                 name=f"axial layer segment {seg_idx} ({segment.base_role})",
@@ -304,18 +529,35 @@ def materialize_concrete_axial_states(
             })
             continue
 
-        # ---- Detailed core fill (existing behavior) ----
+        # ---- Detailed core fill ----
         active_map = _get_active_inserts_for_segment(
             segment, catalog, resolved_profiles,
         )
 
-        # Build the state signature for dedup
+        # Spacer grid state for this segment
+        active_grids = _get_active_grids_for_segment(segment, grid_overlays)
+        grid_state = AssemblyGridState()
+        grid_lookup = grid_density_lookup or {}
+        for gov in active_grids:
+            grid_state.active_overlay_ids.append(gov.overlay_id)
+            mat_id = gov.material_id or ""
+            grid_state.active_material_ids.append(mat_id)
+            density = grid_lookup.get(mat_id, 7.0)
+            grid_state.derivation_reports.append(
+                _compute_grid_frame_derivation(gov, density, pitch_cm)
+            )
+        if active_grids:
+            result.grid_states[segment.segment_id] = grid_state
+
+        # Build the state signature for tracking
         sig_parts: list[str] = []
         for atype in catalog.assembly_types:
             tid = atype.assembly_type_id
             acts = active_map.get(tid, [])
             if acts:
                 sig_parts.append(f"{tid}:{sorted(a[0] for a in acts)}")
+        if grid_state.active_overlay_ids:
+            sig_parts.append(f"grid:{sorted(grid_state.active_overlay_ids)}")
         state_sig = "|".join(sig_parts)
 
         # Build core lattice universe_pattern for this segment
@@ -326,89 +568,108 @@ def materialize_concrete_axial_states(
                 base_uv = base_assembly_universe_ids.get(type_id, outer_universe_id or "moderator_outer")
                 acts = active_map.get(type_id)
                 if acts:
-                    # Need a derived lattice
-                    cache_key = (type_id, frozenset(a[0] for a in acts))
-                    if cache_key in derived_cache:
-                        seg_uv = derived_cache[cache_key][1]
-                    else:
-                        # Create derived pin lattice
-                        pm = next(
-                            (at.pin_map for at in catalog.assembly_types
-                             if at.assembly_type_id == type_id),
-                            None,
+                    # Compute content hash for this pin state
+                    base_pattern = base_pin_lattices[type_id].universe_pattern
+                    derived_pattern = [r[:] for r in base_pattern]
+                    all_insert_ids: list[str] = []
+                    for insert_id, insert_uv, coords, _pm in acts:
+                        # Validate coordinates (fail-closed)
+                        coord_issues = _validate_insert_coordinates(
+                            coords,
+                            base_pin_lattices[type_id].shape or (len(base_pattern), len(base_pattern[0])),
+                            type_id,
+                            segment.segment_id,
                         )
-                        if pm is None:
-                            pattern_row.append(base_uv)
-                            continue
+                        result.issues.extend(coord_issues)
 
-                        base_pattern = base_pin_lattices[type_id].universe_pattern
-                        derived_pattern = [r[:] for r in base_pattern]
-                        for insert_id, insert_uv, coords, _pm in acts:
-                            for r, c in coords:
-                                if 0 <= r < len(derived_pattern) and 0 <= c < len(derived_pattern[r]):
-                                    derived_pattern[r][c] = insert_uv
+                        for r, c in coords:
+                            if 0 <= r < len(derived_pattern) and 0 <= c < len(derived_pattern[r]):
+                                derived_pattern[r][c] = insert_uv
+                        all_insert_ids.append(insert_id)
 
-                        derived_lat_id = f"assembly_lattice__{type_id}__seg{seg_counter}"
+                    # Get the pin map for convention info
+                    pm_obj = next(
+                        (at.pin_map for at in catalog.assembly_types
+                         if at.assembly_type_id == type_id),
+                        None,
+                    )
+                    ibase = pm_obj.coordinate_convention.index_base if pm_obj else 0
+
+                    grid_ids = grid_state.active_overlay_ids if grid_state.active_overlay_ids else None
+                    pin_hash = _compute_pin_state_hash(
+                        type_id, derived_pattern, all_insert_ids, ibase, grid_ids,
+                    )
+                    total_pin_lookups += 1
+
+                    if pin_hash in pin_cache:
+                        seg_uv = pin_cache[pin_hash][1]
+                        reused_pin_count += 1
+                    else:
+                        unique_pin_states.add(pin_hash)
+                        derived_lat_id = f"assembly_lattice__{type_id}__{pin_hash}"
                         derived_lat = LatticeSpec(
                             id=derived_lat_id,
-                            name=f"derived pin lattice {type_id} seg{seg_counter}",
+                            name=f"derived pin lattice {type_id} {pin_hash[:8]}",
                             kind="rect",
                             pitch_cm=(pitch_cm, pitch_cm),
                             outer_universe_id=moderator_universe_id,
                             universe_pattern=derived_pattern,
                             shape=base_pin_lattices[type_id].shape,
-                            purpose=f"Segment-specific lattice for {type_id} with active inserts: {[a[0] for a in acts]}",
+                            purpose=f"Derived lattice for {type_id} inserts={all_insert_ids} grid={grid_ids or 'none'}",
                         )
                         result.derived_pin_lattices.append(derived_lat)
 
-                        # Create derived wrapper universe + cell
-                        seg_cell_id = f"assembly_wrapper_cell__{type_id}__seg{seg_counter}"
-                        seg_universe_id = f"assembly_universe__{type_id}__seg{seg_counter}"
+                        seg_cell_id = f"assembly_wrapper_cell__{type_id}__{pin_hash}"
+                        seg_universe_id = f"assembly_universe__{type_id}__{pin_hash}"
                         seg_cell = CellSpec(
                             id=seg_cell_id,
-                            name=f"wrapper cell {type_id} seg{seg_counter}",
+                            name=f"wrapper cell {type_id} {pin_hash[:8]}",
                             fill_type="lattice",
                             fill_id=derived_lat_id,
-                            purpose=f"Segment-specific wrapper for {type_id}",
+                            purpose=f"Derived wrapper for {type_id}",
                         )
                         seg_universe = UniverseSpec(
                             id=seg_universe_id,
-                            name=f"assembly universe {type_id} seg{seg_counter}",
+                            name=f"assembly universe {type_id} {pin_hash[:8]}",
                             cell_ids=[seg_cell_id],
-                            purpose=f"Segment-specific wrapper universe for {type_id}",
+                            purpose=f"Derived wrapper universe for {type_id}",
                         )
                         result.derived_wrapper_cells.append(seg_cell)
                         result.derived_wrapper_universes.append(seg_universe)
 
-                        derived_cache[cache_key] = (derived_lat_id, seg_universe_id)
+                        pin_cache[pin_hash] = (derived_lat_id, seg_universe_id)
                         seg_uv = seg_universe_id
-                        seg_counter += 1
                     pattern_row.append(seg_uv)
                 else:
                     pattern_row.append(base_uv)
             core_pattern.append(pattern_row)
 
-        # Create segment-specific core lattice
-        seg_core_id = f"{core_lattice_id_base}__seg{seg_idx}"
-
-        # For dedup: if no active inserts, reuse base core lattice
-        if not active_map:
+        # Core lattice dedup by content hash
+        if not active_map and not grid_state.active_overlay_ids:
             seg_core_id_final = core_lattice_id_base
         else:
-            seg_core_id_final = seg_core_id
-            seg_core_lat = LatticeSpec(
-                id=seg_core_id,
-                name=f"core lattice segment {seg_idx}",
-                kind="rect",
-                pitch_cm=(pitch, pitch),
-                lower_left_cm=lower_left,
-                center_cm=(0.0, 0.0),
-                outer_universe_id=moderator_universe_id,
-                universe_pattern=core_pattern,
-                shape=(n_rows, n_cols),
-                purpose=f"Segment-specific core lattice for z=[{segment.z_min_cm}, {segment.z_max_cm}]",
-            )
-            result.segment_core_lattices.append(seg_core_lat)
+            core_hash = _compute_core_state_hash(core_pattern, core_lattice_id_base)
+            total_core_lookups += 1
+            if core_hash in core_cache:
+                seg_core_id_final = core_cache[core_hash]
+                reused_core_count += 1
+            else:
+                unique_core_states.add(core_hash)
+                seg_core_id_final = f"{core_lattice_id_base}__{core_hash}"
+                seg_core_lat = LatticeSpec(
+                    id=seg_core_id_final,
+                    name=f"core lattice {core_hash[:8]}",
+                    kind="rect",
+                    pitch_cm=(pitch, pitch),
+                    lower_left_cm=lower_left,
+                    center_cm=(0.0, 0.0),
+                    outer_universe_id=moderator_universe_id,
+                    universe_pattern=core_pattern,
+                    shape=(n_rows, n_cols),
+                    purpose=f"Core lattice for z=[{segment.z_min_cm:.2f}, {segment.z_max_cm:.2f}] sig={state_sig[:40]}",
+                )
+                result.segment_core_lattices.append(seg_core_lat)
+                core_cache[core_hash] = seg_core_id_final
 
         # Create axial layer
         layer = AxialLayerSpec(
@@ -431,12 +692,35 @@ def materialize_concrete_axial_states(
             "active_types": list(active_map.keys()),
             "state_signature": state_sig,
             "has_derived_lattices": bool(active_map),
+            "grid_overlay_ids": list(grid_state.active_overlay_ids),
         })
+
+    # Build state reuse report
+    result.state_reuse_report = {
+        "contract_version": _MATERIALIZATION_CONTRACT_VERSION,
+        "segment_count": len(segments),
+        "pin_state_lookups": total_pin_lookups,
+        "unique_pin_states": len(unique_pin_states),
+        "reused_pin_states": reused_pin_count,
+        "pin_reuse_ratio": reused_pin_count / total_pin_lookups if total_pin_lookups > 0 else 0.0,
+        "core_state_lookups": total_core_lookups,
+        "unique_core_states": len(unique_core_states),
+        "reused_core_states": reused_core_count,
+        "core_reuse_ratio": reused_core_count / total_core_lookups if total_core_lookups > 0 else 0.0,
+        "pin_state_hashes": sorted(unique_pin_states),
+        "core_state_hashes": sorted(unique_core_states),
+    }
 
     return result
 
 
 __all__ = [
+    "MaterializationIssue",
+    "GridFrameDerivationReport",
+    "AssemblyGridState",
     "ConcreteAxialStateResult",
     "materialize_concrete_axial_states",
+    "_compute_grid_frame_derivation",
+    "_compute_pin_state_hash",
+    "_compute_core_state_hash",
 ]
