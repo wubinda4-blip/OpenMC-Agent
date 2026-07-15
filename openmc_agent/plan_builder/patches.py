@@ -30,6 +30,25 @@ PatchType = Literal[
     "axial_layers",
     "axial_overlays",
     "settings",
+    "assembly_catalog",
+    "core_layout",
+]
+
+ModelScope = Literal[
+    "single_pin",
+    "single_assembly",
+    "multi_assembly_core",
+    "full_core",
+    "unknown",
+]
+
+CountScope = Literal[
+    "pin_cell",
+    "pin_map",
+    "assembly_type",
+    "assembly_instance",
+    "core_total",
+    "unknown",
 ]
 
 
@@ -37,6 +56,32 @@ class _PatchBase(AgentBaseModel):
     """Common base for all patch models (extra='forbid', strip whitespace)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+# ---------------------------------------------------------------------------
+# Scope Contracts (P2-FULLCORE-1)
+# ---------------------------------------------------------------------------
+
+
+class ScopedExpectedCount(_PatchBase):
+    """An expected count with explicit scope binding.
+
+    Replaces the old un-scoped ``expected_pin_count`` etc. for
+    multi-assembly / full-core models.  Each count is explicitly tied to a
+    scope (pin_map, assembly_type, core_total, ...) so that the validator
+    only compares counts at the same scope level.
+    """
+
+    role: str
+    value: int
+    scope: CountScope = "unknown"
+    assembly_type_id: str | None = None
+    assembly_instance_id: str | None = None
+    source_note: str | None = None
+    provenance_refs: list[str] = Field(default_factory=list)
+    derived: bool = False
+    derivation: str | None = None
+    requires_human_confirmation: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +118,15 @@ class FactsPatch(_PatchBase):
     expected_instrument_tube_count: int | None = None
     expected_pyrex_count: int | None = None
     expected_thimble_plug_count: int | None = None
+
+    # --- P2-FULLCORE-1: Scope-aware fields ---
+    model_scope: ModelScope = "single_assembly"
+    assembly_count: int | None = None
+    core_lattice_size: tuple[int, int] | None = None
+    assembly_type_counts: dict[str, int] = Field(default_factory=dict)
+    scoped_expected_counts: list[ScopedExpectedCount] = Field(default_factory=list)
+    boundary_scope: str | None = None
+    symmetry_description: str | None = None
 
     material_roles: list[str] = Field(default_factory=list)
     missing_facts: list[str] = Field(default_factory=list)
@@ -457,6 +511,91 @@ class SettingsPatch(_PatchBase):
 
 
 # ---------------------------------------------------------------------------
+# AssemblyCatalogPatch (P2-FULLCORE-1)
+# ---------------------------------------------------------------------------
+
+
+class AssemblyPinMapPatchItem(_PatchBase):
+    """Sparse pin map for a single assembly type.
+
+    Reuses the same structure as PinMapPatch but is scoped to an assembly
+    type template rather than the top-level plan.
+    """
+
+    lattice_size: tuple[int, int]
+    default_universe_id: str
+    coordinate_convention: CoordinateConvention = Field(
+        default_factory=CoordinateConvention
+    )
+    guide_tube_coords: list[tuple[int, int]] = Field(default_factory=list)
+    instrument_tube_coords: list[tuple[int, int]] = Field(default_factory=list)
+    water_cell_coords: list[tuple[int, int]] = Field(default_factory=list)
+    localized_insert_intents: list[LocalizedInsertIntentPatchItem] = Field(
+        default_factory=list,
+    )
+    assumptions: list[str] = Field(default_factory=list)
+    source_note: str | None = None
+
+
+class AssemblyTypePatchItem(_PatchBase):
+    """A single assembly type template in an AssemblyCatalogPatch."""
+
+    assembly_type_id: str
+    name: str = ""
+    role: str = ""
+    multiplicity_hint: int | None = None
+    pin_map: AssemblyPinMapPatchItem
+    axial_profile_id: str | None = None
+    overlay_set_id: str | None = None
+    source_note: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    requires_human_confirmation: bool = False
+
+
+class AssemblyCatalogPatch(_PatchBase):
+    """Catalog of assembly type templates for multi-assembly core models.
+
+    Each entry defines one assembly type's sparse pin map and localized
+    inserts.  The core_layout patch references these type IDs for placement.
+    """
+
+    patch_type: Literal["assembly_catalog"] = "assembly_catalog"
+    assembly_types: list[AssemblyTypePatchItem]
+    assumptions: list[str] = Field(default_factory=list)
+    source_note: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# CoreLayoutPatch (P2-FULLCORE-1)
+# ---------------------------------------------------------------------------
+
+
+class CoreLayoutPatch(_PatchBase):
+    """Core-level assembly placement patch.
+
+    Defines a 2-D pattern of assembly type IDs that references the
+    AssemblyCatalogPatch.  The assembler uses this to build a second-level
+    core lattice.
+    """
+
+    patch_type: Literal["core_layout"] = "core_layout"
+    core_lattice_id: str = "core_lattice"
+    shape: tuple[int, int]
+    assembly_pitch_cm: float | None = None
+    coordinate_convention: CoordinateConvention = Field(
+        default_factory=CoordinateConvention
+    )
+    assembly_pattern: list[list[str]]
+    outer_assembly_type_id: str | None = None
+    boundary: str = "vacuum"
+    expected_assembly_type_counts: dict[str, int] = Field(default_factory=dict)
+    symmetry_description: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    source_note: str | None = None
+    requires_human_confirmation: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Patch parsing helpers
 # ---------------------------------------------------------------------------
 
@@ -468,6 +607,8 @@ _PATCH_MODELS: dict[str, type[BaseModel]] = {
     "axial_layers": AxialLayersPatch,
     "axial_overlays": AxialOverlaysPatch,
     "settings": SettingsPatch,
+    "assembly_catalog": AssemblyCatalogPatch,
+    "core_layout": CoreLayoutPatch,
 }
 
 
@@ -604,6 +745,9 @@ def get_patch_json_schema(patch_type: str) -> dict[str, Any]:
 
 __all__ = [
     "PatchType",
+    "ModelScope",
+    "CountScope",
+    "ScopedExpectedCount",
     "FactsPatch",
     "MaterialSpecPatch",
     "MaterialsPatch",
@@ -611,7 +755,12 @@ __all__ = [
     "UniverseSpecPatch",
     "UniversesPatch",
     "CoordinateConvention",
+    "LocalizedInsertIntentPatchItem",
     "PinMapPatch",
+    "AssemblyPinMapPatchItem",
+    "AssemblyTypePatchItem",
+    "AssemblyCatalogPatch",
+    "CoreLayoutPatch",
     "AxialLayerPatchItem",
     "LatticeTransformationPatchItem",
     "LatticeLoadingPatchItem",

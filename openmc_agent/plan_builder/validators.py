@@ -31,12 +31,17 @@ from .patches import (
     AxialLayersPatch,
     AxialOverlayPatchItem,
     AxialOverlaysPatch,
+    AssemblyCatalogPatch,
+    AssemblyPinMapPatchItem,
+    AssemblyTypePatchItem,
     CoordinateConvention,
+    CoreLayoutPatch,
     FactsPatch,
     LatticeTransformationPatchItem,
     MaterialSpecPatch,
     MaterialsPatch,
     PinMapPatch,
+    ScopedExpectedCount,
     SettingsPatch,
     UniverseSpecPatch,
     UniversesPatch,
@@ -96,6 +101,14 @@ class PatchValidationContext(AgentBaseModel):
     known_overlay_summaries: list[dict[str, Any]] = Field(default_factory=list)
     has_spacer_grids: bool = False
     expected_spacer_grid_count: int | None = None
+    # P2-FULLCORE-1: multi-assembly context fields
+    model_scope: str = "single_assembly"
+    assembly_count: int | None = None
+    core_lattice_size: tuple[int, int] | None = None
+    assembly_type_counts: dict[str, int] = Field(default_factory=dict)
+    known_assembly_type_ids: list[str] = Field(default_factory=list)
+    scoped_expected_counts: list[dict[str, Any]] = Field(default_factory=list)
+    assembly_pitch_cm: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1306,237 @@ def _validate_settings(
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Assembly catalog validator (P2-FULLCORE-1)
+# ---------------------------------------------------------------------------
+
+
+def _validate_assembly_catalog(
+    patch: AssemblyCatalogPatch,
+    ctx: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+
+    if not patch.assembly_types:
+        issues.append(PatchValidationIssue(
+            code="assembly_catalog.empty",
+            severity="error",
+            message="assembly_catalog has no assembly_types",
+        ))
+        return issues
+
+    seen_ids: set[str] = set()
+    known_uvs = set(ctx.known_universe_ids)
+
+    for atype in patch.assembly_types:
+        if atype.assembly_type_id in seen_ids:
+            issues.append(PatchValidationIssue(
+                code="assembly_catalog.duplicate_type_id",
+                severity="error",
+                message=f"duplicate assembly_type_id {atype.assembly_type_id!r}",
+                path=f"assembly_types[{atype.assembly_type_id}]",
+            ))
+            continue
+        seen_ids.add(atype.assembly_type_id)
+
+        pm = atype.pin_map
+        nx, ny = pm.lattice_size
+        if nx <= 0 or ny <= 0:
+            issues.append(PatchValidationIssue(
+                code="assembly_catalog.pin_map_invalid",
+                severity="error",
+                message=f"assembly type {atype.assembly_type_id!r} has invalid lattice_size ({nx},{ny})",
+                path=f"assembly_types[{atype.assembly_type_id}].pin_map.lattice_size",
+            ))
+
+        if known_uvs and pm.default_universe_id not in known_uvs:
+            issues.append(PatchValidationIssue(
+                code="assembly_catalog.universe_missing",
+                severity="error",
+                message=(
+                    f"assembly type {atype.assembly_type_id!r} pin_map default_universe_id "
+                    f"{pm.default_universe_id!r} not found in known universes"
+                ),
+                path=f"assembly_types[{atype.assembly_type_id}].pin_map.default_universe_id",
+                expected=list(known_uvs),
+                actual=pm.default_universe_id,
+            ))
+
+        for intent in pm.localized_insert_intents:
+            if known_uvs and intent.insert_universe_id not in known_uvs:
+                issues.append(PatchValidationIssue(
+                    code="assembly_catalog.universe_missing",
+                    severity="error",
+                    message=(
+                        f"assembly type {atype.assembly_type_id!r} insert {intent.insert_id!r} "
+                        f"universe {intent.insert_universe_id!r} not found"
+                    ),
+                    path=f"assembly_types[{atype.assembly_type_id}].pin_map.localized_insert_intents",
+                ))
+
+        total_cells = nx * ny
+        special = (
+            len(pm.guide_tube_coords)
+            + len(pm.instrument_tube_coords)
+            + len(pm.water_cell_coords)
+        )
+        if special > total_cells:
+            issues.append(PatchValidationIssue(
+                code="assembly_catalog.local_count_mismatch",
+                severity="error",
+                message=(
+                    f"assembly type {atype.assembly_type_id!r} has {special} special coords "
+                    f"but only {total_cells} total cells"
+                ),
+                path=f"assembly_types[{atype.assembly_type_id}].pin_map",
+                expected=total_cells,
+                actual=special,
+            ))
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Core layout validator (P2-FULLCORE-1)
+# ---------------------------------------------------------------------------
+
+
+def _validate_core_layout(
+    patch: CoreLayoutPatch,
+    ctx: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    issues: list[PatchValidationIssue] = []
+
+    n_rows, n_cols = patch.shape
+
+    if n_rows <= 0 or n_cols <= 0:
+        issues.append(PatchValidationIssue(
+            code="core_layout.shape_mismatch",
+            severity="error",
+            message=f"core_layout shape ({n_rows},{n_cols}) is invalid",
+            path="shape",
+        ))
+        return issues
+
+    if len(patch.assembly_pattern) != n_rows:
+        issues.append(PatchValidationIssue(
+            code="core_layout.shape_mismatch",
+            severity="error",
+            message=(
+                f"assembly_pattern has {len(patch.assembly_pattern)} rows "
+                f"but shape says {n_rows}"
+            ),
+            path="assembly_pattern",
+            expected=n_rows,
+            actual=len(patch.assembly_pattern),
+        ))
+
+    for i, row in enumerate(patch.assembly_pattern):
+        if len(row) != n_cols:
+            issues.append(PatchValidationIssue(
+                code="core_layout.row_length_mismatch",
+                severity="error",
+                message=f"row {i} has {len(row)} cols but shape says {n_cols}",
+                path=f"assembly_pattern[{i}]",
+                expected=n_cols,
+                actual=len(row),
+            ))
+
+    known_types = set(ctx.known_assembly_type_ids)
+    if not known_types:
+        known_types = set(patch.expected_assembly_type_counts.keys())
+
+    pattern_type_counts: dict[str, int] = {}
+    for i, row in enumerate(patch.assembly_pattern):
+        for j, type_id in enumerate(row):
+            if known_types and type_id not in known_types:
+                issues.append(PatchValidationIssue(
+                    code="core_layout.assembly_type_missing",
+                    severity="error",
+                    message=f"assembly type {type_id!r} at ({i},{j}) not defined in catalog",
+                    path=f"assembly_pattern[{i}][{j}]",
+                    actual=type_id,
+                ))
+            pattern_type_counts[type_id] = pattern_type_counts.get(type_id, 0) + 1
+
+    for type_id, expected_count in patch.expected_assembly_type_counts.items():
+        actual_count = pattern_type_counts.get(type_id, 0)
+        if actual_count != expected_count:
+            issues.append(PatchValidationIssue(
+                code="core_layout.multiplicity_mismatch",
+                severity="error",
+                message=(
+                    f"assembly type {type_id!r}: expected {expected_count} instances "
+                    f"but pattern has {actual_count}"
+                ),
+                path="expected_assembly_type_counts",
+                expected=expected_count,
+                actual=actual_count,
+            ))
+
+    if patch.assembly_pitch_cm is not None and patch.assembly_pitch_cm <= 0:
+        issues.append(PatchValidationIssue(
+            code="core_layout.pitch_invalid",
+            severity="error",
+            message=f"assembly_pitch_cm must be > 0, got {patch.assembly_pitch_cm}",
+            path="assembly_pitch_cm",
+            actual=patch.assembly_pitch_cm,
+        ))
+
+    if not patch.boundary:
+        issues.append(PatchValidationIssue(
+            code="core_layout.boundary_missing",
+            severity="warning",
+            message="boundary is empty; defaulting to 'vacuum'",
+            path="boundary",
+        ))
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Catalog-layout cross-validation (P2-FULLCORE-1)
+# ---------------------------------------------------------------------------
+
+
+def validate_catalog_layout_cross_references(
+    catalog: AssemblyCatalogPatch,
+    layout: CoreLayoutPatch,
+) -> PatchValidationResult:
+    """Cross-validate that core_layout references match the assembly catalog."""
+    issues: list[PatchValidationIssue] = []
+    catalog_type_ids = {at.assembly_type_id for at in catalog.assembly_types}
+
+    for i, row in enumerate(layout.assembly_pattern):
+        for j, type_id in enumerate(row):
+            if type_id not in catalog_type_ids:
+                issues.append(PatchValidationIssue(
+                    code="core_layout.assembly_type_missing",
+                    severity="error",
+                    message=f"layout ({i},{j}) references {type_id!r} not in catalog",
+                    path=f"assembly_pattern[{i}][{j}]",
+                    actual=type_id,
+                ))
+
+    if layout.outer_assembly_type_id and layout.outer_assembly_type_id not in catalog_type_ids:
+        issues.append(PatchValidationIssue(
+            code="core_layout.assembly_type_missing",
+            severity="error",
+            message=(
+                f"outer_assembly_type_id {layout.outer_assembly_type_id!r} "
+                f"not in catalog"
+            ),
+            path="outer_assembly_type_id",
+        ))
+
+    errors = [i for i in issues if i.severity == "error"]
+    return PatchValidationResult(
+        patch_type="core_layout",
+        ok=len(errors) == 0,
+        issues=issues,
+    )
+
+
 _VALIDATORS: dict[str, Any] = {
     "facts": _validate_facts,
     "materials": _validate_materials,
@@ -1301,6 +1545,8 @@ _VALIDATORS: dict[str, Any] = {
     "axial_layers": _validate_axial_layers,
     "axial_overlays": _validate_axial_overlays,
     "settings": _validate_settings,
+    "assembly_catalog": _validate_assembly_catalog,
+    "core_layout": _validate_core_layout,
 }
 
 
@@ -1370,4 +1616,5 @@ __all__ = [
     "PatchValidationResult",
     "PatchValidationContext",
     "validate_patch",
+    "validate_catalog_layout_cross_references",
 ]

@@ -374,8 +374,10 @@ _DEFAULT_TASK_SEQUENCE: tuple[tuple[str, str], ...] = (
     ("materials", "Define materials (fuel, coolant, cladding, structural)"),
     ("universes", "Define universes (pin cells, guide tubes, special pins)"),
     ("pin_map", "Build lattice pin map with universe assignments"),
+    ("assembly_catalog", "Define assembly type templates with per-type sparse pin maps"),
     ("axial_layers", "Define core.axial_layers (z-segmentation)"),
     ("axial_overlays", "Define core.axial_overlays (spacer grids, bands)"),
+    ("core_layout", "Define core-level assembly placement pattern"),
     ("settings", "Define execution settings (batches, particles, source)"),
 )
 
@@ -384,8 +386,10 @@ _DEFAULT_DEPENDENCIES: dict[str, list[str]] = {
     "materials": ["task_facts"],
     "universes": ["task_materials"],
     "pin_map": ["task_universes"],
+    "assembly_catalog": ["task_universes"],
     "axial_layers": ["task_facts"],
     "axial_overlays": ["task_axial_layers"],
+    "core_layout": ["task_assembly_catalog"],
     "settings": [],
 }
 
@@ -410,9 +414,13 @@ def create_initial_component_tasks(
     has_special_pin = bool(feature_summary.get("has_special_pin_map"))
     has_large_lattice = feature_summary.get("large_lattice_dimension") is not None
     has_variants = bool(feature_summary.get("has_benchmark_variant"))
+    is_multi_assembly = bool(
+        feature_summary.get("multi_assembly_core")
+        or feature_summary.get("core_lattice")
+    )
 
     # If nothing complex is detected, return an empty task list.
-    if not any([has_axial, has_spacer, has_special_pin, has_large_lattice, has_variants]):
+    if not any([has_axial, has_spacer, has_special_pin, has_large_lattice, has_variants, is_multi_assembly]):
         return []
 
     tasks: list[PlanComponentTask] = []
@@ -423,8 +431,14 @@ def create_initial_component_tasks(
         # Skip axial_overlays if no spacer grid and no axial geometry.
         if patch_type == "axial_overlays" and not (has_spacer or has_axial):
             continue
-        # Skip pin_map if no special pin map.
-        if patch_type == "pin_map" and not (has_special_pin or has_large_lattice):
+        # Single-assembly: skip assembly_catalog and core_layout.
+        if patch_type in ("assembly_catalog", "core_layout") and not is_multi_assembly:
+            continue
+        # Multi-assembly: skip top-level pin_map.
+        if patch_type == "pin_map" and is_multi_assembly:
+            continue
+        # Single-assembly without special pins: skip pin_map.
+        if patch_type == "pin_map" and not is_multi_assembly and not (has_special_pin or has_large_lattice):
             continue
 
         tasks.append(

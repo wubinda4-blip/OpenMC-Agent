@@ -77,15 +77,30 @@ _PATCH_DEPENDENTS: dict[str, tuple[str, ...]] = {
         "materials",
         "universes",
         "pin_map",
+        "assembly_catalog",
         "axial_layers",
         "axial_overlays",
+        "core_layout",
         "settings",
     ),
-    "materials": ("universes", "pin_map", "axial_layers", "axial_overlays"),
-    "universes": ("pin_map", "axial_layers", "axial_overlays"),
+    "materials": (
+        "universes",
+        "pin_map",
+        "assembly_catalog",
+        "axial_layers",
+        "axial_overlays",
+    ),
+    "universes": (
+        "pin_map",
+        "assembly_catalog",
+        "axial_layers",
+        "axial_overlays",
+    ),
     "pin_map": ("axial_layers", "axial_overlays"),
+    "assembly_catalog": ("axial_layers", "axial_overlays", "core_layout"),
     "axial_layers": ("axial_overlays",),
     "axial_overlays": (),
+    "core_layout": (),
     "settings": (),
 }
 
@@ -151,7 +166,35 @@ _REFERENCE_CODES: dict[str, str] = {
     "patch.pin_map.default_universe_missing": "universes",
     "assembly.unresolved_material_reference": "materials",
     "assembly.unresolved_universe_reference": "universes",
+    # P2-FULLCORE-1: scoped count mismatches route to responsible patches.
+    "assembly_catalog.universe_missing": "universes",
+    "assembly_catalog.local_count_mismatch": "assembly_catalog",
+    "assembly_catalog.pin_map_invalid": "assembly_catalog",
+    "assembly_catalog.duplicate_type_id": "assembly_catalog",
+    "assembly_catalog.empty": "assembly_catalog",
+    "core_layout.assembly_type_missing": "assembly_catalog",
+    "core_layout.shape_mismatch": "core_layout",
+    "core_layout.row_length_mismatch": "core_layout",
+    "core_layout.multiplicity_mismatch": "core_layout",
+    "core_layout.pitch_invalid": "core_layout",
+    "core_layout.boundary_missing": "core_layout",
+    "core_layout.pattern_incomplete": "core_layout",
 }
+
+# Codes that signal scoped-count issues.
+_SCOPED_COUNT_FACT_CODES: frozenset[str] = frozenset({
+    "facts.count_scope_ambiguous",
+    "counts.homogeneous_derivation_unproven",
+})
+
+_SCOPED_COUNT_CATALOG_CODES: frozenset[str] = frozenset({
+    "counts.assembly_type_mismatch",
+})
+
+_SCOPED_COUNT_LAYOUT_CODES: frozenset[str] = frozenset({
+    "counts.core_total_mismatch",
+    "counts.scope_mismatch",
+})
 
 
 def route_retry(
@@ -203,6 +246,8 @@ def route_retry(
         "patch.axial_overlays.",
         "patch.materials.",
         "patch.universes.",
+        "patch.assembly_catalog.",
+        "patch.core_layout.",
         "patch.schema_invalid",
         "patch.duplicate_id",
     )
@@ -212,6 +257,28 @@ def route_retry(
             patch_type=failed_patch_type,
             reason=f"local validation error(s): {error_codes[:3]}",
         )
+
+    # P2-FULLCORE-1: Scoped count mismatches route to responsible patches.
+    for code in error_codes:
+        if code in _SCOPED_COUNT_FACT_CODES:
+            return RetryDecision(
+                action="retry_dependency_patch",
+                patch_type=failed_patch_type,
+                dependency_patch_type="facts",
+                reason=f"scoped count issue {code} requires facts retry",
+            )
+        if code in _SCOPED_COUNT_CATALOG_CODES:
+            return RetryDecision(
+                action="retry_same_patch",
+                patch_type="assembly_catalog",
+                reason=f"assembly-type count mismatch: {code}",
+            )
+        if code in _SCOPED_COUNT_LAYOUT_CODES:
+            return RetryDecision(
+                action="retry_same_patch",
+                patch_type="core_layout",
+                reason=f"core-level count mismatch: {code}",
+            )
 
     return RetryDecision(
         action="fail",
@@ -229,8 +296,10 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "materials",
     "universes",
     "pin_map",
+    "assembly_catalog",
     "axial_layers",
     "axial_overlays",
+    "core_layout",
     "settings",
 )
 
@@ -239,8 +308,10 @@ _DEPENDENCIES: dict[str, list[str]] = {
     "materials": ["facts"],
     "universes": ["facts", "materials"],
     "pin_map": ["facts", "universes"],
+    "assembly_catalog": ["facts", "universes"],
     "axial_layers": ["facts"],
     "axial_overlays": ["facts", "materials", "axial_layers"],
+    "core_layout": ["facts", "assembly_catalog"],
     "settings": [],
 }
 
@@ -248,42 +319,80 @@ _DEPENDENCIES: dict[str, list[str]] = {
 def default_patch_task_order(state: PlanBuildState) -> list[str]:
     """Return the default patch generation order based on state features."""
     order = list(_DEFAULT_ORDER)
+    is_multi = _state_is_multi_assembly(state)
     # Remove axial_overlays if spacer grids are not expected.
     has_spacer = _state_has_feature(state, "has_spacer_grid")
     if not has_spacer:
         order = [t for t in order if t != "axial_overlays"]
-    # Remove pin_map if no special pin map.
-    has_special = _state_has_feature(state, "has_special_pin_map")
-    has_large = state.metadata.get("planning_mode_decision", {}).get(
-        "feature_summary", {}
-    ).get("large_lattice_dimension") is not None
-    if not has_special and not has_large:
+    if is_multi:
+        # Multi-assembly core: use assembly_catalog + core_layout path.
+        # Remove top-level pin_map (each assembly type has its own pin map
+        # inside the assembly_catalog patch).
         order = [t for t in order if t != "pin_map"]
+    else:
+        # Single-assembly path: remove assembly_catalog and core_layout.
+        order = [t for t in order if t not in ("assembly_catalog", "core_layout")]
+        # Remove pin_map if no special pin map.
+        has_special = _state_has_feature(state, "has_special_pin_map")
+        has_large = state.metadata.get("planning_mode_decision", {}).get(
+            "feature_summary", {}
+        ).get("large_lattice_dimension") is not None
+        if not has_special and not has_large:
+            order = [t for t in order if t != "pin_map"]
     return order
 
 
 def required_patch_types_for_state(state: PlanBuildState) -> list[str]:
     """Return the minimal required patch types for this state.
 
-    Structural patches (``pin_map``, ``axial_overlays``) are required when the
-    feature detector found special pin maps / spacer grids, OR when a benchmark
-    variant is present (which strongly implies a structural assembly model that
-    needs a pin map). This is benchmark-agnostic: it only uses the generic
-    "has_benchmark_variant" flag, not any specific benchmark name.
+    For single-assembly models, the path is:
+        facts, materials, universes, pin_map, axial_layers, settings,
+        (axial_overlays if spacer grids).
+
+    For multi-assembly core models, the path is:
+        facts, materials, universes, assembly_catalog, axial_layers,
+        (axial_overlays if spacer grids), core_layout, settings.
+
+    The top-level pin_map is NOT required for multi-assembly cores.
     """
-    required = ["facts", "materials", "universes", "axial_layers", "settings"]
+    is_multi = _state_is_multi_assembly(state)
     has_spacer = _state_has_feature(state, "has_spacer_grid")
     has_special = _state_has_feature(state, "has_special_pin_map")
     has_large = bool(_state_has_feature(state, "large_lattice_dimension"))
     has_benchmark_variant = _state_has_feature(state, "has_benchmark_variant")
-    if has_spacer:
-        required.append("axial_overlays")
-    # pin_map is required when there are special pins, a large lattice, or any
-    # benchmark variant (the variant implies a real assembly with a pin map).
-    if has_special or has_large or has_benchmark_variant:
-        required.append("pin_map")
-    # Preserve canonical order.
+
+    if is_multi:
+        required = [
+            "facts", "materials", "universes",
+            "assembly_catalog", "axial_layers",
+        ]
+        if has_spacer:
+            required.append("axial_overlays")
+        required.append("core_layout")
+        required.append("settings")
+    else:
+        required = ["facts", "materials", "universes", "axial_layers", "settings"]
+        if has_spacer:
+            required.append("axial_overlays")
+        if has_special or has_large or has_benchmark_variant:
+            required.append("pin_map")
+
     return [t for t in _DEFAULT_ORDER if t in required]
+
+
+def _state_is_multi_assembly(state: PlanBuildState) -> bool:
+    """Check whether the state describes a multi-assembly core model."""
+    pmd = state.metadata.get("planning_mode_decision", {})
+    fs = pmd.get("feature_summary", {})
+    if fs.get("multi_assembly_core") or fs.get("core_lattice"):
+        return True
+    model_scope = state.extracted_facts.get("model_scope", "")
+    if model_scope in ("multi_assembly_core", "full_core"):
+        return True
+    assembly_count = state.extracted_facts.get("assembly_count")
+    if isinstance(assembly_count, int) and assembly_count > 1:
+        return True
+    return False
 
 
 def _state_has_feature(state: PlanBuildState, feature: str) -> bool:
@@ -366,6 +475,29 @@ def build_generation_context_from_state(
                 if content.get(flag):
                     ctx.extracted_facts[flag] = True
             ctx.strict_benchmark = bool(content.get("benchmark_id"))
+            # P2-FULLCORE-1: propagate multi-assembly fields.
+            model_scope = content.get("model_scope")
+            if isinstance(model_scope, str):
+                ctx.model_scope = model_scope
+                ctx.extracted_facts["model_scope"] = model_scope
+            ac = content.get("assembly_count")
+            if isinstance(ac, int):
+                ctx.assembly_count = ac
+                ctx.extracted_facts["assembly_count"] = ac
+            cls = content.get("core_lattice_size")
+            if isinstance(cls, list) and len(cls) == 2:
+                ctx.core_lattice_size = (cls[0], cls[1])
+            atc = content.get("assembly_type_counts")
+            if isinstance(atc, dict):
+                ctx.assembly_type_counts = {
+                    str(k): int(v) for k, v in atc.items() if isinstance(v, (int, float))
+                }
+            apc = content.get("assembly_pitch_cm")
+            if isinstance(apc, (int, float)):
+                ctx.assembly_pitch_cm = float(apc)
+            sec = content.get("scoped_expected_counts")
+            if isinstance(sec, list):
+                ctx.scoped_expected_counts = sec
 
         elif ptype == "materials":
             for mat in content.get("materials", []):
@@ -424,6 +556,12 @@ def build_generation_context_from_state(
                         "through_path_preserved",
                     )
                 })
+
+        elif ptype == "assembly_catalog":
+            for atype in content.get("assembly_types", []):
+                tid = atype.get("assembly_type_id")
+                if isinstance(tid, str):
+                    ctx.known_assembly_type_ids.append(tid)
 
     ctx.expected_counts = expected_counts
     ctx.reference_expected_counts = reference_expected_counts

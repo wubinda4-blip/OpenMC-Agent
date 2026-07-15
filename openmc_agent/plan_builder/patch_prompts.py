@@ -51,6 +51,10 @@ Schema fields: benchmark_id, selected_variant, geometry_type, lattice_size [int,
   has_special_pin_map, active_fuel_region_cm [float,float], axial_domain_cm [float,float],
   expected_spacer_grid_count, expected_pin_count, expected_guide_tube_count,
   expected_instrument_tube_count, expected_pyrex_count, expected_thimble_plug_count,
+  model_scope (single_pin|single_assembly|multi_assembly_core|full_core|unknown),
+  assembly_count, core_lattice_size [int,int], assembly_type_counts {{type_id: count}},
+  scoped_expected_counts [list of {{role, value, scope, assembly_type_id}}],
+  boundary_scope, symmetry_description,
   material_roles [list[str]], missing_facts [list[str]], assumptions [list[str]],
   source_notes [list[str]].
 
@@ -59,12 +63,26 @@ Rules:
 - If variant is 3A/3B, set selected_variant.
 - If requirement mentions spacer grids, set has_spacer_grids=true.
 - If requirement mentions Pyrex/thimble plug/guide tube/instrument tube, set has_special_pin_map=true.
+- Determine model_scope: single_assembly for one assembly, multi_assembly_core for N×N cores.
+- For multi-assembly cores: set assembly_count, core_lattice_size, assembly_type_counts.
+- For multi-assembly cores: use scoped_expected_counts with explicit scope, NOT legacy fields.
+- Do NOT divide core totals by assembly count to guess per-assembly counts.
+- Legacy fields (expected_pin_count etc.) are for single_assembly only.
 - Unknown facts go into missing_facts, NOT fabricated values.
 
-Minimal example (adapt to the actual requirement):
+Minimal example (single assembly):
 {{"patch_type": "facts", "benchmark_id": "EXAMPLE", "selected_variant": "3B",
-  "lattice_size": [17, 17], "has_axial_geometry": true,
-  "has_spacer_grids": true, "has_special_pin_map": true, "missing_facts": []}}""",
+  "model_scope": "single_assembly", "lattice_size": [17, 17], "has_axial_geometry": true,
+  "has_spacer_grids": true, "has_special_pin_map": true, "missing_facts": []}}
+
+Reactor-neutral multi-assembly example:
+{{"patch_type": "facts", "model_scope": "multi_assembly_core",
+  "core_lattice_size": [2, 2], "assembly_count": 4,
+  "assembly_type_counts": {{"type_a": 2, "type_b": 2}},
+  "scoped_expected_counts": [
+    {{"role": "fuel_pin", "value": 1000, "scope": "core_total"}},
+    {{"role": "fuel_pin", "value": 250, "scope": "assembly_type", "assembly_type_id": "type_a"}}
+  ]}}""",
 
     "materials": """\
 Requested patch type: materials
@@ -317,6 +335,93 @@ Minimal example:
 {{"patch_type": "settings", "source_strategy": "active_fuel_box",
   "plot_strategy": "full_assembly", "cross_sections_runtime_required": true,
   "tallies_required_for_smoke_test": false}}""",
+
+    "assembly_catalog": """\
+Requested patch type: assembly_catalog
+Schema: {{"patch_type": "assembly_catalog",
+  "assembly_types": [
+    {{"assembly_type_id": "type_id", "name": "descriptive name", "role": "fuel/guide/etc",
+      "multiplicity_hint": int_or_null,
+      "pin_map": {{
+        "lattice_size": [int, int],
+        "default_universe_id": "universe_id",
+        "coordinate_convention": {{"index_base": 0, "row_origin": "top", "col_origin": "left", "ordering": "row_col"}},
+        "guide_tube_coords": [[row, col], ...],
+        "instrument_tube_coords": [[row, col], ...],
+        "water_cell_coords": [[row, col], ...],
+        "localized_insert_intents": [
+          {{"insert_id": "id", "insert_kind": "pyrex_rod|thimble_plug|absorber_insert|...",
+            "host_kind": "guide_tube", "insert_universe_id": "universe_id",
+            "coordinates": [[row, col], ...], "z_min_cm": float, "z_max_cm": float,
+            "application_mode": "coordinate_override"}}
+        ]
+      }},
+      "axial_profile_id": "id_or_null",
+      "overlay_set_id": "id_or_null",
+      "requires_human_confirmation": false
+    }}
+  ],
+  "assumptions": [], "source_note": "optional"}}
+
+Rules:
+- Only output assembly type TEMPLATES — not core placement.
+- Do NOT output a full expanded pin lattice (e.g. 17x17 matrix).
+- Each assembly type outputs ONLY: default universe + sparse special coordinates.
+- Different assembly types CAN share universe IDs.
+- Different assembly types CAN have different localized inserts.
+- Do NOT divide core totals evenly among assembly types.
+- Each type's local structure must come from the requirement document.
+- If the requirement does not provide enough detail for a type, set requires_human_confirmation=true.
+- The multiplicity_hint is advisory; the core_layout patch determines actual placement.
+
+Reactor-neutral example (2 types, 3x3 lattice):
+{{"patch_type": "assembly_catalog",
+  "assembly_types": [
+    {{"assembly_type_id": "type_a", "pin_map": {{
+      "lattice_size": [3, 3], "default_universe_id": "fuel_cell",
+      "guide_tube_coords": [[1, 1]]}}}},
+    {{"assembly_type_id": "type_b", "pin_map": {{
+      "lattice_size": [3, 3], "default_universe_id": "fuel_cell",
+      "guide_tube_coords": [[0, 0], [2, 2]],
+      "localized_insert_intents": [
+        {{"insert_id": "abs1", "insert_kind": "absorber_insert",
+          "host_kind": "guide_tube", "insert_universe_id": "absorber",
+          "coordinates": [[0, 0]], "application_mode": "coordinate_override"}}
+      ]}}}}
+  ]}}""",
+
+    "core_layout": """\
+Requested patch type: core_layout
+Schema: {{"patch_type": "core_layout",
+  "core_lattice_id": "core_lattice",
+  "shape": [int, int],
+  "assembly_pitch_cm": float,
+  "coordinate_convention": {{"index_base": 0, "row_origin": "top", "col_origin": "left", "ordering": "row_col"}},
+  "assembly_pattern": [["type_id", ...], ...],
+  "outer_assembly_type_id": "type_id_or_null",
+  "boundary": "reflective|vacuum|periodic",
+  "expected_assembly_type_counts": {{"type_id": count}},
+  "symmetry_description": "optional",
+  "requires_human_confirmation": false}}
+
+Rules:
+- Only output assembly type PLACEMENT — not pin coordinates.
+- Do NOT re-define materials or universes.
+- Each entry in assembly_pattern MUST be a known assembly_type_id from the assembly_catalog.
+- The pattern shape MUST match the shape field [rows, cols].
+- All rows MUST have the same length.
+- Expected type multiplicities MUST match the pattern counts.
+- Use the boundary from the requirement document.
+- Do NOT fill missing positions with guesses.
+
+Reactor-neutral example (2x2 heterogeneous):
+{{"patch_type": "core_layout",
+  "core_lattice_id": "core_lattice",
+  "shape": [2, 2],
+  "assembly_pitch_cm": 21.5,
+  "assembly_pattern": [["type_a", "type_b"], ["type_b", "type_a"]],
+  "expected_assembly_type_counts": {{"type_a": 2, "type_b": 2}},
+  "boundary": "reflective"}}""",
 }
 
 
@@ -474,6 +579,9 @@ def _context_block(context: Any | None) -> str:
         "known_material_ids", "known_universe_ids", "known_lattice_ids",
         "active_fuel_region_cm", "axial_domain_cm",
         "strict_benchmark",
+        "model_scope", "assembly_count", "core_lattice_size",
+        "assembly_type_counts", "known_assembly_type_ids",
+        "assembly_pitch_cm", "scoped_expected_counts",
     ):
         val = getattr(context, attr, None)
         if val is None:

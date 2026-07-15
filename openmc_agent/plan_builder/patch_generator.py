@@ -72,6 +72,14 @@ class PatchGenerationContext(AgentBaseModel):
     known_overlay_summaries: list[dict[str, Any]] = Field(default_factory=list)
     has_spacer_grids: bool = False
     expected_spacer_grid_count: int | None = None
+    # P2-FULLCORE-1: multi-assembly context fields
+    model_scope: str = "single_assembly"
+    assembly_count: int | None = None
+    core_lattice_size: tuple[int, int] | None = None
+    assembly_type_counts: dict[str, int] = Field(default_factory=dict)
+    known_assembly_type_ids: list[str] = Field(default_factory=list)
+    assembly_pitch_cm: float | None = None
+    scoped_expected_counts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PatchGenerationAttempt(AgentBaseModel):

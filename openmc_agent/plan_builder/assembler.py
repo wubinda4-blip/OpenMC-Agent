@@ -1216,8 +1216,13 @@ def _assemble_axial_overlays(
 # Required patch checking
 # ---------------------------------------------------------------------------
 
-_REQUIRED_3D: tuple[str, ...] = (
+_REQUIRED_3D_SINGLE: tuple[str, ...] = (
     "facts", "materials", "universes", "pin_map", "axial_layers", "settings",
+)
+
+_REQUIRED_3D_MULTI: tuple[str, ...] = (
+    "facts", "materials", "universes", "assembly_catalog", "axial_layers",
+    "core_layout", "settings",
 )
 
 
@@ -1226,7 +1231,17 @@ def _check_required_patches(
     facts: FactsPatch | None,
 ) -> list[PlanAssemblyIssue]:
     issues: list[PlanAssemblyIssue] = []
-    for ptype in _REQUIRED_3D:
+
+    is_multi = False
+    if facts is not None:
+        scope = getattr(facts, "model_scope", "single_assembly")
+        if scope in ("multi_assembly_core", "full_core"):
+            is_multi = True
+        elif facts.assembly_count is not None and facts.assembly_count > 1:
+            is_multi = True
+
+    required = _REQUIRED_3D_MULTI if is_multi else _REQUIRED_3D_SINGLE
+    for ptype in required:
         if ptype not in indexed:
             hint = ""
             if ptype == "pin_map":
