@@ -24,6 +24,7 @@ from openmc_agent.plan_builder.patches import (
     CoreLayoutPatch,
     FactsPatch,
     LocalizedInsertIntentPatchItem,
+    LocalizedInsertProfilesPatch,
     PinMapPatch,
 )
 from openmc_agent.plan_builder.scoped_counts import (
@@ -409,13 +410,19 @@ def compile_global_axial_segments(
     catalog: AssemblyCatalogPatch,
     axial_layer_boundaries: list[tuple[float, float]] | None = None,
     spacer_grid_z: list[tuple[float, float]] | None = None,
+    *,
+    profiles_patch: LocalizedInsertProfilesPatch | None = None,
+    resolved_profiles: list[Any] | None = None,
+    tolerance_cm: float = 1e-6,
 ) -> list[AxialSegment]:
     """Compile a global list of non-overlapping axial segments.
 
     Breakpoints come from:
-    1. Shared axial layer boundaries.
-    2. Localized insert z_min/z_max (per assembly type).
-    3. Spacer grid z boundaries.
+    1. Axial domain boundaries (from facts).
+    2. Shared axial layer z boundaries.
+    3. Simple insert z_min/z_max (per assembly type).
+    4. Resolved profile segment absolute boundaries.
+    5. Spacer grid z boundaries.
 
     Returns sorted, non-overlapping segments with no gaps.
     """
@@ -432,6 +439,8 @@ def compile_global_axial_segments(
 
     for atype in catalog.assembly_types:
         for intent in atype.pin_map.localized_insert_intents:
+            if intent.axial_profile_id is not None:
+                continue
             if intent.z_min_cm is not None:
                 breakpoints.add(intent.z_min_cm)
             if intent.z_max_cm is not None:
@@ -442,6 +451,12 @@ def compile_global_axial_segments(
             breakpoints.add(z_min)
             breakpoints.add(z_max)
 
+    if resolved_profiles:
+        for rp in resolved_profiles:
+            for seg in rp.resolved_segments:
+                breakpoints.add(seg.absolute_z_min_cm)
+                breakpoints.add(seg.absolute_z_max_cm)
+
     sorted_bps = sorted(breakpoints)
     if len(sorted_bps) < 2:
         return []
@@ -450,7 +465,7 @@ def compile_global_axial_segments(
     for i in range(len(sorted_bps) - 1):
         z_min = sorted_bps[i]
         z_max = sorted_bps[i + 1]
-        if z_max <= z_min:
+        if z_max - z_min < tolerance_cm:
             continue
 
         seg = AxialSegment(
@@ -463,12 +478,27 @@ def compile_global_axial_segments(
         for atype in catalog.assembly_types:
             active_ids: list[str] = []
             for intent in atype.pin_map.localized_insert_intents:
+                if intent.axial_profile_id is not None:
+                    continue
                 intent_zmin = intent.z_min_cm or float("-inf")
                 intent_zmax = intent.z_max_cm or float("inf")
-                if z_min >= intent_zmin and z_max <= intent_zmax:
+                if z_min >= intent_zmin - tolerance_cm and z_max <= intent_zmax + tolerance_cm:
                     active_ids.append(intent.insert_id)
             if active_ids:
                 seg.active_inserts[atype.assembly_type_id] = active_ids
+
+        if resolved_profiles:
+            for rp in resolved_profiles:
+                for rseg in rp.resolved_segments:
+                    if (
+                        z_min >= rseg.absolute_z_min_cm - tolerance_cm
+                        and z_max <= rseg.absolute_z_max_cm + tolerance_cm
+                    ):
+                        type_id = rp.assembly_type_id
+                        existing = seg.active_inserts.setdefault(type_id, [])
+                        insert_label = f"{rp.insert_id}::{rseg.segment_id}"
+                        if insert_label not in existing:
+                            existing.append(insert_label)
 
         segments.append(seg)
 

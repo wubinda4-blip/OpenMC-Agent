@@ -390,6 +390,54 @@ Reactor-neutral example (2 types, 3x3 lattice):
       ]}}}}
   ]}}""",
 
+    "localized_insert_profiles": """\
+Requested patch type: localized_insert_profiles
+Schema: {{"patch_type": "localized_insert_profiles",
+  "profiles": [
+    {{"profile_id": "unique_id",
+      "anchor_kind": "bottom|top|center|absolute",
+      "anchor_z_cm": float_or_null,
+      "segments": [
+        {{"segment_id": "unique_within_profile",
+          "relative_z_min_cm": float,
+          "relative_z_max_cm": float,
+          "universe_id": "known_universe",
+          "role": "absorber|plenum|end_structure|...",
+          "source_note": "optional"}}
+      ],
+      "source_note": "optional",
+      "assumptions": []}}
+  ],
+  "assumptions": [],
+  "source_note": "optional"}}
+
+Rules:
+- Define ONLY reusable axial profiles — no pin coordinates, no core layout.
+- Each segment uses RELATIVE coordinates (relative to anchor point).
+- Each segment MUST reference a universe already defined in the universes patch.
+- Segments MUST be ordered by relative_z (ascending), no overlaps.
+- Mechanical gaps between segments MUST be explicitly modeled or noted in assumptions.
+- Do NOT adjust profiles based on keff or criticality targets.
+- For movable inserts (control rods), the ACTUAL position is provided by intent.anchor_z_cm,
+  NOT the profile. The profile only defines the relative structure.
+- anchor_kind determines coordinate translation: bottom=additive, top=subtractive, center=bilateral.
+- Use anchor_kind="absolute" only when segments are already in global coordinates.
+
+Reactor-neutral example (multi-segment control rod profile):
+{{"patch_type": "localized_insert_profiles",
+  "profiles": [
+    {{"profile_id": "rod_type_a",
+      "anchor_kind": "bottom",
+      "segments": [
+        {{"segment_id": "lower_end", "relative_z_min_cm": 0.0, "relative_z_max_cm": 10.0,
+          "universe_id": "rod_end_structure", "role": "end_structure"}},
+        {{"segment_id": "absorber", "relative_z_min_cm": 10.0, "relative_z_max_cm": 110.0,
+          "universe_id": "rod_absorber", "role": "absorber"}},
+        {{"segment_id": "plenum", "relative_z_min_cm": 110.0, "relative_z_max_cm": 140.0,
+          "universe_id": "rod_plenum", "role": "plenum"}}
+      ]}}
+  ]}}""",
+
     "core_layout": """\
 Requested patch type: core_layout
 Schema: {{"patch_type": "core_layout",
@@ -582,6 +630,8 @@ def _context_block(context: Any | None) -> str:
         "model_scope", "assembly_count", "core_lattice_size",
         "assembly_type_counts", "known_assembly_type_ids",
         "assembly_pitch_cm", "scoped_expected_counts",
+        "known_insert_profile_ids", "insert_profile_summaries",
+        "movable_insert_facts",
     ):
         val = getattr(context, attr, None)
         if val is None:

@@ -26,6 +26,7 @@ PatchType = Literal[
     "facts",
     "materials",
     "universes",
+    "localized_insert_profiles",
     "pin_map",
     "axial_layers",
     "axial_overlays",
@@ -595,6 +596,29 @@ class AssemblyCatalogPatch(_PatchBase):
 
 
 # ---------------------------------------------------------------------------
+# LocalizedInsertProfilesPatch (P2-FULLCORE-2C-A)
+# ---------------------------------------------------------------------------
+
+
+class LocalizedInsertProfilesPatch(_PatchBase):
+    """Registry of reusable axial profiles for multi-segment inserts.
+
+    Each profile defines a relative axial segmentation (e.g., absorber +
+    plenum + end-plug for a control rod).  Profiles are referenced by
+    ``axial_profile_id`` from :class:`LocalizedInsertIntentPatchItem`.
+
+    The actual insert *position* (anchor) is provided by the intent, not
+    the profile.  This separation allows the same profile to be reused
+    across different rod positions or control states.
+    """
+
+    patch_type: Literal["localized_insert_profiles"] = "localized_insert_profiles"
+    profiles: list[LocalizedInsertAxialProfilePatchItem] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    source_note: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # CoreLayoutPatch (P2-FULLCORE-1)
 # ---------------------------------------------------------------------------
 
@@ -632,6 +656,7 @@ _PATCH_MODELS: dict[str, type[BaseModel]] = {
     "facts": FactsPatch,
     "materials": MaterialsPatch,
     "universes": UniversesPatch,
+    "localized_insert_profiles": LocalizedInsertProfilesPatch,
     "pin_map": PinMapPatch,
     "axial_layers": AxialLayersPatch,
     "axial_overlays": AxialOverlaysPatch,
@@ -787,6 +812,7 @@ __all__ = [
     "LocalizedInsertIntentPatchItem",
     "LocalizedInsertAxialSegmentPatchItem",
     "LocalizedInsertAxialProfilePatchItem",
+    "LocalizedInsertProfilesPatch",
     "PinMapPatch",
     "AssemblyPinMapPatchItem",
     "AssemblyTypePatchItem",

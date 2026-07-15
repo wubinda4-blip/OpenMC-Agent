@@ -76,6 +76,7 @@ _PATCH_DEPENDENTS: dict[str, tuple[str, ...]] = {
     "facts": (
         "materials",
         "universes",
+        "localized_insert_profiles",
         "pin_map",
         "assembly_catalog",
         "axial_layers",
@@ -91,6 +92,13 @@ _PATCH_DEPENDENTS: dict[str, tuple[str, ...]] = {
         "axial_overlays",
     ),
     "universes": (
+        "localized_insert_profiles",
+        "pin_map",
+        "assembly_catalog",
+        "axial_layers",
+        "axial_overlays",
+    ),
+    "localized_insert_profiles": (
         "pin_map",
         "assembly_catalog",
         "axial_layers",
@@ -295,6 +303,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "facts",
     "materials",
     "universes",
+    "localized_insert_profiles",
     "pin_map",
     "assembly_catalog",
     "axial_layers",
@@ -307,8 +316,9 @@ _DEPENDENCIES: dict[str, list[str]] = {
     "facts": [],
     "materials": ["facts"],
     "universes": ["facts", "materials"],
+    "localized_insert_profiles": ["facts", "universes"],
     "pin_map": ["facts", "universes"],
-    "assembly_catalog": ["facts", "universes"],
+    "assembly_catalog": ["facts", "universes", "localized_insert_profiles"],
     "axial_layers": ["facts"],
     "axial_overlays": ["facts", "materials", "axial_layers"],
     "core_layout": ["facts", "assembly_catalog"],
@@ -324,6 +334,10 @@ def default_patch_task_order(state: PlanBuildState) -> list[str]:
     has_spacer = _state_has_feature(state, "has_spacer_grid")
     if not has_spacer:
         order = [t for t in order if t != "axial_overlays"]
+    # Remove localized_insert_profiles if no multi-segment inserts.
+    has_profiles = _state_has_feature(state, "has_localized_insert_profiles")
+    if not has_profiles:
+        order = [t for t in order if t != "localized_insert_profiles"]
     if is_multi:
         # Multi-assembly core: use assembly_catalog + core_layout path.
         # Remove top-level pin_map (each assembly type has its own pin map
@@ -357,6 +371,7 @@ def required_patch_types_for_state(state: PlanBuildState) -> list[str]:
     """
     is_multi = _state_is_multi_assembly(state)
     has_spacer = _state_has_feature(state, "has_spacer_grid")
+    has_profiles = _state_has_feature(state, "has_localized_insert_profiles")
     has_special = _state_has_feature(state, "has_special_pin_map")
     has_large = bool(_state_has_feature(state, "large_lattice_dimension"))
     has_benchmark_variant = _state_has_feature(state, "has_benchmark_variant")
@@ -368,6 +383,8 @@ def required_patch_types_for_state(state: PlanBuildState) -> list[str]:
         ]
         if has_spacer:
             required.append("axial_overlays")
+        if has_profiles:
+            required.append("localized_insert_profiles")
         required.append("core_layout")
         required.append("settings")
     else:
@@ -562,6 +579,19 @@ def build_generation_context_from_state(
                 tid = atype.get("assembly_type_id")
                 if isinstance(tid, str):
                     ctx.known_assembly_type_ids.append(tid)
+
+        elif ptype == "localized_insert_profiles":
+            for prof in content.get("profiles", []):
+                pid = prof.get("profile_id")
+                if isinstance(pid, str):
+                    ctx.known_insert_profile_ids.append(pid)
+                ctx.insert_profile_summaries.append({
+                    k: prof.get(k)
+                    for k in ("profile_id", "anchor_kind", "anchor_z_cm")
+                })
+            ctx.movable_insert_facts = {
+                "has_localized_insert_profiles": True,
+            }
 
     ctx.expected_counts = expected_counts
     ctx.reference_expected_counts = reference_expected_counts

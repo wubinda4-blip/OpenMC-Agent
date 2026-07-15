@@ -80,6 +80,10 @@ class PatchGenerationContext(AgentBaseModel):
     known_assembly_type_ids: list[str] = Field(default_factory=list)
     assembly_pitch_cm: float | None = None
     scoped_expected_counts: list[dict[str, Any]] = Field(default_factory=list)
+    # P2-FULLCORE-2C-A: localized insert profile context
+    known_insert_profile_ids: list[str] = Field(default_factory=list)
+    insert_profile_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    movable_insert_facts: dict[str, Any] = Field(default_factory=dict)
 
 
 class PatchGenerationAttempt(AgentBaseModel):

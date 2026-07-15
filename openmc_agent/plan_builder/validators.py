@@ -45,6 +45,7 @@ from .patches import (
     SettingsPatch,
     UniverseSpecPatch,
     UniversesPatch,
+    LocalizedInsertProfilesPatch,
     normalized_coords,
 )
 
@@ -109,6 +110,10 @@ class PatchValidationContext(AgentBaseModel):
     known_assembly_type_ids: list[str] = Field(default_factory=list)
     scoped_expected_counts: list[dict[str, Any]] = Field(default_factory=list)
     assembly_pitch_cm: float | None = None
+    # P2-FULLCORE-2C-A: localized insert profile context
+    known_insert_profile_ids: list[str] = Field(default_factory=list)
+    insert_profile_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    movable_insert_facts: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -1393,6 +1398,41 @@ def _validate_assembly_catalog(
                 actual=special,
             ))
 
+        known_profile_ids = set(ctx.known_insert_profile_ids)
+        for intent in pm.localized_insert_intents:
+            if intent.axial_profile_id is not None:
+                if known_profile_ids and intent.axial_profile_id not in known_profile_ids:
+                    issues.append(PatchValidationIssue(
+                        code="localized_insert.profile_ref_missing",
+                        severity="error",
+                        message=(
+                            f"insert {intent.insert_id!r} in {atype.assembly_type_id!r} "
+                            f"references profile {intent.axial_profile_id!r} "
+                            "not in registry"
+                        ),
+                        path=f"assembly_types[{atype.assembly_type_id}].pin_map.localized_insert_intents",
+                    ))
+                if intent.z_min_cm is not None and intent.z_max_cm is not None:
+                    issues.append(PatchValidationIssue(
+                        code="localized_insert.profile_anchor_conflict",
+                        severity="error",
+                        message=(
+                            f"insert {intent.insert_id!r} uses both axial_profile_id "
+                            f"and z_min/z_max"
+                        ),
+                        path=f"assembly_types[{atype.assembly_type_id}].pin_map.localized_insert_intents",
+                    ))
+            elif intent.z_min_cm is None or intent.z_max_cm is None:
+                issues.append(PatchValidationIssue(
+                    code="localized_insert.profile_ref_missing",
+                    severity="error",
+                    message=(
+                        f"insert {intent.insert_id!r} in {atype.assembly_type_id!r} "
+                        "has neither axial_profile_id nor both z_min/z_max"
+                    ),
+                    path=f"assembly_types[{atype.assembly_type_id}].pin_map.localized_insert_intents",
+                ))
+
     return issues
 
 
@@ -1537,6 +1577,34 @@ def validate_catalog_layout_cross_references(
     )
 
 
+def _validate_localized_insert_profiles(
+    patch: LocalizedInsertProfilesPatch,
+    ctx: PatchValidationContext,
+) -> list[PatchValidationIssue]:
+    """Validate a LocalizedInsertProfilesPatch (P2-FULLCORE-2C-A)."""
+    from .localized_insert_profiles import validate_profile_registry
+
+    result = validate_profile_registry(
+        patch,
+        known_universe_ids=ctx.known_universe_ids or None,
+    )
+    issues: list[PatchValidationIssue] = []
+    for raw in result.issues:
+        issues.append(PatchValidationIssue(
+            code=raw.get("code", "localized_insert.unknown"),
+            severity=raw.get("severity", "error"),
+            message=raw.get("message", ""),
+            path=raw.get("path"),
+        ))
+    if not patch.profiles:
+        issues.append(PatchValidationIssue(
+            code="localized_insert.profile_registry_empty",
+            severity="warning",
+            message="localized_insert_profiles patch has no profiles defined",
+        ))
+    return issues
+
+
 _VALIDATORS: dict[str, Any] = {
     "facts": _validate_facts,
     "materials": _validate_materials,
@@ -1547,6 +1615,7 @@ _VALIDATORS: dict[str, Any] = {
     "settings": _validate_settings,
     "assembly_catalog": _validate_assembly_catalog,
     "core_layout": _validate_core_layout,
+    "localized_insert_profiles": _validate_localized_insert_profiles,
 }
 
 
