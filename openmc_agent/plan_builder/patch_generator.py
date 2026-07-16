@@ -145,9 +145,22 @@ _PLAN_ONLY_FIELDS: tuple[str, ...] = (
     "model_spec",
 )
 
-# Thresholds for full-lattice suspicion in pin_map output.
-_FULL_LATTICE_COORD_THRESHOLD: int = 80
-_FULL_LATTICE_RAW_CHARS_THRESHOLD: int = 3000
+# Thresholds for full-lattice suspicion in pin_map output.  The check is
+# *structural* (see ``_detect_full_lattice``): a single coordinate list whose
+# size approaches ``lattice_size[0] x lattice_size[1]`` is a near-full dump.
+# We deliberately do NOT reject merely because the raw text is long or has many
+# brackets — a legitimate multi-assembly special-coordinate map (guide tubes +
+# pyrex + thimble plugs + RCCA, each its own list) can legitimately be several
+# KB and contain ~100 coords in aggregate while no single list exceeds a
+# handful of cells.
+# A single list covering this fraction of all lattice cells is a near-full
+# dump.  50% stays clear of reactor designs with many legitimate special
+# paths (e.g. BWR part-length rods / water rods can be ~30-40% of cells).
+_FULL_LATTICE_FRAC_THRESHOLD: float = 0.5
+# Absolute fallback when lattice_size is absent/unparseable (~a full 17x17).
+_FULL_LATTICE_ABS_LIST_THRESHOLD: int = 200
+# Pure DoS backstop; far above any legitimate special-coordinate pin_map.
+_FULL_LATTICE_RAW_CHARS_BACKSTOP: int = 50_000
 
 
 def _detect_full_plan_markers(raw: str) -> bool:
@@ -175,16 +188,96 @@ def _detect_full_plan_in_parsed(content: dict[str, Any], patch_type: str) -> boo
     return False
 
 
+def _pin_map_largest_coord_list(content: dict[str, Any]) -> int:
+    """Return the size of the largest single coordinate list in a pin_map.
+
+    Checks the base path groups, the legacy coord fields, and each localized
+    insert intent's ``coordinates``.  Returns the max length of any *single*
+    list (not the sum) — summing lists across sections was the source of the
+    old false-positive heuristic.
+    """
+    largest = 0
+    base_fields = (
+        "guide_tube_coords",
+        "instrument_tube_coords",
+        "water_cell_coords",
+        "pyrex_rod_coords",
+        "thimble_plug_coords",
+    )
+    for fld in base_fields:
+        lst = content.get(fld)
+        if isinstance(lst, list):
+            largest = max(largest, len(lst))
+    inserts = content.get("localized_insert_intents")
+    if isinstance(inserts, list):
+        for intent in inserts:
+            if isinstance(intent, dict):
+                coords = intent.get("coordinates")
+                if isinstance(coords, list):
+                    largest = max(largest, len(coords))
+    return largest
+
+
+def _pin_map_lattice_cells(content: dict[str, Any]) -> int:
+    """Return lattice_size[0] x lattice_size[1], or 0 if unknown."""
+    lattice_size = content.get("lattice_size")
+    if isinstance(lattice_size, (list, tuple)) and len(lattice_size) >= 2:
+        try:
+            cells = int(lattice_size[0]) * int(lattice_size[1])
+            if cells > 0:
+                return cells
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
 def _detect_full_lattice(raw: str, patch_type: str) -> bool:
-    """Check if pin_map raw output looks like a full expanded lattice."""
+    """Return True if a pin_map output declares a full/near-full lattice.
+
+    This is a *structural* check on the parsed JSON: a single coordinate list
+    whose size approaches ``lattice_size[0] x lattice_size[1]`` (>= 50% of
+    cells) is treated as a near-full dump.  Forbidden full-lattice *field
+    names* (``universe_pattern`` etc.) are caught separately by
+    :func:`validate_patch_contract`, so this function only inspects list sizes.
+
+    Raw text is never rejected for being long or bracket-dense — a legitimate
+    special-coordinate map for a multi-assembly core can be several KB and
+    contain ~100 coords in aggregate while no single list is large.
+    """
     if patch_type != "pin_map":
         return False
-    if len(raw) > _FULL_LATTICE_RAW_CHARS_THRESHOLD:
+    # Pathological-size backstop only (DoS guard).
+    if len(raw) > _FULL_LATTICE_RAW_CHARS_BACKSTOP:
         return True
-    coord_count = raw.count("[") + raw.count("(")
-    if coord_count > _FULL_LATTICE_COORD_THRESHOLD:
-        return True
-    return False
+
+    # Best-effort parse, tolerant of markdown fences / surrounding prose.
+    # On parse failure, defer to the dedicated json_parse_error path.
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        content = json.loads(text)
+    except json.JSONDecodeError:
+        match = _JSON_OBJECT_RE.search(raw)
+        if not match:
+            return False
+        try:
+            content = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(content, dict):
+        return False
+
+    largest_list = _pin_map_largest_coord_list(content)
+    cells = _pin_map_lattice_cells(content)
+    if cells > 0:
+        return largest_list >= _FULL_LATTICE_FRAC_THRESHOLD * cells
+    return largest_list > _FULL_LATTICE_ABS_LIST_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -586,9 +679,10 @@ def generate_patch(
                 "code": "patch_generation.pin_map_full_lattice_forbidden",
                 "severity": "error",
                 "message": (
-                    "pin_map raw output appears to contain a full expanded "
-                    "lattice (>80 coords or >3000 chars). Only special "
-                    "coordinates are allowed."
+                    "pin_map output enumerates a near-full lattice (one "
+                    "coordinate list approaches rows x cols). Only special "
+                    "coordinates are allowed; the default universe fills the "
+                    "rest."
                 ),
             })
             attempts.append(attempt)

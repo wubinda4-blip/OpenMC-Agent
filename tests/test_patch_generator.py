@@ -365,14 +365,19 @@ def test_retry_after_full_plan_succeeds() -> None:
 
 
 def test_pin_map_full_lattice_forbidden_error() -> None:
-    """Pin_map with >80 coords → forbidden error (not warning)."""
-    huge_coords = [[i, i] for i in range(100)]
+    """A near-full enumerated pin_map (one coord list ≈ rows×cols) is forbidden.
+
+    "Full lattice" means the LLM enumerated (almost) every cell into a single
+    coordinate list instead of using special coordinates.  Here 250 of 289
+    cells (≈86%) sit in one list, so the structural full-lattice gate fires.
+    """
+    near_full = [[r, c] for r in range(17) for c in range(17)][:250]
     raw = json.dumps({
         "patch_type": "pin_map",
         "lattice_size": [17, 17],
         "default_universe_id": "fp",
         "coordinate_convention": {"index_base": 0},
-        "guide_tube_coords": huge_coords,
+        "guide_tube_coords": near_full,
     })
     fake = FakePatchLLM([raw, raw])
     result = generate_patch(
@@ -384,6 +389,98 @@ def test_pin_map_full_lattice_forbidden_error() -> None:
     assert result.ok is False
     all_codes = [i["code"] for i in result.issues]
     assert "patch_generation.pin_map_full_lattice_forbidden" in all_codes
+
+
+def test_pin_map_special_coords_multi_insert_not_flagged() -> None:
+    """Regression for VERA Problem 4: a legitimate special-coordinate pin_map
+    with many localized inserts (guide tubes + pyrex + thimble plugs + RCCA)
+    must NOT be rejected as a full lattice.
+
+    The largest single coordinate list here is 24 (guide tubes) out of 289
+    cells (≈8%), yet the raw JSON has >80 brackets in aggregate (24 guide +
+    1 instrument + 20 + 24 + 4 + 24 insert coords).  The old raw-text
+    heuristic summed every bracket and falsely flagged this; the structural
+    check must accept it.
+    """
+    guide_tubes = [
+        [3, 6], [3, 9], [3, 12], [4, 4], [4, 14],
+        [6, 3], [6, 6], [6, 9], [6, 12], [6, 15],
+        [9, 3], [9, 6], [9, 12], [9, 15],
+        [12, 3], [12, 6], [12, 9], [12, 12], [12, 15],
+        [14, 4], [14, 14], [15, 6], [15, 9], [15, 12],
+    ]
+    pyrex_e = [
+        [3, 6], [3, 12], [4, 4], [4, 14],
+        [6, 3], [6, 9], [6, 15], [9, 6], [9, 12],
+        [12, 3], [12, 9], [12, 15], [14, 4], [14, 14],
+        [15, 6], [15, 12], [3, 9], [9, 3], [9, 15], [15, 9],
+    ]
+    plug_e = [[6, 6], [6, 12], [12, 6], [12, 12]]
+    raw = json.dumps({
+        "patch_type": "pin_map",
+        "lattice_size": [17, 17],
+        "default_universe_id": "fuel_pin",
+        "coordinate_convention": {
+            "index_base": 1, "row_origin": "top",
+            "col_origin": "left", "ordering": "row_col",
+        },
+        "guide_tube_coords": guide_tubes,
+        "instrument_tube_coords": [[9, 9]],
+        "localized_insert_intents": [
+            {
+                "insert_id": "pyrex_E", "insert_kind": "pyrex_rod",
+                "host_kind": "guide_tube", "insert_universe_id": "pyrex_rod",
+                "coordinates": pyrex_e,
+                "z_min_cm": 15.761, "z_max_cm": 376.441,
+                "application_mode": "nested_component_override",
+                "component_role": "internal_coolant",
+                "preserve_component_roles": ["tube_wall", "outer_coolant"],
+            },
+            {
+                "insert_id": "plug_C", "insert_kind": "thimble_plug",
+                "host_kind": "guide_tube", "insert_universe_id": "thimble_plug",
+                "coordinates": list(guide_tubes),
+                "z_min_cm": 383.31, "z_max_cm": 394.31,
+                "application_mode": "nested_component_override",
+                "component_role": "internal_coolant",
+                "preserve_component_roles": ["tube_wall", "outer_coolant"],
+            },
+            {
+                "insert_id": "plug_E", "insert_kind": "thimble_plug",
+                "host_kind": "guide_tube", "insert_universe_id": "thimble_plug",
+                "coordinates": plug_e,
+                "z_min_cm": 383.31, "z_max_cm": 394.31,
+                "application_mode": "nested_component_override",
+            },
+            {
+                "insert_id": "rcca_R", "insert_kind": "control_rod",
+                "host_kind": "guide_tube", "insert_universe_id": "control_rod_AIC",
+                "coordinates": list(guide_tubes),
+                "z_min_cm": 257.9, "z_max_cm": 359.5,
+                "application_mode": "nested_component_override",
+                "component_role": "internal_coolant",
+                "preserve_component_roles": ["tube_wall", "outer_coolant"],
+            },
+        ],
+        "assumptions": [
+            "Inserts are finite-height; guide-tube wall and outer coolant are "
+            "preserved outside each insert's z range.",
+            "Pyrex/thimble-plug/RCCA coordinates are subsets of guide_tube_coords.",
+        ],
+        "source_note": "VERA Problem 4 base state; multi-insert special-coordinate map.",
+    })
+    # This input trips the OLD raw-text heuristic (sums brackets across sections).
+    assert raw.count("[") + raw.count("(") > 80
+    fake = FakePatchLLM([raw])
+    result = generate_patch(
+        patch_type="pin_map",
+        requirement="VERA4 3x3 multi-assembly",
+        llm_client=fake,
+        max_attempts=1,
+    )
+    all_codes = [i["code"] for i in result.issues]
+    assert "patch_generation.pin_map_full_lattice_forbidden" not in all_codes
+    assert result.ok is True
 
 
 def test_non_json_natural_language_response() -> None:
