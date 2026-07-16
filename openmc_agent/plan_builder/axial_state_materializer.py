@@ -127,6 +127,7 @@ class ConcreteAxialStateResult:
     issues: list[MaterializationIssue] = field(default_factory=list)
     grid_states: dict[str, AssemblyGridState] = field(default_factory=dict)
     state_reuse_report: dict[str, Any] = field(default_factory=dict)
+    grid_decorated_universe_patches: list[Any] = field(default_factory=list)
 
     @property
     def has_errors(self) -> bool:
@@ -476,9 +477,11 @@ def _make_grid_decorated_universe(
 ) -> UniverseSpecPatch | None:
     """Create a grid-decorated variant of a base universe.
 
-    Inserts a square_frame cell layer between the last cylinder and the
-    background.  The frame uses grid_material_id; the remaining moderator
-    inside the frame is preserved.
+    Inserts a square_frame cell BEFORE the background cell.  The assembler
+    partitions the background into inner moderator (outside cylinder,
+    excluding frame area) to prevent overlap.
+
+    Cell order: [original cylinders...] → [square_frame] → [background]
 
     Returns None if the base universe patch is not available.
     """
@@ -488,22 +491,22 @@ def _make_grid_decorated_universe(
     decorated_cells: list[CellLayerPatch] = []
     for cell in base_universe_patch.cells:
         if cell.region_kind == "background":
-            # Insert frame before background
+            # Insert grid frame BEFORE the background
             decorated_cells.append(CellLayerPatch(
-                id=f"grid_frame",
+                id="grid_frame",
                 role="grid_frame",
                 material_id=grid_material_id,
                 region_kind="square_frame",
                 outer_side_cm=pitch_cm,
                 inner_side_cm=inner_side,
             ))
-            # Remaining moderator inside frame
+            # Background becomes bounded inner moderator
+            # (assembler excludes frame area from this region)
             decorated_cells.append(CellLayerPatch(
-                id=f"grid_inner_mod",
-                role="coolant",
+                id=str(cell.id),
+                role=str(cell.role),
                 material_id=cell.material_id,
-                region_kind="box",
-                outer_side_cm=inner_side,
+                region_kind="background",
             ))
         else:
             decorated_cells.append(cell)
@@ -789,7 +792,9 @@ def materialize_concrete_axial_states(
                     segment.base_role, type_id, base_path_profiles, profile_id,
                 )
 
-                needs_derived = bool(acts) or bool(bpath_bindings)
+                needs_derived = bool(acts) or bool(bpath_bindings) or (
+                    bool(active_grids) and bool(universe_patches_by_id)
+                )
 
                 if needs_derived:
                     base_pattern = base_pin_lattices[type_id].universe_pattern
@@ -815,6 +820,52 @@ def materialize_concrete_axial_states(
                             if 0 <= r < len(derived_pattern) and 0 <= c < len(derived_pattern[r]):
                                 derived_pattern[r][c] = insert_uv
                         all_insert_ids.append(insert_id)
+
+                    # Step 3: Apply grid decoration (replace universe IDs with grid-decorated variants)
+                    grid_deco_map: dict[str, str] = {}
+                    if active_grids and universe_patches_by_id and grid_state.derivation_reports:
+                        # Compute grid geometry hash from first active grid
+                        dr = grid_state.derivation_reports[0]
+                        grid_geo_hash = hashlib.sha256()
+                        grid_geo_hash.update(f"|gmat={dr.material_id}".encode())
+                        grid_geo_hash.update(f"|dens={dr.density_g_cm3}".encode())
+                        grid_geo_hash.update(f"|mass={dr.total_mass_g}".encode())
+                        grid_geo_hash.update(f"|inner={dr.area_per_cell_cm2}".encode())
+                        grid_geo_hash.update(f"|pitch={dr.pitch_cm}".encode())
+                        grid_geo_hash.update(f"|h={dr.grid_height_cm}".encode())
+                        grid_geo_hash.update(_MATERIALIZATION_CONTRACT_VERSION.encode())
+                        ggh = grid_geo_hash.hexdigest()[:12]
+
+                        inner_side_val = 0.0
+                        if dr.pitch_cm > 0 and dr.area_per_cell_cm2 >= 0:
+                            val = dr.pitch_cm ** 2 - dr.area_per_cell_cm2
+                            inner_side_val = math.sqrt(val) if val > 0 else 0.0
+
+                        # Decorate every unique universe in the pattern
+                        unique_uvs = set()
+                        for row in derived_pattern:
+                            unique_uvs.update(row)
+
+                        for uv_id in sorted(unique_uvs):
+                            base_patch = universe_patches_by_id.get(uv_id)
+                            if base_patch is None:
+                                continue
+                            decorated = _make_grid_decorated_universe(
+                                uv_id, ggh, dr.material_id,
+                                inner_side_val, dr.pitch_cm, base_patch,
+                            )
+                            if decorated is not None:
+                                grid_deco_map[uv_id] = decorated.universe_id
+                                if decorated not in result.grid_decorated_universe_patches:
+                                    result.grid_decorated_universe_patches.append(decorated)
+
+                        # Replace universe IDs in pattern
+                        if grid_deco_map:
+                            for r in range(len(derived_pattern)):
+                                for c in range(len(derived_pattern[r])):
+                                    uv = derived_pattern[r][c]
+                                    if uv in grid_deco_map:
+                                        derived_pattern[r][c] = grid_deco_map[uv]
 
                     # Get the pin map for convention info
                     pm_obj = atype_obj.pin_map if atype_obj else None

@@ -1548,9 +1548,17 @@ def _region_expression_to_python(
                 tokens.append("&")
             tokens.append(token)
             continue
-        if token in {")", "&", "|", "~"}:
+        if token in {")", "&", "|"}:
             if pending_sign:
                 raise ValueError(f"dangling half-space sign {pending_sign!r} in region expression")
+            tokens.append(token)
+            continue
+        if token == "~":
+            if pending_sign:
+                raise ValueError(f"dangling half-space sign {pending_sign!r} in region expression")
+            # P2-FULLCORE-2D-A-GRID-CLOSURE: ~ needs & before it when preceded by an expression
+            if _needs_implicit_intersection(tokens):
+                tokens.append("&")
             tokens.append(token)
             continue
         if _needs_implicit_intersection(tokens):

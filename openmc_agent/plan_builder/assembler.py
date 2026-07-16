@@ -443,6 +443,7 @@ def _assemble_universes(
         cell_ids: list[str] = []
         prev_surface_id: str | None = None
         has_background = False
+        frame_surf_ids: list[str] = []  # P2-FULLCORE-2D-A-GRID-CLOSURE
 
         for cell_patch in univ.cells:
             cell_id = f"{univ.universe_id}_{cell_patch.id}"
@@ -485,12 +486,30 @@ def _assemble_universes(
                 has_background = True
                 if prev_surface_id is not None:
                     region_id = f"reg_{cell_id}_out"
-                    all_regions.append(RegionSpec(
-                        id=region_id,
-                        expression=f"+{prev_surface_id}",
-                        surface_ids=[prev_surface_id],
-                        purpose=f"Outside region for {cell_id}",
-                    ))
+                    if frame_surf_ids:
+                        # P2-FULLCORE-2D-A-GRID-CLOSURE: Exclude frame area from background.
+                        # Background = outside cylinder AND NOT in frame
+                        frame_expr = " ".join([
+                            f"+{frame_surf_ids[0]}", f"-{frame_surf_ids[1]}",
+                            f"+{frame_surf_ids[2]}", f"-{frame_surf_ids[3]}",
+                            "~", "(",
+                            f"+{frame_surf_ids[4]}", f"-{frame_surf_ids[5]}",
+                            f"+{frame_surf_ids[6]}", f"-{frame_surf_ids[7]}",
+                            ")",
+                        ])
+                        all_regions.append(RegionSpec(
+                            id=region_id,
+                            expression=f"+{prev_surface_id} ~ ( {frame_expr} )",
+                            surface_ids=[prev_surface_id] + frame_surf_ids,
+                            purpose=f"Inner moderator (outside cyl, excluding frame) for {cell_id}",
+                        ))
+                    else:
+                        all_regions.append(RegionSpec(
+                            id=region_id,
+                            expression=f"+{prev_surface_id}",
+                            surface_ids=[prev_surface_id],
+                            purpose=f"Outside region for {cell_id}",
+                        ))
 
             elif cell_patch.region_kind == "square_frame" and cell_patch.outer_side_cm is not None:
                 # P2-FULLCORE-2D-A-HARDENING: Spacer grid square frame.
@@ -501,29 +520,29 @@ def _assemble_universes(
 
                 # Outer planes
                 surf_ids_outer = []
-                for axis, sign, val in [
-                    ("xplane", "-", -half_outer), ("xplane", "+", half_outer),
-                    ("yplane", "-", -half_outer), ("yplane", "+", half_outer),
+                for axis, side, val in [
+                    ("xplane", "lo", -half_outer), ("xplane", "hi", half_outer),
+                    ("yplane", "lo", -half_outer), ("yplane", "hi", half_outer),
                 ]:
-                    s_id = f"surf_{cell_id}_o_{axis}_{sign}"
+                    s_id = f"surf_{cell_id}_o_{axis}_{side}"
                     param_key = "x0" if axis == "xplane" else "y0"
                     all_surfaces.append(SurfaceSpec(
                         id=s_id, kind=axis, parameters={param_key: val},
-                        purpose=f"Grid frame outer {axis} {sign} for {cell_id}",
+                        purpose=f"Grid frame outer {axis} {side} for {cell_id}",
                     ))
                     surf_ids_outer.append(s_id)
 
                 # Inner planes
                 surf_ids_inner = []
-                for axis, sign, val in [
-                    ("xplane", "-", -half_inner), ("xplane", "+", half_inner),
-                    ("yplane", "-", -half_inner), ("yplane", "+", half_inner),
+                for axis, side, val in [
+                    ("xplane", "lo", -half_inner), ("xplane", "hi", half_inner),
+                    ("yplane", "lo", -half_inner), ("yplane", "hi", half_inner),
                 ]:
-                    s_id = f"surf_{cell_id}_i_{axis}_{sign}"
+                    s_id = f"surf_{cell_id}_i_{axis}_{side}"
                     param_key = "x0" if axis == "xplane" else "y0"
                     all_surfaces.append(SurfaceSpec(
                         id=s_id, kind=axis, parameters={param_key: val},
-                        purpose=f"Grid frame inner {axis} {sign} for {cell_id}",
+                        purpose=f"Grid frame inner {axis} {side} for {cell_id}",
                     ))
                     surf_ids_inner.append(s_id)
 
@@ -546,22 +565,23 @@ def _assemble_universes(
                     surface_ids=all_surfaces_ids,
                     purpose=f"Square frame for {cell_id}",
                 ))
-                # Reset prev_surface_id — frame is not concentric with cylinders
-                prev_surface_id = None
+                # P2-FULLCORE-2D-A-GRID-CLOSURE: Save frame surfaces for background partition.
+                # Do NOT reset prev_surface_id — the background cell needs it.
+                frame_surf_ids = all_surfaces_ids
 
             elif cell_patch.region_kind == "box" and cell_patch.outer_side_cm is not None:
                 # P2-FULLCORE-2D-A-HARDENING: Inner moderator box (inside grid frame).
                 half = cell_patch.outer_side_cm / 2.0
                 surf_ids_box = []
-                for axis, sign, val in [
-                    ("xplane", "-", -half), ("xplane", "+", half),
-                    ("yplane", "-", -half), ("yplane", "+", half),
+                for axis, side, val in [
+                    ("xplane", "lo", -half), ("xplane", "hi", half),
+                    ("yplane", "lo", -half), ("yplane", "hi", half),
                 ]:
-                    s_id = f"surf_{cell_id}_{axis}_{sign}"
+                    s_id = f"surf_{cell_id}_{axis}_{side}"
                     param_key = "x0" if axis == "xplane" else "y0"
                     all_surfaces.append(SurfaceSpec(
                         id=s_id, kind=axis, parameters={param_key: val},
-                        purpose=f"Inner box {axis} {sign} for {cell_id}",
+                        purpose=f"Inner box {axis} {side} for {cell_id}",
                     ))
                     surf_ids_box.append(s_id)
 
@@ -1501,13 +1521,24 @@ def assemble_simulation_plan_from_patches(
             base_axial_layers_list = list(axial_layers_patch.layers)
 
         # Always compile segments if we have base axial layers (even without inserts)
+        # P2-FULLCORE-2D-A-GRID-CLOSURE: Add spacer grid z-boundaries as breakpoints
+        _spacer_grid_z = None
+        if axial_overlays_patch is not None:
+            _spacer_grid_z = [
+                (ov.z_min_cm, ov.z_max_cm)
+                for ov in axial_overlays_patch.overlays
+                if ov.overlay_kind == "spacer_grid"
+                and ov.z_min_cm is not None and ov.z_max_cm is not None
+            ]
+
         # so whole-plane segments get properly classified.
-        if has_simple_inserts or has_profile_inserts or base_axial_layers_list:
+        if has_simple_inserts or has_profile_inserts or base_axial_layers_list or _spacer_grid_z:
             global_segments = compile_global_axial_segments(
                 facts,
                 assembly_catalog_patch,
                 base_axial_layers=base_axial_layers_list,
                 resolved_profiles=resolved_profiles,
+                spacer_grid_z=_spacer_grid_z,
             )
         else:
             global_segments = []
@@ -1596,6 +1627,20 @@ def assemble_simulation_plan_from_patches(
             )
             all_universes = list(all_universes) + list(concrete_result.derived_wrapper_universes)
             all_cells = list(all_cells) + list(concrete_result.derived_wrapper_cells)
+
+            # P2-FULLCORE-2D-A-GRID-CLOSURE: Process grid-decorated universe patches
+            if concrete_result.grid_decorated_universe_patches:
+                grid_uvs_patch = UniversesPatch(
+                    universes=concrete_result.grid_decorated_universe_patches,
+                )
+                grid_uvs, grid_cells_ir, grid_surfs, grid_regs, grid_issues = _assemble_universes(
+                    grid_uvs_patch, material_ids, coolant_material,
+                )
+                issues.extend(grid_issues)
+                all_universes.extend(grid_uvs)
+                all_cells.extend(grid_cells_ir)
+                pin_surfaces.extend(grid_surfs)
+                pin_regions.extend(grid_regs)
 
         for uv_id in hier.assembly_universe_ids.values():
             if uv_id not in {u.id for u in all_universes}:
