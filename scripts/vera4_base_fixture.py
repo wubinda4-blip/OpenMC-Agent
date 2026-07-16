@@ -30,6 +30,7 @@ from openmc_agent.plan_builder.patches import (
     BasePathStateBindingPatchItem,
     CoreLayoutPatch,
     FactsPatch,
+    FuelVariantRequirementPatchItem,
     LocalizedInsertAxialProfilePatchItem,
     LocalizedInsertAxialSegmentPatchItem,
     LocalizedInsertIntentPatchItem,
@@ -160,22 +161,26 @@ GRID_BANDS = [
 def build_vera4_materials() -> MaterialsPatch:
     """Build VERA4 materials with full composition."""
     return MaterialsPatch(materials=[
-        # --- Fuel variants ---
+        # --- Fuel variants (source: Table P4-2) ---
         MaterialSpecPatch(
-            material_id="fuel_r1", name="fuel 2.11%", role="fuel",
-            density_g_cm3=10.25,
-            composition={"U235": 0.0211, "U238": 0.9789, "O16": 2.0},
-            composition_basis="atom_frac",
-            composition_status="approximate",
-            source_note="VERA4 fuel 2.11% enrichment",
+            material_id="fuel_r1", name="UO2 2.11%", role="fuel",
+            density_g_cm3=10.257,
+            composition={"U234": 0.0174, "U235": 2.11, "U236": 0.0097,
+                         "U238": 97.8629, "O16": 2.0},
+            composition_basis="stoichiometric_ratio",
+            composition_status="confirmed",
+            source_variant_id="fuel_region1",
+            source_note="VERA4 Table P4-2 Region 1; UO2 stoichiometry O/U=2",
         ),
         MaterialSpecPatch(
-            material_id="fuel_r2", name="fuel 2.619%", role="fuel",
-            density_g_cm3=10.25,
-            composition={"U235": 0.02619, "U238": 0.97381, "O16": 2.0},
-            composition_basis="atom_frac",
-            composition_status="approximate",
-            source_note="VERA4 fuel 2.619% enrichment",
+            material_id="fuel_r2", name="UO2 2.619%", role="fuel",
+            density_g_cm3=10.257,
+            composition={"U234": 0.0219, "U235": 2.619, "U236": 0.012,
+                         "U238": 97.3471, "O16": 2.0},
+            composition_basis="stoichiometric_ratio",
+            composition_status="confirmed",
+            source_variant_id="fuel_region2",
+            source_note="VERA4 Table P4-2 Region 2; UO2 stoichiometry O/U=2",
         ),
         # --- Coolant ---
         MaterialSpecPatch(
@@ -674,6 +679,7 @@ def build_vera4_assembly_catalog() -> AssemblyCatalogPatch:
                 assembly_type_id="corner",
                 name="corner assembly (2.11%)",
                 role="fuel",
+                fuel_variant_id="fuel_region1",
                 multiplicity_hint=4,
                 base_path_profile_id="vera4_fuel_path",
                 pin_map=AssemblyPinMapPatchItem(
@@ -690,6 +696,7 @@ def build_vera4_assembly_catalog() -> AssemblyCatalogPatch:
                 assembly_type_id="edge",
                 name="edge assembly (2.619%)",
                 role="fuel",
+                fuel_variant_id="fuel_region2",
                 multiplicity_hint=4,
                 base_path_profile_id="vera4_fuel_path",
                 pin_map=AssemblyPinMapPatchItem(
@@ -706,6 +713,7 @@ def build_vera4_assembly_catalog() -> AssemblyCatalogPatch:
                 assembly_type_id="center_rcca",
                 name="center RCCA assembly (2.11%)",
                 role="fuel",
+                fuel_variant_id="fuel_region1",
                 multiplicity_hint=1,
                 base_path_profile_id="vera4_fuel_path",
                 pin_map=AssemblyPinMapPatchItem(
@@ -764,6 +772,26 @@ def build_vera4_facts() -> FactsPatch:
         ],
         axial_domain_cm=(Z_DOMAIN_MIN, Z_DOMAIN_MAX),
         active_fuel_region_cm=(Z_LOWER_ENDPLUG_TOP, Z_ACTIVE_FUEL_TOP),
+        fuel_variant_requirements=[
+            FuelVariantRequirementPatchItem(
+                variant_id="fuel_region1",
+                source_label="Region 1",
+                enrichment_wt_percent=2.11,
+                density_g_cm3=10.257,
+                assembly_type_ids=["corner", "center_rcca"],
+                expected_assembly_count=5,
+                source_note="Table P4-2 Region 1; C and R assemblies",
+            ),
+            FuelVariantRequirementPatchItem(
+                variant_id="fuel_region2",
+                source_label="Region 2",
+                enrichment_wt_percent=2.619,
+                density_g_cm3=10.257,
+                assembly_type_ids=["edge"],
+                expected_assembly_count=4,
+                source_note="Table P4-2 Region 2; E assemblies",
+            ),
+        ],
     )
 
 
