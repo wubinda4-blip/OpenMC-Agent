@@ -578,18 +578,108 @@ def build_patch_prompt(
     )
 
 
+# ---------------------------------------------------------------------------
+# Compact overlay repair prompt (issue-scoped retry)
+# ---------------------------------------------------------------------------
+
+
+def _build_compact_overlay_retry(
+    issues: list[dict[str, Any]],
+    attempt_index: int,
+    previous_patch: dict[str, Any],
+) -> str:
+    """Build a compact repair prompt for axial_overlay semantic issues.
+
+    Includes the previous parsed patch JSON, exact failing overlays, and
+    allowed vs locked fields — preventing the LLM from re-deriving the
+    entire patch from scratch.
+    """
+    # Extract failing overlay IDs from issue paths.
+    failing_ids: list[str] = []
+    for issue in issues:
+        code = issue.get("code", "")
+        if "mode_semantic_contradiction" in code or "through_path_not_preserved" in code:
+            path = issue.get("path", "")
+            # path format: overlays[grid_id].through_path_preserved
+            oid = path.replace("overlays[", "").replace("].through_path_preserved", "")
+            if oid:
+                failing_ids.append(oid)
+
+    id_list = ", ".join(failing_ids) if failing_ids else "all affected overlays"
+
+    previous_json = json.dumps(previous_patch, indent=2, ensure_ascii=False)
+
+    return (
+        "Your previous axial_overlays patch is structurally correct except\n"
+        "for a semantic contradiction in the following overlays:\n"
+        f"  {id_list}\n\n"
+        "PROBLEM:\n"
+        'For geometry_mode="mass_conserving_outer_frame" or\n'
+        '"homogenized_open_region", through_path_preserved must be true.\n'
+        "These modes only replace the outer moderator frame or open region.\n"
+        "Protected paths that must remain:\n"
+        "  - fuel pellet\n"
+        "  - fuel-clad gap\n"
+        "  - cladding\n"
+        "  - guide-tube wall\n"
+        "  - instrument-tube wall\n"
+        "  - Pyrex internal structure\n"
+        "  - thimble plug\n"
+        "  - RCCA\n"
+        "  - necessary coolant paths outside these structures\n\n"
+        "ALLOWED CHANGE:\n"
+        "  - overlays[...].through_path_preserved  (set to true or remove)\n"
+        "  - overlays[...].assumptions             (text only)\n"
+        "  - overlays[...].source_note             (text only)\n\n"
+        "LOCKED (must NOT change):\n"
+        "  - overlay IDs and count\n"
+        "  - overlay_kind, z_min_cm, z_max_cm\n"
+        "  - material_id, geometry_mode, total_mass_g\n"
+        "  - target_lattice_id, cell_count, pitch_cm\n"
+        "  - frame_area_cm2, frame_thickness_cm\n"
+        "  - ordering and all other fields\n\n"
+        "YOUR PREVIOUS PATCH:\n"
+        f"{previous_json}\n\n"
+        "Return the COMPLETE axial_overlays JSON with the fix applied.\n"
+        "Output ONLY the JSON — no reasoning, no prose, no markdown fences."
+    )
+
+
 def build_retry_prompt(
     patch_type: str,
     requirement: str,
     context: Any | None,
     issues: list[dict[str, Any]],
     attempt_index: int,
+    *,
+    previous_patch: dict[str, Any] | None = None,
 ) -> str:
-    """Build a retry prompt for a patch that failed validation."""
+    """Build a retry prompt for a patch that failed validation.
+
+    When ``previous_patch`` is available and the failure is a scoped issue
+    (e.g. ``mode_semantic_contradiction``), a **compact repair prompt** is
+    generated instead of the full base prompt + requirement.  The compact
+    prompt includes the previous parsed JSON, the exact failing overlays,
+    and the allowed vs locked fields — minimising token cost and preventing
+    the LLM from re-deriving the entire patch from scratch.
+    """
+    issue_codes = [i.get("code", "") for i in issues]
+
+    # Determine whether compact retry is applicable.
+    is_semantic_contradiction = any(
+        "mode_semantic_contradiction" in c or "through_path_not_preserved" in c
+        for c in issue_codes
+    )
+
+    if previous_patch is not None and is_semantic_contradiction and patch_type == "axial_overlays":
+        return _build_compact_overlay_retry(
+            issues, attempt_index, previous_patch,
+        )
+
+    # Fall back to full-prompt retry for other issue types.
     base_prompt = build_patch_prompt(patch_type, requirement, context)
 
     # Check failure type for targeted retry message.
-    issue_codes = [i.get("code", "") for i in issues]
     is_full_plan = any(
         "full_plan" in code or "full_lattice" in code
         for code in issue_codes
@@ -604,7 +694,8 @@ def build_retry_prompt(
         "fuel_variant_missing" in code for code in issue_codes
     )
     is_through_path = any(
-        "through_path_not_preserved" in code for code in issue_codes
+        "through_path_not_preserved" in code or "mode_semantic_contradiction" in code
+        for code in issue_codes
     )
 
     issue_lines: list[str] = []

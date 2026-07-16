@@ -579,15 +579,23 @@ class AxialOverlayPatchItem(_PatchBase):
     source_note: str | None = None
 
     @model_validator(mode="after")
-    def _coerce_through_path_preserved(self) -> "AxialOverlayPatchItem":
-        """Auto-set through_path_preserved=True for modes that inherently
-        preserve through-paths.  This prevents pipeline-stopping validation
-        errors when the LLM omits the field (it is a constant for these
-        geometry modes, not independent information)."""
-        if self.geometry_mode in (
-            "mass_conserving_outer_frame",
-            "homogenized_open_region",
-        ) and self.through_path_preserved is not True:
+    def _derive_through_path_preserved(self) -> "AxialOverlayPatchItem":
+        """Deterministically derive through_path_preserved=True when the field
+        is absent (None) for modes that inherently preserve through-paths.
+
+        An explicit ``False`` is left untouched — it is a semantic
+        contradiction caught by the validator as
+        ``patch.axial_overlays.mode_semantic_contradiction``.
+
+        Protected paths (fuel pellet, gap, cladding, guide-tube wall,
+        instrument-tube wall, Pyrex, thimble plug, RCCA, and necessary
+        coolant paths) remain because these geometry modes only replace the
+        outer moderator frame or open region."""
+        if (
+            self.geometry_mode
+            in ("mass_conserving_outer_frame", "homogenized_open_region")
+            and self.through_path_preserved is None
+        ):
             self.through_path_preserved = True
         return self
 

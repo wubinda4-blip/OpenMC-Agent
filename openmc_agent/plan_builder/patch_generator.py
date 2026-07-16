@@ -100,12 +100,17 @@ class PatchGenerationAttempt(AgentBaseModel):
     raw_text: str | None = None
     raw_chars: int = 0
     parsed: bool = False
+    parsed_content: dict[str, Any] | None = None
     validated: bool = False
     issues: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
     contains_full_plan_markers: bool = False
     contains_full_lattice_suspected: bool = False
     output_mode_used: str = ""
+    semantic_normalizations: list[dict[str, Any]] = Field(default_factory=list)
+    retry_mode: str | None = None
+    retry_allowed_paths: list[str] = Field(default_factory=list)
+    retry_drift: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PatchGenerationResult(AgentBaseModel):
@@ -658,6 +663,140 @@ def _normalize_known_universe_references(
 
 
 # ---------------------------------------------------------------------------
+# Semantic normalization detection (through_path_preserved derivation audit)
+# ---------------------------------------------------------------------------
+
+_THROUGH_PATH_MODES = frozenset({
+    "mass_conserving_outer_frame",
+    "homogenized_open_region",
+})
+
+
+def _detect_semantic_normalizations(
+    patch_type: str,
+    original_json: dict[str, Any],
+    parsed_model: Any,
+) -> list[dict[str, Any]]:
+    """Detect fields deterministically derived from absent (None) by model
+    validators — e.g. ``through_path_preserved`` derived for
+    ``mass_conserving_outer_frame`` overlays.
+
+    Returns a list of audit records for ``semantic_normalizations``.
+    """
+    normalizations: list[dict[str, Any]] = []
+    if patch_type != "axial_overlays":
+        return normalizations
+    orig_list = original_json.get("overlays")
+    if not isinstance(orig_list, list):
+        return normalizations
+    parsed_list = getattr(parsed_model, "overlays", [])
+    for orig, parsed in zip(orig_list, parsed_list):
+        if not isinstance(orig, dict):
+            continue
+        orig_tpp = orig.get("through_path_preserved", None)
+        parsed_tpp = getattr(parsed, "through_path_preserved", None)
+        mode = getattr(parsed, "geometry_mode", None)
+        if (
+            orig_tpp is None
+            and parsed_tpp is True
+            and mode in _THROUGH_PATH_MODES
+        ):
+            normalizations.append({
+                "patch_type": patch_type,
+                "overlay_id": getattr(parsed, "overlay_id", ""),
+                "field": "through_path_preserved",
+                "original_value": None,
+                "derived_value": True,
+                "derived_from": "geometry_mode",
+                "geometry_mode": mode,
+            })
+    return normalizations
+
+
+# ---------------------------------------------------------------------------
+# Retry drift detection
+# ---------------------------------------------------------------------------
+
+# Locked fields for axial_overlays retry drift checks.
+# These fields must NOT change during a targeted retry that only fixes
+# through_path_preserved or similar single-field issues.
+_OVERLAY_LOCKED_FIELDS = frozenset({
+    "overlay_id", "overlay_kind", "z_min_cm", "z_max_cm",
+    "target_lattice_id", "material_id", "geometry_mode",
+    "total_mass_g", "cell_count", "pitch_cm",
+    "frame_area_cm2", "frame_thickness_cm",
+    "volume_fraction", "effective_density_g_cm3",
+    "material_density_source", "mass_tolerance_rel",
+    "requires_human_confirmation",
+})
+
+# Allowed-change fields for through-path contradiction retry.
+_THROUGH_PATH_ALLOWED_FIELDS = frozenset({
+    "through_path_preserved", "assumptions", "source_note",
+})
+
+
+def _compute_allowed_overlay_fields(issue_codes: list[str]) -> set[str]:
+    """Return the set of overlay fields that the retry is allowed to change."""
+    allowed = set(_THROUGH_PATH_ALLOWED_FIELDS)
+    for code in issue_codes:
+        if "total_mass_missing" in code:
+            allowed.add("total_mass_g")
+        if "material_missing" in code:
+            allowed.add("material_id")
+        if "target_missing" in code:
+            allowed.add("target_lattice_id")
+    return allowed
+
+
+def _detect_retry_drift(
+    patch_type: str,
+    previous: dict[str, Any],
+    retry: dict[str, Any],
+    issue_codes: list[str],
+) -> list[dict[str, Any]]:
+    """Compare previous and retry patch JSON to detect unexpected field changes.
+
+    Only checks overlay-level fields for ``axial_overlays`` patches.
+    Returns a list of drift records.  Empty means no unexpected drift.
+    """
+    if patch_type != "axial_overlays":
+        return []
+    prev_ovs = previous.get("overlays", [])
+    new_ovs = retry.get("overlays", [])
+    if not isinstance(prev_ovs, list) or not isinstance(new_ovs, list):
+        return []
+    drift: list[dict[str, Any]] = []
+    if len(prev_ovs) != len(new_ovs):
+        drift.append({
+            "json_path": "overlays.length",
+            "previous": len(prev_ovs),
+            "new": len(new_ovs),
+            "reason": "overlay count changed during targeted retry",
+        })
+        return drift
+    allowed = _compute_allowed_overlay_fields(issue_codes)
+    for i, (po, no) in enumerate(zip(prev_ovs, new_ovs)):
+        if not isinstance(po, dict) or not isinstance(no, dict):
+            continue
+        overlay_id = no.get("overlay_id", po.get("overlay_id", f"[{i}]"))
+        for field in _OVERLAY_LOCKED_FIELDS:
+            if field in allowed:
+                continue
+            pv = po.get(field)
+            nv = no.get(field)
+            if pv != nv:
+                drift.append({
+                    "json_path": f"overlays[{overlay_id}].{field}",
+                    "previous": pv,
+                    "new": nv,
+                    "allowed_paths": sorted(allowed),
+                    "triggering_issue_codes": issue_codes,
+                })
+    return drift
+
+
+# ---------------------------------------------------------------------------
 # Main generate_patch API
 # ---------------------------------------------------------------------------
 
@@ -717,6 +856,7 @@ def generate_patch(
     val_context = _to_validation_context(effective_context)
     attempts: list[PatchGenerationAttempt] = []
     last_issues: list[dict[str, Any]] = []
+    previous_parsed_content: dict[str, Any] | None = None
 
     for attempt_idx in range(max_attempts):
         attempt = PatchGenerationAttempt(attempt_index=attempt_idx, patch_type=patch_type)
@@ -728,6 +868,7 @@ def generate_patch(
             prompt = build_retry_prompt(
                 patch_type, requirement, effective_context,
                 last_issues, attempt_idx,
+                previous_patch=previous_parsed_content,
             )
 
         # Call LLM (Phase 7C: prefer structured output if available).
@@ -849,6 +990,45 @@ def generate_patch(
             continue
 
         attempt.parsed = True
+        attempt.parsed_content = content
+
+        # Detect semantic normalizations (e.g. through_path_preserved derived
+        # from None by model_validator).
+        normalizations = _detect_semantic_normalizations(
+            patch_type, content, parsed_model,
+        )
+        attempt.semantic_normalizations = normalizations
+
+        # Retry drift detection: if this is a retry and we have the previous
+        # parsed patch, check that only allowed fields changed.
+        if previous_parsed_content is not None and attempt_idx > 0:
+            issue_codes = [i.get("code", "") for i in last_issues]
+            drift = _detect_retry_drift(
+                patch_type,
+                previous_parsed_content,
+                content,
+                issue_codes,
+            )
+            attempt.retry_drift = drift
+            attempt.retry_allowed_paths = sorted(
+                _compute_allowed_overlay_fields(issue_codes)
+            )
+            if drift:
+                for d in drift:
+                    attempt.issues.append({
+                        "code": "patch_retry.unexpected_semantic_drift",
+                        "severity": "error",
+                        "message": (
+                            f"retry changed {d['json_path']}: "
+                            f"{d.get('previous')!r} → {d.get('new')!r} "
+                            f"(allowed: {attempt.retry_allowed_paths})"
+                        ),
+                        **d,
+                    })
+                attempts.append(attempt)
+                last_issues = attempt.issues
+                previous_parsed_content = content
+                continue
 
         # Validate.
         val_result: PatchValidationResult = validate_patch(parsed_model, val_context)
@@ -884,6 +1064,7 @@ def generate_patch(
         ]
         if not last_issues:
             last_issues = attempt.issues
+        previous_parsed_content = content
 
     # Max attempts exceeded.
     all_issues: list[dict[str, Any]] = [i for a in attempts for i in a.issues]

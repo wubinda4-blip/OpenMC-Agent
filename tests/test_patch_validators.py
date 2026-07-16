@@ -512,10 +512,10 @@ def test_overlay_homogenized_valid() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_overlay_through_path_auto_coerced() -> None:
-    """through_path_preserved is auto-coerced to True for modes that
-    inherently preserve through-paths (mass_conserving_outer_frame,
-    homogenized_open_region).  The validator never needs to fire."""
+def test_overlay_through_path_derived_for_none() -> None:
+    """through_path_preserved is deterministically derived to True for modes
+    that inherently preserve through-paths (mass_conserving_outer_frame,
+    homogenized_open_region) when the field is absent (None)."""
     for mode in ("mass_conserving_outer_frame", "homogenized_open_region"):
         ov = AxialOverlayPatchItem(
             overlay_id="grid1",
@@ -526,12 +526,39 @@ def test_overlay_through_path_auto_coerced() -> None:
             material_id="grid_material",
             geometry_mode=mode,
         )
-        assert ov.through_path_preserved is True, f"{mode} should auto-coerce"
-    # skeleton mode does NOT coerce
+        assert ov.through_path_preserved is True, f"{mode} should derive True"
+    # skeleton mode does NOT derive
     ov_skel = AxialOverlayPatchItem(
         overlay_id="grid1", overlay_kind="spacer_grid", geometry_mode="skeleton",
     )
     assert ov_skel.through_path_preserved is None
+
+
+def test_overlay_through_path_explicit_false_is_contradiction() -> None:
+    """Explicit through_path_preserved=False is a semantic contradiction for
+    mass_conserving_outer_frame and homogenized_open_region."""
+    from openmc_agent.plan_builder.validators import validate_patch
+    for mode in ("mass_conserving_outer_frame", "homogenized_open_region"):
+        patch = AxialOverlaysPatch(overlays=[
+            AxialOverlayPatchItem(
+                overlay_id="grid1",
+                overlay_kind="spacer_grid",
+                z_min_cm=10.0,
+                z_max_cm=12.0,
+                target_lattice_id="assembly_lattice",
+                material_id="grid_material",
+                total_mass_g=500.0,
+                geometry_mode=mode,
+                through_path_preserved=False,
+            ),
+        ])
+        result = validate_patch(patch)
+        codes = _codes(result)
+        assert "patch.axial_overlays.mode_semantic_contradiction" in codes, (
+            f"{mode} + explicit False should produce mode_semantic_contradiction, "
+            f"got {codes}"
+        )
+        assert result.ok is False
 
 
 def test_overlay_target_missing() -> None:

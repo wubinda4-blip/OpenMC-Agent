@@ -1303,16 +1303,21 @@ def _validate_axial_overlays(
                         expected=resolved.resolved_id,
                         actual=ov.material_id,
                     ))
-            if ov.through_path_preserved is not True:
+            if ov.through_path_preserved is False:
                 issues.append(PatchValidationIssue(
-                    code="patch.axial_overlays.through_path_not_preserved",
+                    code="patch.axial_overlays.mode_semantic_contradiction",
                     severity="error",
                     message=(
                         f"overlay {ov.overlay_id!r} geometry_mode="
-                        "'homogenized_open_region' requires "
-                        "through_path_preserved=True"
+                        "'homogenized_open_region' inherently preserves "
+                        "through-paths (fuel, gap, cladding, guide-tube wall, "
+                        "instrument-tube wall, Pyrex, thimble plug, RCCA). "
+                        "Setting through_path_preserved=false is a semantic "
+                        "contradiction. Remove the field or set it to true."
                     ),
                     path=f"overlays[{ov.overlay_id}].through_path_preserved",
+                    actual=False,
+                    expected=True,
                 ))
 
         # Mass-conserving outer-frame requirements
@@ -1365,16 +1370,21 @@ def _validate_axial_overlays(
                     ),
                     path=f"overlays[{ov.overlay_id}].total_mass_g",
                 ))
-            if ov.through_path_preserved is not True:
+            if ov.through_path_preserved is False:
                 issues.append(PatchValidationIssue(
-                    code="patch.axial_overlays.through_path_not_preserved",
+                    code="patch.axial_overlays.mode_semantic_contradiction",
                     severity="error",
                     message=(
                         f"overlay {ov.overlay_id!r} geometry_mode="
-                        "'mass_conserving_outer_frame' requires "
-                        "through_path_preserved=True"
+                        "'mass_conserving_outer_frame' inherently preserves "
+                        "through-paths (fuel, gap, cladding, guide-tube wall, "
+                        "instrument-tube wall, Pyrex, thimble plug, RCCA). "
+                        "Setting through_path_preserved=false is a semantic "
+                        "contradiction. Remove the field or set it to true."
                     ),
                     path=f"overlays[{ov.overlay_id}].through_path_preserved",
+                    actual=False,
+                    expected=True,
                 ))
 
         # Volume fraction calibrated requirements
