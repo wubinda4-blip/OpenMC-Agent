@@ -2024,6 +2024,43 @@ def assemble_simulation_plan_from_patches(
         )
 
     errors = [i for i in issues if i.severity == "error"]
+
+    # P2-FULLCORE-2D-B: fuel variant reachability check on assembled plan.
+    if facts is not None and facts.fuel_variant_requirements:
+        from openmc_agent.plan_builder.fuel_variant_reachability import (
+            build_fuel_variant_reachability_report,
+            reachability_report_to_issues,
+        )
+        mat_sv = {
+            m.material_id: m.source_variant_id
+            for m in materials_patch.materials
+            if m.source_variant_id
+        } if materials_patch else {}
+        bindings = []
+        if assembly_catalog_patch:
+            for atype in assembly_catalog_patch.assembly_types:
+                bindings.append({
+                    "assembly_type_id": atype.assembly_type_id,
+                    "default_universe_id": atype.pin_map.default_universe_id,
+                    "fuel_variant_id": atype.fuel_variant_id,
+                    "resolved_fuel_variant_ids": [atype.fuel_variant_id] if atype.fuel_variant_id else [],
+                })
+        layout_pattern = []
+        if core_layout_patch:
+            layout_pattern = core_layout_patch.assembly_pattern
+        reach_report = build_fuel_variant_reachability_report(
+            assembled_plan=plan.model_dump(mode="json") if plan else None,
+            fuel_variant_requirements=[
+                v.model_dump(mode="json") for v in facts.fuel_variant_requirements
+            ],
+            material_source_variants=mat_sv,
+            assembly_fuel_bindings=bindings,
+            core_layout_pattern=layout_pattern,
+        )
+        reach_issues = reachability_report_to_issues(reach_report)
+        issues.extend(reach_issues)
+        errors = [i for i in issues if i.severity == "error"]
+
     return PlanAssemblyResult(
         ok=len(errors) == 0,
         plan=plan,
