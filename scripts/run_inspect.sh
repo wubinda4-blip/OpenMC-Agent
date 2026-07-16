@@ -43,7 +43,7 @@ Options:
                           state is modeled.
   --model PROVIDER:MODEL  LLM model as 'provider:model'. Default: zhipu:glm-5.2
                           Examples: zhipu:glm-5.2, deepseek:deepseek-chat,
-                          deepseek:deepseek-reasoner.
+                          ds:deepseek-v4-flash, deepseek:deepseek-reasoner.
   --full                  Enable both OpenMC geometry plot and smoke test.
   --plot                  Enable geometry plot only.
   --smoke-test            Enable low-particle smoke test only.
@@ -88,8 +88,9 @@ Options:
   -h, --help              Show this help.
 
 Providers:
-  zhipu       -> ZHIPUAI_API_KEY,    endpoint open.bigmodel.cn
-  deepseek    -> DEEPSEEK_API_KEY,   endpoint api.deepseek.com
+  zhipu       -> ZHIPUAI_API_KEY,     endpoint open.bigmodel.cn
+  deepseek    -> DEEPSEEK_API_KEY,    endpoint api.deepseek.com
+  ds          -> SENSENOVA_API_KEY,   endpoint token.sensenova.cn
 
 The corresponding API key env var is requested securely if not already set.
 
@@ -97,6 +98,7 @@ Examples:
   scripts/run_inspect.sh --md-file Input/case1.md
   scripts/run_inspect.sh --requirement "建立一个 UO2 pin-cell 临界计算" --full
   scripts/run_inspect.sh --model deepseek:deepseek-chat --md-file Input/case2.md --full --text
+  scripts/run_inspect.sh --model ds:deepseek-v4-flash --md-file Input/VERA3_problem.md --state 3A
   scripts/run_inspect.sh --md-file Input/VERA1_problem.md --state 1A --text
 EOF
 }
@@ -236,23 +238,28 @@ fi
 
 # Provider is the part before the first ':' in the model id (e.g. zhipu, deepseek).
 PROVIDER="${MODEL%%:*}"
-case "$PROVIDER" in
-  zhipu)
-    API_KEY_ENV="ZHIPUAI_API_KEY"
-    TIMEOUT_ENV="ZHIPUAI_TIMEOUT_SECONDS"
-    RETRIES_ENV="ZHIPUAI_MAX_RETRIES"
-    ;;
-  deepseek)
-    API_KEY_ENV="DEEPSEEK_API_KEY"
-    TIMEOUT_ENV="DEEPSEEK_TIMEOUT_SECONDS"
-    RETRIES_ENV="DEEPSEEK_MAX_RETRIES"
-    ;;
-  *)
-    echo "Unsupported provider '$PROVIDER' in model '$MODEL'." >&2
-    echo "Use a 'provider:model' id such as 'zhipu:glm-5.2' or 'deepseek:deepseek-chat'." >&2
-    exit 2
-    ;;
-esac
+  case "$PROVIDER" in
+    zhipu)
+      API_KEY_ENV="ZHIPUAI_API_KEY"
+      TIMEOUT_ENV="ZHIPUAI_TIMEOUT_SECONDS"
+      RETRIES_ENV="ZHIPUAI_MAX_RETRIES"
+      ;;
+    deepseek)
+      API_KEY_ENV="DEEPSEEK_API_KEY"
+      TIMEOUT_ENV="DEEPSEEK_TIMEOUT_SECONDS"
+      RETRIES_ENV="DEEPSEEK_MAX_RETRIES"
+      ;;
+    ds)
+      API_KEY_ENV="SENSENOVA_API_KEY"
+      TIMEOUT_ENV="SENSENOVA_TIMEOUT_SECONDS"
+      RETRIES_ENV="SENSENOVA_MAX_RETRIES"
+      ;;
+    *)
+      echo "Unsupported provider '$PROVIDER' in model '$MODEL'." >&2
+      echo "Use a 'provider:model' id such as 'zhipu:glm-5.2', 'deepseek:deepseek-chat', or 'ds:deepseek-v4-flash'." >&2
+      exit 2
+      ;;
+  esac
 
 # Resolve timeout/retries: --flag > provider env > default.
 [[ -z "$TIMEOUT_SECONDS" ]] && TIMEOUT_SECONDS="${!TIMEOUT_ENV:-}"

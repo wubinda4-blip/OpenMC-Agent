@@ -58,6 +58,7 @@ test-all:
 #   make model INPUT=Input/VERA3_problem.md FULL=1 ALLOW_REAL_LLM=1    # plot + smoke (equivalent to --full)
 # ---------------------------------------------------------------------------
 model:
+	@mkdir -p $(OUT)
 	$(PYTHON) scripts/run_model.py \
 		--input $(INPUT) \
 		--model $(MODEL) \
@@ -69,7 +70,7 @@ model:
 		--log-level $(LOG_LEVEL) \
 		$(if $(ALLOW_REAL_LLM),--allow-real-llm) \
 		$(if $(SMOKE),--smoke-test) \
-		$(if $(FULL),--full)
+		$(if $(FULL),--full) 2>&1 | tee $(OUT)/cli.log
 
 # Dry-run: resolve requirement + feature detection only (no LLM, no OpenMC)
 model-dry:
