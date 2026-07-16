@@ -367,6 +367,40 @@ def _pick_best_json_object(
     return None
 
 
+# Characteristic content keys for each patch type.  Used to auto-inject
+# patch_type when the LLM omits it (common with DS reasoning models that
+# output the content object directly after chain-of-thought).
+_PATCH_CHARACTERISTIC_KEYS: dict[str, frozenset[str]] = {
+    "facts": frozenset({"feature_summary", "expected_counts", "confirmed_facts"}),
+    "materials": frozenset({"materials"}),
+    "universes": frozenset({"universes"}),
+    "pin_map": frozenset({"lattice_size", "default_universe_id", "guide_tube_coords"}),
+    "axial_layers": frozenset({"layers", "lattice_loadings", "axial_domain_cm"}),
+    "axial_overlays": frozenset({"overlays"}),
+    "assembly_catalog": frozenset({"assembly_types"}),
+    "core_layout": frozenset({"core_lattice", "core_pattern", "assembly_placements"}),
+    "settings": frozenset({"source_strategy", "plot_strategy"}),
+    "localized_insert_profiles": frozenset({"insert_profiles"}),
+}
+
+
+def _maybe_inject_patch_type(obj: dict[str, Any], patch_type: str) -> dict[str, Any]:
+    """Inject ``patch_type`` if the object has characteristic content keys
+    for the expected patch type but is missing the ``patch_type`` field.
+
+    This is safe because:
+    1. The prompt explicitly asks for this specific patch type.
+    2. The content keys uniquely identify the patch type.
+    3. The contract validator still validates the injected value.
+    """
+    if "patch_type" in obj:
+        return obj
+    char_keys = _PATCH_CHARACTERISTIC_KEYS.get(patch_type)
+    if char_keys and char_keys & set(obj.keys()):
+        obj["patch_type"] = patch_type
+    return obj
+
+
 def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
     """Extract a JSON dict from raw LLM output.
 
@@ -392,7 +426,7 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
     try:
         obj = json.loads(text)
         if isinstance(obj, dict):
-            return obj
+            return _maybe_inject_patch_type(obj, patch_type)
     except json.JSONDecodeError:
         pass
 
@@ -410,7 +444,7 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
         try:
             obj = json.loads(candidate)
             if isinstance(obj, dict):
-                return obj
+                return _maybe_inject_patch_type(obj, patch_type)
         except json.JSONDecodeError:
             pass
         # Try stripping trailing commas (common LLM mistake).
@@ -418,7 +452,7 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
         try:
             obj = json.loads(cleaned)
             if isinstance(obj, dict):
-                return obj
+                return _maybe_inject_patch_type(obj, patch_type)
         except json.JSONDecodeError:
             pass
 
