@@ -269,6 +269,14 @@ class DSChatClient(OpenAICompatibleChatClient):
 
     SenseNova hosts DeepSeek models behind an OpenAI-compatible endpoint.
     The provider prefix is ``ds``, e.g. ``ds:deepseek-v4-flash``.
+
+    DeepSeek V4 (Flash) enables a thinking mode by default: it streams
+    chain-of-thought via ``reasoning_content`` that consumes the output token
+    budget and can truncate the JSON answer mid-generation. For structured
+    patch output we cap ``reasoning_effort`` to the minimum so the final JSON
+    is not crowded out by reasoning. Override with the
+    ``SENSENOVA_REASONING_EFFORT`` env var (``"none"``/``"low"``/``"medium"``
+    /``"high"``); set it to an empty string to leave the provider default.
     """
 
     provider = "ds"
@@ -278,6 +286,18 @@ class DSChatClient(OpenAICompatibleChatClient):
     max_retries_env = "SENSENOVA_MAX_RETRIES"
     default_timeout = DS_DEFAULT_TIMEOUT_SECONDS
     default_max_retries = DS_DEFAULT_MAX_RETRIES
+
+    def adjust_payload(self, payload: dict[str, Any], model_name: str) -> dict[str, Any]:
+        # deepseek-reasoner rejects sampling params such as temperature.
+        if "reasoner" in model_name:
+            payload.pop("temperature", None)
+        # Cap thinking effort so reasoning_content does not exhaust the
+        # output budget before the JSON answer completes.
+        if "reasoning_effort" not in payload:
+            effort = os.environ.get("SENSENOVA_REASONING_EFFORT", "low").strip()
+            if effort:
+                payload["reasoning_effort"] = effort
+        return payload
 
 
 class _Chat:

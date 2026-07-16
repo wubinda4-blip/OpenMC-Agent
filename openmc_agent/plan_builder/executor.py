@@ -31,6 +31,7 @@ from .patch_generator import (
     PatchGenerationContext,
     generate_patch,
 )
+from .llm_adapter import PATCH_MAX_TOKENS
 from .validators import validate_patch
 from .scoped_counts import resolve_expected_counts_for_pin_map
 from .reference_patches import (
@@ -1098,6 +1099,7 @@ def run_incremental_planning(
             context=ctx,
             llm_client=llm_client,
             max_attempts=max_patch_attempts,
+            max_tokens=PATCH_MAX_TOKENS.get(patch_type),
         )
 
         if result.ok and result.envelope is not None:

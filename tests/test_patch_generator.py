@@ -135,6 +135,8 @@ def test_pin_map_overlap_repaired_no_retry_needed() -> None:
 
 
 def test_invalid_json_retry() -> None:
+    # Unbalanced braces (object never closes) -> flagged as truncated, which
+    # is a distinct, more actionable code than a generic parse error.
     bad_raw = '{"patch_type": "materials", "materials": [{"material_id": "fuel", broken'
     good_raw = json.dumps({
         "patch_type": "materials",
@@ -153,7 +155,30 @@ def test_invalid_json_retry() -> None:
     assert len(result.attempts) == 2
     assert result.attempts[0].parsed is False
     first_codes = [i["code"] for i in result.attempts[0].issues]
+    assert "patch_generation.json_truncated" in first_codes
+
+
+def test_non_truncated_json_parse_error() -> None:
+    # Output with no JSON object at all (e.g. pure prose from a reasoning
+    # model that never answered) is NOT truncation -> generic parse error.
+    bad_raw = "I cannot produce JSON for this requirement."
+    good_raw = json.dumps({
+        "patch_type": "materials",
+        "materials": [
+            {"material_id": "fuel", "name": "UO2", "role": "fuel", "density_g_cm3": 10.0}
+        ],
+    })
+    fake = FakePatchLLM([bad_raw, good_raw])
+    result = generate_patch(
+        patch_type="materials",
+        requirement="UO2 fuel",
+        llm_client=fake,
+        max_attempts=2,
+    )
+    assert result.ok is True
+    first_codes = [i["code"] for i in result.attempts[0].issues]
     assert "patch_generation.json_parse_error" in first_codes
+    assert "patch_generation.json_truncated" not in first_codes
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +606,28 @@ def test_structured_client_method_used() -> None:
     )
     assert result.ok is True
     assert client.called_structured is True
+
+
+def test_max_tokens_threaded_to_structured_client() -> None:
+    """generate_patch(max_tokens=...) must reach generate_patch_json."""
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.received_max_tokens = "not called"
+
+        def __call__(self, prompt: str) -> str:
+            return '{"patch_type": "facts", "benchmark_id": "T"}'
+
+        def generate_patch_json(self, *, prompt, patch_type, json_schema=None, **kw):
+            self.received_max_tokens = kw.get("max_tokens")
+            return '{"patch_type": "facts", "benchmark_id": "T"}'
+
+    client = RecordingClient()
+    generate_patch(
+        patch_type="facts", requirement="test",
+        llm_client=client, max_attempts=1, max_tokens=1234,
+    )
+    assert client.received_max_tokens == 1234
 
 
 def test_attempt_records_prompt_and_output_mode() -> None:

@@ -14,15 +14,18 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal
 
-# Per-patch-type suggested max token budgets.
+# Per-patch-type suggested max token budgets. These are hard caps on the
+# model's *output* (which includes any reasoning tokens for thinking-mode
+# models), so they are sized for the multi-assembly / full-core case — the
+# largest legitimate patch. A single-assembly patch simply stops earlier.
 PATCH_MAX_TOKENS: dict[str, int] = {
-    "facts": 1200,
-    "materials": 2500,
-    "universes": 3500,
-    "pin_map": 1800,
-    "axial_layers": 2500,
-    "axial_overlays": 2500,
-    "settings": 800,
+    "facts": 3000,         # multi-assembly scoped_expected_counts ~2200 tokens
+    "materials": 3500,
+    "universes": 4500,     # multi-cell universes + nested component profiles
+    "pin_map": 2500,
+    "axial_layers": 3000,
+    "axial_overlays": 3500,
+    "settings": 1500,
 }
 
 OutputMode = Literal["auto", "plain_prompt", "json_object", "json_schema", "tool_call"]

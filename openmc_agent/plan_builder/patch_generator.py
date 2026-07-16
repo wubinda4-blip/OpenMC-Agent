@@ -364,6 +364,22 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
     )
 
 
+def _looks_truncated(raw_text: str) -> bool:
+    """Heuristic: does the output look like a JSON object cut off mid-stream?
+
+    True when there is at least one ``{`` but curly or square openers outnumber
+    closers — i.e. a JSON object started but never balanced. Pure-prose outputs
+    (no braces) return ``False`` so they still report a generic parse error.
+    Used only to produce a clearer error message, never to reject valid JSON.
+    """
+    if not raw_text or "{" not in raw_text:
+        return False
+    return (
+        raw_text.count("{") > raw_text.count("}")
+        or raw_text.count("[") > raw_text.count("]")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patch contract validation (Phase 7C)
 # ---------------------------------------------------------------------------
@@ -577,6 +593,7 @@ def generate_patch(
     context: PatchGenerationContext | None = None,
     llm_client: Any | None = None,
     max_attempts: int = 2,
+    max_tokens: int | None = None,
 ) -> PatchGenerationResult:
     """Generate a single patch via LLM with targeted retry.
 
@@ -640,6 +657,7 @@ def generate_patch(
         try:
             raw, output_mode = _call_llm_for_patch(
                 llm_client, prompt=prompt, patch_type=patch_type,
+                max_tokens=max_tokens,
             )
         except Exception as exc:
             attempt.error = str(exc)
@@ -694,11 +712,30 @@ def generate_patch(
             content = parse_llm_patch_json(raw, patch_type)
         except PatchParseError as exc:
             attempt.error = str(exc)
-            attempt.issues.append({
-                "code": "patch_generation.json_parse_error",
-                "severity": "error",
-                "message": str(exc),
-            })
+            if _looks_truncated(raw):
+                # Output started a JSON object but never closed it — almost
+                # always a max_tokens / reasoning-budget exhaustion on a
+                # thinking-mode model. Give a pointed message + distinct code
+                # so the operator knows to raise the token budget or lower
+                # reasoning_effort, rather than guessing at "bad JSON".
+                attempt.issues.append({
+                    "code": "patch_generation.json_truncated",
+                    "severity": "error",
+                    "message": (
+                        "LLM output appears truncated (unbalanced braces) — "
+                        "the JSON object started but never completed. This "
+                        "usually means the output token budget (including "
+                        "reasoning tokens) was exhausted. Raise "
+                        "PATCH_MAX_TOKENS for this patch type or lower "
+                        "reasoning_effort (SENSENOVA_REASONING_EFFORT)."
+                    ),
+                })
+            else:
+                attempt.issues.append({
+                    "code": "patch_generation.json_parse_error",
+                    "severity": "error",
+                    "message": str(exc),
+                })
             attempts.append(attempt)
             last_issues = attempt.issues
             continue
