@@ -208,7 +208,9 @@ conda run --no-capture-output -n openmc-env python scripts/run_model.py \
 > **提示**：`deepseek-v4-flash` 默认开启思考模式，CoT 会占用输出 token 预算，可能导致 JSON
 > 被截断。本仓库默认对 `ds:` 注入 `reasoning_effort=low` 以抑制思考；如需调整可设环境变量
 > `SENSENOVA_REASONING_EFFORT`（`none`/`low`/`medium`/`high`，留空则用 provider 默认）。
-> 各 patch 类型的输出 token 上限见 `openmc_agent/plan_builder/llm_adapter.py:PATCH_MAX_TOKENS`。
+> 生成 patch 时不主动设 `max_tokens`——各 provider 的默认上限（如 DeepSeek ~8192）比任何
+> 安全的统一 cap 都大，主动压低反而会截断多组件大 patch；参考预算见
+> `openmc_agent/plan_builder/llm_adapter.py:PATCH_MAX_TOKENS`（可显式传给 `generate_patch`）。
 
 可用 provider 前缀：`deepseek:`（DeepSeek 官方）、`ds:`（SenseNova 托管）、`zhipu:`（智谱）、`fake`（不调 LLM）。
 

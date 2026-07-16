@@ -58,11 +58,16 @@ def test_adapter_wraps_openai_compatible_client() -> None:
 
 
 def test_patch_max_tokens_budgets() -> None:
-    """Token budgets are defined for all patch types."""
+    """Reference token budgets are defined for all patch types.
+
+    These are reference values (NOT auto-applied caps) documenting typical
+    multi-assembly patch sizes; a caller may pass them explicitly to
+    generate_patch(max_tokens=...). Provider defaults are used otherwise, as
+    they are larger than any safe universal cap. See PATCH_MAX_TOKENS comment.
+    """
     for ptype in ("facts", "materials", "universes", "pin_map", "axial_layers", "axial_overlays"):
         assert ptype in PATCH_MAX_TOKENS
         assert PATCH_MAX_TOKENS[ptype] > 0
-        assert PATCH_MAX_TOKENS[ptype] < 5000  # small budgets
 
 
 def test_json_schema_response_format_is_sent_to_provider() -> None:

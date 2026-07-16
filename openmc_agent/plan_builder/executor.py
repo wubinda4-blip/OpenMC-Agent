@@ -31,7 +31,6 @@ from .patch_generator import (
     PatchGenerationContext,
     generate_patch,
 )
-from .llm_adapter import PATCH_MAX_TOKENS
 from .validators import validate_patch
 from .scoped_counts import resolve_expected_counts_for_pin_map
 from .reference_patches import (
@@ -1091,7 +1090,12 @@ def run_incremental_planning(
             state, patch_type, few_shot_case_ids=few_shot_case_ids
         )
 
-        # Generate patch with retry.
+        # Generate patch with retry. We intentionally do NOT pass max_tokens:
+        # provider defaults (e.g. DeepSeek ~8192) are larger than any safe
+        # per-patch cap and capping below them truncates large multi-assembly
+        # patches (a 4500-token cap truncated a ~6000-token universes patch).
+        # For thinking-mode providers (ds:), reasoning_effort is capped in the
+        # client instead — see DSChatClient.adjust_payload.
         result = generate_patch(
             patch_type=patch_type,
             requirement=requirement,
@@ -1099,7 +1103,6 @@ def run_incremental_planning(
             context=ctx,
             llm_client=llm_client,
             max_attempts=max_patch_attempts,
-            max_tokens=PATCH_MAX_TOKENS.get(patch_type),
         )
 
         if result.ok and result.envelope is not None:

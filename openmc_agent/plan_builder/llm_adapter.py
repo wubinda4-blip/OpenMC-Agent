@@ -14,14 +14,18 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal
 
-# Per-patch-type suggested max token budgets. These are hard caps on the
-# model's *output* (which includes any reasoning tokens for thinking-mode
-# models), so they are sized for the multi-assembly / full-core case — the
-# largest legitimate patch. A single-assembly patch simply stops earlier.
+# Reference token budgets for each patch type (multi-assembly / full-core
+# case — the largest legitimate patch). These are NOT auto-applied to LLM
+# calls: provider defaults (e.g. DeepSeek ~8192) are larger than any safe
+# universal cap, and capping below them truncates large patches (observed: a
+# 4500-token cap truncated a ~6000-token universes patch). A caller may pass
+# these explicitly to generate_patch(max_tokens=...) if it wants to cap a
+# specific call. Thinking-mode providers are controlled via reasoning_effort
+# in the client instead (see DSChatClient.adjust_payload).
 PATCH_MAX_TOKENS: dict[str, int] = {
     "facts": 3000,         # multi-assembly scoped_expected_counts ~2200 tokens
     "materials": 3500,
-    "universes": 4500,     # multi-cell universes + nested component profiles
+    "universes": 6500,     # multi-cell universes + nested component profiles
     "pin_map": 2500,
     "axial_layers": 3000,
     "axial_overlays": 3500,
