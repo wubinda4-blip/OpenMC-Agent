@@ -270,6 +270,122 @@ def check_geometry_level(plan: Any) -> list[AcceptanceCheck]:
     return checks
 
 
+def check_fuel_fidelity_level(plan: Any) -> list[AcceptanceCheck]:
+    """Level G: Fuel source fidelity — VERA4-specific fuel variant checks.
+
+    Verifies that Region 1 (2.11%) and Region 2 (2.619%) are correctly
+    bound to their assembly types and reachable in the final geometry.
+    """
+    checks: list[AcceptanceCheck] = []
+    model = plan.complex_model
+    if model is None:
+        checks.append(AcceptanceCheck(
+            code="fuel.variant_count", passed=False,
+            message="no complex_model", level="G",
+        ))
+        return checks
+
+    materials = model.materials or []
+    # ComplexMaterialSpec has no role field; identify fuel by composition or id
+    fuel_mats = []
+    for m in materials:
+        mid = (getattr(m, "id", "") or "").lower()
+        formula = getattr(m, "chemical_formula", "") or ""
+        comp = getattr(m, "composition", []) or []
+        has_u235 = any(
+            getattr(n, "nuclide", "").startswith("U235")
+            or getattr(n, "nuclide", "") == "U235"
+            for n in comp
+        )
+        if "fuel" in mid or "region" in mid or formula == "UO2" or has_u235:
+            fuel_mats.append(m)
+
+    # Check exactly 2 fuel variants
+    checks.append(AcceptanceCheck(
+        code="fuel.variant_count", passed=len(fuel_mats) == 2,
+        message=f"{len(fuel_mats)} fuel materials (expected 2)",
+        level="G",
+    ))
+
+    # Check Region 1 material present (2.11%)
+    r1 = next((m for m in fuel_mats
+               if "fuel_r1" in m.id.lower() or "region1" in m.id.lower()
+               or "2.11" in getattr(m, "name", "")), None)
+    checks.append(AcceptanceCheck(
+        code="fuel.region1_material_present", passed=r1 is not None,
+        message=f"region1 material={'found' if r1 else 'MISSING'}",
+        level="G",
+    ))
+
+    # Check Region 2 material present (2.619%)
+    r2 = next((m for m in fuel_mats
+               if "fuel_r2" in m.id.lower() or "region2" in m.id.lower()
+               or "2.619" in getattr(m, "name", "")), None)
+    checks.append(AcceptanceCheck(
+        code="fuel.region2_material_present", passed=r2 is not None,
+        message=f"region2 material={'found' if r2 else 'MISSING'}",
+        level="G",
+    ))
+
+    # Check materials are referenced in geometry (not just defined)
+    cells = model.cells or []
+    cells_by_id = {c.id: c for c in cells}
+    all_mat_refs: set[str] = set()
+    for c in cells:
+        if c.fill_type == "material" and c.fill_id:
+            all_mat_refs.add(c.fill_id)
+    if r1:
+        checks.append(AcceptanceCheck(
+            code="fuel.region1_reachable", passed=r1.id in all_mat_refs,
+            message=f"region1 ({r1.id}) {'referenced' if r1.id in all_mat_refs else 'NOT referenced'} in geometry",
+            level="G",
+        ))
+    if r2:
+        checks.append(AcceptanceCheck(
+            code="fuel.region2_reachable", passed=r2.id in all_mat_refs,
+            message=f"region2 ({r2.id}) {'referenced' if r2.id in all_mat_refs else 'NOT referenced'} in geometry",
+            level="G",
+        ))
+
+    # Check correct binding in assembly catalog
+    catalog = getattr(model, "assembly_catalog", None)
+    universes = model.universes or []
+    uv_by_id = {u.id: u for u in universes}
+    if catalog and hasattr(catalog, "assembly_types"):
+        for atype in catalog.assembly_types:
+            tid = atype.assembly_type_id
+            pm = atype.pin_map
+            default_uv = pm.default_universe_id if pm else None
+            # Find the universe's fuel material via cell_ids → cells → fill_id
+            uv_fuel_mat = None
+            uv = uv_by_id.get(default_uv)
+            if uv:
+                for cid in (uv.cell_ids or []):
+                    cell = cells_by_id.get(cid)
+                    if cell and cell.fill_type == "material" and cell.fill_id:
+                        comp_role = getattr(cell, "component_role", "") or ""
+                        if "fuel" in comp_role.lower() or "fuel" in (cell.name or "").lower():
+                            uv_fuel_mat = cell.fill_id
+                            break
+
+            if tid in ("corner", "center_rcca", "C", "R"):
+                expected = r1.id if r1 else "fuel_r1"
+                checks.append(AcceptanceCheck(
+                    code=f"fuel.{tid}_binding", passed=uv_fuel_mat == expected,
+                    message=f"{tid}: fuel_material={uv_fuel_mat}, expected={expected}",
+                    level="G",
+                ))
+            elif tid in ("edge", "E"):
+                expected = r2.id if r2 else "fuel_r2"
+                checks.append(AcceptanceCheck(
+                    code=f"fuel.{tid}_binding", passed=uv_fuel_mat == expected,
+                    message=f"{tid}: fuel_material={uv_fuel_mat}, expected={expected}",
+                    level="G",
+                ))
+
+    return checks
+
+
 def run_full_acceptance(
     plan: Any,
     *,
@@ -301,6 +417,9 @@ def run_full_acceptance(
 
     # Level F: Grid geometry (VERA4-specific)
     result.checks.extend(check_grid_geometry_level(plan))
+
+    # Level G: Fuel fidelity (VERA4-specific fuel variant binding)
+    result.checks.extend(check_fuel_fidelity_level(plan))
 
     # Level D: XML (if provided)
     if xml_dir and xml_dir.exists():
@@ -562,6 +681,7 @@ __all__ = [
     "check_plan_level",
     "check_geometry_level",
     "check_grid_geometry_level",
+    "check_fuel_fidelity_level",
     "check_xml_level",
     "check_runtime_level",
     "run_full_acceptance",
