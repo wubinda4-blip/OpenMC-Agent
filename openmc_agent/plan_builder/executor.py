@@ -32,6 +32,7 @@ from .patch_generator import (
     generate_patch,
 )
 from .validators import validate_patch
+from .scoped_counts import resolve_expected_counts_for_pin_map
 from .reference_patches import (
     REFERENCE_PATCH_TYPES,
     build_reference_patch,
@@ -521,6 +522,21 @@ def build_generation_context_from_state(
             sec = content.get("scoped_expected_counts")
             if isinstance(sec, list):
                 ctx.scoped_expected_counts = sec
+                # Multi-assembly cores: the legacy flat ``expected_*_count``
+                # fields hold core_total values, but the pin_map patch
+                # describes a single (superposed) assembly lattice. Resolve
+                # scoped counts to per-assembly scope so the validator
+                # compares like-for-like instead of flagging a false mismatch
+                # (e.g. fuel_pin 264 per-assembly vs 2376 core-total).
+                resolved = resolve_expected_counts_for_pin_map(
+                    sec,
+                    model_scope=model_scope if isinstance(model_scope, str) else "single_assembly",
+                    assembly_count=ac if isinstance(ac, int) else None,
+                    assembly_type_counts=ctx.assembly_type_counts,
+                )
+                if resolved:
+                    expected_counts.clear()
+                    expected_counts.update(resolved)
 
         elif ptype == "materials":
             for mat in content.get("materials", []):

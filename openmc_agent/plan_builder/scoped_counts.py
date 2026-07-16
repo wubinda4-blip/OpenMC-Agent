@@ -370,3 +370,108 @@ def derive_homogeneous_local_counts_if_proven(
         f"= {per_assembly}; homogeneous=True, identical=True, "
         f"types={assembly_type_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Pin-map (per-assembly) expected-count resolution
+# ---------------------------------------------------------------------------
+
+# Roles appear under different aliases in ``scoped_expected_counts`` versus
+# the pin_map validator's ``actual_counts``. Normalize so they line up.
+_PIN_MAP_ROLE_ALIASES: dict[str, str] = {
+    "pyrex": "pyrex_rod",
+    "pin": "fuel_pin",
+}
+
+
+def _normalize_pin_map_role(role: object) -> str | None:
+    if not isinstance(role, str):
+        return None
+    return _PIN_MAP_ROLE_ALIASES.get(role, role)
+
+
+def resolve_expected_counts_for_pin_map(
+    scoped_expected_counts: list[dict[str, Any]],
+    *,
+    model_scope: str = "single_assembly",
+    assembly_count: int | None = None,
+    assembly_type_counts: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Resolve scoped expected counts to per-assembly pin_map scope.
+
+    The ``pin_map`` patch describes a *single* (possibly superposed) assembly
+    lattice, so its counts must be compared against per-assembly — not
+    core-total — expectations. For multi-assembly / full-core models this
+    derives per-role per-assembly expected counts from the
+    ``assembly_type``-scoped entries in ``scoped_expected_counts``:
+
+    * a role present in **all** assembly types with the **same** value → that
+      value (shared lattice positions, e.g. fuel_pin / guide_tube);
+    * a role present in a **subset** of types or with **differing** values →
+      the sum across types (superposed positions, e.g. pyrex present only in
+      some types, or thimble plugs whose count differs by type).
+
+    Roles available only at ``core_total`` scope (no assembly_type breakdown)
+    are included solely when the core is provably homogeneous
+    (:func:`derive_homogeneous_local_counts_if_proven`); otherwise they are
+    skipped, since on a heterogeneous core ``core_total / assembly_count`` is
+    not even an integer and would only produce false positives.
+
+    Returns ``{}`` for single-assembly models (the legacy flat fields are
+    already per-assembly there) or when no scoped data is available, leaving
+    the legacy validation path untouched. Reactor-neutral: no reactor-type
+    assumptions, only the generic per-assembly-superposition rule above.
+    """
+    is_multi = model_scope in ("multi_assembly_core", "full_core") or (
+        assembly_count is not None and assembly_count > 1
+    )
+    if not is_multi or not scoped_expected_counts:
+        return {}
+
+    type_scoped: dict[str, dict[str, int]] = {}
+    core_total_entries: dict[str, int] = {}
+    for entry in scoped_expected_counts:
+        if not isinstance(entry, dict):
+            continue
+        role = _normalize_pin_map_role(entry.get("role"))
+        value = entry.get("value")
+        scope = entry.get("scope")
+        if role is None or not isinstance(value, int):
+            continue
+        if scope == "assembly_type":
+            tid = entry.get("assembly_type_id") or ""
+            type_scoped.setdefault(role, {})[tid] = value
+        elif scope == "core_total":
+            core_total_entries[role] = value
+
+    all_type_ids = set(assembly_type_counts or ()) or set()
+    result: dict[str, int] = {}
+
+    for role, by_type in type_scoped.items():
+        values = list(by_type.values())
+        if not values:
+            continue
+        shared = (
+            bool(all_type_ids)
+            and len(by_type) == len(all_type_ids)
+            and len(set(values)) == 1
+        )
+        # Shared positions (e.g. fuel pins) are identical across types → take
+        # the common value; type-specific positions (inserts) superpose → sum.
+        result[role] = values[0] if shared else sum(values)
+
+    n_types = max(len(all_type_ids), 1)
+    for role, core_total in core_total_entries.items():
+        if role in result:
+            continue  # already resolved from assembly_type entries
+        per_assembly, _ = derive_homogeneous_local_counts_if_proven(
+            core_total=core_total,
+            assembly_count=assembly_count or 0,
+            assembly_type_count=n_types,
+            input_states_homogeneous=(n_types <= 1),
+            input_states_identical=(n_types <= 1),
+        )
+        if per_assembly is not None:
+            result[role] = per_assembly
+
+    return result
