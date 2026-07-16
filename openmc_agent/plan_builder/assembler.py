@@ -29,6 +29,9 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from openmc_agent.plan_builder.grid_geometry_validation import (
+    validate_grid_geometry_materialization,
+)
 from openmc_agent.schemas import (
     AgentBaseModel,
     AssemblySpec,
@@ -1763,6 +1766,18 @@ def assemble_simulation_plan_from_patches(
             execution_check=execution_check,
             expert_assumptions=list(dict.fromkeys(all_assumptions)),
         )
+
+        # P2-FULLCORE-2D-A-GRID-ACCEPTANCE-CLOSURE: Strict grid geometry gate.
+        # When physical spacer_grid overlays exist, verify the full chain
+        # (overlay → decorated universe → lattice → frame cell → material).
+        grid_validation = validate_grid_geometry_materialization(plan)
+        if not grid_validation.ok:
+            for gi in grid_validation.issues:
+                issues.append(PlanAssemblyIssue(
+                    code=gi.code,
+                    severity=gi.severity,
+                    message=gi.message,
+                ))
 
         errors = [i for i in issues if i.severity == "error"]
         warnings = [i for i in issues if i.severity == "warning"]

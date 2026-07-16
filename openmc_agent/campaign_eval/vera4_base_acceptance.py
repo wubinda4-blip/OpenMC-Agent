@@ -299,6 +299,9 @@ def run_full_acceptance(
     # Level C: Geometry
     result.checks.extend(check_geometry_level(plan))
 
+    # Level F: Grid geometry (VERA4-specific)
+    result.checks.extend(check_grid_geometry_level(plan))
+
     # Level D: XML (if provided)
     if xml_dir and xml_dir.exists():
         xml_checks = check_xml_level(xml_dir)
@@ -317,6 +320,178 @@ def run_full_acceptance(
         "failed_codes": result.failed_codes,
     }
     return result
+
+
+def check_grid_geometry_level(plan: Any) -> list[AcceptanceCheck]:
+    """Level F: Grid geometry acceptance — VERA4-specific quantity checks.
+
+    These checks hardcode VERA4 expected counts (8 bands, 72 instances,
+    18 end grids, 54 middle grids).  The generic validator in
+    ``grid_geometry_validation.py`` handles reactor-neutral checks.
+    """
+    from openmc_agent.plan_builder.grid_geometry_validation import (
+        build_grid_geometry_reachability_report,
+        validate_grid_geometry_materialization,
+    )
+
+    checks: list[AcceptanceCheck] = []
+    model = plan.complex_model
+    if model is None or model.core is None:
+        checks.append(AcceptanceCheck(
+            code="grid.model_present", passed=False,
+            message="No complex_model/core", level="F",
+        ))
+        return checks
+
+    overlays = [
+        ov for ov in (model.core.axial_overlays or [])
+        if getattr(ov, "overlay_kind", None) == "spacer_grid"
+        and getattr(ov, "geometry_mode", "skeleton") != "skeleton"
+    ]
+
+    # --- Grid band count ---
+    checks.append(AcceptanceCheck(
+        code="grid.band_count",
+        passed=len(overlays) == 8,
+        message=f"grid_bands={len(overlays)} expected=8",
+        level="F",
+    ))
+
+    # --- Physical instances: 8 bands × 9 assemblies = 72 ---
+    core_lat = next((l for l in model.lattices if l.id == model.core.lattice_id), None)
+    n_assemblies = 0
+    if core_lat and core_lat.universe_pattern:
+        n_assemblies = sum(len(row) for row in core_lat.universe_pattern)
+    expected_instances = len(overlays) * n_assemblies if overlays else 0
+    checks.append(AcceptanceCheck(
+        code="grid.instance_count",
+        passed=n_assemblies > 0 and expected_instances == 72,
+        message=f"instances={expected_instances} ({len(overlays)}×{n_assemblies}) expected=72",
+        level="F",
+    ))
+
+    # --- End grids (Inconel) vs Middle grids (Zircaloy) ---
+    end_grids = [ov for ov in overlays if getattr(ov, "material_id", "") == "inconel718"]
+    mid_grids = [ov for ov in overlays if getattr(ov, "material_id", "") == "zircaloy4"]
+    checks.append(AcceptanceCheck(
+        code="grid.end_grid_count",
+        passed=len(end_grids) == 2,
+        message=f"end_grids={len(end_grids)} expected=2",
+        level="F",
+    ))
+    checks.append(AcceptanceCheck(
+        code="grid.middle_grid_count",
+        passed=len(mid_grids) == 6,
+        message=f"middle_grids={len(mid_grids)} expected=6",
+        level="F",
+    ))
+
+    # --- Grid-decorated universes exist ---
+    decorated = [u for u in model.universes if "__grid__" in u.id]
+    checks.append(AcceptanceCheck(
+        code="grid.decorated_universes_exist",
+        passed=len(decorated) > 0,
+        message=f"decorated_universes={len(decorated)}",
+        level="F",
+    ))
+
+    # --- Lattices reference decorated IDs ---
+    lattices_with_grid = []
+    for lat in model.lattices:
+        for row in (lat.universe_pattern or []):
+            for uid in row:
+                if "__grid__" in uid:
+                    lattices_with_grid.append(lat.id)
+                    break
+            else:
+                continue
+            break
+    checks.append(AcceptanceCheck(
+        code="grid.lattices_reference_decorated",
+        passed=len(lattices_with_grid) > 0,
+        message=f"lattices_with_grid={len(lattices_with_grid)}",
+        level="F",
+    ))
+
+    # --- Grid materials reachable ---
+    val_result = validate_grid_geometry_materialization(plan)
+    checks.append(AcceptanceCheck(
+        code="grid.validator_passes",
+        passed=val_result.ok,
+        message=f"validator_ok={val_result.ok} errors={len(val_result.errors)}",
+        level="F",
+    ))
+
+    # --- Reachability report ---
+    rep = build_grid_geometry_reachability_report(plan)
+    checks.append(AcceptanceCheck(
+        code="grid.reachability_passes",
+        passed=rep.result == "pass",
+        message=f"reachability={rep.result} missing={len(rep.missing_refs)} unreachable={len(rep.unreachable_refs)}",
+        level="F",
+    ))
+
+    # --- Frame cells exist ---
+    frame_cells = []
+    for uv in decorated:
+        for cid in (uv.cell_ids or []):
+            cell = next((c for c in model.cells if c.id == cid), None)
+            if cell and ("grid_frame" in (cell.component_role or "").lower()
+                         or "grid_frame" in cid.lower()):
+                frame_cells.append(cid)
+    checks.append(AcceptanceCheck(
+        code="grid.frame_cells_exist",
+        passed=len(frame_cells) > 0,
+        message=f"frame_cells={len(frame_cells)}",
+        level="F",
+    ))
+
+    # --- Frame regions exist ---
+    frame_regions = []
+    for cid in frame_cells:
+        cell = next((c for c in model.cells if c.id == cid), None)
+        if cell and cell.region_id:
+            region = next((r for r in model.regions if r.id == cell.region_id), None)
+            if region:
+                frame_regions.append(cell.region_id)
+    checks.append(AcceptanceCheck(
+        code="grid.frame_regions_exist",
+        passed=len(frame_regions) > 0,
+        message=f"frame_regions={len(frame_regions)}",
+        level="F",
+    ))
+
+    # --- Grid material IDs present in material catalog ---
+    grid_mat_ids = {getattr(ov, "material_id", None) for ov in overlays}
+    grid_mat_ids.discard(None)
+    all_mat_ids = {m.id for m in model.materials}
+    missing_mats = grid_mat_ids - all_mat_ids
+    checks.append(AcceptanceCheck(
+        code="grid.materials_in_catalog",
+        passed=len(missing_mats) == 0,
+        message=f"grid_materials={sorted(grid_mat_ids)} missing={sorted(missing_mats)}",
+        level="F",
+    ))
+
+    # --- Assembly gap has no grid material ---
+    # The moderator_outer universe (assembly gap fill) should not contain
+    # any cell referencing a grid material.
+    mod_outer = next((u for u in model.universes if u.id == "moderator_outer"), None)
+    gap_has_grid = False
+    if mod_outer:
+        for cid in (mod_outer.cell_ids or []):
+            cell = next((c for c in model.cells if c.id == cid), None)
+            if cell and cell.fill_type == "material" and cell.fill_id in grid_mat_ids:
+                gap_has_grid = True
+                break
+    checks.append(AcceptanceCheck(
+        code="grid.assembly_gap_no_grid_material",
+        passed=not gap_has_grid,
+        message=f"gap_has_grid_material={gap_has_grid}",
+        level="F",
+    ))
+
+    return checks
 
 
 def check_xml_level(xml_dir: Path) -> list[AcceptanceCheck]:
@@ -386,6 +561,7 @@ __all__ = [
     "check_facts_level",
     "check_plan_level",
     "check_geometry_level",
+    "check_grid_geometry_level",
     "check_xml_level",
     "check_runtime_level",
     "run_full_acceptance",
