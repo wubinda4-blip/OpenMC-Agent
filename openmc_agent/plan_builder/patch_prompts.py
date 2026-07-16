@@ -301,13 +301,15 @@ Minimal example (family replacement for a plenum layer):
 Requested patch type: axial_overlays
 Schema: {{"patch_type": "axial_overlays", "overlays": [{{"overlay_id", "overlay_kind",
   "z_min_cm", "z_max_cm", "target_lattice_id", "material_id", "geometry_mode",
-  "through_path_preserved", "requires_human_confirmation", "assumptions": []}}]}}
+  "total_mass_g", "through_path_preserved", "requires_human_confirmation", "assumptions": []}}]}}
 
 Rules:
 - Spacer grids MUST be overlays, NOT material slabs.
 - When the source provides grid mass or density, use geometry_mode="mass_conserving_outer_frame"
   with target_lattice_id="assembly_lattice", material_id, and total_mass_g set from the source.
   This preserves through-paths (fuel, clad, guide tubes) while adding the grid frame.
+- total_mass_g is REQUIRED for geometry_mode="mass_conserving_outer_frame". Read the grid
+  mass per assembly from the source document (e.g., end grid 1017 g, middle grid 875 g).
 - Only use geometry_mode="homogenized_open_region" when mass data is truly unavailable.
 - target_lattice_id should be "assembly_lattice".
 - If grid z positions are unknown, use geometry_mode="skeleton" with requires_human_confirmation=true.
@@ -316,7 +318,8 @@ Minimal example (1 overlay):
 {{"patch_type": "axial_overlays", "overlays": [
   {{"overlay_id": "grid_1", "overlay_kind": "spacer_grid", "z_min_cm": 50.0, "z_max_cm": 52.0,
     "target_lattice_id": "assembly_lattice", "material_id": "grid_mat",
-    "geometry_mode": "mass_conserving_outer_frame", "through_path_preserved": true}}
+    "geometry_mode": "mass_conserving_outer_frame", "total_mass_g": 1017.0,
+    "through_path_preserved": true}}
 ]}}""",
 
     "settings": """\
