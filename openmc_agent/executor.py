@@ -2046,8 +2046,15 @@ def _reconcile_plot_origins(
             # boundary, the slice hits no cell and the PNG is blank. Move z
             # to the active-fuel mid-plane so the cross-section shows pins.
             af = next(
-                (L for L in spec.core.axial_layers if L.fill.type == "lattice"), None
+                (L for L in spec.core.axial_layers
+                 if L.id == "active_fuel" and L.fill.type == "lattice"),
+                None,
             )
+            if af is None:
+                af = next(
+                    (L for L in spec.core.axial_layers if L.fill.type == "lattice"),
+                    None,
+                )
             if af is not None:
                 fuel_z_mid = (af.z_min_cm + af.z_max_cm) / 2.0
                 # Check if current z is on (or very near) any layer boundary.
