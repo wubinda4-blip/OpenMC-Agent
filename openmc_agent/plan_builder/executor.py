@@ -188,6 +188,17 @@ _REFERENCE_CODES: dict[str, str] = {
     "core_layout.pitch_invalid": "core_layout",
     "core_layout.boundary_missing": "core_layout",
     "core_layout.pattern_incomplete": "core_layout",
+    # P2-FULLCORE-2D-B: fuel variant source contract routing
+    "materials.required_fuel_variant_missing": "facts",
+    "materials.fuel_variant_source_id_missing": "facts",
+    "materials.fuel_variant_duplicate_material": "materials",
+    "universes.fuel_material_unreachable": "materials",
+    "universes.multiple_fuel_variants_in_universe": "universes",
+    "universes.fuel_variant_collapsed": "universes",
+    "assembly_catalog.fuel_variant_missing": "facts",
+    "assembly_catalog.fuel_variant_source_mismatch": "facts",
+    "assembly_catalog.fuel_material_mismatch": "universes",
+    "assembly_catalog.distinct_fuel_variants_collapsed": "assembly_catalog",
 }
 
 # Codes that signal scoped-count issues.
@@ -456,6 +467,10 @@ def build_generation_context_from_state(
     material_roles_by_id: dict[str, str] = {}
     known_overlay_summaries: list[dict[str, Any]] = []
     expected_counts: dict[str, int] = {}
+    fuel_variant_requirements: list[dict[str, Any]] = []
+    material_summaries: list[dict[str, Any]] = []
+    universe_summaries: list[dict[str, Any]] = []
+    assembly_fuel_binding_summaries: list[dict[str, Any]] = []
     reference_expected_counts: dict[str, int] = {
         str(k): int(v)
         for k, v in state.metadata.get("reference_expected_counts", {}).items()
@@ -499,6 +514,19 @@ def build_generation_context_from_state(
                 if content.get(flag):
                     ctx.extracted_facts[flag] = True
             ctx.strict_benchmark = bool(content.get("benchmark_id"))
+            fvr = content.get("fuel_variant_requirements")
+            if isinstance(fvr, list):
+                for item in fvr:
+                    if isinstance(item, dict) and item.get("variant_id"):
+                        fuel_variant_requirements.append({
+                            k: item.get(k)
+                            for k in (
+                                "variant_id", "source_label",
+                                "enrichment_wt_percent", "density_g_cm3",
+                                "assembly_type_ids", "expected_assembly_count",
+                                "source_note",
+                            )
+                        })
             # P2-FULLCORE-1: propagate multi-assembly fields.
             model_scope = content.get("model_scope")
             if isinstance(model_scope, str):
@@ -546,18 +574,52 @@ def build_generation_context_from_state(
                 role = mat.get("role")
                 if isinstance(mid, str) and isinstance(role, str):
                     material_roles_by_id[mid] = role
+                material_summaries.append({
+                    "material_id": mid,
+                    "role": role,
+                    "source_variant_id": mat.get("source_variant_id"),
+                    "density_g_cm3": mat.get("density_g_cm3"),
+                    "composition_basis": mat.get("composition_basis"),
+                    "composition_status": mat.get("composition_status"),
+                })
 
         elif ptype == "universes":
             for univ in content.get("universes", []):
                 uid = univ.get("universe_id")
                 if isinstance(uid, str):
                     known_universe_ids.append(uid)
+                cell_material_ids: list[str] = []
+                cell_roles: list[str] = []
                 for cell in univ.get("cells", []):
                     cid = cell.get("id")
                     if isinstance(cid, str) and isinstance(uid, str):
                         if cid not in known_cell_ids:
                             known_cell_ids.append(cid)
                         cell_owner_universe_ids.setdefault(cid, []).append(uid)
+                    crole = cell.get("role")
+                    if isinstance(crole, str):
+                        cell_roles.append(crole)
+                    cmat = cell.get("material_id")
+                    if isinstance(cmat, str):
+                        cell_material_ids.append(cmat)
+                fuel_mats = [
+                    cm for cm, cr in zip(cell_material_ids, cell_roles)
+                    if cr == "fuel"
+                ]
+                fuel_variants = [
+                    material_summaries[idx]["source_variant_id"]
+                    for idx, ms in enumerate(material_summaries)
+                    if ms["material_id"] in fuel_mats and ms.get("source_variant_id")
+                ]
+                universe_summaries.append({
+                    "universe_id": uid,
+                    "kind": univ.get("kind"),
+                    "material_ids": cell_material_ids,
+                    "fuel_material_ids": fuel_mats,
+                    "fuel_variant_ids": list(dict.fromkeys(fuel_variants)),
+                    "cell_roles": cell_roles,
+                    "is_active_fuel_capable": len(fuel_mats) > 0,
+                })
 
         elif ptype == "pin_map":
             for group in (
@@ -601,6 +663,28 @@ def build_generation_context_from_state(
                 tid = atype.get("assembly_type_id")
                 if isinstance(tid, str):
                     ctx.known_assembly_type_ids.append(tid)
+                pm = atype.get("pin_map", {})
+                default_uv = pm.get("default_universe_id")
+                resolved_fuel_mats = [
+                    us["fuel_material_ids"]
+                    for us in universe_summaries
+                    if us["universe_id"] == default_uv
+                ]
+                resolved_fuel_mids = (
+                    resolved_fuel_mats[0] if resolved_fuel_mats else []
+                )
+                resolved_fuel_vids: list[str] = []
+                for fmid in resolved_fuel_mids:
+                    for ms in material_summaries:
+                        if ms["material_id"] == fmid and ms.get("source_variant_id"):
+                            resolved_fuel_vids.append(ms["source_variant_id"])
+                assembly_fuel_binding_summaries.append({
+                    "assembly_type_id": tid,
+                    "fuel_variant_id": atype.get("fuel_variant_id"),
+                    "default_universe_id": default_uv,
+                    "resolved_fuel_material_ids": resolved_fuel_mids,
+                    "resolved_fuel_variant_ids": list(dict.fromkeys(resolved_fuel_vids)),
+                })
 
         elif ptype == "localized_insert_profiles":
             for prof in content.get("profiles", []):
@@ -636,6 +720,10 @@ def build_generation_context_from_state(
         or any(s.get("overlay_kind") == "spacer_grid" for s in known_overlay_summaries)
     )
     ctx.expected_spacer_grid_count = expected_counts.get("expected_spacer_grid_count")
+    ctx.fuel_variant_requirements = fuel_variant_requirements
+    ctx.material_summaries = material_summaries
+    ctx.universe_summaries = universe_summaries
+    ctx.assembly_fuel_binding_summaries = assembly_fuel_binding_summaries
 
     state.add_event(
         event_type=EVENT_PATCH_DEPENDENCY_CONTEXT_BUILT,

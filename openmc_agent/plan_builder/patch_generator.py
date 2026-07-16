@@ -84,6 +84,11 @@ class PatchGenerationContext(AgentBaseModel):
     known_insert_profile_ids: list[str] = Field(default_factory=list)
     insert_profile_summaries: list[dict[str, Any]] = Field(default_factory=list)
     movable_insert_facts: dict[str, Any] = Field(default_factory=dict)
+    # P2-FULLCORE-2D-B: fuel variant source contract
+    fuel_variant_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    material_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    universe_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    assembly_fuel_binding_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PatchGenerationAttempt(AgentBaseModel):
@@ -570,6 +575,9 @@ def _to_validation_context(
         expected_counts=gen_context.expected_counts,
         expected_counts_complete=gen_context.expected_counts_complete,
         reference_expected_counts=gen_context.reference_expected_counts,
+        expected_material_roles=[
+            r for r in (gen_context.material_roles_by_id.values())
+        ],
         known_material_ids=gen_context.known_material_ids,
         material_aliases=gen_context.material_aliases,
         known_universe_ids=gen_context.known_universe_ids,
@@ -583,6 +591,20 @@ def _to_validation_context(
         known_overlay_summaries=gen_context.known_overlay_summaries,
         has_spacer_grids=gen_context.has_spacer_grids,
         expected_spacer_grid_count=gen_context.expected_spacer_grid_count,
+        model_scope=gen_context.model_scope,
+        assembly_count=gen_context.assembly_count,
+        core_lattice_size=gen_context.core_lattice_size,
+        assembly_type_counts=gen_context.assembly_type_counts,
+        known_assembly_type_ids=gen_context.known_assembly_type_ids,
+        assembly_pitch_cm=gen_context.assembly_pitch_cm,
+        scoped_expected_counts=gen_context.scoped_expected_counts,
+        known_insert_profile_ids=gen_context.known_insert_profile_ids,
+        insert_profile_summaries=gen_context.insert_profile_summaries,
+        movable_insert_facts=gen_context.movable_insert_facts,
+        fuel_variant_requirements=gen_context.fuel_variant_requirements,
+        material_summaries=gen_context.material_summaries,
+        universe_summaries=gen_context.universe_summaries,
+        assembly_fuel_binding_summaries=gen_context.assembly_fuel_binding_summaries,
     )
 
 

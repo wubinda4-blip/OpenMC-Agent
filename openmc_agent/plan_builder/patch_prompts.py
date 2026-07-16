@@ -55,7 +55,10 @@ Schema fields: benchmark_id, selected_variant, geometry_type, lattice_size [int,
   assembly_count, core_lattice_size [int,int], assembly_type_counts {{type_id: count}},
   scoped_expected_counts [list of {{role, value, scope, assembly_type_id}}],
   boundary_scope, symmetry_description,
-  material_roles [list[str]], missing_facts [list[str]], assumptions [list[str]],
+  material_roles [list[str]],
+  fuel_variant_requirements [list of {{"variant_id", "source_label", "enrichment_wt_percent",
+    "density_g_cm3", "assembly_type_ids", "expected_assembly_count", "source_note"}}],
+  missing_facts [list[str]], assumptions [list[str]],
   source_notes [list[str]].
 
 Rules:
@@ -69,6 +72,9 @@ Rules:
 - Do NOT divide core totals by assembly count to guess per-assembly counts.
 - Legacy fields (expected_pin_count etc.) are for single_assembly only.
 - Unknown facts go into missing_facts, NOT fabricated values.
+- If the source specifies multiple fuel enrichments or compositions, declare each as a
+  fuel_variant_requirements entry with variant_id, enrichment, density, and which
+  assembly_type_ids use it. This is the source-of-truth for fuel identity.
 
 Minimal example (single assembly):
 {{"patch_type": "facts", "benchmark_id": "EXAMPLE", "selected_variant": "3B",
@@ -88,8 +94,9 @@ Reactor-neutral multi-assembly example:
 Requested patch type: materials
 Schema: {{"patch_type": "materials", "materials": [{{"material_id", "name", "role",
   "density_g_cm3", "temperature_K", "composition": {{"element": fraction}},
-  "composition_basis", "composition_status", "source_note", "warnings": [],
-  "mixture_components": [{{"material_id", "volume_fraction"}}]}}], "assumptions": []}}
+  "composition_basis", "composition_status", "source_variant_id", "source_note",
+  "warnings": [], "mixture_components": [{{"material_id", "volume_fraction"}}]}}],
+  "assumptions": []}}
 
 Rules:
 - Do NOT generate universes, cells, lattices, or axial structures.
@@ -104,6 +111,10 @@ Rules:
   Do not represent that mixture only in an assumption and do not substitute pure
   coolant for the structural slab.
 - Cross section paths do NOT belong here.
+- If fuel_variant_requirements are present in Context, define one fuel material per
+  variant. Set source_variant_id on each role="fuel" material to match the variant_id.
+- Do NOT merge different enrichments into one fuel material.
+- Do NOT define a required fuel material and leave it unused.
 
 composition_basis semantics (MUST declare for every material with a composition):
 - "atom_frac": each value is an atom fraction (e.g., U235=3.1 means 3.1 at% U-235).
@@ -163,11 +174,19 @@ Rules:
   If the input does not specify a gap, insert a thin water annulus (0.001–0.01 cm).
 - fuel_pin should have a fuel material cell.
 - Mark through-path cells with protected_through_path=true.
+- If Context shows N distinct fuel_variant_requirements, generate at least N distinct
+  active-fuel universes (one per variant). Each active-fuel universe must use exactly
+  one fuel material whose source_variant_id matches.
+- Do NOT collapse different fuel enrichments into one generic fuel_pin universe.
+- Every required fuel material must be reachable via at least one active-fuel universe.
 
-Minimal example:
+Minimal example (two fuel variants):
 {{"patch_type": "universes", "universes": [
-  {{"universe_id": "fuel_pin", "kind": "fuel_pin", "cells": [
-    {{"id": "fuel", "role": "fuel", "material_id": "fuel_mat", "region_kind": "cylinder"}}
+  {{"universe_id": "fuel_pin_low", "kind": "fuel_pin", "cells": [
+    {{"id": "fuel", "role": "fuel", "material_id": "fuel_low", "region_kind": "cylinder"}}
+  ]}},
+  {{"universe_id": "fuel_pin_high", "kind": "fuel_pin", "cells": [
+    {{"id": "fuel", "role": "fuel", "material_id": "fuel_high", "region_kind": "cylinder"}}
   ]}}
 ]}}""",
 
@@ -370,21 +389,26 @@ Rules:
 - Only output assembly type TEMPLATES — not core placement.
 - Do NOT output a full expanded pin lattice (e.g. 17x17 matrix).
 - Each assembly type outputs ONLY: default universe + sparse special coordinates.
-- Different assembly types CAN share universe IDs.
-- Different assembly types CAN have different localized inserts.
-- Do NOT divide core totals evenly among assembly types.
-- Each type's local structure must come from the requirement document.
-- If the requirement does not provide enough detail for a type, set requires_human_confirmation=true.
+- Different assembly types CAN share universe IDs ONLY when the source facts
+  explicitly show they use the same fuel variant and same base pin geometry.
+- If the source specifies different enrichment, fuel composition, or fuel region
+  for different assembly types, they MUST NOT share the active-fuel default universe.
+- Localized inserts being the same or different must NOT mask a fuel material
+  difference. Check fuel variant first.
+- If fuel_variant_requirements are in Context, set fuel_variant_id on each
+  fuel assembly type to match the variant for its assembly_type_id.
+- default_universe_id must use a universe whose fuel material has the same
+  source_variant_id as the assembly type's fuel_variant_id.
 - The multiplicity_hint is advisory; the core_layout patch determines actual placement.
 
-Reactor-neutral example (2 types, 3x3 lattice):
+Reactor-neutral example (2 types, different fuel variants):
 {{"patch_type": "assembly_catalog",
   "assembly_types": [
-    {{"assembly_type_id": "type_a", "pin_map": {{
-      "lattice_size": [3, 3], "default_universe_id": "fuel_cell",
+    {{"assembly_type_id": "type_a", "fuel_variant_id": "fuel_low", "pin_map": {{
+      "lattice_size": [3, 3], "default_universe_id": "fuel_pin_low",
       "guide_tube_coords": [[1, 1]]}}}},
-    {{"assembly_type_id": "type_b", "pin_map": {{
-      "lattice_size": [3, 3], "default_universe_id": "fuel_cell",
+    {{"assembly_type_id": "type_b", "fuel_variant_id": "fuel_high", "pin_map": {{
+      "lattice_size": [3, 3], "default_universe_id": "fuel_pin_high",
       "guide_tube_coords": [[0, 0], [2, 2]],
       "localized_insert_intents": [
         {{"insert_id": "abs1", "insert_kind": "absorber_insert",
@@ -635,6 +659,8 @@ def _context_block(context: Any | None) -> str:
         "assembly_pitch_cm", "scoped_expected_counts",
         "known_insert_profile_ids", "insert_profile_summaries",
         "movable_insert_facts",
+        "fuel_variant_requirements", "material_summaries",
+        "universe_summaries", "assembly_fuel_binding_summaries",
     ):
         val = getattr(context, attr, None)
         if val is None:

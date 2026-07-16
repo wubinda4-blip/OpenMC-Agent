@@ -114,6 +114,11 @@ class PatchValidationContext(AgentBaseModel):
     known_insert_profile_ids: list[str] = Field(default_factory=list)
     insert_profile_summaries: list[dict[str, Any]] = Field(default_factory=list)
     movable_insert_facts: dict[str, Any] = Field(default_factory=dict)
+    # P2-FULLCORE-2D-B: fuel variant source contract
+    fuel_variant_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    material_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    universe_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    assembly_fuel_binding_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +393,53 @@ def _validate_materials(
                     path=f"materials[{mat.material_id}].role",
                 ))
 
+    # P2-FULLCORE-2D-B: fuel variant source contract checks
+    if context.fuel_variant_requirements:
+        required_variants = {
+            v["variant_id"]: v for v in context.fuel_variant_requirements
+            if v.get("variant_id")
+        }
+        fuel_mats_by_variant: dict[str, list[str]] = {vid: [] for vid in required_variants}
+        for mat in patch.materials:
+            if mat.role == "fuel" and mat.source_variant_id:
+                if mat.source_variant_id in fuel_mats_by_variant:
+                    fuel_mats_by_variant[mat.source_variant_id].append(mat.material_id)
+                else:
+                    issues.append(PatchValidationIssue(
+                        code="materials.fuel_variant_source_id_missing",
+                        severity="error",
+                        message=(
+                            f"fuel material {mat.material_id!r} has source_variant_id "
+                            f"{mat.source_variant_id!r} not declared in facts"
+                        ),
+                        path=f"materials[{mat.material_id}].source_variant_id",
+                        actual=mat.source_variant_id,
+                    ))
+        for vid, req in required_variants.items():
+            mats = fuel_mats_by_variant.get(vid, [])
+            if len(mats) == 0:
+                issues.append(PatchValidationIssue(
+                    code="materials.required_fuel_variant_missing",
+                    severity="error",
+                    message=(
+                        f"required fuel variant {vid!r} (enrichment="
+                        f"{req.get('enrichment_wt_percent')}) has no matching "
+                        f"fuel material with source_variant_id={vid!r}"
+                    ),
+                    path="materials",
+                    expected=vid,
+                ))
+            elif len(mats) > 1:
+                issues.append(PatchValidationIssue(
+                    code="materials.fuel_variant_duplicate_material",
+                    severity="error",
+                    message=(
+                        f"fuel variant {vid!r} mapped to multiple materials: {mats}"
+                    ),
+                    path="materials",
+                    actual=mats,
+                ))
+
     return issues
 
 
@@ -556,6 +608,80 @@ def _validate_universes(
                 message=ri.message,
                 path=ri.path,
                 actual=ri.details,
+            ))
+
+    # P2-FULLCORE-2D-B: fuel variant universe coverage checks
+    if context.fuel_variant_requirements and context.material_summaries:
+        required_variants = {
+            v["variant_id"] for v in context.fuel_variant_requirements
+            if v.get("variant_id")
+        }
+        # Build map: material_id -> source_variant_id from upstream materials
+        mat_to_variant: dict[str, str] = {}
+        for ms in context.material_summaries:
+            mid = ms.get("material_id")
+            vid = ms.get("source_variant_id")
+            if mid and vid:
+                mat_to_variant[mid] = vid
+
+        # Check each active-fuel universe's fuel cell references exactly one variant
+        for univ in patch.universes:
+            fuel_variants_in_universe: set[str] = set()
+            for cell in univ.cells:
+                if cell.role == "fuel" and cell.material_id:
+                    vid = mat_to_variant.get(cell.material_id)
+                    if vid:
+                        fuel_variants_in_universe.add(vid)
+            if len(fuel_variants_in_universe) > 1:
+                issues.append(PatchValidationIssue(
+                    code="universes.multiple_fuel_variants_in_universe",
+                    severity="error",
+                    message=(
+                        f"universe {univ.universe_id!r} contains fuel materials "
+                        f"from multiple variants: {sorted(fuel_variants_in_universe)}"
+                    ),
+                    path=f"universes[{univ.universe_id}]",
+                    actual=sorted(fuel_variants_in_universe),
+                ))
+
+        # Check each required variant has at least one reachable active-fuel universe
+        reachable_variants: set[str] = set()
+        for univ in patch.universes:
+            for cell in univ.cells:
+                if cell.role == "fuel" and cell.material_id:
+                    vid = mat_to_variant.get(cell.material_id)
+                    if vid:
+                        reachable_variants.add(vid)
+
+        for vid in required_variants - reachable_variants:
+            issues.append(PatchValidationIssue(
+                code="universes.fuel_material_unreachable",
+                severity="error",
+                message=(
+                    f"required fuel variant {vid!r} is not reachable via any "
+                    f"active-fuel universe (fuel cell with role='fuel')"
+                ),
+                path="universes",
+                expected=vid,
+            ))
+
+        # Detect collapse: all required variants present in materials but
+        # only one active-fuel universe with role='fuel' cell
+        fuel_universe_count = sum(
+            1 for u in patch.universes
+            if any(c.role == "fuel" for c in u.cells)
+        )
+        if len(required_variants) > 1 and fuel_universe_count == 1:
+            issues.append(PatchValidationIssue(
+                code="universes.fuel_variant_collapsed",
+                severity="error",
+                message=(
+                    f"{len(required_variants)} distinct fuel variants required but "
+                    f"only 1 active-fuel universe generated — variants likely collapsed"
+                ),
+                path="universes",
+                expected=len(required_variants),
+                actual=fuel_universe_count,
             ))
 
     return issues
@@ -1432,6 +1558,99 @@ def _validate_assembly_catalog(
                     ),
                     path=f"assembly_types[{atype.assembly_type_id}].pin_map.localized_insert_intents",
                 ))
+
+    # P2-FULLCORE-2D-B: fuel variant binding checks
+    if ctx.fuel_variant_requirements and ctx.universe_summaries:
+        variant_by_assembly: dict[str, str] = {}
+        for req in ctx.fuel_variant_requirements:
+            vid = req.get("variant_id")
+            if vid:
+                for atid in req.get("assembly_type_ids", []):
+                    variant_by_assembly[atid] = vid
+
+        uv_fuel_variants: dict[str, list[str]] = {}
+        for us in ctx.universe_summaries:
+            uid = us.get("universe_id")
+            if uid:
+                uv_fuel_variants[uid] = us.get("fuel_variant_ids", [])
+
+        for atype in patch.assembly_types:
+            tid = atype.assembly_type_id
+            expected_vid = variant_by_assembly.get(tid)
+            if expected_vid is None:
+                continue
+
+            if atype.fuel_variant_id is None:
+                issues.append(PatchValidationIssue(
+                    code="assembly_catalog.fuel_variant_missing",
+                    severity="error",
+                    message=(
+                        f"assembly type {tid!r} should have fuel_variant_id="
+                        f"{expected_vid!r} (from facts) but field is missing"
+                    ),
+                    path=f"assembly_types[{tid}].fuel_variant_id",
+                    expected=expected_vid,
+                ))
+                continue
+
+            if atype.fuel_variant_id != expected_vid:
+                issues.append(PatchValidationIssue(
+                    code="assembly_catalog.fuel_variant_source_mismatch",
+                    severity="error",
+                    message=(
+                        f"assembly type {tid!r} fuel_variant_id="
+                        f"{atype.fuel_variant_id!r} does not match facts "
+                        f"variant {expected_vid!r}"
+                    ),
+                    path=f"assembly_types[{tid}].fuel_variant_id",
+                    expected=expected_vid,
+                    actual=atype.fuel_variant_id,
+                ))
+
+            default_uv = atype.pin_map.default_universe_id
+            uv_vids = uv_fuel_variants.get(default_uv, [])
+            if uv_vids and expected_vid not in uv_vids:
+                issues.append(PatchValidationIssue(
+                    code="assembly_catalog.fuel_material_mismatch",
+                    severity="error",
+                    message=(
+                        f"assembly type {tid!r} default_universe_id={default_uv!r} "
+                        f"has fuel variant(s) {uv_vids} but expected {expected_vid!r}"
+                    ),
+                    path=f"assembly_types[{tid}].pin_map.default_universe_id",
+                    expected=expected_vid,
+                    actual=uv_vids,
+                ))
+
+        # Check for variant collapse: multiple distinct expected variants
+        # sharing the same default universe
+        if len(set(variant_by_assembly.values())) > 1:
+            uv_to_types: dict[str, list[str]] = {}
+            for atype in patch.assembly_types:
+                tid = atype.assembly_type_id
+                expected_vid = variant_by_assembly.get(tid)
+                if expected_vid is None:
+                    continue
+                uv = atype.pin_map.default_universe_id
+                uv_to_types.setdefault(uv, []).append(
+                    f"{tid}({expected_vid})"
+                )
+            for uv, type_list in uv_to_types.items():
+                vids_in_group = {
+                    variant_by_assembly.get(t.split("(")[0])
+                    for t in type_list
+                }
+                if len(vids_in_group) > 1:
+                    issues.append(PatchValidationIssue(
+                        code="assembly_catalog.distinct_fuel_variants_collapsed",
+                        severity="error",
+                        message=(
+                            f"default_universe_id {uv!r} shared by assembly types "
+                            f"with different fuel variants: {type_list}"
+                        ),
+                        path=f"assembly_types",
+                        actual=type_list,
+                    ))
 
     return issues
 

@@ -111,6 +111,23 @@ class ScopedExpectedCount(_PatchBase):
     requires_human_confirmation: bool = False
 
 
+class FuelVariantRequirementPatchItem(_PatchBase):
+    """A distinct fuel variant required by the source document.
+
+    Reactor-neutral: each entry records one fuel enrichment / composition
+    variant and which assembly types use it.  This drives the downstream
+    material → universe → assembly-type binding contract.
+    """
+
+    variant_id: str
+    source_label: str | None = None
+    enrichment_wt_percent: float | None = None
+    density_g_cm3: float | None = None
+    assembly_type_ids: list[str] = Field(default_factory=list)
+    expected_assembly_count: int | None = None
+    source_note: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # FactsPatch
 # ---------------------------------------------------------------------------
@@ -156,6 +173,10 @@ class FactsPatch(_PatchBase):
     symmetry_description: str | None = None
 
     material_roles: list[str] = Field(default_factory=list)
+    fuel_variant_requirements: list[FuelVariantRequirementPatchItem] = Field(
+        default_factory=list,
+        description="Distinct fuel variants required by the source document.",
+    )
     missing_facts: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     source_notes: list[str] = Field(default_factory=list)
@@ -202,6 +223,7 @@ class MaterialSpecPatch(_PatchBase):
     source_note: str | None = None
     warnings: list[str] = Field(default_factory=list)
     mixture_components: list[MixtureComponentPatch] = Field(default_factory=list)
+    source_variant_id: str | None = None
     variant_scope: str | None = None
     derivation_method: str | None = None
 
@@ -625,6 +647,7 @@ class AssemblyTypePatchItem(_PatchBase):
     assembly_type_id: str
     name: str = ""
     role: str = ""
+    fuel_variant_id: str | None = None
     multiplicity_hint: int | None = None
     pin_map: AssemblyPinMapPatchItem
     axial_profile_id: str | None = None
