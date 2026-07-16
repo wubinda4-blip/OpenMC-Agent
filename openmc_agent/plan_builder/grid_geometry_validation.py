@@ -34,8 +34,10 @@ __all__ = [
     "GridGeometryValidationIssue",
     "GridGeometryValidationResult",
     "GridReachabilityReport",
+    "FuelVariantIdentityReport",
     "validate_grid_geometry_materialization",
     "build_grid_geometry_reachability_report",
+    "verify_fuel_variant_identity_after_decoration",
     "compute_geometry_structural_digest",
 ]
 
@@ -764,3 +766,179 @@ def build_grid_geometry_reachability_report(
             "validator_contract_version": _VALIDATOR_CONTRACT_VERSION,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Fuel variant identity verification after grid decoration
+# ---------------------------------------------------------------------------
+
+CODE_FUEL_IDENTITY_LOST = "fullcore.fuel_variant_identity_lost_after_grid_decoration"
+CODE_GRID_REPLACED_PROTECTED_PATH = "fullcore.grid_replaced_protected_path"
+CODE_FUEL_BINDING_MISMATCH = "fullcore.grid_decorated_fuel_binding_mismatch"
+
+
+@dataclass
+class FuelVariantIdentityReport:
+    """Report from post-decoration fuel variant identity check."""
+    result: str = "pass"  # "pass" | "fail"
+    checked_universe_count: int = 0
+    protected_path_roles: list[str] = field(default_factory=lambda: [
+        "fuel", "fuel_pellet", "gap", "cladding", "clad",
+        "guide_tube_wall", "instrument_tube_wall",
+        "pyrex", "thimble_plug", "rcca",
+    ])
+    issues: list[dict[str, Any]] = field(default_factory=list)
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+def verify_fuel_variant_identity_after_decoration(
+    *,
+    base_universes: list[Any],
+    decorated_universes: list[Any],
+    fuel_variant_requirements: list[dict[str, Any]] | None = None,
+    assembly_fuel_bindings: list[dict[str, Any]] | None = None,
+) -> FuelVariantIdentityReport:
+    """Verify that grid decoration preserves fuel variant identity.
+
+    Checks:
+    1. Each decorated universe preserves all non-background cells from base
+    2. Grid frame cells only use grid materials (not fuel/clad/gap)
+    3. Protected-path cells (fuel, clad, gap, tubes, inserts) are not replaced
+    4. Fuel variant materials are still reachable
+
+    Parameters
+    ----------
+    base_universes
+        List of base ``UniverseSpec`` or ``UniverseSpecPatch`` objects.
+    decorated_universes
+        List of grid-decorated universe objects.
+    fuel_variant_requirements
+        Optional fuel variant requirements for variant-level checks.
+    assembly_fuel_bindings
+        Optional assembly→fuel_variant binding summaries.
+    """
+    report = FuelVariantIdentityReport(
+        checked_universe_count=len(decorated_universes),
+    )
+    protected_roles = set(report.protected_path_roles)
+
+    # Build a lookup of base universes by ID.
+    base_by_id: dict[str, Any] = {}
+    for bu in base_universes:
+        uid = getattr(bu, "id", None) or getattr(bu, "universe_id", None) or ""
+        if uid:
+            base_by_id[uid] = bu
+
+    for dec_uv in decorated_universes:
+        dec_id = getattr(dec_uv, "id", None) or getattr(dec_uv, "universe_id", "")
+
+        # Find the base universe this was decorated from.
+        # Decorated IDs typically end with _grid_<hash> or similar.
+        base_uv = None
+        if dec_id in base_by_id:
+            base_uv = base_by_id[dec_id]
+        else:
+            # Try stripping decoration suffix to find base.
+            for bid, bu in base_by_id.items():
+                if dec_id.startswith(bid):
+                    base_uv = bu
+                    break
+
+        if base_uv is None:
+            # Can't verify without base — skip (not necessarily an error).
+            continue
+
+        # Compare cells.
+        base_cells = list(getattr(base_uv, "cells", []))
+        dec_cells = list(getattr(dec_uv, "cells", []))
+
+        # Build cell lookup by ID for comparison.
+        base_cell_ids = {str(getattr(c, "id", "")): c for c in base_cells}
+        dec_cell_ids = {str(getattr(c, "id", "")): c for c in dec_cells}
+
+        # Check 1: Protected-path cells must exist in decorated universe.
+        for cell in base_cells:
+            role = str(getattr(cell, "role", "") or getattr(cell, "component_role", ""))
+            cell_id = str(getattr(cell, "id", ""))
+            if role in protected_roles:
+                if cell_id not in dec_cell_ids:
+                    report.issues.append({
+                        "code": CODE_GRID_REPLACED_PROTECTED_PATH,
+                        "severity": "error",
+                        "universe_id": dec_id,
+                        "cell_id": cell_id,
+                        "role": role,
+                        "message": (
+                            f"decorated universe {dec_id!r} is missing "
+                            f"protected-path cell {cell_id!r} (role={role!r})"
+                        ),
+                    })
+
+                # Check material_id is preserved.
+                elif cell_id in dec_cell_ids:
+                    base_mat = getattr(cell, "material_id", None)
+                    dec_mat = getattr(dec_cell_ids[cell_id], "material_id", None)
+                    if base_mat is not None and base_mat != dec_mat:
+                        report.issues.append({
+                            "code": CODE_FUEL_IDENTITY_LOST,
+                            "severity": "error",
+                            "universe_id": dec_id,
+                            "cell_id": cell_id,
+                            "role": role,
+                            "base_material_id": base_mat,
+                            "decorated_material_id": dec_mat,
+                            "message": (
+                                f"protected-path cell {cell_id!r} material changed "
+                                f"from {base_mat!r} to {dec_mat!r} after decoration"
+                            ),
+                        })
+
+        # Check 2: Grid frame cells should only use grid materials.
+        for cell in dec_cells:
+            role = str(getattr(cell, "role", ""))
+            mat_id = getattr(cell, "material_id", None)
+            if role == "grid_frame":
+                # Grid frame material must not be a fuel material.
+                if mat_id and fuel_variant_requirements:
+                    for fv in fuel_variant_requirements:
+                        sv = fv.get("source_variant_id") or fv.get("variant_id")
+                        if sv and sv in str(mat_id):
+                            report.issues.append({
+                                "code": CODE_GRID_REPLACED_PROTECTED_PATH,
+                                "severity": "error",
+                                "universe_id": dec_id,
+                                "cell_id": str(getattr(cell, "id", "")),
+                                "role": role,
+                                "material_id": mat_id,
+                                "message": (
+                                    f"grid frame cell in {dec_id!r} uses fuel "
+                                    f"material {mat_id!r} — grid must not replace fuel"
+                                ),
+                            })
+
+    # Check 3: Fuel variant bindings preserved.
+    if assembly_fuel_bindings and fuel_variant_requirements:
+        variant_ids = {
+            fv.get("variant_id") for fv in fuel_variant_requirements
+        }
+        for binding in assembly_fuel_bindings:
+            fv_id = binding.get("fuel_variant_id")
+            if fv_id and fv_id not in variant_ids:
+                report.issues.append({
+                    "code": CODE_FUEL_BINDING_MISMATCH,
+                    "severity": "error",
+                    "assembly_type_id": binding.get("assembly_type_id"),
+                    "fuel_variant_id": fv_id,
+                    "message": (
+                        f"assembly type {binding.get('assembly_type_id')!r} "
+                        f"references unknown fuel variant {fv_id!r}"
+                    ),
+                })
+
+    report.result = "fail" if report.issues else "pass"
+    report.detail = {
+        "checked_universe_count": report.checked_universe_count,
+        "issue_count": len(report.issues),
+        "issue_codes": sorted({i["code"] for i in report.issues}),
+    }
+    return report

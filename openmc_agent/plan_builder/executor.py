@@ -270,6 +270,7 @@ def route_retry(
         "patch.core_layout.",
         "patch.schema_invalid",
         "patch.duplicate_id",
+        "patch_retry.",
     )
     if any(code.startswith(local_prefixes) for code in error_codes):
         return RetryDecision(
