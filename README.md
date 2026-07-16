@@ -181,6 +181,7 @@ make model INPUT=Input/VERA2_problem.md BENCHMARK=VERA2 VARIANT=2A ALLOW_REAL_LL
 
 # 切换 LLM
 make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
+make model INPUT=Input/VERA3_problem.md MODEL=ds:deepseek-v4-flash ALLOW_REAL_LLM=1
 
 # 不调 LLM，只看 feature detection（秒级，不花钱）
 make model-dry INPUT=Input/VERA3_problem.md
@@ -188,6 +189,23 @@ make model-dry INPUT=Input/VERA3_problem.md
 # 带 OpenMC smoke test（输出 keff）
 make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 SMOKE=1
 ```
+
+**切换到 DS（SenseNova）模型**：
+
+```bash
+# 1. 设置 API key
+export SENSENOVA_API_KEY="sk-xxx"
+
+# 2. 用 ds: 前缀指定模型
+make model INPUT=Input/VERA3_problem.md MODEL=ds:deepseek-v4-flash ALLOW_REAL_LLM=1
+
+# 或者直接用 python
+conda run --no-capture-output -n openmc-env python scripts/run_model.py \
+    --input Input/VERA3_problem.md --variant 3A \
+    --model ds:deepseek-v4-flash --allow-real-llm
+```
+
+可用 provider 前缀：`deepseek:`（DeepSeek 官方）、`ds:`（SenseNova 托管）、`zhipu:`（智谱）、`fake`（不调 LLM）。
 
 运行时进度（`[node:...]`、`[llm] ...`）默认输出到 stderr。通过 `LOG_LEVEL` 控制：
 
@@ -464,6 +482,7 @@ make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2 ALLOW_REAL_LL
 
 # Switch LLM model
 make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
+make model INPUT=Input/VERA3_problem.md MODEL=ds:deepseek-v4-flash ALLOW_REAL_LLM=1
 
 # Dry-run (resolve + feature detection, no LLM/OpenMC)
 make model-dry INPUT=Input/VERA3_problem.md
@@ -471,6 +490,15 @@ make model-dry INPUT=Input/VERA3_problem.md
 # Run with OpenMC smoke test (keff)
 make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 SMOKE=1
 ```
+
+**Using the DS (SenseNova) model**: set `SENSENOVA_API_KEY` and use the `ds:` provider prefix:
+
+```bash
+export SENSENOVA_API_KEY="sk-xxx"
+make model INPUT=Input/VERA3_problem.md MODEL=ds:deepseek-v4-flash ALLOW_REAL_LLM=1
+```
+
+Available provider prefixes: `deepseek:` (DeepSeek official), `ds:` (SenseNova-hosted), `zhipu:` (Zhipu), `fake` (no LLM call).
 
 Output goes to `data/runs/<BENCHMARK>_<VARIANT>/` (overridable via `OUT=...`). Artifacts include `simulation_plan.json`, `model.py`, `incremental/material_composition_report.json`, and traces.
 
