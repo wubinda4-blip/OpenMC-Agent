@@ -25,6 +25,9 @@ ZHIPU_DEFAULT_MAX_RETRIES = 2
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 180.0
 DEEPSEEK_DEFAULT_MAX_RETRIES = 2
+DS_DEFAULT_BASE_URL = "https://token.sensenova.cn/v1/chat/completions"
+DS_DEFAULT_TIMEOUT_SECONDS = 180.0
+DS_DEFAULT_MAX_RETRIES = 2
 LLM_HEARTBEAT_DEFAULT_SECONDS = 10.0
 
 _logger = logging.getLogger("openmc_agent")
@@ -259,6 +262,22 @@ class DeepSeekChatClient(OpenAICompatibleChatClient):
         if "reasoner" in model_name:
             payload.pop("temperature", None)
         return payload
+
+
+class DSChatClient(OpenAICompatibleChatClient):
+    """Client for DeepSeek models served via SenseNova (https://token.sensenova.cn).
+
+    SenseNova hosts DeepSeek models behind an OpenAI-compatible endpoint.
+    The provider prefix is ``ds``, e.g. ``ds:deepseek-v4-flash``.
+    """
+
+    provider = "ds"
+    default_base_url = DS_DEFAULT_BASE_URL
+    api_key_env = "SENSENOVA_API_KEY"
+    timeout_env = "SENSENOVA_TIMEOUT_SECONDS"
+    max_retries_env = "SENSENOVA_MAX_RETRIES"
+    default_timeout = DS_DEFAULT_TIMEOUT_SECONDS
+    default_max_retries = DS_DEFAULT_MAX_RETRIES
 
 
 class _Chat:
@@ -575,6 +594,8 @@ def _client_for_model(model: str) -> Any:
         return ZhipuChatClient()
     if provider == "deepseek":
         return DeepSeekChatClient()
+    if provider == "ds":
+        return DSChatClient()
     return aisuite.Client()
 
 
