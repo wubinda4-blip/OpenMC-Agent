@@ -334,11 +334,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-incremental", action="store_true",
         help="Use the monolithic planner instead of the incremental executor.",
     )
+    parser.add_argument("--log-level", default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Logging level (default: INFO)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    from openmc_agent.logging_setup import configure_logging
+    configure_logging(args.log_level)
 
     if args.model != "fake" and not args.allow_real_llm:
         print(

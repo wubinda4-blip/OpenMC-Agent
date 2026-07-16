@@ -18,6 +18,8 @@ MAT_POLICY ?= apply_alloy_library
 OUT      ?= data/runs/$(BENCHMARK)_$(VARIANT)
 # Set ALLOW_REAL_LLM=1 on the command line to enable non-fake models
 ALLOW_REAL_LLM ?=
+# Log level: INFO (default, shows [llm]/[node:] progress), WARNING (quiet), DEBUG
+LOG_LEVEL ?= INFO
 
 # ---------------------------------------------------------------------------
 # Environment checks
@@ -64,6 +66,7 @@ model:
 		--reference-patch-policy $(REF_POLICY) \
 		--material-policy $(MAT_POLICY) \
 		--out $(OUT) \
+		--log-level $(LOG_LEVEL) \
 		$(if $(ALLOW_REAL_LLM),--allow-real-llm) \
 		$(if $(SMOKE),--smoke-test) \
 		$(if $(FULL),--full)

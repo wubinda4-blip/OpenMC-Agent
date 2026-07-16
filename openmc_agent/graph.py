@@ -5,6 +5,7 @@ from typing import Any, Callable, Literal, TypedDict
 
 import functools
 import json
+import logging
 import re
 import shutil
 import sqlite3
@@ -120,6 +121,8 @@ from openmc_agent.workflow_trace import (
     summarize_retrieval_context as summarize_retrieval_context_for_trace,
     summarize_validation_report,
 )
+
+_logger = logging.getLogger("openmc_agent")
 
 
 GenerateSpecFn = Callable[..., StructuredOutputResult[SimulationSpec]]
@@ -7984,5 +7987,4 @@ def _truncate_text(text: str, limit: int = 1200) -> str:
 
 
 def _progress(state: GraphState, node: str, message: str) -> None:
-    if state.get("verbose"):
-        print(f"[node:{node}] {message}", file=sys.stderr, flush=True)
+    _logger.info("[node:%s] %s", node, message)

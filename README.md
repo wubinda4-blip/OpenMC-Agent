@@ -189,6 +189,16 @@ make model-dry INPUT=Input/VERA3_problem.md
 make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 SMOKE=1
 ```
 
+运行时进度（`[node:...]`、`[llm] ...`）默认输出到 stderr。通过 `LOG_LEVEL` 控制：
+
+```bash
+make model ... LOG_LEVEL=WARNING   # 静默进度消息
+make model ... LOG_LEVEL=DEBUG     # 更详细诊断
+```
+
+等价的 `--log-level` / `--quiet` 参数也可直接传给 `scripts/run_model.py`。
+环境变量 `OPENMC_AGENT_LOG_LEVEL` 作为全局兜底。
+
 输出写入 `data/runs/<BENCHMARK>_<VARIANT>/`，包含 `simulation_plan.json`、`model.py`、`incremental/material_composition_report.json` 和 traces。
 
 ### 回归 benchmark（evaluation cases 清单）

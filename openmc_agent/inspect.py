@@ -32,6 +32,7 @@ from openmc_agent.llm import (
     repair_structured_output,
     set_llm_progress,
 )
+from openmc_agent.logging_setup import configure_logging
 from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
 from openmc_agent.repair_proposal import make_repair_proposal_client
 from openmc_agent.retrieval import make_default_investigation_llm
@@ -83,7 +84,7 @@ def inspect_requirement(
     allow_monolithic_fallback: bool = False,
     verbose: bool = False,
 ) -> InspectResult:
-    set_llm_progress(verbose)
+    configure_logging("INFO" if verbose else "WARNING")
     if operating_state:
         requirement = compose_operating_state_requirement(
             requirement, operating_state

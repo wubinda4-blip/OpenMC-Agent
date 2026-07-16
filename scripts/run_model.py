@@ -104,7 +104,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="Use monolithic planner instead of incremental executor")
     parser.add_argument("--dry-run", action="store_true",
                         help="Resolve requirement and show feature detection without calling LLM or OpenMC")
+    parser.add_argument("--log-level", default="INFO",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Logging level (default: INFO)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress progress messages (equivalent to --log-level WARNING)")
     args = parser.parse_args(argv)
+
+    from openmc_agent.logging_setup import configure_logging
+    configure_logging("WARNING" if args.quiet else args.log_level)
 
     input_path = Path(args.input)
     if not input_path.exists():
@@ -148,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  incremental: {not args.no_incremental}")
     print(f"  smoke_test: {args.smoke_test}")
     print(f"  plot_artifacts: {not args.no_plot_artifacts}")
+    print(f"  log_level: {'WARNING' if args.quiet else args.log_level}")
     print()
 
     # --- Dry-run: resolve + feature detection only ---

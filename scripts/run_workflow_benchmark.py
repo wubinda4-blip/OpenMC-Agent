@@ -20,6 +20,10 @@ from openmc_agent.workflow_benchmark import (  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    from openmc_agent.logging_setup import configure_logging
+    configure_logging("INFO" if args.verbose else args.log_level)
+
     mode = args.mode.replace("-", "_")
     if args.model != "fake" and not args.allow_real_llm:
         print(
@@ -135,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-supervisor-max-decisions", type=int, default=5)
     parser.add_argument("--run-supervisor-max-patch-retries", type=int, default=2)
     parser.add_argument("--run-supervisor-max-no-progress", type=int, default=2)
+    parser.add_argument("--log-level", default="WARNING",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                        help="Logging level (default: WARNING for benchmark runs)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Show progress messages (equivalent to --log-level INFO)")
     return parser
 
 

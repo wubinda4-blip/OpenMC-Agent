@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import sys
@@ -26,24 +27,21 @@ DEEPSEEK_DEFAULT_TIMEOUT_SECONDS = 180.0
 DEEPSEEK_DEFAULT_MAX_RETRIES = 2
 LLM_HEARTBEAT_DEFAULT_SECONDS = 10.0
 
-_llm_progress_enabled = False
+_logger = logging.getLogger("openmc_agent")
 
 
 def set_llm_progress(enabled: bool) -> None:
-    """Toggle stderr progress logging for slow LLM HTTP calls.
+    """Toggle LLM progress logging via the ``openmc_agent`` logger level.
 
-    Off by default so library and test usage stays silent. The CLI enables it
-    alongside ``--verbose`` so a long-running remote model call can be told
-    apart from a hung process: every few seconds a heartbeat line confirms the
-    call is still in flight, and request/response timing lines mark when the
-    connection is attempted and when the model actually answers.
+    Backward-compat wrapper: when *enabled* is True the logger is set to INFO
+    so all ``[llm]`` / ``[node:...]`` messages are visible; when False the
+    logger is set to WARNING so progress messages are suppressed.
     """
-    global _llm_progress_enabled
-    _llm_progress_enabled = bool(enabled)
+    _logger.setLevel(logging.INFO if enabled else logging.WARNING)
 
 
 def _llm_log(message: str) -> None:
-    if _llm_progress_enabled:
+    if _logger.isEnabledFor(logging.INFO):
         # print_line atomically moves past any in-place status line so this
         # transition log (POST, stream finished, model responded, errors) gets
         # its own clean row instead of being overprinted by the status.
@@ -57,7 +55,7 @@ def _normalize_log(message: str) -> None:
     visible alongside the request/response logs when a CLI run opts in, and
     silent in library/test usage.
     """
-    if _llm_progress_enabled:
+    if _logger.isEnabledFor(logging.INFO):
         _stderr_status.print_line(f"[normalize] {message}")
 
 
@@ -82,7 +80,7 @@ class _StderrStatus:
     @staticmethod
     def _enabled() -> bool:
         return (
-            _llm_progress_enabled
+            _logger.isEnabledFor(logging.INFO)
             and sys.stderr.isatty()
             and os.getenv("TERM", "") != "dumb"
         )
@@ -148,7 +146,7 @@ def _start_heartbeat(started_at: float) -> _HeartbeatHandle | None:
     Returns ``None`` when progress logging is disabled, so callers pay no
     thread overhead in library or test mode.
     """
-    if not _llm_progress_enabled:
+    if not _logger.isEnabledFor(logging.INFO):
         return None
     stop = threading.Event()
 
@@ -639,7 +637,7 @@ def _consume_sse_stream(
             if text:
                 content_parts.append(text)
             now = time.monotonic()
-            if _llm_progress_enabled and now - last_progress >= 5.0:
+            if _logger.isEnabledFor(logging.INFO) and now - last_progress >= 5.0:
                 _stderr_status.update(
                     f"[llm] ... streaming, {chunk_count} chunks / "
                     f"{sum(len(p) for p in content_parts)} content chars "
