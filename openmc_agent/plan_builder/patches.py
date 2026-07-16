@@ -15,9 +15,9 @@ No OpenMC, no renderer, no LLM dependencies.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_origin
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openmc_agent.schemas import AgentBaseModel
 
@@ -58,6 +58,31 @@ class _PatchBase(AgentBaseModel):
     """Common base for all patch models (extra='forbid', strip whitespace)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_null_collections(cls, data: Any) -> Any:
+        """Tolerate LLMs that emit ``null`` for optional list/dict fields.
+
+        A pydantic ``default_factory=list`` only applies when a field is
+        *absent*; an explicit ``null`` is rejected (``list`` is not
+        ``Optional[list]``). LLMs routinely write ``null`` for list/dict
+        fields they leave empty (e.g. ``"loading_ids": null``), so coerce
+        those to empty collections before validation. Reactor-neutral.
+        """
+        if not isinstance(data, dict):
+            return data
+        for fname, finfo in cls.model_fields.items():
+            if data.get(fname) is not None:
+                continue
+            if fname not in data:
+                continue
+            origin = get_origin(finfo.annotation) or finfo.annotation
+            if origin is list:
+                data[fname] = []
+            elif origin is dict:
+                data[fname] = {}
+        return data
 
 
 # ---------------------------------------------------------------------------

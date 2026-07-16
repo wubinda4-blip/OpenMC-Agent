@@ -126,3 +126,53 @@ class TestCoordinateConvention:
         conv = CoordinateConvention(index_base=1)
         result = normalized_coords([(1, 1), (2, 3)], conv, (17, 17))
         assert result == [(0, 0), (1, 2)]
+
+
+# ---------------------------------------------------------------------------
+# Null-collection coercion: LLMs emit `null` for list/dict fields they leave
+# empty (e.g. "loading_ids": null). Pydantic's default_factory only applies to
+# ABSENT fields, so _PatchBase coerces explicit null -> empty collection.
+# ---------------------------------------------------------------------------
+
+
+class TestNullCollectionCoercion:
+    def test_axial_layer_loading_ids_null_coerced_to_empty(self) -> None:
+        from openmc_agent.plan_builder.patches import AxialLayerPatchItem
+
+        layer = AxialLayerPatchItem(
+            layer_id="active_fuel",
+            role="active_fuel",
+            loading_ids=None,
+            assumptions=None,
+        )
+        assert layer.loading_ids == []
+        assert layer.assumptions == []
+
+    def test_full_patch_null_list_fields_coerced(self) -> None:
+        patch = parse_patch_content(
+            "axial_layers",
+            {
+                "patch_type": "axial_layers",
+                "layers": [
+                    {
+                        "layer_id": "active_fuel",
+                        "role": "active_fuel",
+                        "z_min_cm": 0.0,
+                        "z_max_cm": 100.0,
+                        "fill_type": "lattice",
+                        "fill_id": "asm",
+                        "loading_ids": None,
+                        "assumptions": None,
+                    }
+                ],
+            },
+        )
+        assert isinstance(patch, AxialLayersPatch)
+        assert patch.layers[0].loading_ids == []
+
+    def test_absent_list_fields_still_use_default(self) -> None:
+        # Absent (not null) must keep working via default_factory.
+        from openmc_agent.plan_builder.patches import AxialLayerPatchItem
+
+        layer = AxialLayerPatchItem(layer_id="x", role="custom")
+        assert layer.loading_ids == []
