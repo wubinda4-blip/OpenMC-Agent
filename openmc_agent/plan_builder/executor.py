@@ -1312,7 +1312,7 @@ def run_incremental_planning(
                     "attempt_index": att.attempt_index,
                     "raw_chars": att.raw_chars,
                     "raw_text": (att.raw_text or "")[:50000],
-                    "prompt_text": (att.prompt_text or "")[:20000],
+                    "prompt_text": (att.prompt_text or "")[:60000],
                     "issues": att.issues,
                     "output_mode_used": att.output_mode_used,
                     "error": att.error,

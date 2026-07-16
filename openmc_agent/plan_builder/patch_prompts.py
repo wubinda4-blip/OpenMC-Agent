@@ -363,6 +363,7 @@ Requested patch type: assembly_catalog
 Schema: {{"patch_type": "assembly_catalog",
   "assembly_types": [
     {{"assembly_type_id": "type_id", "name": "descriptive name", "role": "fuel/guide/etc",
+      "fuel_variant_id": "variant_id_or_omit_if_no_fuel_variant_requirements",
       "multiplicity_hint": int_or_null,
       "pin_map": {{
         "lattice_size": [int, int],
@@ -597,6 +598,9 @@ def build_retry_prompt(
     is_parse_error = any(
         "json_parse" in code for code in issue_codes
     )
+    is_fuel_variant_missing = any(
+        "fuel_variant_missing" in code for code in issue_codes
+    )
 
     issue_lines: list[str] = []
     for issue in issues:
@@ -623,6 +627,24 @@ def build_retry_prompt(
         forbidden_block = (
             f"\n\nYour previous response was not valid JSON.\n"
             f"Return JSON only. No prose. No markdown."
+        )
+    elif is_fuel_variant_missing:
+        # Build explicit per-assembly-type directives from issue data.
+        directives: list[str] = []
+        for issue in issues:
+            if "fuel_variant_missing" not in issue.get("code", ""):
+                continue
+            expected = issue.get("expected", "")
+            path = issue.get("path", "")
+            tid = path.replace("assembly_types[", "").replace("].fuel_variant_id", "")
+            if expected and tid:
+                directives.append(f'  "{tid}": add "fuel_variant_id": "{expected}"')
+        directive_block = "\n".join(directives) if directives else ""
+        forbidden_block = (
+            f"\n\nYou MUST add the field \"fuel_variant_id\" to each assembly type.\n"
+            f"This field is in the schema template. Do NOT omit it.\n"
+            f"Exact values to use:\n{directive_block}\n"
+            f"Output ONLY JSON — no reasoning, no prose."
         )
     else:
         forbidden_block = ""
