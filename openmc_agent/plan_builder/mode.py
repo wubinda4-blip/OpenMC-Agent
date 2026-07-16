@@ -104,6 +104,7 @@ TRIGGER_FEATURE_SPACER_GRID: str = "feature.spacer_grid"
 TRIGGER_FEATURE_SPECIAL_PIN_MAP: str = "feature.special_pin_map"
 TRIGGER_FEATURE_MULTIPLE_VARIANTS: str = "feature.multiple_variants"
 TRIGGER_FEATURE_LARGE_LATTICE: str = "feature.large_lattice"
+TRIGGER_FEATURE_MULTI_ASSEMBLY: str = "feature.multi_assembly_core"
 TRIGGER_HISTORY_LARGE_JSON_PARSE_ERROR: str = "history.large_json_parse_error"
 TRIGGER_HISTORY_REPAIR_LOST_AXIAL: str = "history.repair_lost_axial_layers"
 TRIGGER_HISTORY_REPEATED_AXIAL_CONTRACT: str = "history.repeated_axial_contract_violation"
@@ -165,6 +166,46 @@ def _detect_large_lattice(text: str) -> int | None:
             except (ValueError, IndexError):
                 continue
     return max_dim if max_dim >= _LARGE_LATTICE_THRESHOLD else None
+
+
+# Reactor-neutral cues that a requirement describes a core composed of
+# MULTIPLE assemblies (not a single-assembly model). Detecting this early is
+# what schedules the assembly_catalog + core_layout patches; without it a
+# multi-assembly core is built on the single-assembly task order and the
+# assembler later fails with assembly.missing_patch.
+_MULTI_ASSEMBLY_KEYWORDS: tuple[str, ...] = (
+    "multi-assembly", "multi assembly", "multiple assembl",
+    "full core", "full-core", "core lattice", "core layout",
+    "assembly array", "assembly lattice", "assemblies arranged",
+    "多组件", "多个组件", "组件阵列", "全堆", "整堆", "全堆芯",
+)
+# "N assemblies" (N >= 2) — English count.
+_MULTI_ASSEMBLY_COUNT_RE = re.compile(
+    r"(\d+)\s*(?:assemblies|fuel\s*assemblies|assembly\s*types)",
+    re.IGNORECASE,
+)
+# Chinese count of assemblies, e.g. "九个燃料组件" / "3 个组件" (>=2).
+_CN_ASSEMBLY_COUNT_RE = re.compile(r"([二三四五六七八九2-9])\s*个\s*(?:燃料)?组件")
+
+
+def _detect_multi_assembly_core(text: str) -> bool:
+    """Return True if the requirement describes a multi-assembly core.
+
+    Reactor-neutral: matches generic multi-assembly / core-lattice vocabulary
+    (a core assembled from multiple fuel assemblies), never a single reactor
+    type. A single-assembly model (one pin lattice, no core-level placement)
+    returns False so it stays on the simpler single-assembly task order.
+    """
+    low = text.lower()
+    if any(k in low for k in _MULTI_ASSEMBLY_KEYWORDS):
+        return True
+    for m in _MULTI_ASSEMBLY_COUNT_RE.finditer(low):
+        try:
+            if int(m.group(1)) >= 2:
+                return True
+        except ValueError:
+            continue
+    return bool(_CN_ASSEMBLY_COUNT_RE.search(text))
 
 
 def _analyze_retry_history(
@@ -375,6 +416,19 @@ def should_use_incremental_planning(
             f"requirement mentions a {large_dim}x{large_dim} or larger lattice"
         )
 
+    # 7. Multi-assembly core (core composed of multiple fuel assemblies).
+    # This is the trigger that schedules assembly_catalog + core_layout;
+    # without it a multi-assembly requirement is mis-routed onto the
+    # single-assembly task order and assembly later fails (missing patches).
+    is_multi_assembly = _detect_multi_assembly_core(requirement)
+    feature_summary["multi_assembly_core"] = is_multi_assembly
+    if is_multi_assembly:
+        triggers.append(TRIGGER_FEATURE_MULTI_ASSEMBLY)
+        reasons.append(
+            "requirement describes a multi-assembly core "
+            "(multiple assemblies / core-level placement)"
+        )
+
     # --- History analysis ----------------------------------------------------
     hist_triggers, hist_reasons = _analyze_retry_history(retry_history)
     triggers.extend(hist_triggers)
@@ -426,6 +480,7 @@ __all__ = [
     "TRIGGER_FEATURE_SPECIAL_PIN_MAP",
     "TRIGGER_FEATURE_MULTIPLE_VARIANTS",
     "TRIGGER_FEATURE_LARGE_LATTICE",
+    "TRIGGER_FEATURE_MULTI_ASSEMBLY",
     "TRIGGER_HISTORY_LARGE_JSON_PARSE_ERROR",
     "TRIGGER_HISTORY_REPAIR_LOST_AXIAL",
     "TRIGGER_HISTORY_REPEATED_AXIAL_CONTRACT_VIOLATION",

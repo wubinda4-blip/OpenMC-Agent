@@ -12,6 +12,7 @@ from openmc_agent.plan_builder.mode import (
     TRIGGER_FEATURE_SPECIAL_PIN_MAP,
     TRIGGER_FEATURE_MULTIPLE_VARIANTS,
     TRIGGER_FEATURE_LARGE_LATTICE,
+    TRIGGER_FEATURE_MULTI_ASSEMBLY,
     TRIGGER_HISTORY_LARGE_JSON_PARSE_ERROR,
     TRIGGER_HISTORY_REPAIR_LOST_AXIAL,
     TRIGGER_OVERRIDE_FORCE_INCREMENTAL,
@@ -269,3 +270,40 @@ def test_repeated_axial_contract_violation() -> None:
     )
     assert decision.mode == "incremental"
     assert TRIGGER_HISTORY_REPAIR_LOST_AXIAL in decision.triggers
+
+
+# ---------------------------------------------------------------------------
+# Multi-assembly core detection: schedules assembly_catalog + core_layout.
+# Without this, a multi-assembly requirement is mis-routed onto the
+# single-assembly task order and the assembler fails with assembly.missing_patch.
+# ---------------------------------------------------------------------------
+
+
+def test_multi_assembly_core_detected_en() -> None:
+    requirement = (
+        "Build a 3x3 assembly core (9 fuel assemblies) of types C, E, R, "
+        "with core-level assembly placement and reflective outer boundary."
+    )
+    decision = should_use_incremental_planning(requirement)
+    assert decision.feature_summary["multi_assembly_core"] is True
+    assert TRIGGER_FEATURE_MULTI_ASSEMBLY in decision.triggers
+
+
+def test_multi_assembly_core_detected_cn() -> None:
+    requirement = (
+        "VERA4 基准问题：九个燃料组件组成的 3×3 多组件区域，"
+        "反射边界只设在 3×3 区域最外侧。"
+    )
+    decision = should_use_incremental_planning(requirement)
+    assert decision.feature_summary["multi_assembly_core"] is True
+    assert TRIGGER_FEATURE_MULTI_ASSEMBLY in decision.triggers
+
+
+def test_single_assembly_not_flagged_multi() -> None:
+    requirement = (
+        "Build a single 17x17 PWR fuel assembly with 24 guide tubes. "
+        "Model one assembly only."
+    )
+    decision = should_use_incremental_planning(requirement)
+    assert decision.feature_summary.get("multi_assembly_core") is False
+    assert TRIGGER_FEATURE_MULTI_ASSEMBLY not in decision.triggers
