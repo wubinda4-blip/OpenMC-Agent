@@ -205,6 +205,19 @@ class MaterialSpecPatch(_PatchBase):
     variant_scope: str | None = None
     derivation_method: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_mixture_nulls(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        has_mixture = bool(data.get("mixture_components"))
+        if has_mixture:
+            if data.get("composition") is None:
+                data["composition"] = {}
+            if data.get("composition_basis") is None:
+                data["composition_basis"] = "unknown"
+        return data
+
 
 class MaterialsPatch(_PatchBase):
     """Material catalog patch."""
