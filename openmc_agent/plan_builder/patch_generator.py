@@ -310,11 +310,59 @@ class FakePatchLLM:
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
 
+def _scan_json_objects(text: str) -> list[dict[str, Any]]:
+    """Find all valid top-level JSON objects anywhere in *text*.
+
+    Unlike a greedy regex, this tries ``json.JSONDecoder().raw_decode`` at
+    every ``{`` position, so it recovers a JSON object that is buried after
+    chain-of-thought prose — which reasoning models emit before the answer
+    and which may itself contain stray ``{`` characters that defeat a regex.
+    Trailing-comma / other syntax errors skip that position and keep scanning.
+    """
+    decoder = json.JSONDecoder()
+    found: list[dict[str, Any]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+        # Advance past the consumed object (raw_decode returns the index
+        # one past the last char it consumed).
+        i = end if isinstance(end, int) and end > i else i + 1
+    return found
+
+
+def _pick_best_json_object(
+    objs: list[dict[str, Any]], patch_type: str
+) -> dict[str, Any] | None:
+    """Return the last JSON object declaring the expected ``patch_type``.
+
+    A reasoning model's final answer comes after its chain-of-thought, so the
+    latest object with a matching ``patch_type`` is the real patch. Returns
+    ``None`` when no object declares the expected type — callers then fall
+    back to the greedy-regex path rather than risk recovering a stray CoT
+    example (which lacks the right ``patch_type``).
+    """
+    for o in reversed(objs):
+        if o.get("patch_type") == patch_type:
+            return o
+    return None
+
+
 def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
     """Extract a JSON dict from raw LLM output.
 
-    Handles markdown fences and surrounding text.  Returns the parsed dict.
-    Raises ``PatchParseError`` if no valid JSON can be extracted.
+    Handles markdown fences and surrounding text, including chain-of-thought
+    prose emitted by reasoning models before the JSON answer.  Returns the
+    parsed dict.  Raises ``PatchParseError`` if no valid JSON can be extracted.
     """
     if not raw_text or not raw_text.strip():
         raise PatchParseError(patch_type, "empty LLM response")
@@ -330,7 +378,7 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
 
-    # Try direct parse first.
+    # Try direct parse first (clean JSON, no surrounding prose).
     try:
         obj = json.loads(text)
         if isinstance(obj, dict):
@@ -338,7 +386,14 @@ def parse_llm_patch_json(raw_text: str, patch_type: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # Fallback: extract the first {...} block.
+    # Robust scan: recover a JSON object buried after reasoning prose. This
+    # also handles the case where the greedy regex below would span from a
+    # stray '{' in the prose to the answer's closing '}' and fail to parse.
+    best = _pick_best_json_object(_scan_json_objects(text), patch_type)
+    if best is not None:
+        return best
+
+    # Fallback: extract the first {...} block (greedy regex).
     match = _JSON_OBJECT_RE.search(raw_text)
     if match:
         candidate = match.group(0)

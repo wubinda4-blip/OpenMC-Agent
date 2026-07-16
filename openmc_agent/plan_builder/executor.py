@@ -1223,7 +1223,7 @@ def run_incremental_planning(
                     "patch_type": patch_type,
                     "attempt_index": att.attempt_index,
                     "raw_chars": att.raw_chars,
-                    "raw_text": (att.raw_text or "")[:5000],
+                    "raw_text": (att.raw_text or "")[:50000],
                     "prompt_text": (att.prompt_text or "")[:3000],
                     "issues": att.issues,
                     "output_mode_used": att.output_mode_used,

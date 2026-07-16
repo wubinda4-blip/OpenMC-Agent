@@ -19,6 +19,7 @@ from openmc_agent.plan_builder.patch_generator import (
     generate_patch,
     parse_llm_patch_json,
 )
+from openmc_agent.plan_builder.patches import PatchParseError
 from openmc_agent.plan_builder.state import (
     PlanBuildState,
     PlanPatchEnvelope,
@@ -179,6 +180,40 @@ def test_non_truncated_json_parse_error() -> None:
     first_codes = [i["code"] for i in result.attempts[0].issues]
     assert "patch_generation.json_parse_error" in first_codes
     assert "patch_generation.json_truncated" not in first_codes
+
+
+def test_json_recovered_from_chain_of_thought() -> None:
+    # Reasoning models (e.g. ds:deepseek-v4-flash) emit CoT before the JSON
+    # answer; the CoT may contain stray '{' that defeat a greedy regex. The
+    # parser must recover the real patch (declared patch_type) from after the
+    # prose.
+    cot = (
+        'We need a JSON object for patch_type="facts". The schema looks like '
+        '{"role": "fuel_pin", "value": 264}. Let me list counts: fuel 2376.\n'
+        'Here is the final answer:\n'
+    )
+    real = json.dumps({
+        "patch_type": "facts", "benchmark_id": "VERA4",
+        "lattice_size": [17, 17], "model_scope": "multi_assembly_core",
+    })
+    raw = cot + real
+    obj = parse_llm_patch_json(raw, "facts")
+    assert obj["patch_type"] == "facts"
+    assert obj["benchmark_id"] == "VERA4"
+
+
+def test_no_false_recovery_from_cot_examples() -> None:
+    # CoT that only contains small JSON examples (no object declaring the
+    # expected patch_type) must NOT be mis-recovered as the patch.
+    raw = (
+        'Reasoning... the schema is {"role": "x", "value": 1} '
+        'and maybe {"a": 1}. No actual patch emitted.'
+    )
+    try:
+        parse_llm_patch_json(raw, "facts")
+        assert False, "expected PatchParseError"
+    except PatchParseError:
+        pass
 
 
 # ---------------------------------------------------------------------------
