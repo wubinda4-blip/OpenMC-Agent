@@ -327,6 +327,8 @@ Rules:
 - When the source provides grid mass or density, use geometry_mode="mass_conserving_outer_frame"
   with target_lattice_id="assembly_lattice", material_id, and total_mass_g set from the source.
   This preserves through-paths (fuel, clad, guide tubes) while adding the grid frame.
+- For geometry_mode="mass_conserving_outer_frame" or "homogenized_open_region", you MUST set
+  through_path_preserved=true. This is a required field for these modes.
 - total_mass_g is REQUIRED for geometry_mode="mass_conserving_outer_frame". Read the grid
   mass per assembly from the source document (e.g., end grid 1017 g, middle grid 875 g).
 - Only use geometry_mode="homogenized_open_region" when mass data is truly unavailable.
@@ -601,6 +603,9 @@ def build_retry_prompt(
     is_fuel_variant_missing = any(
         "fuel_variant_missing" in code for code in issue_codes
     )
+    is_through_path = any(
+        "through_path_not_preserved" in code for code in issue_codes
+    )
 
     issue_lines: list[str] = []
     for issue in issues:
@@ -644,6 +649,19 @@ def build_retry_prompt(
             f"\n\nYou MUST add the field \"fuel_variant_id\" to each assembly type.\n"
             f"This field is in the schema template. Do NOT omit it.\n"
             f"Exact values to use:\n{directive_block}\n"
+            f"Output ONLY JSON — no reasoning, no prose."
+        )
+    elif is_through_path:
+        overlay_ids = [
+            issue.get("path", "").replace("overlays[", "").replace("].through_path_preserved", "")
+            for issue in issues
+            if "through_path_not_preserved" in issue.get("code", "")
+        ]
+        id_list = ", ".join(overlay_ids) if overlay_ids else "all overlays"
+        forbidden_block = (
+            f"\n\nYou MUST set \"through_path_preserved\": true on every overlay\n"
+            f"with geometry_mode \"mass_conserving_outer_frame\" or \"homogenized_open_region\".\n"
+            f"Affected overlays: {id_list}\n"
             f"Output ONLY JSON — no reasoning, no prose."
         )
     else:

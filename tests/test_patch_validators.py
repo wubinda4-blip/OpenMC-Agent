@@ -512,22 +512,26 @@ def test_overlay_homogenized_valid() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_overlay_through_path_not_preserved() -> None:
-    patch = AxialOverlaysPatch(overlays=[
-        AxialOverlayPatchItem(
+def test_overlay_through_path_auto_coerced() -> None:
+    """through_path_preserved is auto-coerced to True for modes that
+    inherently preserve through-paths (mass_conserving_outer_frame,
+    homogenized_open_region).  The validator never needs to fire."""
+    for mode in ("mass_conserving_outer_frame", "homogenized_open_region"):
+        ov = AxialOverlayPatchItem(
             overlay_id="grid1",
             overlay_kind="spacer_grid",
             z_min_cm=10.0,
             z_max_cm=12.0,
             target_lattice_id="assembly_lattice",
             material_id="grid_material",
-            geometry_mode="homogenized_open_region",
-            through_path_preserved=False,
-        ),
-    ])
-    result = validate_patch(patch)
-    assert "patch.axial_overlays.through_path_not_preserved" in _codes(result)
-    assert result.ok is False
+            geometry_mode=mode,
+        )
+        assert ov.through_path_preserved is True, f"{mode} should auto-coerce"
+    # skeleton mode does NOT coerce
+    ov_skel = AxialOverlayPatchItem(
+        overlay_id="grid1", overlay_kind="spacer_grid", geometry_mode="skeleton",
+    )
+    assert ov_skel.through_path_preserved is None
 
 
 def test_overlay_target_missing() -> None:

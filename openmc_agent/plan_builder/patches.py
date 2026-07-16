@@ -578,6 +578,19 @@ class AxialOverlayPatchItem(_PatchBase):
     assumptions: list[str] = Field(default_factory=list)
     source_note: str | None = None
 
+    @model_validator(mode="after")
+    def _coerce_through_path_preserved(self) -> "AxialOverlayPatchItem":
+        """Auto-set through_path_preserved=True for modes that inherently
+        preserve through-paths.  This prevents pipeline-stopping validation
+        errors when the LLM omits the field (it is a constant for these
+        geometry modes, not independent information)."""
+        if self.geometry_mode in (
+            "mass_conserving_outer_frame",
+            "homogenized_open_region",
+        ) and self.through_path_preserved is not True:
+            self.through_path_preserved = True
+        return self
+
 
 class AxialOverlaysPatch(_PatchBase):
     """Axial overlays patch (spacer grids, support plates, ...)."""
