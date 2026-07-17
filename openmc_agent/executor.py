@@ -28,6 +28,13 @@ from openmc_agent.reachability import (
 from openmc_agent.lattice_transform import (
     materialize_axial_lattice_transformations,
 )
+from openmc_agent.material_species import (
+    ELEMENT_SYMBOLS,
+    FISSILE_COMPOUND_ELEMENTS,
+    canonical_nuclide_name,
+    parse_empirical_formula,
+    resolve_material_species,
+)
 
 import re
 
@@ -69,106 +76,50 @@ def _normalize_nuclide_name(name: str) -> str:
     return f"{match.group(1)}{match.group(2)}{match.group(3)}"
 
 
-# ---------------------------------------------------------------------------
-# Compound formula expansion (reactor-neutral)
-# ---------------------------------------------------------------------------
-
-# All standard element symbols for compound detection.
-_ELEMENT_SYMBOLS: frozenset[str] = frozenset({
-    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
-    "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
-    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
-    "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
-    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
-    "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
-    "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
-    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
-    "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
-    "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf",
-})
-
-_COMPOUND_TOKEN_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
-
-
 def _try_parse_compound(name: str) -> list[tuple[str, int]] | None:
-    """Try to parse *name* as a multi-element chemical compound formula.
-
-    Returns ``[(element, count), ...]`` for compounds like ``"B2O3"``,
-    ``"SiO2"``, ``"UO2"``.  Returns ``None`` for single-element names
-    (nuclides like ``"B10"``, element symbols like ``"Zr"``).
-
-    A name is treated as a compound only when it parses into **2+ known
-    element symbols**.  This correctly distinguishes ``"UO2"`` (compound:
-    U+O) from ``"U235"`` (nuclide: single element U).
-    """
-    tokens = _COMPOUND_TOKEN_RE.findall(name)
-    if not tokens:
+    """Compatibility wrapper around the canonical parser."""
+    try:
+        return parse_empirical_formula(name)
+    except ValueError:
         return None
-    elements: list[tuple[str, int]] = []
-    pos = 0
-    for elem_sym, count_str in tokens:
-        if elem_sym not in _ELEMENT_SYMBOLS:
-            return None
-        count = int(count_str) if count_str else 1
-        elements.append((elem_sym, count))
-        pos += len(elem_sym) + len(count_str)
-    # Must consume the entire string (no trailing garbage).
-    if pos != len(name):
-        return None
-    # Must have at least 2 distinct elements to be a compound.
-    if len({e for e, _ in elements}) < 2:
-        return None
-    return elements
 
 
 def _expand_compound_composition(
     components: list,
 ) -> list:
-    """Expand compound formula names (B2O3, SiO2, UO2) in a composition list.
+    """Compatibility adapter using the single canonical resolver.
 
-    Each compound is replaced by individual ``add_element`` entries with
-    weight fractions distributed by the element's mass fraction in the
-    compound.  Non-compound names are passed through unchanged.
-
-    Works with both :class:`NuclideSpec` and plain tuples.
+    Historical ``MaterialSpec`` callers may still carry a simple formula in a
+    composition list.  It is normalized with an audit-capable legacy path;
+    invalid formulas raise before any ``add_nuclide`` emission.
     """
+    if not components:
+        return []
+    percent_types = {c.percent_type if hasattr(c, "percent_type") else c[2] for c in components}
+    if len(percent_types) != 1:
+        raise ValueError("material_resolution.mixed_fraction_basis")
+    percent_type = next(iter(percent_types))
+    basis = "weight_frac" if percent_type == "wo" else "atom_frac"
+    composition: dict[str, float] = {}
+    for component in components:
+        name = component.name if hasattr(component, "name") else component[0]
+        value = component.percent if hasattr(component, "percent") else component[1]
+        composition[name] = composition.get(name, 0.0) + value
+    resolution = resolve_material_species(
+        material_id="legacy_renderer_material", role="unknown", composition=composition,
+        composition_basis=basis, strict_composition=False, legacy_compatibility=True,
+    )
+    if resolution.errors:
+        raise ValueError("; ".join(resolution.errors))
+    exemplar = components[0]
     expanded: list = []
-    for comp in components:
-        name = comp.name if hasattr(comp, "name") else comp[0]
-        parsed = _try_parse_compound(name)
-        if parsed is None:
-            expanded.append(comp)
-            continue
-
-        # Calculate molecular weight from element atomic masses.
-        mw = 0.0
-        for elem, count in parsed:
-            mw += count * _get_atomic_mass(elem)
-        if mw <= 0:
-            expanded.append(comp)
-            continue
-
-        # Expand each element in the compound.
-        percent = comp.percent if hasattr(comp, "percent") else comp[1]
-        percent_type = comp.percent_type if hasattr(comp, "percent_type") else comp[2]
-
-        for elem, count in parsed:
-            if percent_type == "wo":
-                # Weight fraction: distribute by mass contribution.
-                elem_frac = count * _get_atomic_mass(elem) / mw
-            else:
-                # Atom fraction: distribute by atom count ratio.
-                total_atoms = sum(c for _, c in parsed)
-                elem_frac = count / total_atoms
-            if hasattr(comp, "model_copy"):
-                new_comp = comp.model_copy(update={
-                    "name": elem,
-                    "percent": percent * elem_frac,
-                    "kind": "element",
-                })
-                expanded.append(new_comp)
-            else:
-                expanded.append((elem, percent * elem_frac, percent_type))
+    for entry in resolution.species:
+        if hasattr(exemplar, "model_copy"):
+            expanded.append(exemplar.model_copy(update={
+                "name": entry.name, "percent": entry.fraction, "kind": entry.kind,
+            }))
+        else:
+            expanded.append((entry.name, entry.fraction, percent_type))
     return expanded
 
 
@@ -881,6 +832,9 @@ def _use_chemical_formula_for_complex_material(material: ComplexMaterialSpec) ->
     """
     if material.chemical_formula is None:
         return False
+    _validate_formula_fissile_policy(
+        material.chemical_formula, material.id, material.enrichment_percent,
+    )
     return not material.composition or _material_has_mixed_percent_types(material)
 
 
@@ -893,7 +847,27 @@ def _use_chemical_formula_for_material(spec: MaterialSpec) -> bool:
     """
     if spec.chemical_formula is None:
         return False
+    _validate_formula_fissile_policy(
+        spec.chemical_formula, spec.name, spec.enrichment_percent,
+    )
     return _material_has_mixed_percent_types(spec)
+
+
+def _validate_formula_fissile_policy(
+    formula: str,
+    material_id: str,
+    enrichment_percent: float | None,
+) -> None:
+    """Reject generic fissile formula emission without an isotope policy."""
+    parsed = _try_parse_compound(formula)
+    if parsed is None:
+        # Formula fallback has historically supported OpenMC's richer formula
+        # grammar; only the typed compound path claims simple-formula support.
+        return
+    if {symbol for symbol, _ in parsed} & FISSILE_COMPOUND_ELEMENTS and enrichment_percent is None:
+        raise ValueError(
+            f"materials.fissile_compound_isotope_policy_missing: {material_id!r}"
+        )
 
 
 def _material_enrichment_kwargs(spec: MaterialSpec) -> dict[str, float | str]:

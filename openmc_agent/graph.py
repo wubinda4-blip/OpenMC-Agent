@@ -1471,6 +1471,11 @@ def _write_incremental_artifacts(state: GraphState, exec_result: Any) -> list[st
             mr_path = inc_dir / "material_composition_report.json"
             _write_json_file(mr_path, mat_rep)
             artifact_paths.append(str(mr_path))
+        species_rep = getattr(exec_result.state, "material_species_resolution_report", None)
+        if species_rep:
+            sr_path = inc_dir / "material_species_resolution_report.json"
+            _write_json_file(sr_path, species_rep)
+            artifact_paths.append(str(sr_path))
     except Exception:
         pass  # artifact writing must not block the workflow
     return artifact_paths

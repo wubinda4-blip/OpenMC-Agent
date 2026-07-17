@@ -224,10 +224,17 @@ def build_vera4_materials() -> MaterialsPatch:
         # --- Absorbers ---
         MaterialSpecPatch(
             material_id="pyrex_glass", name="pyrex glass", role="absorber",
-            density_g_cm3=2.23,
-            composition={"B11": 0.0403, "O16": 0.5356, "Na23": 0.0282,
-                         "Al27": 0.0116, "Si28": 0.3770, "Si29": 0.0192},
-            composition_basis="atom_frac",
+            density_g_cm3=2.25,
+            composition={},
+            composition_basis="weight_frac",
+            compound_components=[
+                {"formula": "B2O3", "fraction": 12.5,
+                 "fraction_basis": "weight_frac", "isotope_policy": "natural_elements",
+                 "source_note": "VERA4 §13.1 B2O3 mass fraction"},
+                {"formula": "SiO2", "fraction": 87.5,
+                 "fraction_basis": "weight_frac", "isotope_policy": "natural_elements",
+                 "source_note": "silica balance after specified B2O3 fraction"},
+            ],
             composition_status="approximate",
         ),
         MaterialSpecPatch(

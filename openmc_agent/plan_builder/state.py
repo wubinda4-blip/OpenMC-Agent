@@ -121,6 +121,7 @@ class PlanBuildState(AgentBaseModel):
 
     assembled_plan: dict[str, Any] | None = None
     material_composition_report: dict[str, Any] | None = None
+    material_species_resolution_report: dict[str, Any] | None = None
     validation_issues: list[dict[str, Any]] = Field(default_factory=list)
     build_log: list[BuildEvent] = Field(default_factory=list)
 
@@ -224,6 +225,7 @@ class PlanBuildState(AgentBaseModel):
                     task.issues = issue_payload
             self.assembled_plan = None
             self.material_composition_report = None
+            self.material_species_resolution_report = None
             self.validation_issues = []
             self.add_event(
                 event_type="planning.patch_invalidated_for_plan_repair",
@@ -600,6 +602,8 @@ def assemble_state_if_ready(
             state.material_composition_report = (
                 result.material_composition_report.model_dump(mode="json")
             )
+        if result.material_species_resolution_report is not None:
+            state.material_species_resolution_report = result.material_species_resolution_report
         state.add_event(
             event_type=EVENT_ASSEMBLY_COMPLETED,
             message=f"assembly completed ({len(result.summary)} summary entries)",

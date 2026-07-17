@@ -24,6 +24,11 @@ from pydantic import BaseModel, Field
 
 from openmc_agent.schemas import AgentBaseModel
 from openmc_agent.radial_profile_validation import validate_concentric_radial_profile
+from openmc_agent.material_species import (
+    FISSILE_COMPOUND_ELEMENTS,
+    classify_species_name,
+    parse_empirical_formula,
+)
 
 from .material_resolution import resolve_material_id
 from .patches import (
@@ -364,6 +369,57 @@ def _validate_materials(
                 path=f"materials[{mat.material_id}].density_g_cm3",
                 actual=mat.density_g_cm3,
             ))
+
+        # Static source/transport species contract.  This deliberately does
+        # not import OpenMC or inspect nuclear data; library availability is a
+        # runtime preflight concern.
+        for name in mat.composition:
+            kind = classify_species_name(name)
+            if kind == "compound":
+                issues.append(PatchValidationIssue(
+                    code="materials.compound_in_transport_composition",
+                    severity="error",
+                    message=(f"material {mat.material_id!r} places chemical formula "
+                             f"{name!r} in composition; use compound_components"),
+                    path=f"materials[{mat.material_id}].composition.{name}",
+                    actual=name,
+                ))
+            elif kind == "invalid":
+                issues.append(PatchValidationIssue(
+                    code="materials.species_name_invalid",
+                    severity="error",
+                    message=f"material {mat.material_id!r} has invalid transport species {name!r}",
+                    path=f"materials[{mat.material_id}].composition.{name}",
+                    actual=name,
+                ))
+        for index, component in enumerate(mat.compound_components):
+            path = f"materials[{mat.material_id}].compound_components[{index}]"
+            if component.fraction_basis is None:
+                issues.append(PatchValidationIssue(
+                    code="materials.compound_fraction_basis_missing", severity="error",
+                    message=f"compound {component.formula!r} requires fraction_basis", path=path,
+                ))
+            if component.isotope_policy is None:
+                issues.append(PatchValidationIssue(
+                    code="materials.compound_isotope_policy_missing", severity="error",
+                    message=f"compound {component.formula!r} requires isotope_policy", path=path,
+                ))
+            try:
+                parsed = parse_empirical_formula(component.formula)
+            except ValueError:
+                issues.append(PatchValidationIssue(
+                    code="materials.unresolved_species", severity="error",
+                    message=f"compound formula {component.formula!r} is unsupported", path=path,
+                ))
+                continue
+            if ({symbol for symbol, _ in parsed} & FISSILE_COMPOUND_ELEMENTS
+                    and component.isotope_policy != "explicit_isotopes"):
+                issues.append(PatchValidationIssue(
+                    code="materials.fissile_compound_isotope_policy_missing", severity="error",
+                    message=(f"fissile compound {component.formula!r} requires "
+                             "explicit_isotopes; natural expansion would erase enrichment"),
+                    path=path,
+                ))
 
         alloy_issue = _detect_alloy_reduction(mat)
         if alloy_issue is not None:

@@ -216,6 +216,17 @@ _SCOPED_COUNT_LAYOUT_CODES: frozenset[str] = frozenset({
     "counts.scope_mismatch",
 })
 
+_MATERIAL_SPECIES_RETRY_CODES: frozenset[str] = frozenset({
+    "materials.compound_in_transport_composition",
+    "materials.unsupported_compound_formula",
+    "materials.compound_fraction_basis_missing",
+    "materials.compound_isotope_policy_missing",
+    "materials.fissile_compound_isotope_policy_missing",
+    "materials.fissile_compound_would_erase_enrichment",
+    "materials.species_name_invalid",
+    "materials.unresolved_species",
+})
+
 
 def route_retry(
     *,
@@ -231,6 +242,13 @@ def route_retry(
             action="retry_same_patch",
             patch_type=failed_patch_type,
             reason="non-error issues detected; retrying for completeness",
+        )
+
+    if any(code in _MATERIAL_SPECIES_RETRY_CODES for code in error_codes):
+        return RetryDecision(
+            action="retry_same_patch",
+            patch_type="materials",
+            reason=f"material species contract error(s): {error_codes[:3]}",
         )
 
     # Check for unresolved-reference codes that point to a dependency patch.

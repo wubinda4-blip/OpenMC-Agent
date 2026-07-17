@@ -94,6 +94,8 @@ Reactor-neutral multi-assembly example:
 Requested patch type: materials
 Schema: {{"patch_type": "materials", "materials": [{{"material_id", "name", "role",
   "density_g_cm3", "temperature_K", "composition": {{"element": fraction}},
+  "compound_components": [{{"formula", "fraction", "fraction_basis", "isotope_policy",
+    "isotope_overrides", "source_note", "assumptions"}}],
   "composition_basis", "composition_status", "source_variant_id", "source_note",
   "warnings": [], "mixture_components": [{{"material_id", "volume_fraction"}}]}}],
   "assumptions": []}}
@@ -115,6 +117,15 @@ Rules:
   variant. Set source_variant_id on each role="fuel" material to match the variant_id.
 - Do NOT merge different enrichments into one fuel material.
 - Do NOT define a required fuel material and leave it unused.
+- OpenMC composition entries MUST be transport-ready element or nuclide names only.
+  Chemical formulas such as B2O3, SiO2, UO2, H2O, and Al2O3 are NOT nuclide names:
+  never place them directly in composition.
+- Put source chemical compounds in compound_components. Every component MUST include
+  fraction, fraction_basis (weight_frac or atom_frac), and isotope_policy.
+- For ordinary compounds with no isotope vector, use isotope_policy="natural_elements".
+  For enriched fuel compounds, provide explicit isotope composition; never reduce
+  enriched UO2 to generic U and O, and do not overwrite a fuel variant requirement.
+- Every material must be transport-ready after deterministic species resolution.
 
 composition_basis semantics (MUST declare for every material with a composition):
 - "atom_frac": each value is an atom fraction (e.g., U235=3.1 means 3.1 at% U-235).
@@ -142,7 +153,13 @@ Minimal example:
  {{"material_id": "coolant", "name": "Borated water", "role": "coolant",
    "density_g_cm3": 0.743, "composition": {{"B10": 1066, "H1": 2.0, "O16": 1.0}},
    "composition_basis": "ppm_by_weight",
-   "composition_status": "confirmed"}}
+   "composition_status": "confirmed"}},
+ {{"material_id": "glass", "name": "Borosilicate glass", "role": "absorber",
+   "density_g_cm3": 2.25, "composition": {{}}, "composition_basis": "weight_frac",
+   "compound_components": [
+     {{"formula": "B2O3", "fraction": 12.5, "fraction_basis": "weight_frac", "isotope_policy": "natural_elements"}},
+     {{"formula": "SiO2", "fraction": 87.5, "fraction_basis": "weight_frac", "isotope_policy": "natural_elements"}}
+   ], "composition_status": "approximate"}}
 ]}}""",
 
     "universes": """\
@@ -697,6 +714,17 @@ def build_retry_prompt(
         "through_path_not_preserved" in code or "mode_semantic_contradiction" in code
         for code in issue_codes
     )
+    material_species_codes = {
+        "materials.compound_in_transport_composition",
+        "materials.unsupported_compound_formula",
+        "materials.compound_fraction_basis_missing",
+        "materials.compound_isotope_policy_missing",
+        "materials.fissile_compound_isotope_policy_missing",
+        "materials.fissile_compound_would_erase_enrichment",
+    }
+    is_material_species = patch_type == "materials" and any(
+        code in material_species_codes for code in issue_codes
+    )
 
     issue_lines: list[str] = []
     for issue in issues:
@@ -705,7 +733,24 @@ def build_retry_prompt(
         msg = issue.get("message", "")
         issue_lines.append(f"  - [{sev}] {code}: {msg}")
 
-    if is_full_plan:
+    if is_material_species:
+        affected = [
+            {"path": i.get("path"), "species": i.get("actual"), "message": i.get("message")}
+            for i in issues if i.get("code") in material_species_codes
+        ]
+        previous_json = json.dumps(previous_patch or {}, ensure_ascii=False, indent=2)
+        forbidden_block = (
+            "\n\nTARGETED MATERIALS RETRY — regenerate only the materials patch.\n"
+            f"Affected entries: {json.dumps(affected, ensure_ascii=False)}\n"
+            "B2O3 and SiO2 are chemical compounds, not nuclides. Move any chemical "
+            "formula from composition to compound_components. Keep density, fractions, "
+            "source notes, and fuel-variant requirements unchanged. Do not invent explicit "
+            "isotope fractions. Allowed changes: materials[*].composition, "
+            "materials[*].compound_components, and necessary composition_basis/status/warnings.\n"
+            "Do not regenerate facts, universes, or fuel variant requirements.\n"
+            f"Previous materials patch:\n{previous_json}"
+        )
+    elif is_full_plan:
         forbidden_block = (
             f"\n\nYour previous response was REJECTED because it looked like a "
             f"full SimulationPlan, not a {patch_type} patch.\n"

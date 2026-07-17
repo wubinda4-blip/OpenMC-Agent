@@ -194,6 +194,20 @@ class MixtureComponentPatch(_PatchBase):
     volume_fraction: float = Field(gt=0, le=1.0)
 
 
+class CompoundComponentPatchItem(_PatchBase):
+    """A source-level chemical compound; never a transport nuclide entry."""
+
+    formula: str
+    fraction: float
+    fraction_basis: Literal["weight_frac", "atom_frac"] | None = None
+    isotope_policy: Literal[
+        "natural_elements", "explicit_isotopes", "requires_confirmation",
+    ] | None = None
+    isotope_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+    source_note: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
+
+
 class MaterialSpecPatch(_PatchBase):
     """A single material entry in a MaterialsPatch."""
 
@@ -202,7 +216,10 @@ class MaterialSpecPatch(_PatchBase):
     role: str
     density_g_cm3: float | None = None
     temperature_K: float | None = None
+    # Transport-ready element or nuclide names only. Source formulae belong in
+    # compound_components and are deterministically resolved before rendering.
     composition: dict[str, float] = Field(default_factory=dict)
+    compound_components: list[CompoundComponentPatchItem] = Field(default_factory=list)
     composition_basis: Literal[
         "atom_frac",
         "weight_frac",

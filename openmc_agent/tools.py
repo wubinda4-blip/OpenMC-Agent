@@ -1,6 +1,8 @@
 import subprocess
 import sys
 import re
+import os
+import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from difflib import get_close_matches
@@ -107,6 +109,29 @@ def run_smoke_test(
     timeout: float = 120.0,
 ) -> ToolResult:
     from openmc_agent.executor import render_openmc_smoke_test_script
+
+    cross_sections_path = os.environ.get("OPENMC_CROSS_SECTIONS")
+    if cross_sections_path:
+        from openmc_agent.material_species import preflight_plan_material_species
+        try:
+            preflight_errors = preflight_plan_material_species(plan, cross_sections_path)
+        except Exception as exc:
+            preflight_errors = [{
+                "code": "runtime.material_species_unresolved",
+                "cross_sections_path": cross_sections_path,
+                "detail": str(exc),
+                "suggested_patch_type": "materials",
+            }]
+        if preflight_errors:
+            return ToolResult(
+                name="run_smoke_test", ok=False, returncode=None,
+                error=json.dumps(preflight_errors, ensure_ascii=False),
+                issues=[issue_from_catalog(
+                    error["code"],
+                    message=(f"material species preflight failed for {error.get('material_id')}: "
+                             f"{error.get('species_name')}; repair materials patch before OpenMC"),
+                ) for error in preflight_errors],
+            )
 
     settings = plan.execution_check.settings
     if settings.particles > max_particles or settings.batches > max_batches:
