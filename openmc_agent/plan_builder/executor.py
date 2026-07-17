@@ -1483,7 +1483,9 @@ def run_incremental_planning(
     def _placement_stage():
         return state.plan_loop_stages.get("plan_gate_placement")
 
-    def _run_placement_gate() -> IncrementalExecutionIssue | None:
+    def _run_placement_gate(
+        *, finalize_non_applicable: bool = False,
+    ) -> IncrementalExecutionIssue | None:
         """Run read-only/admission Placement Gate once its inputs are valid."""
         if policy.mode is PlanLoopMode.OFF or not policy.gate_enabled.get(PlanGateId.PLACEMENT, False):
             return None
@@ -1504,20 +1506,58 @@ def run_incremental_planning(
             if facts_stage is None or facts_stage.status is not PlanStageStatus.ACCEPTED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
                 return IncrementalExecutionIssue(code="planning.placement_requires_accepted_facts", severity="error", message="controlled placement gate requires accepted Facts Gate", patch_type="placement")
-        if not placement_gate_applicable(state):
+        applicable = placement_gate_applicable(state)
+        # A placement gate can only be declared not applicable after all
+        # candidate producer patches have had a chance to run.  In particular,
+        # a profile or assembly intent generated after Facts may make the gate
+        # applicable.  ``skipped`` is terminal in the protocol, so marking it
+        # during the per-patch loop used to cause an illegal
+        # skipped -> reviewing transition later in the same execution.
+        if stage.status is PlanStageStatus.SKIPPED:
+            if applicable and stage.metadata.get("reason") == "not_applicable":
+                stage.status = PlanStageStatus.PENDING
+                stage.completed_at = None
+                stage.updated_at = None
+                stage.metadata.pop("reason", None)
+                state.add_event(
+                    "planning.placement_gate_reopened",
+                    "placement inputs became applicable after an earlier skip",
+                    {"stage_id": stage.stage_id},
+                )
+            else:
+                return None
+        if not applicable:
             # Empty foundation-only runs have no facts patch at all.  Leave
             # their pending stage for the Phase-0 advisory artifact writer so
             # historic "review_not_implemented" semantics remain intact.
-            if not _has_valid_patch(state, "facts"):
+            if not _has_valid_patch(state, "facts") or not finalize_non_applicable:
                 return None
             if stage.status is PlanStageStatus.PENDING:
                 transition_stage(stage, PlanStageStatus.SKIPPED)
-            stage.metadata["reason"] = "not_applicable"
-            state.add_event("planning.placement_gate_not_applicable", "placement gate not applicable", {})
+                stage.metadata["reason"] = "not_applicable"
+                state.add_event(
+                    "planning.placement_gate_not_applicable",
+                    "placement gate not applicable after task-plan completion",
+                    {},
+                )
             return None
         if not placement_gate_ready(state):
             return None
         input_hash = placement_gate_input_hash(state)
+        if stage.status in {PlanStageStatus.REVIEWED, PlanStageStatus.REVIEW_FAILED}:
+            if stage.metadata.get("reviewed_input_hash") == input_hash:
+                return None
+            # Advisory reviews are terminal per input snapshot, not for the
+            # lifetime of a run.  A changed placement patch begins a new,
+            # auditable review round.
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            stage.updated_at = None
+            state.add_event(
+                "planning.placement_input_hash_changed",
+                "reviewed placement input changed; starting a new review round",
+                {"previous": stage.metadata.get("reviewed_input_hash"), "current": input_hash},
+            )
         if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") == input_hash:
             return None
         if stage.status is PlanStageStatus.ACCEPTED:
@@ -1526,6 +1566,8 @@ def run_incremental_planning(
             stage.status = PlanStageStatus.PENDING
             stage.completed_at = None
             state.add_event("planning.placement_input_hash_changed", "accepted placement input changed", {"previous": stage.metadata.get("accepted_input_hash"), "current": input_hash})
+        if stage.status in {PlanStageStatus.BLOCKED, PlanStageStatus.AWAITING_HUMAN}:
+            return None
         if stage.status is PlanStageStatus.PENDING:
             transition_stage(stage, PlanStageStatus.PROPOSING)
         if stage.status is PlanStageStatus.REPAIRING:
@@ -2228,7 +2270,7 @@ def run_incremental_planning(
         if facts_gate_issue is not None:
             issues.append(facts_gate_issue)
             return IncrementalExecutionResult(ok=False, state=state, issues=issues, summary=_build_failure_summary("facts", [facts_gate_issue.code], 0), plan_loop_outcome={"status": "blocked", "active_gate_id": "facts", "active_stage_id": "plan_gate_facts", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": facts_gate_issue.message})
-    placement_gate_issue = _run_placement_gate()
+    placement_gate_issue = _run_placement_gate(finalize_non_applicable=True)
     if placement_gate_issue is not None:
         issues.append(placement_gate_issue)
         return IncrementalExecutionResult(

@@ -462,3 +462,11 @@ runtime repair, or monolithic fallback path was introduced.
   envelopes, resuming at the failed patch instead of contaminating every prompt
   with a full-plan correction. Hyphenated document identifiers no longer count
   as lattice dimensions. Focused regression tests: 65 passed.
+
+## 2026-07-18 — Placement Gate deferred applicability
+
+- Placement Gate now remains pending while candidate profile/intent patches are
+  still being generated, and only becomes `skipped` after task-plan completion.
+  A stale `not_applicable` checkpoint is explicitly reopened if its inputs later
+  become applicable; this prevents an illegal `skipped → reviewing` transition.
+- Validation: placement, incremental, graph, and controller regressions: 41 passed.

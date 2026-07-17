@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 
-from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanGateId, PlanFindingCategory, PlanFindingSeverity, PlanReviewFinding, PlacementPatchEdit, PlacementRevisionProposal
+from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanGateId, PlanFindingCategory, PlanFindingSeverity, PlanReviewFinding, PlacementPatchEdit, PlacementRevisionProposal, PlanStageStatus
+from openmc_agent.plan_builder.closed_loop.controller import initialize_gate_stage, transition_stage
 from openmc_agent.plan_builder.closed_loop.placement_evidence import (
     build_placement_evidence_pack, build_placement_binding_view,
     placement_gate_applicable, placement_gate_input_hash, placement_gate_ready,
@@ -98,6 +99,43 @@ def test_controlled_gate_accepts_after_facts_and_placement_review(monkeypatch) -
     assert result.ok
     assert result.state.plan_loop_stages["plan_gate_facts"].status.value == "accepted"
     assert result.state.plan_loop_stages["plan_gate_placement"].status.value == "accepted"
+
+
+def test_previously_skipped_placement_stage_reopens_when_inputs_become_applicable(monkeypatch) -> None:
+    """A stale not-applicable checkpoint cannot cause skipped -> reviewing."""
+    state = _state()
+    stage = initialize_gate_stage(PlanGateId.PLACEMENT, [])
+    transition_stage(stage, PlanStageStatus.SKIPPED)
+    stage.metadata["reason"] = "not_applicable"
+    state.plan_loop_stages[stage.stage_id] = stage
+    monkeypatch.setattr(executor, "default_patch_task_order", lambda _: [])
+    monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: [])
+    monkeypatch.setattr(
+        executor,
+        "assemble_state_if_ready",
+        lambda state, **_: state.model_copy(update={"assembled_plan": {"ok": True}}),
+    )
+
+    def reviewer(prompt: str) -> str:
+        payload = json.loads(prompt.split("INPUT:\n", 1)[1])
+        return json.dumps({
+            "review_status": "complete",
+            "reviewed_contract_row_ids": [row["requirement_id"] for row in payload["contract_matrix"]["rows"]],
+            "reviewed_evidence_refs": [item["ref_id"] for item in payload["evidence_items"]],
+            "coverage_summary": {"omitted_contract_row_count": 0},
+            "findings": [],
+        })
+
+    result = run_incremental_planning(
+        requirement=state.requirement_text,
+        state=state,
+        llm_client=lambda _: (_ for _ in ()).throw(AssertionError("no proposer")),
+        plan_loop_policy={"mode": "advisory", "gate_enabled": {"placement": True}},
+        plan_reviewer_client=reviewer,
+    )
+    assert result.ok
+    assert result.state.plan_loop_stages["plan_gate_placement"].status is PlanStageStatus.REVIEWED
+    assert any(event.event_type == "planning.placement_gate_reopened" for event in result.state.build_log)
 
 
 def test_vera4_static_placement_contract_and_mutation() -> None:
