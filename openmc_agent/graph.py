@@ -463,6 +463,8 @@ def build_plan_graph(
     graph.add_node("ask_expert", _ask_expert)
     graph.add_node("ask_plan_expert", _ask_plan_expert)
     graph.add_node("resume_plan_closed_loop", _resume_plan_closed_loop)
+    graph.add_node("execute_plan_retry", _execute_plan_retry)
+    graph.add_node("resume_plan_retry", _resume_plan_retry)
     graph.add_node("classify_expert_feedback", _classify_expert_feedback)
     graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
     graph.add_node("render_plan_script", _render_plan_script)
@@ -536,13 +538,15 @@ def build_plan_graph(
     graph.add_edge("select_few_shots", "generate_plan")
     graph.add_conditional_edges(
         "generate_plan", _plan_generation_router,
-        {"ask_plan_expert": "ask_plan_expert", "validate": "validate_plan"},
+        {"ask_plan_expert": "ask_plan_expert", "validate": "validate_plan", "execute_plan_retry": "execute_plan_retry"},
     )
     graph.add_conditional_edges(
         "ask_plan_expert", _plan_human_router,
-        {"resume": "resume_plan_closed_loop", "stop": "save_record"},
+        {"resume": "resume_plan_closed_loop", "resume_plan_retry": "resume_plan_retry", "stop": "save_record"},
     )
     graph.add_edge("resume_plan_closed_loop", "generate_plan")
+    graph.add_edge("execute_plan_retry", "generate_plan")
+    graph.add_edge("resume_plan_retry", "generate_plan")
     graph.add_conditional_edges(
         "validate_plan",
         _make_plan_validation_router(max_retries),
@@ -3910,7 +3914,14 @@ def _make_assess_plan_capability_node(max_retries: int):
 
 
 def _plan_generation_router(state: GraphState) -> str:
-    """Route any typed plan-gate wait state into the shared interrupt."""
+    """Route any typed plan-gate wait state into the shared interrupt.
+
+    Priority:
+      1. plan Gate awaiting_human (existing reviewer gate interrupt),
+      2. retry awaiting_human (typed human question from the retry loop),
+      3. retry_pending (Phase-3B executable retry has work),
+      4. validate.
+    """
     build_state = state.get("plan_build_state") or {}
     stages = build_state.get("plan_loop_stages", {}) if isinstance(build_state, dict) else {}
     awaiting_plan_gate = isinstance(stages, dict) and any(
@@ -3919,11 +3930,86 @@ def _plan_generation_router(state: GraphState) -> str:
     )
     if awaiting_plan_gate:
         return "ask_plan_expert"
+    # Phase-3B: if there are pending retry requests and the loop is not in
+    # advisory/off mode, route into execute_plan_retry instead of validate.
+    pending_retry_ids = build_state.get("plan_retry_pending_request_ids", []) if isinstance(build_state, dict) else []
+    plan_loop_mode = (build_state.get("plan_loop_mode") or "off") if isinstance(build_state, dict) else "off"
+    if pending_retry_ids and plan_loop_mode == "controlled":
+        return "execute_plan_retry"
     return "validate"
 
 
 def _plan_human_router(state: GraphState) -> str:
+    """Distinguish gate-driven human questions from retry-driven ones.
+
+    A retry human question sets ``plan_retry_human_resume=True`` so the
+    answer is routed through ``resume_plan_retry`` (which consumes the typed
+    answer and re-enters the retry loop) rather than
+    ``resume_plan_closed_loop`` (which re-runs the incremental planner).
+    """
+    if state.get("plan_retry_human_resume"):
+        return "resume_plan_retry"
     return "resume" if state.get("plan_resume_requested") else "stop"
+
+
+def _execute_plan_retry(state: GraphState) -> GraphState:
+    """Run one pass of the executable retry loop.
+
+    The actual producer/acceptance/downstream/gate-replay injection is done
+    inside the executor; this node simply triggers it and records the outcome.
+    The node never clears ``plan_build_state`` or mutates the requirement.
+    """
+    build_state_dict = state.get("plan_build_state") or {}
+    if not isinstance(build_state_dict, dict):
+        return {"plan_build_state": build_state_dict}
+    from openmc_agent.plan_builder.state import PlanBuildState
+    from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanLoopMode
+    from openmc_agent.plan_builder.closed_loop.retry_controller import execute_plan_retry_loop
+
+    build_state = PlanBuildState.model_validate(build_state_dict)
+    policy_dict = build_state.plan_loop_policy or {}
+    mode = (policy_dict.get("mode") or build_state.plan_loop_mode or PlanLoopMode.OFF).value if hasattr((policy_dict.get("mode") or build_state.plan_loop_mode or PlanLoopMode.OFF), "value") else str(policy_dict.get("mode") or build_state.plan_loop_mode or "off")
+    policy = PlanClosedLoopPolicy(**{**policy_dict, "mode": mode})
+    if policy.mode is PlanLoopMode.OFF or policy.mode is PlanLoopMode.ADVISORY:
+        outcome = execute_plan_retry_loop(state=build_state, policy=policy)
+    else:
+        # Controlled mode: the producer/acceptance injection is wired by the
+        # executor; this graph node is a lightweight entry point that records
+        # the outcome.  The executor's own retry path remains authoritative.
+        outcome = execute_plan_retry_loop(state=build_state, policy=policy)
+    return {
+        "plan_build_state": build_state.model_dump(mode="json"),
+        "plan_retry_outcome": outcome.model_dump(mode="json"),
+    }
+
+
+def _resume_plan_retry(state: GraphState) -> GraphState:
+    """Consume a typed human answer and re-enter the retry loop.
+
+    Marks the prior question's request as superseded so the loop cannot
+    accidentally consume a stale answer bound to a different input hash.
+    """
+    build_state_dict = state.get("plan_build_state") or {}
+    if not isinstance(build_state_dict, dict):
+        return {"plan_build_state": build_state_dict, "plan_retry_human_resume": False}
+    from openmc_agent.plan_builder.state import PlanBuildState
+    from openmc_agent.plan_builder.closed_loop.retry_models import RetryRequestLifecycle
+
+    build_state = PlanBuildState.model_validate(build_state_dict)
+    answers = state.get("plan_human_answers", {}) or {}
+    for question_id, answer in answers.items():
+        request_id = build_state.plan_retry_human_questions.get(question_id, {}).get("retry_request_id") if isinstance(build_state.plan_retry_human_questions.get(question_id, None), dict) else None
+        if request_id and request_id in build_state.plan_retry_requests:
+            req = build_state.plan_retry_requests[request_id]
+            req.lifecycle = RetryRequestLifecycle.SUPERSEDED
+            if request_id in build_state.plan_retry_pending_request_ids:
+                build_state.plan_retry_pending_request_ids.remove(request_id)
+            build_state.add_event("planning.retry_human_answered", "typed human answer consumed; request superseded", {"request_id": request_id, "question_id": question_id})
+    return {
+        "plan_build_state": build_state.model_dump(mode="json"),
+        "plan_retry_human_resume": False,
+        "plan_resume_requested": False,
+    }
 
 
 def _ask_plan_expert(state: GraphState) -> GraphState:
