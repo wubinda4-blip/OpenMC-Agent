@@ -3837,11 +3837,14 @@ def _make_assess_plan_capability_node(max_retries: int):
 
 
 def _plan_generation_router(state: GraphState) -> str:
-    """Route only the typed Facts Gate wait state into its own interrupt."""
+    """Route any typed plan-gate wait state into the shared interrupt."""
     build_state = state.get("plan_build_state") or {}
     stages = build_state.get("plan_loop_stages", {}) if isinstance(build_state, dict) else {}
-    facts_stage = stages.get("plan_gate_facts", {}) if isinstance(stages, dict) else {}
-    if isinstance(facts_stage, dict) and facts_stage.get("status") == "awaiting_human":
+    awaiting_plan_gate = isinstance(stages, dict) and any(
+        isinstance(stage, dict) and stage.get("status") == "awaiting_human"
+        for stage in stages.values()
+    )
+    if awaiting_plan_gate:
         return "ask_plan_expert"
     return "validate"
 
@@ -3851,7 +3854,7 @@ def _plan_human_router(state: GraphState) -> str:
 
 
 def _ask_plan_expert(state: GraphState) -> GraphState:
-    """Issue a typed Facts-only interrupt without touching expert_feedback."""
+    """Issue a typed plan-gate interrupt without touching expert_feedback."""
     build_state = state.get("plan_build_state") or {}
     raw_questions = build_state.get("plan_human_questions", {}) if isinstance(build_state, dict) else {}
     questions = list(raw_questions.values()) if isinstance(raw_questions, dict) else []
@@ -3861,7 +3864,7 @@ def _ask_plan_expert(state: GraphState) -> GraphState:
     if not state.get("plan_human_interactive", False):
         return {"plan_human_questions": unanswered, "plan_awaiting_human": True, "plan_resume_requested": False}
     payload = interrupt({
-        "kind": "plan_facts_human_confirmation",
+        "kind": "plan_gate_human_confirmation",
         "questions": unanswered,
         "instruction": "Submit a typed HumanPlanAnswer for each question_id; do not provide free-text patch JSON.",
     })

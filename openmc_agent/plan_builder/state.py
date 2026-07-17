@@ -25,6 +25,7 @@ from openmc_agent.schemas import AgentBaseModel
 
 from .mode import PlanningModeDecision
 from .closed_loop.models import (
+    ConfirmedPlanFactRecord,
     ConfirmedFactRecord,
     HumanPlanAnswer,
     HumanPlanQuestion,
@@ -158,7 +159,7 @@ class PlanBuildState(AgentBaseModel):
     plan_loop_mode: PlanLoopMode = PlanLoopMode.OFF
     # Older persisted ledgers deliberately remain valid.  The controller
     # upgrades behaviour lazily instead of rewriting checkpoint files.
-    plan_loop_contract_version: str = "0.3"
+    plan_loop_contract_version: str = "0.4"
     plan_loop_policy: dict[str, Any] = Field(default_factory=dict)
     plan_loop_stages: dict[str, PlanStageState] = Field(default_factory=dict)
     plan_review_findings: dict[str, PlanReviewFinding] = Field(default_factory=dict)
@@ -173,6 +174,10 @@ class PlanBuildState(AgentBaseModel):
     plan_confirmed_fact_records: dict[str, ConfirmedFactRecord] = Field(default_factory=dict)
     facts_review_history: list[dict[str, Any]] = Field(default_factory=list)
     facts_revision_history: list[dict[str, Any]] = Field(default_factory=list)
+    placement_review_history: list[dict[str, Any]] = Field(default_factory=list)
+    placement_revision_history: list[dict[str, Any]] = Field(default_factory=list)
+    placement_dependency_requests: list[dict[str, Any]] = Field(default_factory=list)
+    plan_confirmed_plan_fact_records: dict[str, ConfirmedPlanFactRecord] = Field(default_factory=dict)
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 

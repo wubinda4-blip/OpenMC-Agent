@@ -9,6 +9,7 @@ touching the graph workflow or OpenMC.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -963,7 +964,7 @@ def run_incremental_planning(
     from .closed_loop.facts_evidence import build_facts_evidence_packs
     from .closed_loop.facts_review_prompts import build_facts_review_prompt
     from .closed_loop.facts_reviewer import run_facts_review
-    from .closed_loop.models import PlanClosedLoopPolicy, PlanGateId, PlanLoopMode, PlanReviewAction, PlanReviewDecision, PlanStageStatus
+    from .closed_loop.models import PlanClosedLoopPolicy, PlanFindingCategory, PlanFindingSeverity, PlanGateId, PlanLoopMode, PlanReviewAction, PlanReviewDecision, PlanReviewFinding, PlanStageStatus
     from .closed_loop.policy import canonical_gate_order, compute_allowed_actions
     from .closed_loop.fingerprints import compute_issue_fingerprint
 
@@ -974,11 +975,15 @@ def run_incremental_planning(
         policy = policy.model_copy(update={"gate_enabled": {gate: True for gate in canonical_gate_order()}})
     if policy.mode is PlanLoopMode.CONTROLLED and not any(policy.gate_enabled.values()):
         policy = policy.model_copy(update={"gate_enabled": {PlanGateId.FACTS: True}})
-    unsupported_controlled = [gate for gate, enabled in policy.gate_enabled.items() if enabled and gate is not PlanGateId.FACTS]
+    if policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.PLACEMENT, False) and not policy.gate_enabled.get(PlanGateId.FACTS, False):
+        issue = IncrementalExecutionIssue(code="planning.closed_loop.invalid_gate_configuration", severity="error", message="controlled placement requires the facts gate")
+        return IncrementalExecutionResult(ok=False, state=state, issues=[issue], summary={"issue_codes": [issue.code]}, plan_loop_outcome={"status": "blocked", "detail": issue.message, "additional_llm_calls_used": 0})
+    supported_controlled = {PlanGateId.FACTS, PlanGateId.PLACEMENT}
+    unsupported_controlled = [gate for gate, enabled in policy.gate_enabled.items() if enabled and gate not in supported_controlled]
     if policy.mode is PlanLoopMode.CONTROLLED and unsupported_controlled:
         issue = IncrementalExecutionIssue(
             code="planning.closed_loop.gate_not_implemented", severity="error",
-            message="controlled mode currently implements only the facts gate",
+            message="controlled mode currently implements only facts and placement gates",
         )
         state.add_event(
             event_type="planning.closed_loop.controlled_not_implemented",
@@ -1010,6 +1015,15 @@ def run_incremental_planning(
     )
 
     order = task_order or default_patch_task_order(state)
+    # Only controlled Placement Gate gets a barrier.  The historical off and
+    # advisory orders must remain byte-for-byte behaviourally identical.
+    placement_controlled = policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.PLACEMENT, False)
+    if placement_controlled and task_order is None:
+        placement_types = {"localized_insert_profiles", "base_path_axial_profiles", "pin_map", "assembly_catalog", "core_layout"}
+        early = [item for item in order if item in {"facts", "materials", "universes"}]
+        placement = [item for item in order if item in placement_types]
+        late = [item for item in order if item not in set(early) | set(placement)]
+        order = early + placement + late
     required = required_patch_types_for_state(state)
     advisory_enabled = policy.mode is PlanLoopMode.ADVISORY
     artifact_writer = PlanLoopArtifactWriter(plan_loop_output_dir, policy.artifact_subdir)
@@ -1040,7 +1054,9 @@ def run_incremental_planning(
             "workflow_behavior_changed": False,
         }
         facts_stage = state.plan_loop_stages.get("plan_gate_facts")
+        placement_stage = state.plan_loop_stages.get("plan_gate_placement")
         facts_history = state.facts_review_history[-1] if state.facts_review_history else {}
+        placement_history = state.placement_review_history[-1] if state.placement_review_history else {}
         summary.update({
             "facts_review_executed": bool(state.facts_review_history),
             "facts_stage_status": facts_stage.status.value if facts_stage else None,
@@ -1050,6 +1066,12 @@ def run_incremental_planning(
             "facts_revision_calls": sum(1 for item in state.facts_revision_history if "proposal" in item),
             "confirmed_fact_count": len(state.plan_confirmed_fact_records),
             "budget_remaining": max(0, policy.max_total_additional_llm_calls - state.plan_loop_additional_llm_calls),
+            "placement_gate_applicable": bool(placement_stage and placement_stage.metadata.get("reason") != "not_applicable"),
+            "placement_stage_status": placement_stage.status.value if placement_stage else None,
+            "placement_reviewer_calls": int(placement_history.get("reviewer_calls", 0)),
+            "placement_review_schema_retries": int(placement_history.get("schema_retries", 0)),
+            "placement_revision_calls": len(state.placement_revision_history),
+            "placement_dependency_requests": len(state.placement_dependency_requests),
         })
         writes = [
             artifact_writer.write_plan_loop_policy(policy),
@@ -1102,6 +1124,29 @@ def run_incremental_planning(
             artifact_writer._write("facts_confirmed_fact_records.json", consumed)
             state.add_event("planning.facts_human_answer_consumed", "typed facts confirmation consumed", {"count": len(consumed)})
 
+    placement_stage_for_resume = state.plan_loop_stages.get("plan_gate_placement")
+    if placement_stage_for_resume is not None and placement_stage_for_resume.status is PlanStageStatus.AWAITING_HUMAN and state.plan_human_answers:
+        from .closed_loop.placement_human import consume_placement_answer
+        consumed = []
+        for question_id, question in list(state.plan_human_questions.items()):
+            if question.gate_id is not PlanGateId.PLACEMENT or question_id not in state.plan_human_answers:
+                continue
+            if any(record.question_id == question_id for record in state.plan_confirmed_plan_fact_records.values()):
+                continue
+            record = consume_placement_answer(question=question, answer=state.plan_human_answers[question_id], round_index=placement_stage_for_resume.human_round_count + 1)
+            state.plan_confirmed_plan_fact_records[record.fact_id] = record
+            state.confirmed_facts.setdefault("plan_closed_loop", {}).setdefault("placement", {})[record.json_path] = record.value
+            state.confirmed_facts.setdefault("plan_closed_loop_records", []).append(record.model_dump(mode="json"))
+            consumed.append(record)
+        if consumed:
+            placement_stage_for_resume.human_round_count += 1
+            transition_stage(placement_stage_for_resume, PlanStageStatus.REPAIRING)
+            targets = _expand_patch_repair_targets(sorted({ptype for record in consumed for ptype in record.affected_patch_types}))
+            state.invalidate_patch_types(targets, reason="placement human confirmation", issues=[{"code": "placement.human_confirmation"}])
+            artifact_writer._write("placement_human_answers.json", [state.plan_human_answers[item.question_id] for item in consumed])
+            artifact_writer._write("placement_confirmed_fact_records.json", consumed)
+            state.add_event("planning.placement_human_answer_consumed", "typed placement confirmation consumed", {"count": len(consumed), "invalidated_patch_types": targets})
+
     def _facts_stage():
         return state.plan_loop_stages.get("plan_gate_facts")
 
@@ -1111,6 +1156,8 @@ def run_incremental_planning(
         stage = _facts_stage()
         if stage is None:
             return None
+        if stage.status is PlanStageStatus.PENDING:
+            transition_stage(stage, PlanStageStatus.PROPOSING)
         if stage.status is PlanStageStatus.PROPOSING:
             transition_stage(stage, PlanStageStatus.VALIDATING)
             stage.validation_count += 1
@@ -1422,6 +1469,247 @@ def run_incremental_planning(
             plan_loop_outcome=_write_advisory_artifacts(),
         )
 
+    def _placement_stage():
+        return state.plan_loop_stages.get("plan_gate_placement")
+
+    def _run_placement_gate() -> IncrementalExecutionIssue | None:
+        """Run read-only/admission Placement Gate once its inputs are valid."""
+        if policy.mode is PlanLoopMode.OFF or not policy.gate_enabled.get(PlanGateId.PLACEMENT, False):
+            return None
+        from .closed_loop.placement_evidence import (
+            build_placement_evidence_pack, placement_gate_applicable,
+            placement_gate_input_hash, placement_gate_ready,
+        )
+        from .closed_loop.placement_preflight import run_placement_preflight
+        from .closed_loop.placement_reviewer import run_placement_review
+        from .closed_loop.placement_review_prompts import build_placement_review_prompt
+        from .closed_loop.placement_issue_policy import placement_issue_owner
+
+        stage = _placement_stage()
+        if stage is None:
+            return None
+        if policy.mode is PlanLoopMode.CONTROLLED:
+            facts_stage = _facts_stage()
+            if facts_stage is None or facts_stage.status is not PlanStageStatus.ACCEPTED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.placement_requires_accepted_facts", severity="error", message="controlled placement gate requires accepted Facts Gate", patch_type="placement")
+        if not placement_gate_applicable(state):
+            # Empty foundation-only runs have no facts patch at all.  Leave
+            # their pending stage for the Phase-0 advisory artifact writer so
+            # historic "review_not_implemented" semantics remain intact.
+            if not _has_valid_patch(state, "facts"):
+                return None
+            if stage.status is PlanStageStatus.PENDING:
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+            stage.metadata["reason"] = "not_applicable"
+            state.add_event("planning.placement_gate_not_applicable", "placement gate not applicable", {})
+            return None
+        if not placement_gate_ready(state):
+            return None
+        input_hash = placement_gate_input_hash(state)
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") == input_hash:
+            return None
+        if stage.status is PlanStageStatus.ACCEPTED:
+            # A dependent valid patch was changed on resume; accepted evidence
+            # cannot be reused.  This is the sole safe same-stage reset.
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event("planning.placement_input_hash_changed", "accepted placement input changed", {"previous": stage.metadata.get("accepted_input_hash"), "current": input_hash})
+        if stage.status is PlanStageStatus.PENDING:
+            transition_stage(stage, PlanStageStatus.PROPOSING)
+        if stage.status is PlanStageStatus.REPAIRING:
+            # A human-confirmed placement answer invalidated target patches;
+            # once generation restores all inputs this is a fresh validation
+            # round, not an illegal REVIEWING shortcut.
+            transition_stage(stage, PlanStageStatus.VALIDATING)
+            stage.validation_count += 1
+        if stage.status is PlanStageStatus.PROPOSING:
+            transition_stage(stage, PlanStageStatus.VALIDATING)
+            stage.validation_count += 1
+        preflight = run_placement_preflight(state=state)
+        state.add_event("planning.placement_preflight_completed", "placement deterministic preflight completed", {"issue_count": len(preflight["issues"])})
+        pack = build_placement_evidence_pack(state=state, policy=policy, deterministic_issues=preflight["issues"])
+        stage.metadata.update({"reviewed_input_hash": pack.input_hash, "review_model": getattr(plan_reviewer_client, "model_name", None)})
+        for name, value in (("placement_binding_view.json", preflight.get("binding_view")), ("placement_contract_matrix.json", pack.contract_matrix), ("placement_evidence_pack.json", pack), ("placement_preflight.json", preflight)):
+            path = artifact_writer._write(name, value)
+            if path:
+                state.plan_loop_artifacts.append(path)
+        prompt_path = artifact_writer.write_text(f"placement_review_prompt_{stage.review_count:03d}.txt", build_placement_review_prompt(pack))
+        if prompt_path:
+            state.plan_loop_artifacts.append(prompt_path)
+        transition_stage(stage, PlanStageStatus.REVIEWING)
+        stage.review_count += 1
+        state.add_event("planning.placement_review_started", "independent placement critic called", {"input_hash": pack.input_hash})
+        if plan_reviewer_client is None:
+            if policy.mode is PlanLoopMode.ADVISORY:
+                transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                state.add_event("planning.placement_review_failed", "placement reviewer unavailable", {})
+                return None
+            transition_stage(stage, PlanStageStatus.BLOCKED)
+            return IncrementalExecutionIssue(code="planning.placement_reviewer_unavailable", severity="error", message="controlled placement review requires a reviewer", patch_type="placement")
+        review = run_placement_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+        state.placement_review_history.append(review.model_dump(mode="json"))
+        for index, attempt in enumerate(review.attempts):
+            # Providers may prepend private reasoning to an otherwise useful
+            # JSON object.  Preserve replayable JSON only; never persist that
+            # prose in artifacts.
+            raw_value = str(attempt.get("raw_text", "")) if attempt.get("extraction_strategy") in {"json", "dict"} else "[non-JSON provider text redacted; see extraction metadata]"
+            raw_path = artifact_writer.write_text(f"placement_review_raw_{index:03d}.txt", raw_value)
+            extraction_path = artifact_writer._write(f"placement_review_extraction_{index:03d}.json", {key: value for key, value in attempt.items() if key != "raw_text"})
+            for path in (raw_path, extraction_path):
+                if path:
+                    state.plan_loop_artifacts.append(path)
+        if review.output is not None:
+            path = artifact_writer._write("placement_review_normalized_000.json", review.output)
+            if path:
+                state.plan_loop_artifacts.append(path)
+        path = artifact_writer._write("placement_review_findings.json", review.findings)
+        if path:
+            state.plan_loop_artifacts.append(path)
+        record_findings(state, stage, review.findings)
+        deterministic_findings = [
+            PlanReviewFinding(gate_id=PlanGateId.PLACEMENT, code=item["code"], severity=PlanFindingSeverity.ERROR if item.get("severity") == "error" else PlanFindingSeverity.WARNING,
+                              category=PlanFindingCategory.PLACEMENT_GAP, message=item.get("message", item["code"]), source_evidence=[],
+                              affected_patch_types=placement_issue_owner(item["code"]).get("owner_patch_types", []), affected_json_paths=[],
+                              repairable_by_llm=bool(placement_issue_owner(item["code"]).get("owner_patch_types")), requires_human=False, confidence=1.0,
+                              metadata={"deterministic": True, "requirement_id": item.get("requirement_id")})
+            for item in preflight["issues"]
+        ]
+        record_findings(state, stage, deterministic_findings)
+        all_findings = deterministic_findings + review.findings
+        if not review.ok:
+            state.add_event("planning.placement_review_failed", review.error_code or "placement_review.schema_invalid", {})
+            if policy.mode is PlanLoopMode.ADVISORY:
+                transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                return None
+            transition_stage(stage, PlanStageStatus.BLOCKED)
+            return IncrementalExecutionIssue(code=review.error_code or "placement_review.schema_invalid", severity="error", message="placement review result unavailable", patch_type="placement")
+        actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=all_findings, deterministic_issues=preflight["issues"], additional_llm_calls_used=state.plan_loop_additional_llm_calls)
+        action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED
+        dependency = next((item for item in preflight["issues"] if placement_issue_owner(item["code"]).get("dependency_patch_type")), None)
+        if dependency is not None:
+            action = PlanReviewAction.RETRY_DEPENDENCY
+        decision = PlanReviewDecision(
+            decision_id=f"placement_decision_{len(state.plan_review_decisions):03d}", gate_id=PlanGateId.PLACEMENT, action=action,
+            target_patch_types=([placement_issue_owner(dependency["code"]).get("dependency_patch_type")] if dependency else (sorted({ptype for finding in all_findings for ptype in finding.affected_patch_types}) if action is PlanReviewAction.REVISE_CURRENT_PATCH else [])),
+            finding_ids=[item.finding_id for item in all_findings], rationale="deterministic placement-gate action policy", allowed_actions_snapshot=list(dict.fromkeys(actions + [action])), decided_by="deterministic",
+            metadata={"input_hash": pack.input_hash},
+        )
+        record_decision(state, stage, decision)
+        path = artifact_writer._write("placement_review_decision.json", decision)
+        if path:
+            state.plan_loop_artifacts.append(path)
+        state.add_event("planning.placement_review_completed", "placement critic normalized", {"finding_count": len(review.findings), "preflight_issue_count": len(preflight["issues"])})
+        if policy.mode is PlanLoopMode.ADVISORY:
+            transition_stage(stage, PlanStageStatus.REVIEWED)
+            state.add_event("planning.placement_gate_reviewed", "placement gate recorded without mutation", {})
+            return None
+        if action is PlanReviewAction.APPROVE:
+            transition_stage(stage, PlanStageStatus.ACCEPTED)
+            stage.metadata["accepted_input_hash"] = pack.input_hash
+            state.add_event("planning.placement_gate_accepted", "placement gate accepted", {"input_hash": pack.input_hash})
+            return None
+        if action is PlanReviewAction.ASK_HUMAN:
+            from .closed_loop.placement_human import build_placement_human_question
+            transition_stage(stage, PlanStageStatus.AWAITING_HUMAN)
+            for finding in all_findings:
+                if finding.requires_human:
+                    question = build_placement_human_question(finding, input_hash=pack.input_hash)
+                    if question.question_id not in state.plan_human_answers:
+                        state.plan_human_questions[question.question_id] = question
+            artifact_writer._write("placement_human_questions.json", [question for question in state.plan_human_questions.values() if question.gate_id is PlanGateId.PLACEMENT])
+            state.add_event("planning.placement_human_question_created", "placement ambiguity requires typed confirmation", {"input_hash": pack.input_hash})
+            return IncrementalExecutionIssue(code="planning.placement_awaiting_human", severity="error", message="placement gate awaiting human confirmation", patch_type="placement")
+        if action is PlanReviewAction.RETRY_DEPENDENCY:
+            request = {"request_id": f"placement_dependency_{len(state.placement_dependency_requests):03d}", "gate_id": "placement", "dependency_patch_type": placement_issue_owner(dependency["code"]).get("dependency_patch_type", "universes"), "issue_codes": [dependency["code"]], "finding_ids": [item.finding_id for item in all_findings], "reason": "placement gate dependency requires a prior gate", "downstream_patch_types": ["localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"]}
+            state.placement_dependency_requests.append(request)
+            artifact_writer._write("placement_dependency_retry_request.json", request)
+            transition_stage(stage, PlanStageStatus.BLOCKED)
+            state.add_event("planning.placement_dependency_retry_requested", "placement dependency retry recorded but not executed", request)
+            return IncrementalExecutionIssue(code="planning.placement.blocked_dependency", severity="error", message="placement requires facts/universes dependency retry", patch_type="placement")
+        if action is PlanReviewAction.REVISE_CURRENT_PATCH and plan_repair_client is not None:
+            from .closed_loop.fingerprints import compute_issue_fingerprint
+            from .closed_loop.placement_evidence import build_placement_evidence_pack
+            from .closed_loop.placement_revision import (
+                allowed_paths_for_placement_findings, commit_placement_revision,
+                evaluate_placement_revision, normalize_placement_revision,
+            )
+            from .closed_loop.placement_revision_prompts import build_placement_revision_prompt
+            from .closed_loop.models import PlacementRevisionProposal
+            transition_stage(stage, PlanStageStatus.REPAIRING)
+            stage.repair_count += 1
+            blocking = [item for item in all_findings if item.severity is PlanFindingSeverity.ERROR and item.repairable_by_llm and not item.requires_human]
+            issue_fingerprint = compute_issue_fingerprint(gate_id="placement", code="placement.blocking_set", affected_patch_type="placement", actual=sorted(item.finding_id for item in blocking))
+            stage.issue_fingerprint = issue_fingerprint
+            if state.plan_loop_issue_attempts_by_fingerprint.get(issue_fingerprint, 0) >= policy.max_attempts_per_issue_fingerprint or state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                state.add_event("planning.placement_budget_exhausted", "placement repair budget exhausted", {})
+                return IncrementalExecutionIssue(code="planning.closed_loop.issue_attempt_budget_exhausted", severity="error", message="placement repair budget exhausted", patch_type="placement")
+            current = {patch_type: next(env.content for env in state.patches.values() if env.patch_type == patch_type and env.status == "valid") for patch_type in sorted({ptype for finding in blocking for ptype in finding.affected_patch_types})}
+            prompt = build_placement_revision_prompt(
+                patches=current, findings=[item.model_dump(mode="json") for item in blocking], evidence_pack=pack.model_dump(mode="json"),
+                allowed_paths=allowed_paths_for_placement_findings(blocking), confirmed_records=[item.model_dump(mode="json") for item in state.plan_confirmed_plan_fact_records.values()],
+            )
+            prompt_path = artifact_writer.write_text(f"placement_revision_prompt_{stage.repair_count - 1:03d}.txt", prompt)
+            if prompt_path:
+                state.plan_loop_artifacts.append(prompt_path)
+            state.add_event("planning.placement_revision_started", "transactional placement revision started", {"finding_count": len(blocking)})
+            try:
+                if hasattr(plan_repair_client, "generate_patch_json"):
+                    raw_proposal = plan_repair_client.generate_patch_json(prompt=prompt, patch_type="placement_revision", json_schema=PlacementRevisionProposal.model_json_schema(), temperature=0)
+                else:
+                    raw_proposal = plan_repair_client(prompt)
+                state.plan_loop_additional_llm_calls += 1
+                raw_path = artifact_writer.write_text(f"placement_revision_raw_{stage.repair_count - 1:03d}.txt", raw_proposal if isinstance(raw_proposal, str) else json.dumps(raw_proposal, ensure_ascii=False))
+                if raw_path:
+                    state.plan_loop_artifacts.append(raw_path)
+                proposal = normalize_placement_revision(raw_proposal)
+                proposal_path = artifact_writer._write(f"placement_revision_proposal_{stage.repair_count - 1:03d}.json", proposal)
+                if proposal_path:
+                    state.plan_loop_artifacts.append(proposal_path)
+                evaluation = evaluate_placement_revision(state=state, proposal=proposal, findings=blocking, prior_candidate_hashes=state.plan_loop_candidate_hashes_by_fingerprint.get(issue_fingerprint, []))
+                evaluation_path = artifact_writer._write(f"placement_revision_evaluation_{stage.repair_count - 1:03d}.json", evaluation)
+                if evaluation_path:
+                    state.plan_loop_artifacts.append(evaluation_path)
+                if evaluation.candidate_hash:
+                    duplicate = record_no_progress(state, stage, issue_fingerprint, evaluation.candidate_hash)
+                    if duplicate or not evaluation.accepted:
+                        state.placement_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json")})
+                        transition_stage(stage, PlanStageStatus.BLOCKED)
+                        state.add_event("planning.placement_revision_rejected", "placement revision failed clone preflight", {"reasons": evaluation.reasons})
+                        return IncrementalExecutionIssue(code="planning.placement_revision_rejected", severity="error", message="placement candidate failed clone evaluation", patch_type="placement")
+                if not evaluation.accepted or evaluation.clone_state is None:
+                    transition_stage(stage, PlanStageStatus.BLOCKED)
+                    return IncrementalExecutionIssue(code="planning.placement_revision_rejected", severity="error", message="placement candidate rejected", patch_type="placement")
+                clone = PlanBuildState.model_validate(evaluation.clone_state)
+                clone_preflight = run_placement_preflight(state=clone)
+                clone_pack = build_placement_evidence_pack(state=clone, policy=policy, deterministic_issues=clone_preflight["issues"])
+                before_calls = clone.plan_loop_additional_llm_calls
+                rereview = run_placement_review(evidence_pack=clone_pack, reviewer_client=plan_reviewer_client, state=clone, policy=policy)
+                state.plan_loop_additional_llm_calls += clone.plan_loop_additional_llm_calls - before_calls
+                after_errors = [item for item in clone_preflight["issues"] if item.get("severity") == "error"] + [item for item in rereview.findings if item.severity is PlanFindingSeverity.ERROR]
+                if not rereview.ok or after_errors:
+                    state.placement_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json"), "rereview": rereview.model_dump(mode="json")})
+                    transition_stage(stage, PlanStageStatus.BLOCKED)
+                    state.add_event("planning.placement_revision_rejected", "placement clone re-review did not clear blocking findings", {})
+                    return IncrementalExecutionIssue(code="planning.placement_revision_rereview_failed", severity="error", message="placement candidate failed independent re-review", patch_type="placement")
+                changed = commit_placement_revision(state=state, evaluated=evaluation, proposal_id=proposal.proposal_id)
+                state.placement_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json"), "rereview": rereview.model_dump(mode="json"), "committed_patch_ids": changed})
+                transition_stage(stage, PlanStageStatus.VALIDATING)
+                transition_stage(stage, PlanStageStatus.REVIEWING)
+                transition_stage(stage, PlanStageStatus.ACCEPTED)
+                stage.metadata["accepted_input_hash"] = clone_pack.input_hash
+                state.add_event("planning.placement_revision_rereviewed", "placement candidate independently re-reviewed", {})
+                return None
+            except Exception as exc:
+                state.placement_revision_history.append({"error": str(exc)})
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                state.add_event("planning.placement_revision_rejected", "placement revision proposal rejected", {"error": str(exc)})
+                return IncrementalExecutionIssue(code="planning.placement_revision_rejected", severity="error", message="placement revision proposal failed", patch_type="placement")
+        transition_stage(stage, PlanStageStatus.BLOCKED)
+        state.add_event("planning.placement_gate_blocked", "placement gate blocked", {"action": action.value})
+        return IncrementalExecutionIssue(code="planning.placement_gate_blocked", severity="error", message=f"placement gate action={action.value}; revision is not available for this candidate", patch_type="placement")
+
     for patch_type in order:
         # Skip if already valid.
         if _has_valid_patch(state, patch_type):
@@ -1592,6 +1880,26 @@ def run_incremental_planning(
                             "detail": facts_gate_issue.message,
                         },
                     )
+            # Placement is evaluated at the first point all of its scoped
+            # inputs become valid.  In controlled mode the reordered task list
+            # makes this a barrier before axial patch generation; advisory
+            # retains historical order and remains read-only.
+            placement_gate_issue = _run_placement_gate()
+            if placement_gate_issue is not None:
+                issues.append(placement_gate_issue)
+                state.add_event(
+                    event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
+                    message="placement gate blocked downstream patch generation",
+                    data={"issue_code": placement_gate_issue.code},
+                )
+                return IncrementalExecutionResult(
+                    ok=False, state=state, issues=issues,
+                    summary=_build_failure_summary("placement", [placement_gate_issue.code], len(result.attempts)),
+                    plan_loop_outcome={
+                        "status": "blocked", "active_gate_id": "placement", "active_stage_id": "plan_gate_placement",
+                        "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": placement_gate_issue.message,
+                    },
+                )
             # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
             _sync_benchmark_from_facts()
 
@@ -1808,6 +2116,24 @@ def run_incremental_planning(
                 "reference_patches_used": reference_patches_used,
             },
             plan_loop_outcome=_write_advisory_artifacts(),
+        )
+
+    # Resume paths may skip every already-valid patch, so give the Placement
+    # Gate one final opportunity before assembly.  The input-hash guard makes
+    # this idempotent.
+    facts_stage_for_final = _facts_stage()
+    if facts_stage_for_final is not None and facts_stage_for_final.status is PlanStageStatus.PENDING and _has_valid_patch(state, "facts"):
+        facts_gate_issue = _run_facts_gate()
+        if facts_gate_issue is not None:
+            issues.append(facts_gate_issue)
+            return IncrementalExecutionResult(ok=False, state=state, issues=issues, summary=_build_failure_summary("facts", [facts_gate_issue.code], 0), plan_loop_outcome={"status": "blocked", "active_gate_id": "facts", "active_stage_id": "plan_gate_facts", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": facts_gate_issue.message})
+    placement_gate_issue = _run_placement_gate()
+    if placement_gate_issue is not None:
+        issues.append(placement_gate_issue)
+        return IncrementalExecutionResult(
+            ok=False, state=state, issues=issues,
+            summary=_build_failure_summary("placement", [placement_gate_issue.code], 0),
+            plan_loop_outcome={"status": "blocked", "active_gate_id": "placement", "active_stage_id": "plan_gate_placement", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": placement_gate_issue.message},
         )
 
     # Assemble.

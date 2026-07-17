@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.3"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.4"
 
 
 class _TextEnum(str, Enum):
@@ -136,7 +136,10 @@ class PlanReviewFinding(AgentBaseModel):
             gate_id=self.gate_id.value, code=self.code, category=self.category.value,
             affected_patch_types=self.affected_patch_types,
             affected_json_paths=self.affected_json_paths,
-            source_evidence_hashes=[item.evidence_hash for item in self.source_evidence],
+            source_evidence_hashes=(
+                [item.evidence_hash for item in self.source_evidence]
+                or [str(item) for item in self.metadata.get("evidence_hashes", [])]
+            ),
         )
         if self.finding_id and self.finding_id != fingerprint:
             raise ValueError("finding_id must match the deterministic finding fingerprint")
@@ -238,6 +241,27 @@ class ConfirmedFactRecord(AgentBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConfirmedPlanFactRecord(AgentBaseModel):
+    """Typed confirmation shared by all plan gates.
+
+    ``ConfirmedFactRecord`` remains the backwards-compatible facts-only
+    record.  Placement confirmations deliberately live in a separate,
+    namespaced ledger so an answer cannot be mistaken for source evidence.
+    """
+
+    fact_id: str
+    gate_id: PlanGateId
+    patch_type: str
+    json_path: str
+    value: Any
+    question_id: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    affected_patch_types: list[str] = Field(default_factory=list)
+    confirmed_round: int = 0
+    input_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PlanReviewDecision(AgentBaseModel):
     decision_id: str
     gate_id: PlanGateId
@@ -334,6 +358,226 @@ class PlanEvidencePack(AgentBaseModel):
         return self
 
 
+class PlanEvidenceItem(AgentBaseModel):
+    """A short stable reference used by cross-patch gates.
+
+    The short ``ref_id`` is transport-only.  Semantic identity is always the
+    canonical SHA-256 hash, so an LLM cannot create authority by inventing a
+    convenient reference label.
+    """
+
+    ref_id: str
+    evidence_kind: Literal[
+        "source_excerpt", "accepted_fact_contract", "patch_fragment",
+        "deterministic_issue", "contract_matrix_row",
+    ]
+    patch_type: str | None = None
+    patch_id: str | None = None
+    json_path: str | None = None
+    label: str
+    value: Any
+    canonical_hash: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlacementRequirementView(AgentBaseModel):
+    requirement_id: str
+    insert_kind: str
+    assembly_type_ids: list[str] = Field(default_factory=list)
+    expected_coordinate_count: int | None = None
+    expected_assembly_instance_count: int | None = None
+    host_kind: str = "guide_tube"
+    required_profile_id: str | None = None
+    required_segment_roles: list[str] = Field(default_factory=list)
+    expected_universe_ids: list[str] = Field(default_factory=list)
+    anchor_z_cm: float | None = None
+    control_state_id: str | None = None
+    required_in_detailed_domain: bool = True
+    requires_human_confirmation: bool = False
+
+
+class PlacementAssemblyScopeView(AgentBaseModel):
+    scope_id: str
+    source_patch_type: str
+    source_json_path: str
+    assembly_type_id: str | None = None
+    multiplicity: int | None = None
+    lattice_size: tuple[int, int] | None = None
+    coordinate_convention: dict[str, Any] = Field(default_factory=dict)
+    guide_tube_coords: list[tuple[int, int]] = Field(default_factory=list)
+    instrument_tube_coords: list[tuple[int, int]] = Field(default_factory=list)
+    localized_insert_intents: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PlacementProfileView(AgentBaseModel):
+    profile_id: str
+    anchor_kind: str = "absolute"
+    anchor_z_cm: float | None = None
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PlacementUniverseView(AgentBaseModel):
+    universe_id: str
+    kind: str
+
+
+class PlacementCoreInstanceView(AgentBaseModel):
+    assembly_type_id: str
+    coordinate: tuple[int, int]
+
+
+class PlacementBindingView(AgentBaseModel):
+    scope_kind: Literal["single_assembly", "multi_assembly"]
+    requirements: list[PlacementRequirementView] = Field(default_factory=list)
+    assembly_scopes: list[PlacementAssemblyScopeView] = Field(default_factory=list)
+    profiles: list[PlacementProfileView] = Field(default_factory=list)
+    universes: list[PlacementUniverseView] = Field(default_factory=list)
+    core_instances: list[PlacementCoreInstanceView] = Field(default_factory=list)
+    coordinate_conventions: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlacementContractRow(AgentBaseModel):
+    requirement_id: str
+    insert_kind: str
+    source_scope: str
+    expected_assembly_type_ids: list[str] = Field(default_factory=list)
+    actual_assembly_type_ids: list[str] = Field(default_factory=list)
+    expected_instance_count: int | None = None
+    actual_instance_count: int | None = None
+    expected_coordinate_count: int | None = None
+    actual_coordinate_counts: dict[str, int] = Field(default_factory=dict)
+    host_kind: str = "guide_tube"
+    host_coordinate_counts: dict[str, int] = Field(default_factory=dict)
+    matching_intent_ids: list[str] = Field(default_factory=list)
+    required_profile_id: str | None = None
+    actual_profile_ids: list[str] = Field(default_factory=list)
+    required_segment_roles: list[str] = Field(default_factory=list)
+    actual_segment_roles: list[str] = Field(default_factory=list)
+    expected_universe_ids: list[str] = Field(default_factory=list)
+    referenced_universe_ids: list[str] = Field(default_factory=list)
+    missing_universe_ids: list[str] = Field(default_factory=list)
+    anchor_expected: float | None = None
+    anchor_actual: dict[str, float | None] = Field(default_factory=dict)
+    control_state_expected: str | None = None
+    control_state_actual: dict[str, str | None] = Field(default_factory=dict)
+    coordinate_convention_status: Literal["pass", "fail", "ambiguous", "not_applicable"] = "not_applicable"
+    static_binding_status: Literal["pass", "fail", "ambiguous", "not_applicable"] = "not_applicable"
+    issue_codes: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class PlacementContractMatrix(AgentBaseModel):
+    rows: list[PlacementContractRow] = Field(default_factory=list)
+    input_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlacementEvidencePack(AgentBaseModel):
+    gate_id: Literal[PlanGateId.PLACEMENT] = PlanGateId.PLACEMENT
+    input_hash: str = ""
+    placement_scope_kind: Literal["single_assembly", "multi_assembly"]
+    evidence_items: list[PlanEvidenceItem] = Field(default_factory=list)
+    contract_matrix: PlacementContractMatrix
+    deterministic_issues: list[dict[str, Any]] = Field(default_factory=list)
+    relevant_patch_hashes: dict[str, str] = Field(default_factory=dict)
+    required_patch_types: list[str] = Field(default_factory=list)
+    optional_patch_types: list[str] = Field(default_factory=list)
+    accepted_facts_hash: str = ""
+    coordinate_convention_summary: dict[str, Any] = Field(default_factory=dict)
+    allowed_actions: list[PlanReviewAction] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlacementReviewFindingDraft(AgentBaseModel):
+    code: str
+    severity: PlanFindingSeverity
+    category: PlanFindingCategory
+    message: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    affected_contract_rows: list[str] = Field(default_factory=list)
+    affected_json_paths: list[str] = Field(default_factory=list)
+    repairable_by_llm: bool = False
+    requires_human: bool = False
+    confidence: float
+    expected_value: Any | None = None
+    current_value: Any | None = None
+    candidate_interpretations: list[FactsInterpretationOption] = Field(default_factory=list)
+    downstream_impact: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("confidence")
+    @classmethod
+    def _placement_confidence(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        return value
+
+    @model_validator(mode="after")
+    def _placement_human_or_repair(self) -> "PlacementReviewFindingDraft":
+        if self.requires_human and self.repairable_by_llm:
+            raise ValueError("requires_human findings cannot be repairable_by_llm")
+        return self
+
+
+class PlacementReviewCoverageSummary(AgentBaseModel):
+    reviewed_contract_row_count: int = 0
+    omitted_contract_row_count: int = 0
+    reviewed_evidence_item_count: int = 0
+    omitted_evidence_item_count: int = 0
+    deterministic_issues_acknowledged: list[str] = Field(default_factory=list)
+
+
+class PlacementReviewModelOutput(AgentBaseModel):
+    review_status: Literal["complete", "insufficient_evidence", "malformed_input"]
+    findings: list[PlacementReviewFindingDraft] = Field(default_factory=list)
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    coverage_summary: PlacementReviewCoverageSummary = Field(default_factory=PlacementReviewCoverageSummary)
+    concise_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlacementPatchEdit(AgentBaseModel):
+    patch_type: Literal["localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"]
+    patch_id: str
+    expected_patch_hash: str
+    operations: list[Any] = Field(default_factory=list)
+
+
+class PlacementRevisionProposal(AgentBaseModel):
+    proposal_id: str
+    gate_id: Literal[PlanGateId.PLACEMENT] = PlanGateId.PLACEMENT
+    edits: list[PlacementPatchEdit] = Field(default_factory=list)
+    resolved_finding_ids: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    confidence: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _placement_edits(self) -> "PlacementRevisionProposal":
+        if not self.edits:
+            raise ValueError("placement revision requires at least one edit")
+        if len({edit.patch_type for edit in self.edits}) != len(self.edits):
+            raise ValueError("placement revision has at most one edit block per patch type")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+        return self
+
+
+class PlacementDependencyRetryRequest(AgentBaseModel):
+    request_id: str
+    gate_id: Literal[PlanGateId.PLACEMENT] = PlanGateId.PLACEMENT
+    dependency_patch_type: Literal["facts", "universes"]
+    issue_codes: list[str] = Field(default_factory=list)
+    finding_ids: list[str] = Field(default_factory=list)
+    required_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    reason: str
+    downstream_patch_types: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PlanStageState(AgentBaseModel):
     stage_id: str
     gate_id: PlanGateId
@@ -368,7 +612,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2", "0.3"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3", "0.4"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2
@@ -384,6 +628,8 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     max_facts_review_source_chars: int = 96000
     enable_facts_review_synthesis: bool = True
     plan_human_mode: Literal["off", "ambiguity_only"] = "off"
+    plan_gates: list[PlanGateId] = Field(default_factory=list)
+    placement_review_mode: Literal["off", "advisory", "controlled"] = "off"
     gate_enabled: dict[PlanGateId, bool] = Field(default_factory=_default_gate_enabled)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -86,7 +86,10 @@ def evaluate_facts_revision(*, facts_patch: dict[str, Any], proposal: FactsRevis
         if operation.path == "" or operation.path == "/patch_type" or not any(operation.path == path or operation.path.startswith(path + "/") for path in allowed):
             return FactsRevisionEvaluation(reasons=["facts_revision.path_out_of_scope"])
     try:
-        candidate = apply_json_patch_to_clone(facts_patch, [operation.model_dump(mode="json", exclude_none=True) for operation in operations])
+        applied = apply_json_patch_to_clone(facts_patch, [operation.model_dump(mode="json", exclude_none=True) for operation in operations])
+        if not applied.ok:
+            return FactsRevisionEvaluation(reasons=[f"facts_revision.apply_failed: {applied.error}"])
+        candidate = applied.plan
     except Exception as exc:
         return FactsRevisionEvaluation(reasons=[f"facts_revision.apply_failed: {exc}"])
     if not isinstance(candidate, dict):

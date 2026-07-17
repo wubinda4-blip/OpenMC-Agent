@@ -56,12 +56,22 @@ def initialize_plan_loop_state(state: Any, policy: PlanClosedLoopPolicy, require
     state.plan_loop_mode = policy.mode
     state.plan_loop_policy = policy.model_dump(mode="json")
     state.plan_loop_contract_version = PLAN_CLOSED_LOOP_CONTRACT_VERSION
-    legacy = state.plan_loop_stages.get("plan_gate_facts")
-    if legacy and legacy.status is PlanStageStatus.SKIPPED and legacy.metadata.get("review_not_implemented"):
-        legacy.status = PlanStageStatus.PENDING
-        legacy.completed_at = None
-        legacy.metadata["review_not_implemented"] = False
-        legacy.metadata["migrated_from_contract"] = "0.1_or_0.2_foundation_only"
+    # Foundation-only stages were never reviewed.  Upgrade them lazily so a
+    # restored checkpoint is eligible for the first real gate run.  Never
+    # reset a real reviewed/accepted/failed history.
+    for gate_id in (PlanGateId.FACTS, PlanGateId.PLACEMENT):
+        legacy = state.plan_loop_stages.get(f"plan_gate_{gate_id.value}")
+        if legacy and legacy.status is PlanStageStatus.SKIPPED and legacy.metadata.get("review_not_implemented"):
+            legacy.status = PlanStageStatus.PENDING
+            legacy.completed_at = None
+            legacy.metadata["review_not_implemented"] = False
+            legacy.metadata["migrated_from_contract"] = "0.1_or_0.2_foundation_only"
+            if gate_id is PlanGateId.PLACEMENT and hasattr(state, "add_event"):
+                state.add_event(
+                    "planning.placement_gate_migrated_to_0_4",
+                    "foundation-only placement stage migrated to pending",
+                    {"stage_id": legacy.stage_id},
+                )
     created: list[PlanStageState] = []
     for gate_id in enabled_gates(policy):
         stage_id = f"plan_gate_{gate_id.value}"

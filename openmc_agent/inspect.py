@@ -93,6 +93,8 @@ def inspect_requirement(
     facts_review_chunk_chars: int = 12000,
     max_facts_review_chunks: int = 8,
     plan_human_mode: str = "off",
+    plan_gates: str | None = None,
+    placement_review_mode: str = "off",
     verbose: bool = False,
 ) -> InspectResult:
     configure_logging("INFO" if verbose else "WARNING")
@@ -138,6 +140,8 @@ def inspect_requirement(
             facts_review_chunk_chars=facts_review_chunk_chars,
             max_facts_review_chunks=max_facts_review_chunks,
             plan_human_mode=plan_human_mode,
+            plan_gates=plan_gates,
+            placement_review_mode=placement_review_mode,
             verbose=verbose,
         )
 
@@ -346,6 +350,8 @@ def _inspect_plan_requirement(
     facts_review_chunk_chars: int,
     max_facts_review_chunks: int,
     plan_human_mode: str,
+    plan_gates: str | None,
+    placement_review_mode: str,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -378,7 +384,17 @@ def _inspect_plan_requirement(
                 llm=make_patch_llm_client(model_name=model), model_name=model
             )
 
-    from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy
+    from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanGateId
+
+    selected_gates = [PlanGateId(item.strip()) for item in (plan_gates or "").split(",") if item.strip()]
+    if placement_review_mode != "off" and plan_loop_mode == "off":
+        raise ValueError("--placement-review-mode requires a non-off --plan-loop-mode")
+    if placement_review_mode != "off" and plan_loop_mode != "off" and placement_review_mode != plan_loop_mode:
+        raise ValueError("--placement-review-mode must match --plan-loop-mode when both are enabled")
+    if placement_review_mode != "off" and PlanGateId.PLACEMENT not in selected_gates:
+        selected_gates.append(PlanGateId.PLACEMENT)
+    if plan_loop_mode == "controlled" and not selected_gates:
+        selected_gates = [PlanGateId.FACTS]
 
     plan_loop_policy = PlanClosedLoopPolicy(
         mode=plan_loop_mode,
@@ -391,6 +407,9 @@ def _inspect_plan_requirement(
         max_facts_review_chunks=max_facts_review_chunks,
         plan_human_mode=plan_human_mode,
         enable_human_gate=plan_human_mode == "ambiguity_only",
+        plan_gates=selected_gates,
+        placement_review_mode=placement_review_mode,
+        gate_enabled={gate: gate in selected_gates for gate in PlanGateId},
     )
     plan_reviewer_client = (
         make_patch_llm_client(model_name=plan_reviewer_model or model)
@@ -1132,6 +1151,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--facts-review-chunk-chars", type=int, default=12000)
     parser.add_argument("--max-facts-review-chunks", type=int, default=8)
     parser.add_argument("--plan-human-mode", choices=["off", "ambiguity_only"], default="off")
+    parser.add_argument("--plan-gates", default=None, help="Comma-separated enabled gates, for example facts,placement")
+    parser.add_argument("--placement-review-mode", choices=["off", "advisory", "controlled"], default="off")
     args = parser.parse_args(argv)
     if args.compact and args.json_output:
         parser.error("Use either --compact or --json, not both")
@@ -1189,6 +1210,8 @@ def main(argv: list[str] | None = None) -> int:
             facts_review_chunk_chars=args.facts_review_chunk_chars,
             max_facts_review_chunks=args.max_facts_review_chunks,
             plan_human_mode=args.plan_human_mode,
+            plan_gates=args.plan_gates,
+            placement_review_mode=args.placement_review_mode,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -1226,6 +1249,8 @@ def main(argv: list[str] | None = None) -> int:
             facts_review_chunk_chars=args.facts_review_chunk_chars,
             max_facts_review_chunks=args.max_facts_review_chunks,
             plan_human_mode=args.plan_human_mode,
+            plan_gates=args.plan_gates,
+            placement_review_mode=args.placement_review_mode,
         )
     else:
         parser.error("Provide a requirement or --md-file")

@@ -50,7 +50,7 @@ receive_requirement
 
 Plan closed-loop Phase 0 提供了可持久化 gate/stage 协议、预算和 JSON artifacts；`off` 始终保持既有工作流行为。
 
-Plan closed-loop Phase 1B：Facts Gate 的 structured critic I/O、事务式 Facts revision 与 typed human resume 已加固。Facts Proposer、独立 Facts Evidence Critic 与 Facts Revision Agent 是分离角色，即使模型名相同也独立计数。`advisory` 真实执行 Critic 但不修改 FactsPatch 或 Plan；`controlled` 仅覆盖 Facts Gate，须经 Python action policy 批准后才生成下游 patch。Placement Gate、通用任意-patch executable retry loop 与 LLM Supervisor 尚未实现。
+Plan closed-loop Phase 2：Placement Gate 将已接受的 Facts placement contract 与 universe/profile、intent、assembly/pin-map 和 core-layout 静态绑定做交叉审查。计数、坐标、profile/universe 引用由 Python 预检；独立 Placement Critic 只做证据约束的语义审查，且不会修改 patch。`advisory` 只记录结果，`controlled` 在 Facts accepted 后建立 placement-before-axial barrier。Placement revision 仅能在 issue-scoped path 上 clone→re-review→atomic commit；Facts/Universes 依赖只记录并阻断，尚未执行通用 dependency retry。最终 OpenMC root reachability 仍属于未来 Final Plan Gate。
 
 ### 渲染能力分级
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic import Field
@@ -14,6 +13,7 @@ from .models import (
     FactsReviewModelOutput, PlanClosedLoopPolicy, PlanEvidencePack, PlanFindingCategory,
     PlanFindingSeverity, PlanGateId, PlanReviewFinding, SourceExcerpt,
 )
+from .review_io import StructuredReviewCallSpec, run_structured_review_call
 
 
 class FactsReviewResult(AgentBaseModel):
@@ -28,59 +28,6 @@ class FactsReviewResult(AgentBaseModel):
     raw_outputs: list[str] = Field(default_factory=list)
     call_metadata: list[dict[str, Any]] = Field(default_factory=list)
     failure_code: str = ""
-
-
-def _call(client: Any, prompt: str) -> str | dict[str, Any]:
-    if hasattr(client, "generate_patch_json"):
-        return client.generate_patch_json(
-            prompt=prompt, patch_type="facts_review",
-            json_schema=FactsReviewModelOutput.model_json_schema(), temperature=0,
-        )
-    return client(prompt)
-
-
-def _parse_json_payload(raw: str | dict[str, Any]) -> dict[str, Any]:
-    """Recover a single JSON object from a provider which ignored JSON mode.
-
-    We never treat prose as a finding.  The scan is intentionally conservative:
-    it accepts a complete object only, preferring the final object because
-    reasoning models commonly prepend an explanatory draft.
-    """
-    if isinstance(raw, dict):
-        return raw
-    text = raw.strip()
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
-        pass
-    decoder = json.JSONDecoder()
-    candidates: list[dict[str, Any]] = []
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
-        try:
-            parsed, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            candidates.append(parsed)
-    if not candidates:
-        raise ValueError("facts_review.output_not_json")
-    # A top-level review contract is more specific than nested JSON objects
-    # such as ``coverage_summary``.  Prefer it even when it is followed by
-    # nested objects in the same response.
-    return next((item for item in reversed(candidates) if "review_status" in item), candidates[-1])
-
-
-def _output_mode_metadata(client: Any) -> dict[str, Any]:
-    return {
-        "requested_output_mode": getattr(client, "last_output_mode_requested", "protocol_or_plain_prompt"),
-        "actual_output_mode": getattr(client, "last_output_mode_used", "protocol_or_plain_prompt"),
-        "structured_fallback_used": bool(getattr(client, "last_output_fallback_used", False)),
-        "fallback_reasons": list(getattr(client, "last_output_fallback_reasons", [])),
-    }
 
 
 def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[list[PlanReviewFinding], list[dict[str, Any]]]:
@@ -127,38 +74,34 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
     all_findings: list[PlanReviewFinding] = []
     all_rejected: list[dict[str, Any]] = []
     for pack in evidence_packs:
-        raw: Any = None
-        for attempt in range(2):
-            try:
-                if state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
-                    result.error = "facts_review.budget_exhausted"
-                    result.failure_code = "facts_review.budget_exhausted"
-                    return result
-                prompt = (
-                    build_facts_review_prompt(pack)
-                    if attempt == 0
-                    else build_facts_review_schema_retry_prompt(pack, "facts_review.schema_invalid", raw if isinstance(raw, str) else None)
-                )
-                raw = _call(reviewer_client, prompt)
-                if isinstance(raw, str):
-                    result.raw_outputs.append(raw)
-                result.reviewer_calls += 1
-                state.plan_loop_additional_llm_calls += 1
-                result.call_metadata.append({"pack_id": pack.evidence_pack_id, "attempt": attempt + 1, **_output_mode_metadata(reviewer_client)})
-                parsed = _parse_json_payload(raw)
-                output = FactsReviewModelOutput.model_validate(parsed)
-                findings, rejected = _normalize(output, pack)
-                all_findings.extend(findings)
-                all_rejected.extend(rejected)
-                result.outputs.append({"pack_id": pack.evidence_pack_id, "output": output.model_dump(mode="json")})
-                break
-            except Exception as exc:
-                if attempt == 0:
-                    result.schema_retries += 1
-                    continue
-                result.error = f"facts_review.schema_invalid: {exc}"
-                result.failure_code = "facts_review.schema_invalid"
-                return result
+        call = run_structured_review_call(
+            client=reviewer_client, initial_prompt=build_facts_review_prompt(pack),
+            retry_prompt_builder=lambda raw, error: build_facts_review_schema_retry_prompt(pack, error, raw),
+            output_model=FactsReviewModelOutput,
+            call_spec=StructuredReviewCallSpec(
+                role_id="facts_review", gate_id=PlanGateId.FACTS,
+                schema_name="FactsReviewModelOutput", json_schema=FactsReviewModelOutput.model_json_schema(),
+                artifact_prefix="facts_review",
+            ), state=state, stage=state.plan_loop_stages.get("plan_gate_facts"), policy=policy,
+        )
+        result.reviewer_calls += call.call_count
+        result.schema_retries += call.schema_retry_count
+        for attempt in call.attempts:
+            result.raw_outputs.append(attempt.raw_text)
+            result.call_metadata.append({"pack_id": pack.evidence_pack_id, **attempt.model_dump(mode="json", exclude={"raw_text"})})
+        if not call.ok or call.parsed_output is None:
+            result.error = f"facts_review.schema_invalid: {call.error_detail}"
+            result.failure_code = (
+                "facts_review.budget_exhausted"
+                if call.error_code == "planning.closed_loop.budget_exhausted"
+                else call.error_code or "facts_review.schema_invalid"
+            )
+            return result
+        output = FactsReviewModelOutput.model_validate(call.parsed_output)
+        findings, rejected = _normalize(output, pack)
+        all_findings.extend(findings)
+        all_rejected.extend(rejected)
+        result.outputs.append({"pack_id": pack.evidence_pack_id, "output": output.model_dump(mode="json")})
     result.findings = list({finding.finding_id: finding for finding in all_findings}.values())
     result.rejected = all_rejected
     expected = {item.evidence_hash for pack in evidence_packs for item in pack.source_excerpts}

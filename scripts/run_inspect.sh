@@ -38,6 +38,8 @@ MAX_PLAN_ADDITIONAL_LLM_CALLS=""
 PLAN_REVIEWER_MODEL=""
 PLAN_REPAIR_MODEL=""
 PLAN_HUMAN_MODE="off"
+PLAN_GATES=""
+PLACEMENT_REVIEW_MODE="off"
 FACTS_REVIEW_CHUNK_CHARS=""
 MAX_FACTS_REVIEW_CHUNKS=""
 
@@ -107,6 +109,8 @@ Options:
   --facts-review-chunk-chars N
   --max-facts-review-chunks N
   --plan-human-mode MODE     off or ambiguity_only
+  --plan-gates LIST          Comma-separated gates, e.g. facts,placement
+  --placement-review-mode MODE  off, advisory, or controlled
   -h, --help              Show this help.
 
 Providers:
@@ -277,6 +281,14 @@ while [[ $# -gt 0 ]]; do
       PLAN_HUMAN_MODE="${2:-}"
       shift 2
       ;;
+    --plan-gates)
+      PLAN_GATES="${2:-}"
+      shift 2
+      ;;
+    --placement-review-mode)
+      PLACEMENT_REVIEW_MODE="${2:-}"
+      shift 2
+      ;;
     --facts-review-chunk-chars)
       FACTS_REVIEW_CHUNK_CHARS="${2:-}"
       shift 2
@@ -409,6 +421,8 @@ cmd+=(--plan-loop-mode "$PLAN_LOOP_MODE")
 [[ -n "$PLAN_REVIEWER_MODEL" ]] && cmd+=(--plan-reviewer-model "$PLAN_REVIEWER_MODEL")
 [[ -n "$PLAN_REPAIR_MODEL" ]] && cmd+=(--plan-repair-model "$PLAN_REPAIR_MODEL")
 cmd+=(--plan-human-mode "$PLAN_HUMAN_MODE")
+[[ -n "$PLAN_GATES" ]] && cmd+=(--plan-gates "$PLAN_GATES")
+cmd+=(--placement-review-mode "$PLACEMENT_REVIEW_MODE")
 [[ -n "$FACTS_REVIEW_CHUNK_CHARS" ]] && cmd+=(--facts-review-chunk-chars "$FACTS_REVIEW_CHUNK_CHARS")
 [[ -n "$MAX_FACTS_REVIEW_CHUNKS" ]] && cmd+=(--max-facts-review-chunks "$MAX_FACTS_REVIEW_CHUNKS")
 [[ -n "$MAX_PLAN_REVIEW_ROUNDS" ]] && cmd+=(--max-plan-review-rounds "$MAX_PLAN_REVIEW_ROUNDS")

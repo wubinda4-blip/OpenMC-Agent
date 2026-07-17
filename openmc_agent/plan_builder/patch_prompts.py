@@ -626,6 +626,16 @@ def build_patch_prompt(
             "preserve source=human_confirmation provenance and do not re-ask these facts):\n"
             f"{getattr(context, 'confirmed_facts')}\n\n" + context_block
         )
+    placement_confirmations = (
+        getattr(context, "confirmed_facts", {}).get("plan_closed_loop", {}).get("placement", {})
+        if getattr(context, "confirmed_facts", None) else {}
+    )
+    if patch_type in {"localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"} and placement_confirmations:
+        context_block = (
+            "Confirmed placement facts from human review (authoritative only at their stated JSON paths; "
+            "apply only to the target placement patch and preserve human-confirmation provenance):\n"
+            f"{placement_confirmations}\n\n" + context_block
+        )
     few_shot_block = _few_shot_block(patch_type, context)
 
     # Phase 7C: add allowed/forbidden keys.
