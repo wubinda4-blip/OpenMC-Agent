@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from vera4_base_fixture import (
     RCCA_ANCHOR_Z, RCCA_AIC_HEIGHT, RCCA_B4C_TOTAL, RCCA_PLENUM_TOTAL, RCCA_ENDPLUG_TOTAL,
     build_vera4_rcca_profile, build_vera4_assembly_catalog,
-    build_all_vera4_patches,
+    build_all_vera4_patches, build_vera4_facts,
 )
 from openmc_agent.plan_builder.assembler import assemble_simulation_plan_from_patches
 from openmc_agent.plan_builder.localized_insert_profiles import (
@@ -114,8 +114,77 @@ class TestRCCAAssembly:
         assert (9, 9) not in rcca_intents[0].coordinates
 
     def test_rcca_universes_present_in_assembled_plan(self):
+        """RCCA universes must be defined AND placed in derived lattices."""
         patches = build_all_vera4_patches()
         result = assemble_simulation_plan_from_patches(patches, strict=False)
+        assert result.ok, f"Assembly failed: {[i.message for i in result.issues if i.severity=='error']}"
         uv_ids = {u.id for u in result.plan.complex_model.universes}
         assert "rcca_aic" in uv_ids
         assert "rcca_b4c" in uv_ids
+
+    def test_rcca_actually_placed_in_derived_lattices(self):
+        """RCCA universes must appear in derived lattice patterns (not just defined)."""
+        patches = build_all_vera4_patches()
+        result = assemble_simulation_plan_from_patches(patches, strict=False)
+        assert result.ok
+        model = result.plan.complex_model
+
+        aic_count = 0
+        b4c_count = 0
+        for lat in model.lattices:
+            for row in lat.universe_pattern:
+                for uid in row:
+                    if uid == "rcca_aic":
+                        aic_count += 1
+                    elif uid == "rcca_b4c":
+                        b4c_count += 1
+        assert aic_count >= 24, f"Expected at least 24 AIC placements, got {aic_count}"
+        assert b4c_count >= 24, f"Expected at least 24 B4C placements, got {b4c_count}"
+
+    def test_rcca_root_reachable(self):
+        """RCCA universes must be root-reachable from the geometry root."""
+        from openmc_agent.reachability import collect_active_dependencies
+        patches = build_all_vera4_patches()
+        result = assemble_simulation_plan_from_patches(patches, strict=False)
+        assert result.ok
+        deps = collect_active_dependencies(result.plan)
+        assert "rcca_aic" in deps.universe_ids, "rcca_aic is not root-reachable"
+        assert "rcca_b4c" in deps.universe_ids, "rcca_b4c is not root-reachable"
+
+    def test_rcca_placement_requirement_in_facts(self):
+        """Facts patch must contain the RCCA placement requirement."""
+        facts = build_vera4_facts()
+        assert len(facts.localized_insert_requirements) == 1
+        req = facts.localized_insert_requirements[0]
+        assert req.insert_kind == "control_rod"
+        assert "center_rcca" in req.assembly_type_ids
+        assert req.expected_coordinate_count_per_assembly == 24
+        assert req.required_profile_id == "rcca_base"
+        assert req.anchor_z_cm is not None and abs(req.anchor_z_cm - 257.900) < 1e-3
+
+    def test_rcca_missing_intent_fails_assembly(self):
+        """Removing RCCA intent but keeping universes/profile must fail assembly."""
+        patches = build_all_vera4_patches()
+        # Find and modify the assembly_catalog to remove the RCCA intent
+        for i, p in enumerate(patches):
+            if hasattr(p, 'assembly_types'):
+                for at in p.assembly_types:
+                    if at.assembly_type_id == "center_rcca":
+                        at.pin_map.localized_insert_intents = []
+                break
+        result = assemble_simulation_plan_from_patches(patches, strict=False)
+        assert not result.ok, "Assembly should fail when RCCA intent is missing"
+        error_codes = {i.code for i in result.issues if i.severity == "error"}
+        assert "localized_insert.required_placement_missing" in error_codes
+
+    def test_rcca_level_h_acceptance_passes(self):
+        """Level H RCCA placement acceptance must pass for the deterministic fixture."""
+        from openmc_agent.campaign_eval.vera4_base_acceptance import (
+            check_rcca_placement_level,
+        )
+        patches = build_all_vera4_patches()
+        result = assemble_simulation_plan_from_patches(patches, strict=False)
+        assert result.ok
+        checks = check_rcca_placement_level(result.plan)
+        failed = [c for c in checks if not c.passed]
+        assert not failed, f"Level H failures: {[(c.code, c.message) for c in failed]}"

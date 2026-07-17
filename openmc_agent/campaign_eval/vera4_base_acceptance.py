@@ -421,6 +421,9 @@ def run_full_acceptance(
     # Level G: Fuel fidelity (VERA4-specific fuel variant binding)
     result.checks.extend(check_fuel_fidelity_level(plan))
 
+    # Level H: RCCA placement (VERA4-specific control rod placement)
+    result.checks.extend(check_rcca_placement_level(plan))
+
     # Level D: XML (if provided)
     if xml_dir and xml_dir.exists():
         xml_checks = check_xml_level(xml_dir)
@@ -608,6 +611,111 @@ def check_grid_geometry_level(plan: Any) -> list[AcceptanceCheck]:
         passed=not gap_has_grid,
         message=f"gap_has_grid_material={gap_has_grid}",
         level="F",
+    ))
+
+    return checks
+
+
+def check_rcca_placement_level(plan: Any) -> list[AcceptanceCheck]:
+    """Level H: RCCA placement acceptance — VERA4-specific.
+
+    Verifies that RCCA control rods are actually *placed* in the final
+    geometry, not just defined as universes. Checks root reachability,
+    path counts, and clipping semantics for the center assembly.
+    """
+    checks: list[AcceptanceCheck] = []
+    model = plan.complex_model
+    if model is None:
+        checks.append(AcceptanceCheck(
+            code="rcca.model_present", passed=False,
+            message="No complex_model", level="H",
+        ))
+        return checks
+
+    from openmc_agent.reachability import collect_active_dependencies
+    deps = collect_active_dependencies(plan)
+    reachable_uvs = set(deps.universe_ids)
+
+    # Count RCCA paths: find the MAXIMUM number of RCCA positions in any single lattice
+    # (not total across all lattices, since multiple axial layers may each have their own
+    # derived lattice with the same RCCA positions)
+    aic_max = 0
+    b4c_max = 0
+    aic_in_lattice = False
+    b4c_in_lattice = False
+    for lat in model.lattices:
+        lat_aic = 0
+        lat_b4c = 0
+        for row in lat.universe_pattern:
+            for uid in row:
+                if uid == "rcca_aic":
+                    lat_aic += 1
+                    aic_in_lattice = True
+                elif uid == "rcca_b4c":
+                    lat_b4c += 1
+                    b4c_in_lattice = True
+        aic_max = max(aic_max, lat_aic)
+        b4c_max = max(b4c_max, lat_b4c)
+
+    # rcca.aic_paths_24
+    checks.append(AcceptanceCheck(
+        code="rcca.aic_paths_24",
+        passed=aic_max == 24,
+        message=f"AIC max paths in a single lattice: {aic_max} (expected 24)",
+        level="H",
+    ))
+
+    # rcca.b4c_paths_24
+    checks.append(AcceptanceCheck(
+        code="rcca.b4c_paths_24",
+        passed=b4c_max == 24,
+        message=f"B4C max paths in a single lattice: {b4c_max} (expected 24)",
+        level="H",
+    ))
+
+    # rcca.root_reachable
+    aic_reachable = "rcca_aic" in reachable_uvs
+    b4c_reachable = "rcca_b4c" in reachable_uvs
+    checks.append(AcceptanceCheck(
+        code="rcca.root_reachable",
+        passed=aic_reachable and b4c_reachable,
+        message=f"rcca_aic reachable={aic_reachable}, rcca_b4c reachable={b4c_reachable}",
+        level="H",
+    ))
+
+    # rcca.plenum_clipped_out: plenum/endplug should NOT be reachable
+    # (they are above the detailed domain upper bound)
+    plenum_orphaned = "rcca_plenum" not in reachable_uvs
+    endplug_orphaned = "rcca_endplug" not in reachable_uvs
+    checks.append(AcceptanceCheck(
+        code="rcca.plenum_clipped_out",
+        passed=plenum_orphaned,
+        message=f"rcca_plenum not root-reachable (clipped): {plenum_orphaned}",
+        level="H",
+    ))
+    checks.append(AcceptanceCheck(
+        code="rcca.endplug_clipped_out",
+        passed=endplug_orphaned,
+        message=f"rcca_endplug not root-reachable (clipped): {endplug_orphaned}",
+        level="H",
+    ))
+
+    # rcca.xml_reachable: at least one derived lattice references RCCA
+    checks.append(AcceptanceCheck(
+        code="rcca.derived_lattice_references",
+        passed=aic_in_lattice or b4c_in_lattice,
+        message=f"AIC in lattice={aic_in_lattice}, B4C in lattice={b4c_in_lattice}",
+        level="H",
+    ))
+
+    # rcca.guide_tube_preserved: guide_tube universe should still be reachable
+    # (it's the host path outside RCCA z-range)
+    gt_reachable = "guide_tube" in reachable_uvs
+    checks.append(AcceptanceCheck(
+        code="rcca.guide_tube_preserved",
+        passed=gt_reachable,
+        message=f"guide_tube reachable={gt_reachable}",
+        level="H",
     ))
 
     return checks

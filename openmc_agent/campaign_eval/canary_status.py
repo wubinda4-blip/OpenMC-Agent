@@ -38,6 +38,9 @@ BASE_SMOKE_CANARY_PASSED = "VERA4_BASE_SMOKE_CANARY_PASSED"
 AXIAL_OVERLAY_SEMANTIC_CONTRACT_READY = "P2_FULLCORE_AXIAL_OVERLAY_SEMANTIC_CONTRACT_READY"
 ISSUE_SCOPED_PATCH_RETRY_READY = "P2_FULLCORE_ISSUE_SCOPED_PATCH_RETRY_READY"
 RETRY_DRIFT_GATE_READY = "P2_FULLCORE_RETRY_DRIFT_GATE_READY"
+LOCALIZED_INSERT_SOURCE_CONTRACT_READY = "P2_LOCALIZED_INSERT_SOURCE_CONTRACT_READY"
+REQUIRED_INSERT_REACHABILITY_READY = "P2_REQUIRED_INSERT_REACHABILITY_READY"
+CONTROL_ROD_PLACEMENT_GATE_READY = "P2_CONTROL_ROD_PLACEMENT_GATE_READY"
 
 # Forbidden declarations (must NEVER be set by this module)
 FORBIDDEN_STATUSES = frozenset({
@@ -63,6 +66,12 @@ class CanaryReport(AgentBaseModel):
     axial_overlay_semantic_contract: bool = False
     issue_scoped_patch_retry: bool = False
     retry_drift_gate: bool = False
+    localized_insert_source_contract: bool = False
+    required_insert_reachability: bool = False
+    control_rod_placement_gate: bool = False
+
+    # Localized insert placement gate
+    localized_insert_placement_gate: bool = False
 
     # Detailed checks for planning canary
     all_required_patches_valid: bool = False
@@ -92,6 +101,12 @@ class CanaryReport(AgentBaseModel):
             statuses.append(ISSUE_SCOPED_PATCH_RETRY_READY)
         if self.retry_drift_gate:
             statuses.append(RETRY_DRIFT_GATE_READY)
+        if self.localized_insert_source_contract:
+            statuses.append(LOCALIZED_INSERT_SOURCE_CONTRACT_READY)
+        if self.required_insert_reachability:
+            statuses.append(REQUIRED_INSERT_REACHABILITY_READY)
+        if self.control_rod_placement_gate:
+            statuses.append(CONTROL_ROD_PLACEMENT_GATE_READY)
         if self.fuel_variant_subcanary:
             statuses.append(FUEL_VARIANT_SUBCANARY_PASSED)
         if self.planning_canary:
@@ -192,6 +207,12 @@ def evaluate_planning_canary(
     report.llm_repair_proposer_used = llm_repair_proposer_used
     report.runtime_content_repair_used = runtime_content_repair_used
 
+    # Localized insert placement gate: assembly must pass without placement errors
+    if assembly_result is not None and report.assembly_ok:
+        report.localized_insert_placement_gate = True
+    else:
+        report.localized_insert_placement_gate = False
+
     # Full planning canary: ALL conditions must hold
     report.planning_canary = all([
         report.all_required_patches_valid,
@@ -204,6 +225,7 @@ def evaluate_planning_canary(
         not report.monolithic_fallback_used,
         not report.llm_repair_proposer_used,
         not report.runtime_content_repair_used,
+        report.localized_insert_placement_gate,
     ])
 
     # Build detail message
@@ -227,6 +249,8 @@ def evaluate_planning_canary(
             blockers.append("gold few-shot used")
         if report.monolithic_fallback_used:
             blockers.append("monolithic fallback used")
+        if not report.localized_insert_placement_gate:
+            blockers.append("localized insert placement gate not passed")
         report.detail = "Blocked: " + "; ".join(blockers) if blockers else "Unknown blocker"
 
     return report
