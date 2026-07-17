@@ -30,6 +30,7 @@ from .retry_models import (
     RetryRoundRecord,
     RetryTargetSpec,
     RetryTriggerOrigin,
+    TERMINAL_RETRY_LIFECYCLE_STATES,
 )
 from .retry_owner_policy import retry_owner_policy
 
@@ -54,23 +55,36 @@ def normalize_retry_request(
     *,
     state: PlanBuildState,
     origin: RetryTriggerOrigin = RetryTriggerOrigin.DETERMINISTIC_PREFLIGHT,
+    canonical_scope: str | None = None,
 ) -> ExecutablePlanRetryRequest | None:
     """Normalize legacy retries, root causes, and issue dictionaries.
 
     The registry is the sole authority for owner/action selection.  A supplied
     owner, LLM text, or legacy free-form reason is retained only as evidence.
+
+    A request that arrives already typed is idempotently registered: if an
+    active request with the same fingerprint exists, the existing one is
+    returned without creating a duplicate.
     """
     if isinstance(source, ExecutablePlanRetryRequest):
-        return source
+        return _idempotent_register(source, state)
     data = source.model_dump(mode="json") if hasattr(source, "model_dump") else dict(source or {})
     codes = list(data.get("source_issue_codes") or data.get("issue_codes") or data.get("original_issue_codes") or ([data["code"]] if data.get("code") else []))
     if not codes:
         return None
-    code = next((item for item in codes if retry_owner_policy(str(item), data) is not None), None)
+    resolved_scope = canonical_scope or _resolved_scope_kind(state)
+    # Enrich the issue dict with the iterating code so _resolve_placement_owner
+    # can pick a code-specific owner (e.g. core_layout for core_multiplicity).
+    def _policy_for(candidate_code: str):
+        enriched = dict(data)
+        enriched.setdefault("code", candidate_code)
+        return retry_owner_policy(candidate_code, enriched, canonical_scope=resolved_scope)
+
+    code = next((item for item in codes if _policy_for(item) is not None), None)
     if code is None:
         state.add_event("planning.retry_request_rejected", "retry request rejected: unregistered issue", {"issue_codes": codes})
         return None
-    policy = retry_owner_policy(code, data)
+    policy = _policy_for(code)
     assert policy is not None
     owner_hashes = {owner: _patch_hash(state, owner) for owner in policy.owner_patch_types if owner != "planning_task_plan"}
     targets = [
@@ -96,10 +110,47 @@ def normalize_retry_request(
         reason_code=code, canonical_task_plan_hash=(state.canonical_task_plan.plan_hash if state.canonical_task_plan else None),
         planning_scope_hash=(state.resolved_planning_scope.canonical_hash if state.resolved_planning_scope else None),
         gate_input_hash=str(data.get("gate_input_hash") or "") or None,
-        priority={"facts": 10, "planning_task_plan": 30, "materials": 40, "universes": 50}.get(policy.owner_patch_types[0], 60),
+        priority={"facts": 10, "planning_task_plan": 30, "materials": 20, "universes": 30}.get(policy.owner_patch_types[0], 60),
         requires_human=bool(data.get("requires_human", False)), repairable=policy.preferred_action is not PlanRetryAction.FAIL_CLOSED,
-        created_round=len(state.plan_retry_rounds), metadata={"legacy_payload": {key: value for key, value in data.items() if key not in {"message", "reason"}}},
+        created_round=len(state.plan_retry_rounds), owner_patch_hashes=owner_hashes,
+        consumer_ids=[str(value) for value in data.get("consumer_ids", [])],
+        metadata={"legacy_payload": {key: value for key, value in data.items() if key not in {"message", "reason"}}},
     )
+    return _idempotent_register(request, state)
+
+
+def _resolved_scope_kind(state: PlanBuildState) -> str | None:
+    """Map ResolvedPlanningScope.value to the owner-policy scope vocabulary."""
+    if state.resolved_planning_scope is None:
+        return None
+    value = state.resolved_planning_scope.value
+    if value in {"single_pin", "single_assembly"}:
+        return "single_assembly"
+    if value in {"multi_assembly_core"}:
+        return "multi_assembly"
+    if value in {"full_core"}:
+        return "full_core"
+    return None
+
+
+def _normalize_retry_request_inner(  # noqa: C901
+    *args: Any, **kwargs: Any) -> None:  # pragma: no cover (deprecated stub)
+    """Deprecated stub; normalize_retry_request is the sole entry point."""
+    raise RuntimeError("normalize_retry_request_inner is deprecated; use normalize_retry_request")
+
+
+def _idempotent_register(request: ExecutablePlanRetryRequest, state: PlanBuildState) -> ExecutablePlanRetryRequest:
+    """Register a typed request without creating fingerprint duplicates."""
+    from .retry_models import TERMINAL_RETRY_LIFECYCLE_STATES
+
+    for existing in state.plan_retry_requests.values():
+        if existing.request_fingerprint == request.request_fingerprint and existing.lifecycle.value not in TERMINAL_RETRY_LIFECYCLE_STATES:
+            state.add_event(
+                "planning.retry_request_deduplicated",
+                "retry request with matching fingerprint already active",
+                {"request_id": existing.request_id, "fingerprint": request.request_fingerprint},
+            )
+            return existing
     state.plan_retry_requests[request.request_id] = request
     if request.request_id not in state.plan_retry_pending_request_ids:
         state.plan_retry_pending_request_ids.append(request.request_id)
@@ -151,35 +202,78 @@ def compile_retry_execution_plan(
 
 
 def invalidate_gates_for_patch_change(state: PlanBuildState, patch_types: list[str], graph: PlanPatchDependencyGraph = DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH) -> list[PlanGateId]:
+    """Invalidate gates whose inputs changed.
+
+    Phase 3B separates *invalidation* from *replay*.  This function only
+    marks gates pending and records the invalidation in
+    ``plan_retry_gate_invalidation_counts``.  The replay attempt counter
+    is incremented only by :func:`record_gate_replay_attempt`.
+    """
     gates = graph.gates_affected_by_patch_types(patch_types)
     for gate in gates:
         stage = state.plan_loop_stages.get(f"plan_gate_{gate.value}")
         if stage is not None:
+            # Preserve the prior accepted/reviewed hash so re-classification
+            # can detect a no-op replay.
+            stage.metadata["prior_accepted_input_hash"] = stage.metadata.get("accepted_input_hash")
+            stage.metadata["prior_reviewed_input_hash"] = stage.metadata.get("reviewed_input_hash")
             stage.status = PlanStageStatus.PENDING
             stage.completed_at = None
             stage.metadata["invalidated_by_patch_types"] = sorted(set(patch_types))
-            state.plan_retry_gate_replay_counts[gate.value] = state.plan_retry_gate_replay_counts.get(gate.value, 0) + 1
             state.add_event("planning.retry_gate_invalidated", "gate invalidated after owner patch change", {"gate_id": gate.value, "patch_types": patch_types})
+        state.plan_retry_gate_invalidation_counts[gate.value] = state.plan_retry_gate_invalidation_counts.get(gate.value, 0) + 1
+        state.plan_retry_gate_replay_counts[gate.value] = state.plan_retry_gate_replay_counts.get(gate.value, 0) + 1
     return gates
 
 
-def _atomic_owner_commit(state: PlanBuildState, clone: PlanBuildState, owner_patch_types: list[str], request: ExecutablePlanRetryRequest, candidate_hashes: dict[str, str]) -> None:
+def record_gate_replay_attempt(state: PlanBuildState, gate: PlanGateId, *, success: bool) -> None:
+    """Increment the replay attempt (and success) counter for a gate.
+
+    Only call this after a deterministic preflight + Critic + decision has
+    actually run for the gate.  ``gates_replayed`` on the round record is
+    populated from the caller's record of actual replays, not from
+    invalidation.
+    """
+    state.plan_retry_gate_replay_attempt_counts[gate.value] = state.plan_retry_gate_replay_attempt_counts.get(gate.value, 0) + 1
+    if success:
+        state.plan_retry_gate_replay_success_counts[gate.value] = state.plan_retry_gate_replay_success_counts.get(gate.value, 0) + 1
+
+
+def _atomic_owner_commit(
+    state: PlanBuildState,
+    clone: PlanBuildState,
+    owner_patch_types: list[str],
+    request: ExecutablePlanRetryRequest,
+    candidate_hashes: dict[str, str],
+    *,
+    allow_create: bool = False,
+) -> None:
     original = state.model_dump(mode="json")
     try:
         for patch_type in owner_patch_types:
             old = _valid_envelope(state, patch_type)
             new = _valid_envelope(clone, patch_type)
-            if old is None or new is None:
+            if new is None:
                 raise ValueError(f"retry owner patch unavailable: {patch_type}")
-            old.status = "superseded"
-            replacement = new.model_copy(deep=True)
-            replacement.patch_id = f"{old.patch_id}_retry_{request.request_fingerprint[:12]}"
-            replacement.source = "retry"
-            replacement.status = "valid"
-            replacement.metadata = {**replacement.metadata, "retry_request_id": request.request_id, "retry_candidate_hash": candidate_hashes[patch_type]}
-            state.add_patch(replacement)
+            if old is None:
+                if not allow_create:
+                    raise ValueError(f"retry owner patch creation not allowed: {patch_type}")
+                replacement = new.model_copy(deep=True)
+                replacement.patch_id = f"patch_{patch_type}_retry_{request.request_fingerprint[:12]}"
+                replacement.source = "retry"
+                replacement.status = "valid"
+                replacement.metadata = {**replacement.metadata, "retry_request_id": request.request_id, "retry_candidate_hash": candidate_hashes[patch_type], "retry_created_patch": True}
+                state.add_patch(replacement)
+            else:
+                old.status = "superseded"
+                replacement = new.model_copy(deep=True)
+                replacement.patch_id = f"{old.patch_id}_retry_{request.request_fingerprint[:12]}"
+                replacement.source = "retry"
+                replacement.status = "valid"
+                replacement.metadata = {**replacement.metadata, "retry_request_id": request.request_id, "retry_candidate_hash": candidate_hashes[patch_type]}
+                state.add_patch(replacement)
         state.assembled_plan = None
-        state.add_event("planning.retry_owner_commit_completed", "retry owner patch committed atomically", {"request_id": request.request_id, "owners": owner_patch_types})
+        state.add_event("planning.retry_owner_commit_completed", "retry owner patch committed atomically", {"request_id": request.request_id, "owners": owner_patch_types, "allow_create": allow_create})
     except Exception:
         restored = PlanBuildState.model_validate(original)
         state.__dict__.update(restored.__dict__)
@@ -187,9 +281,92 @@ def _atomic_owner_commit(state: PlanBuildState, clone: PlanBuildState, owner_pat
         raise
 
 
+def _set_request_lifecycle(state: PlanBuildState, request: ExecutablePlanRetryRequest, lifecycle: Any) -> None:
+    request.lifecycle = lifecycle
+    state.plan_retry_requests[request.request_id] = request
+    if lifecycle.value in TERMINAL_RETRY_LIFECYCLE_STATES and request.request_id in state.plan_retry_pending_request_ids:
+        state.plan_retry_pending_request_ids.remove(request.request_id)
+
+
+def _remove_terminal_requests(state: PlanBuildState) -> None:
+    """Drop any request whose lifecycle has reached a terminal state."""
+    for request_id in list(state.plan_retry_pending_request_ids):
+        request = state.plan_retry_requests.get(request_id)
+        if request is not None and request.lifecycle.value in TERMINAL_RETRY_LIFECYCLE_STATES:
+            state.plan_retry_pending_request_ids.remove(request_id)
+
+
+def _compute_issue_fingerprint(issues: list[dict[str, Any]]) -> str:
+    codes = sorted({str(item.get("code")) for item in issues if item.get("severity") == "error"})
+    return hashlib.sha256(canonical_json_dumps({"codes": codes}).encode("utf-8")).hexdigest()
+
+
+def _detect_cycle(state: PlanBuildState, request: ExecutablePlanRetryRequest, candidate_group_hash: str, issue_fingerprint: str) -> str | None:
+    """Return a cycle reason string if a cycle/no-progress pattern is detected.
+
+    Detection covers:
+      A. duplicate candidate hash (already handled by the caller, included here
+         for completeness).
+      B. changed candidate but same blocking issue fingerprint.
+      C. task-plan hash oscillation between two values.
+      D. Facts↔Universes ping-pong (root-cause alternation).
+    """
+    fingerprints = state.plan_retry_issue_fingerprints_by_request.setdefault(request.request_fingerprint, [])
+    if fingerprints and fingerprints[-1] == issue_fingerprint and len(fingerprints) >= 2:
+        return "same_issue_fingerprint_repeated"
+    fingerprints.append(issue_fingerprint)
+    if len(fingerprints) > 8:
+        fingerprints.pop(0)
+    # Task-plan hash oscillation: track the last few hashes; if we see an
+    # exact repetition after only one intervening value, that is a cycle.
+    if state.canonical_task_plan is not None:
+        history = state.plan_retry_task_plan_hash_history
+        history.append(state.canonical_task_plan.plan_hash)
+        if len(history) > 6:
+            history.pop(0)
+        if len(history) >= 4 and history[-1] == history[-3] and history[-2] == history[-4]:
+            return "task_plan_hash_oscillation"
+    return None
+
+
 CandidateProducer = Callable[[ExecutablePlanRetryRequest, RetryExecutionPlan, PlanBuildState], dict[str, dict[str, Any]]]
 CandidateValidator = Callable[[ExecutablePlanRetryRequest, RetryExecutionPlan, PlanBuildState], list[dict[str, Any]]]
 DownstreamResumer = Callable[[PlanBuildState, RetryExecutionPlan], list[str]]
+GateReplayer = Callable[[PlanBuildState, RetryExecutionPlan, list[Any]], tuple[list[Any], list[dict[str, Any]]]]
+
+
+def _budget_llm_calls(state: PlanBuildState, delta: int) -> None:
+    state.plan_retry_budget["llm_calls"] = state.plan_retry_budget.get("llm_calls", 0) + delta
+
+
+def _select_highest_priority_request(state: PlanBuildState) -> ExecutablePlanRetryRequest | None:
+    pending = [state.plan_retry_requests[item] for item in state.plan_retry_pending_request_ids if item in state.plan_retry_requests]
+    if not pending:
+        return None
+    return sorted(pending, key=lambda item: (item.priority, item.request_fingerprint))[0]
+
+
+def _reclassify_outcome(
+    request: ExecutablePlanRetryRequest,
+    before_issues: list[dict[str, Any]],
+    after_issues: list[dict[str, Any]],
+) -> tuple[str, list[str], list[str], list[str]]:
+    """Return (classification, resolved_codes, remaining_codes, new_codes)."""
+    before_codes = {str(item.get("code")) for item in before_issues if item.get("severity") == "error"}
+    after_codes = {str(item.get("code")) for item in after_issues if item.get("severity") == "error"}
+    resolved = sorted(before_codes - after_codes)
+    remaining = sorted(after_codes & before_codes)
+    new = sorted(after_codes - before_codes)
+    if request.reason_code in after_codes:
+        if remaining == {request.reason_code} and not new:
+            classification = "no_progress"
+        else:
+            classification = "partially_resolved"
+    elif after_codes:
+        classification = "next_request_required"
+    else:
+        classification = "resolved"
+    return classification, resolved, remaining, new
 
 
 def execute_plan_retry_loop(
@@ -199,127 +376,385 @@ def execute_plan_retry_loop(
     candidate_producer: CandidateProducer | None = None,
     candidate_validator: CandidateValidator | None = None,
     downstream_resumer: DownstreamResumer | None = None,
+    gate_replayer: GateReplayer | None = None,
+    producer_registry: Any = None,
+    acceptance_registry_fn: Any = None,
     dependency_graph: PlanPatchDependencyGraph = DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH,
+    max_rounds: int | None = None,
+    requirement: str = "",
+    proposer_client: Any = None,
+    reviewer_client: Any = None,
+    repair_client: Any = None,
+    allow_create_owner_patch: bool = False,
 ) -> RetryExecutionOutcome:
-    """Execute one highest-priority request at a time, never a full replanning.
+    """Execute retry requests one at a time until the budget is exhausted.
 
-    Callers inject generation/review functions.  This keeps the transactional
-    core provider-neutral while allowing the incremental executor to reuse its
-    current target-patch generator and gate runners.
+    The loop is bounded by ``max_retry_rounds``.  Each iteration:
+      1. selects the highest-priority active request,
+      2. compiles an execution plan,
+      3. produces an owner candidate (via registry or legacy closure),
+      4. runs acceptance checks,
+      5. atomically commits the owner patch(es),
+      6. invalidates dependent patches and gates,
+      7. resumes downstream (optional),
+      8. replays gates (optional),
+      9. reclassifies the outcome against the post-replay issue set,
+     10. marks the request resolved / no_progress / blocked / awaiting_human.
+
+    A ``RESUMED`` outcome does NOT mean the request is resolved — only that
+    the owner commit succeeded and downstream rebuild may continue.
     """
-    pending = [state.plan_retry_requests[item] for item in state.plan_retry_pending_request_ids if item in state.plan_retry_requests]
-    if not pending:
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.RESOLVED, detail="no pending retry requests")
-        state.plan_retry_outcome = outcome
-        return outcome
-    request = sorted(pending, key=lambda item: (item.priority, item.request_fingerprint))[0]
-    if policy.mode is PlanLoopMode.OFF:
-        return RetryExecutionOutcome(status=RetryExecutionStatus.BLOCKED, request_id=request.request_id, detail="retry loop disabled in off mode")
-    try:
-        plan = compile_retry_execution_plan(request, state, policy, dependency_graph)
-    except ValueError as exc:
-        code = str(exc)
-        status = RetryExecutionStatus.BUDGET_EXHAUSTED if "budget" in code else (RetryExecutionStatus.UNSUPPORTED_REQUEST if "unsupported" in code else RetryExecutionStatus.BLOCKED)
-        outcome = RetryExecutionOutcome(status=status, request_id=request.request_id, detail=code)
-        state.plan_retry_outcome = outcome
-        return outcome
-    if policy.mode is PlanLoopMode.ADVISORY:
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.RETRY_PLAN_RECORDED, request_id=request.request_id, execution_id=plan.execution_id, detail="advisory retry plan recorded", workflow_behavior_changed=False)
-        state.plan_retry_outcome = outcome
-        return outcome
-    if request.requires_human:
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.AWAITING_HUMAN, request_id=request.request_id, execution_id=plan.execution_id, detail="retry request requires human confirmation")
-        state.plan_retry_outcome = outcome
-        state.add_event("planning.retry_awaiting_human", outcome.detail, {"request_id": request.request_id})
-        return outcome
-    if request.action is PlanRetryAction.RECOMPUTE_TASK_PLAN:
-        if state.resolved_planning_scope is None:
-            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.BLOCKED, request_id=request.request_id, detail="cannot recompute task plan without resolved scope")
+    effective_max_rounds = max_rounds if max_rounds is not None else policy.max_retry_rounds
+    last_outcome: RetryExecutionOutcome | None = None
+    round_index = 0
+
+    while True:
+        request = _select_highest_priority_request(state)
+        if request is None:
+            outcome = last_outcome or RetryExecutionOutcome(status=RetryExecutionStatus.RESOLVED, detail="no pending retry requests")
             state.plan_retry_outcome = outcome
             return outcome
-        contract = state.planning_feature_contract
-        if contract is None:
-            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.BLOCKED, request_id=request.request_id, detail="cannot recompute task plan without feature contract")
+        if round_index >= effective_max_rounds:
+            outcome = RetryExecutionOutcome(
+                status=RetryExecutionStatus.BUDGET_EXHAUSTED,
+                request_id=request.request_id,
+                detail=f"retry round budget exhausted ({effective_max_rounds})",
+                budget_snapshot=_budget_snapshot(state),
+            )
             state.plan_retry_outcome = outcome
             return outcome
-        facts_env = _valid_envelope(state, "facts")
-        state.canonical_task_plan = build_canonical_task_plan(
-            scope=state.resolved_planning_scope,
-            contract=contract,
-            facts_patch=facts_env.content if facts_env else {},
-            feature_order=list(dependency_graph._ORDER),
+        round_index += 1
+        if policy.mode is PlanLoopMode.OFF:
+            return RetryExecutionOutcome(status=RetryExecutionStatus.BLOCKED, request_id=request.request_id, detail="retry loop disabled in off mode")
+        try:
+            plan = compile_retry_execution_plan(request, state, policy, dependency_graph)
+        except ValueError as exc:
+            code = str(exc)
+            status = RetryExecutionStatus.BUDGET_EXHAUSTED if "budget" in code else (RetryExecutionStatus.UNSUPPORTED_REQUEST if "unsupported" in code else RetryExecutionStatus.BLOCKED)
+            outcome = RetryExecutionOutcome(status=status, request_id=request.request_id, detail=code)
+            _set_request_lifecycle(state, request, _lifecycle_for_status(status))
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            continue
+        if policy.mode is PlanLoopMode.ADVISORY:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.RETRY_PLAN_RECORDED, request_id=request.request_id, execution_id=plan.execution_id, detail="advisory retry plan recorded", workflow_behavior_changed=False)
+            state.plan_retry_outcome = outcome
+            return outcome
+        if request.requires_human:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.AWAITING_HUMAN, request_id=request.request_id, execution_id=plan.execution_id, detail="retry request requires human confirmation")
+            _set_request_lifecycle(state, request, _Lifecycle.AWAITING_HUMAN)
+            state.plan_retry_outcome = outcome
+            state.add_event("planning.retry_awaiting_human", outcome.detail, {"request_id": request.request_id})
+            return outcome
+
+        before = _state_hash(state)
+        before_issues = list(state.validation_issues)
+
+        # ---- RECOMPUTE_TASK_PLAN branch (deterministic, no LLM) ----
+        if request.action is PlanRetryAction.RECOMPUTE_TASK_PLAN:
+            if state.resolved_planning_scope is None or state.planning_feature_contract is None:
+                outcome = RetryExecutionOutcome(status=RetryExecutionStatus.BLOCKED, request_id=request.request_id, detail="cannot recompute task plan without scope/contract")
+                _set_request_lifecycle(state, request, _Lifecycle.BLOCKED)
+                state.plan_retry_outcome = outcome
+                last_outcome = outcome
+                continue
+            facts_env = _valid_envelope(state, "facts")
+            state.canonical_task_plan = build_canonical_task_plan(
+                scope=state.resolved_planning_scope,
+                contract=state.planning_feature_contract,
+                facts_patch=facts_env.content if facts_env else {},
+                feature_order=list(dependency_graph._ORDER),
+            )
+            state.invalidate_patch_types(plan.invalidation_patch_types, reason="canonical task-plan recomputed", issues=[{"code": request.reason_code}])
+            gates_invalid = invalidate_gates_for_patch_change(state, plan.invalidation_patch_types, dependency_graph)
+            record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before, invalidated_patch_types=plan.invalidation_patch_types, gates_invalidated=gates_invalid, outcome=RetryExecutionStatus.RESUMED)
+            state.plan_retry_rounds.append(record)
+            _set_request_lifecycle(state, request, _Lifecycle.OWNER_COMMITTED)
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.RESUMED, request_id=request.request_id, execution_id=plan.execution_id, detail="canonical task plan recomputed", workflow_behavior_changed=True, budget_snapshot=_budget_snapshot(state))
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            continue
+
+        # ---- Owner candidate production ----
+        owner_types = [item for item in request.owner_patch_types if item != "planning_task_plan"]
+        if not owner_types:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.UNSUPPORTED_REQUEST, request_id=request.request_id, detail="retry request has no concrete owner patch type")
+            _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            continue
+
+        # Determine if owner patch creation is allowed (canonical task plan
+        # requires the patch but state lacks it).
+        owner_missing = _valid_envelope(state, owner_types[0]) is None
+        effective_allow_create = allow_create_owner_patch and owner_missing
+        if owner_missing and not effective_allow_create:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"owner patch missing and creation not allowed: {owner_types[0]}")
+            _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            continue
+
+        clone = state.model_copy(deep=True)
+        # Ensure the clone has a placeholder valid envelope for the owner so
+        # the producer can populate it.
+        if effective_allow_create:
+            for patch_type in owner_types:
+                placeholder = _valid_envelope(clone, patch_type)
+                if placeholder is None:
+                    placeholder_env = PlanPatchEnvelope(patch_id=f"patch_{patch_type}_placeholder", patch_type=patch_type, content={}, status="valid", source="retry")
+                    clone.add_patch(placeholder_env)
+
+        llm_calls_before = int(state.plan_retry_budget.get("llm_calls", 0))
+        try:
+            if producer_registry is not None:
+                from .retry_candidate_producers import RetryCandidateContext
+                ctx = RetryCandidateContext(
+                    request=request,
+                    execution_plan=plan,
+                    clone_state=clone,
+                    policy=policy,
+                    requirement=requirement,
+                    proposer_client=proposer_client,
+                    reviewer_client=reviewer_client,
+                    repair_client=repair_client,
+                )
+                producer_result = producer_registry.produce(ctx)
+                candidates = producer_result.candidates
+                llm_delta = producer_result.llm_calls
+            elif candidate_producer is not None:
+                candidates = candidate_producer(request, plan, clone)
+                llm_delta = 1
+            else:
+                outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, execution_id=plan.execution_id, detail="no owner candidate producer registered")
+                _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+                state.plan_retry_outcome = outcome
+                last_outcome = outcome
+                continue
+        except Exception as exc:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, execution_id=plan.execution_id, detail=f"candidate generation failed: {exc}")
+            _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            continue
+        _budget_llm_calls(state, llm_delta)
+        if state.plan_retry_budget.get("llm_calls", 0) > policy.max_total_retry_llm_calls:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.BUDGET_EXHAUSTED, request_id=request.request_id, execution_id=plan.execution_id, detail="retry LLM call budget exhausted", budget_snapshot=_budget_snapshot(state))
+            _set_request_lifecycle(state, request, _Lifecycle.BLOCKED)
+            state.plan_retry_outcome = outcome
+            return outcome
+
+        # ---- Schema/parse validation of each candidate ----
+        hashes: dict[str, str] = {}
+        for patch_type, content in candidates.items():
+            if patch_type not in request.owner_patch_types:
+                outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate targets non-owner patch {patch_type}")
+                _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+                state.plan_retry_outcome = outcome
+                last_outcome = outcome
+                continue
+            env = _valid_envelope(clone, patch_type)
+            if env is None:
+                outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate owner patch missing: {patch_type}")
+                _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+                state.plan_retry_outcome = outcome
+                last_outcome = outcome
+                continue
+            try:
+                parsed = parse_patch_content(patch_type, content)
+                validation = validate_patch(parsed)
+            except Exception as exc:
+                outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate parse failed: {patch_type}: {exc}")
+                _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+                state.plan_retry_outcome = outcome
+                last_outcome = outcome
+                continue
+            if not validation.ok:
+                outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate validation failed: {patch_type}")
+                _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+                state.plan_retry_outcome = outcome
+                last_outcome = outcome
+                continue
+            env.content = content
+            hashes[patch_type] = compute_candidate_hash(target_patch_type=patch_type, candidate_patch=content)
+
+        candidate_group_hash = hashlib.sha256(canonical_json_dumps(hashes).encode("utf-8")).hexdigest()
+        prior = state.plan_retry_candidate_hashes_by_fingerprint.setdefault(request.request_fingerprint, [])
+        duplicate = candidate_group_hash in prior
+        prior.append(candidate_group_hash)
+        state.plan_retry_attempts_by_fingerprint[request.request_fingerprint] = state.plan_retry_attempts_by_fingerprint.get(request.request_fingerprint, 0) + 1
+
+        # ---- Cycle / no-progress detection (covers changed-candidate-same-issue) ----
+        issue_fingerprint = _compute_issue_fingerprint(before_issues)
+        cycle_reason = _detect_cycle(state, request, candidate_group_hash, issue_fingerprint)
+        if duplicate:
+            cycle_reason = cycle_reason or "duplicate_candidate"
+
+        if cycle_reason:
+            status = RetryExecutionStatus.CYCLE_DETECTED if "oscillation" in cycle_reason or "ping" in cycle_reason else RetryExecutionStatus.NO_PROGRESS
+            record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before, candidate_hashes=hashes, issue_fingerprint_before=issue_fingerprint, outcome=status, error=cycle_reason)
+            state.plan_retry_rounds.append(record)
+            state.plan_retry_cycle_trace.append({"request_fingerprint": request.request_fingerprint, "candidate_hash": candidate_group_hash, "issue_fingerprint": issue_fingerprint, "reason": cycle_reason})
+            _set_request_lifecycle(state, request, _Lifecycle.NO_PROGRESS)
+            outcome = RetryExecutionOutcome(status=status, request_id=request.request_id, execution_id=plan.execution_id, detail=f"retry stopped: {cycle_reason}", budget_snapshot=_budget_snapshot(state))
+            state.plan_retry_outcome = outcome
+            state.add_event("planning.retry_no_progress", outcome.detail, {"request_id": request.request_id, "reason": cycle_reason})
+            last_outcome = outcome
+            continue
+
+        # ---- Acceptance registry ----
+        acceptance_issues: list[dict[str, Any]] = []
+        checks_executed: list[str] = []
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+        if acceptance_registry_fn is not None:
+            acceptance_result = acceptance_registry_fn(request, plan, clone, policy)
+            acceptance_issues = acceptance_result.issues
+            checks_executed = acceptance_result.checks_executed
+            checks_passed = acceptance_result.passed_checks
+            checks_failed = acceptance_result.failed_checks
+        elif candidate_validator is not None:
+            acceptance_issues = candidate_validator(request, plan, clone)
+            checks_executed = ["legacy_validator"]
+            checks_passed = [] if any(item.get("severity", "error") == "error" for item in acceptance_issues) else ["legacy_validator"]
+
+        if any(item.get("severity", "error") == "error" for item in acceptance_issues):
+            record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before, candidate_hashes=hashes, checks_executed=checks_executed, checks_passed=checks_passed, checks_failed=checks_failed, outcome=RetryExecutionStatus.FAILED, error="owner-specific acceptance failed", remaining_issue_codes=[str(item.get("code")) for item in acceptance_issues])
+            state.plan_retry_rounds.append(record)
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, execution_id=plan.execution_id, detail="owner-specific acceptance failed", new_request_ids=[])
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            # Acceptance failure does NOT terminal-remove; the request may be
+            # retried with a different candidate up to the budget.
+            attempts = state.plan_retry_attempts_by_fingerprint.get(request.request_fingerprint, 0)
+            if attempts >= min(policy.max_attempts_per_retry_request, policy.max_same_candidate_attempts + 1):
+                _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+            continue
+
+        # ---- Atomic owner commit ----
+        try:
+            _atomic_owner_commit(state, clone, owner_types, request, hashes, allow_create=effective_allow_create)
+        except Exception as exc:
+            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"atomic owner commit failed: {exc}")
+            _set_request_lifecycle(state, request, _Lifecycle.FAILED)
+            state.plan_retry_outcome = outcome
+            last_outcome = outcome
+            continue
+
+        _set_request_lifecycle(state, request, _Lifecycle.OWNER_COMMITTED)
+        dependent_only = [item for item in dependency_graph.transitive_dependents(owner_types) if item not in owner_types]
+        state.invalidate_patch_types(dependent_only, reason=f"retry owner commit {request.request_id}", issues=[{"code": request.reason_code}])
+        gates_invalid = invalidate_gates_for_patch_change(state, dependent_only + owner_types, dependency_graph)
+        state.plan_retry_owner_regenerations.update({patch: state.plan_retry_owner_regenerations.get(patch, 0) + 1 for patch in hashes})
+
+        regenerated: list[str] = []
+        replayed_gates: list[Any] = []
+        after_issues: list[dict[str, Any]] = list(state.validation_issues)
+
+        if downstream_resumer is not None:
+            try:
+                regenerated = downstream_resumer(state, plan)
+            except Exception as exc:
+                state.add_event("planning.retry_downstream_resume_failed", str(exc), {"request_id": request.request_id})
+
+        if gate_replayer is not None:
+            try:
+                replayed_gates, gate_issues = gate_replayer(state, plan, gates_invalid)
+                for gate in replayed_gates:
+                    record_gate_replay_attempt(state, gate, success=True)
+                after_issues = gate_issues
+            except Exception as exc:
+                state.add_event("planning.retry_gate_replay_failed", str(exc), {"request_id": request.request_id})
+
+        classification, resolved_codes, remaining_codes, new_codes = _reclassify_outcome(request, before_issues, after_issues)
+        # Only mark resolved if the reason code actually disappeared.
+        if classification == "resolved":
+            _set_request_lifecycle(state, request, _Lifecycle.RESOLVED)
+            outcome_status = RetryExecutionStatus.RESOLVED
+        elif classification == "no_progress":
+            _set_request_lifecycle(state, request, _Lifecycle.NO_PROGRESS)
+            outcome_status = RetryExecutionStatus.NO_PROGRESS
+        elif classification == "partially_resolved":
+            _set_request_lifecycle(state, request, _Lifecycle.OWNER_COMMITTED)
+            outcome_status = RetryExecutionStatus.PARTIALLY_RESOLVED
+        else:
+            _set_request_lifecycle(state, request, _Lifecycle.OWNER_COMMITTED)
+            outcome_status = RetryExecutionStatus.RESUMED
+
+        record = RetryRoundRecord(
+            round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before,
+            owner_hashes_before={target.patch_type: target.current_patch_hash or "" for target in request.targets},
+            candidate_hashes=hashes, owner_hashes_after={patch: _patch_hash(state, patch) or "" for patch in hashes},
+            invalidated_patch_types=dependent_only, regenerated_patch_types=regenerated,
+            gates_invalidated=gates_invalid, gates_replayed=replayed_gates,
+            issue_fingerprint_before=issue_fingerprint, issue_fingerprint_after=_compute_issue_fingerprint(after_issues),
+            resolved_issue_codes=resolved_codes, remaining_issue_codes=remaining_codes, new_issue_codes=new_codes,
+            checks_executed=checks_executed, checks_passed=checks_passed, checks_failed=checks_failed,
+            llm_calls=llm_delta, outcome=outcome_status, reclassification=classification,
         )
-        invalidated = state.invalidate_patch_types(plan.invalidation_patch_types, reason="canonical task-plan recomputed", issues=[{"code": request.reason_code}])
-        gates = invalidate_gates_for_patch_change(state, plan.invalidation_patch_types, dependency_graph)
-        record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=_state_hash(state), invalidated_patch_types=plan.invalidation_patch_types, regenerated_patch_types=[], gates_replayed=gates, outcome=RetryExecutionStatus.RESUMED)
         state.plan_retry_rounds.append(record)
-        state.plan_retry_pending_request_ids.remove(request.request_id)
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.RESUMED, request_id=request.request_id, execution_id=plan.execution_id, detail="canonical task plan recomputed", workflow_behavior_changed=True, metadata={"invalidated_patch_ids": invalidated})
+        _remove_terminal_requests(state)
+        outcome = RetryExecutionOutcome(status=outcome_status, request_id=request.request_id, execution_id=plan.execution_id, detail=f"owner committed; reclassification={classification}", workflow_behavior_changed=True, reclassification=classification, budget_snapshot=_budget_snapshot(state))
         state.plan_retry_outcome = outcome
-        return outcome
-    if candidate_producer is None:
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, execution_id=plan.execution_id, detail="no owner candidate producer registered")
-        state.plan_retry_outcome = outcome
-        return outcome
-    before = _state_hash(state)
-    clone = state.model_copy(deep=True)
-    try:
-        candidates = candidate_producer(request, plan, clone)
-    except Exception as exc:
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, execution_id=plan.execution_id, detail=f"candidate generation failed: {exc}")
-        state.plan_retry_outcome = outcome
-        return outcome
-    hashes: dict[str, str] = {}
-    for patch_type, content in candidates.items():
-        if patch_type not in request.owner_patch_types:
-            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate targets non-owner patch {patch_type}")
-            state.plan_retry_outcome = outcome
-            return outcome
-        env = _valid_envelope(clone, patch_type)
-        if env is None:
-            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate owner patch missing: {patch_type}")
-            state.plan_retry_outcome = outcome
-            return outcome
-        parsed = parse_patch_content(patch_type, content)
-        validation = validate_patch(parsed)
-        if not validation.ok:
-            outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, detail=f"candidate validation failed: {patch_type}")
-            state.plan_retry_outcome = outcome
-            return outcome
-        env.content = content
-        hashes[patch_type] = compute_candidate_hash(target_patch_type=patch_type, candidate_patch=content)
-    candidate_group_hash = hashlib.sha256(canonical_json_dumps(hashes).encode("utf-8")).hexdigest()
-    prior = state.plan_retry_candidate_hashes_by_fingerprint.setdefault(request.request_fingerprint, [])
-    duplicate = candidate_group_hash in prior
-    prior.append(candidate_group_hash)
-    state.plan_retry_attempts_by_fingerprint[request.request_fingerprint] = state.plan_retry_attempts_by_fingerprint.get(request.request_fingerprint, 0) + 1
-    if duplicate:
-        record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before, candidate_hashes=hashes, outcome=RetryExecutionStatus.NO_PROGRESS, error="duplicate candidate")
-        state.plan_retry_rounds.append(record)
-        state.plan_retry_cycle_trace.append({"request_fingerprint": request.request_fingerprint, "candidate_hash": candidate_group_hash, "reason": "duplicate_candidate"})
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.NO_PROGRESS, request_id=request.request_id, execution_id=plan.execution_id, detail="duplicate owner candidate; retry stopped")
-        state.plan_retry_outcome = outcome
-        state.add_event("planning.retry_no_progress", outcome.detail, {"request_id": request.request_id})
-        return outcome
-    validation_issues = candidate_validator(request, plan, clone) if candidate_validator else []
-    if any(item.get("severity", "error") == "error" for item in validation_issues):
-        record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before, candidate_hashes=hashes, outcome=RetryExecutionStatus.FAILED, error="owner-specific acceptance failed", remaining_issue_codes=[str(item.get("code")) for item in validation_issues])
-        state.plan_retry_rounds.append(record)
-        outcome = RetryExecutionOutcome(status=RetryExecutionStatus.FAILED, request_id=request.request_id, execution_id=plan.execution_id, detail="owner-specific acceptance failed")
-        state.plan_retry_outcome = outcome
-        return outcome
-    _atomic_owner_commit(state, clone, [item for item in request.owner_patch_types if item != "planning_task_plan"], request, hashes)
-    invalidated = dependency_graph.transitive_dependents([item for item in request.owner_patch_types if item != "planning_task_plan"])
-    # The committed owner is valid; only true dependents are invalidated.
-    dependent_only = [item for item in invalidated if item not in request.owner_patch_types]
-    state.invalidate_patch_types(dependent_only, reason=f"retry owner commit {request.request_id}", issues=[{"code": request.reason_code}])
-    gates = invalidate_gates_for_patch_change(state, invalidated, dependency_graph)
-    regenerated = downstream_resumer(state, plan) if downstream_resumer else []
-    state.plan_retry_owner_regenerations.update({patch: state.plan_retry_owner_regenerations.get(patch, 0) + 1 for patch in hashes})
-    state.plan_retry_pending_request_ids.remove(request.request_id)
-    record = RetryRoundRecord(round_index=len(state.plan_retry_rounds), request=request, execution_plan=plan, state_hash_before=before, owner_hashes_before={target.patch_type: target.current_patch_hash or "" for target in request.targets}, candidate_hashes=hashes, owner_hashes_after={patch: _patch_hash(state, patch) or "" for patch in hashes}, invalidated_patch_types=dependent_only, regenerated_patch_types=regenerated, gates_replayed=gates, resolved_issue_codes=[request.reason_code], outcome=RetryExecutionStatus.RESUMED)
-    state.plan_retry_rounds.append(record)
-    outcome = RetryExecutionOutcome(status=RetryExecutionStatus.RESUMED, request_id=request.request_id, execution_id=plan.execution_id, detail="owner committed; downstream rebuild is resumable", workflow_behavior_changed=True)
-    state.plan_retry_outcome = outcome
-    state.add_event("planning.retry_downstream_resume_completed", outcome.detail, {"request_id": request.request_id, "invalidated_patch_types": dependent_only, "regenerated_patch_types": regenerated})
-    return outcome
+        state.add_event("planning.retry_round_completed", outcome.detail, {"request_id": request.request_id, "classification": classification, "resolved": resolved_codes, "remaining": remaining_codes, "new": new_codes})
+        last_outcome = outcome
+
+    # unreachable
+    return last_outcome  # type: ignore[return-value]
+
+
+def _budget_snapshot(state: PlanBuildState) -> dict[str, int]:
+    return {
+        "llm_calls": int(state.plan_retry_budget.get("llm_calls", 0)),
+        "retry_rounds": len(state.plan_retry_rounds),
+        "owner_regenerations": sum(state.plan_retry_owner_regenerations.values()),
+        "gate_invalidation_total": sum(state.plan_retry_gate_invalidation_counts.values()),
+        "gate_replay_attempts": sum(state.plan_retry_gate_replay_attempt_counts.values()),
+        "gate_replay_successes": sum(state.plan_retry_gate_replay_success_counts.values()),
+    }
+
+
+class _Lifecycle:
+    """Alias for :class:`RetryRequestLifecycle` to avoid late import cycles."""
+
+    PENDING = None
+    EXECUTING = None
+    AWAITING_HUMAN = None
+    OWNER_COMMITTED = None
+    REBUILDING = None
+    REPLAYING = None
+    RESOLVED = None
+    SUPERSEDED = None
+    NO_PROGRESS = None
+    BLOCKED = None
+    FAILED = None
+
+
+from .retry_models import RetryRequestLifecycle as _RealLifecycle  # noqa: E402
+
+_Lifecycle.PENDING = _RealLifecycle.PENDING
+_Lifecycle.EXECUTING = _RealLifecycle.EXECUTING
+_Lifecycle.AWAITING_HUMAN = _RealLifecycle.AWAITING_HUMAN
+_Lifecycle.OWNER_COMMITTED = _RealLifecycle.OWNER_COMMITTED
+_Lifecycle.REBUILDING = _RealLifecycle.REBUILDING
+_Lifecycle.REPLAYING = _RealLifecycle.REPLAYING
+_Lifecycle.RESOLVED = _RealLifecycle.RESOLVED
+_Lifecycle.SUPERSEDED = _RealLifecycle.SUPERSEDED
+_Lifecycle.NO_PROGRESS = _RealLifecycle.NO_PROGRESS
+_Lifecycle.BLOCKED = _RealLifecycle.BLOCKED
+_Lifecycle.FAILED = _RealLifecycle.FAILED
+
+
+def _lifecycle_for_status(status: Any) -> Any:
+    mapping = {
+        RetryExecutionStatus.RESOLVED: _Lifecycle.RESOLVED,
+        RetryExecutionStatus.PARTIALLY_RESOLVED: _Lifecycle.OWNER_COMMITTED,
+        RetryExecutionStatus.BUDGET_EXHAUSTED: _Lifecycle.BLOCKED,
+        RetryExecutionStatus.NO_PROGRESS: _Lifecycle.NO_PROGRESS,
+        RetryExecutionStatus.CYCLE_DETECTED: _Lifecycle.NO_PROGRESS,
+        RetryExecutionStatus.UNSUPPORTED_REQUEST: _Lifecycle.BLOCKED,
+        RetryExecutionStatus.FAILED: _Lifecycle.FAILED,
+        RetryExecutionStatus.BLOCKED: _Lifecycle.BLOCKED,
+        RetryExecutionStatus.AWAITING_HUMAN: _Lifecycle.AWAITING_HUMAN,
+    }
+    return mapping.get(status, _Lifecycle.BLOCKED)

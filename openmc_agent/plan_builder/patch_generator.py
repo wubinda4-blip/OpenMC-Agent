@@ -95,6 +95,32 @@ class PatchGenerationContext(AgentBaseModel):
     assembly_insert_binding_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class RetryPatchGenerationContext(AgentBaseModel):
+    """Wrapper that carries typed retry constraints alongside the base context.
+
+    When passed to :func:`generate_patch` as ``context``, the generator
+    unwraps the base context and exposes the retry fields to the prompt
+    builder so the LLM sees required IDs, protected invariants and prior
+    failure codes.
+    """
+
+    base_context: PatchGenerationContext | None = None
+    retry_request_id: str = ""
+    reason_code: str = ""
+    source_issue_codes: list[str] = Field(default_factory=list)
+    required_ids: list[str] = Field(default_factory=list)
+    required_properties: list[str] = Field(default_factory=list)
+    affected_json_paths: list[str] = Field(default_factory=list)
+    protected_invariants: list[str] = Field(default_factory=list)
+    accepted_upstream_summaries: dict[str, Any] = Field(default_factory=dict)
+    confirmed_records: list[dict[str, Any]] = Field(default_factory=list)
+    prior_candidate_hashes: list[str] = Field(default_factory=list)
+    prior_failure_codes: list[str] = Field(default_factory=list)
+
+    def unwrap(self) -> PatchGenerationContext:
+        return self.base_context or PatchGenerationContext()
+
+
 class PatchGenerationAttempt(AgentBaseModel):
     """Record of a single LLM call attempt."""
 
@@ -889,7 +915,7 @@ def generate_patch(
     patch_type: str,
     requirement: str,
     state: PlanBuildState | None = None,
-    context: PatchGenerationContext | None = None,
+    context: PatchGenerationContext | RetryPatchGenerationContext | None = None,
     llm_client: Any | None = None,
     max_attempts: int = 2,
     max_tokens: int | None = None,
@@ -926,6 +952,13 @@ def generate_patch(
                 "message": "llm_client is None; cannot generate patch",
             }],
         )
+
+    # Unwrap retry context if present so the rest of the generator sees the
+    # base context.  Retry-specific fields are available on ``retry_context``.
+    retry_context: RetryPatchGenerationContext | None = None
+    if isinstance(context, RetryPatchGenerationContext):
+        retry_context = context
+        context = retry_context.unwrap()
 
     # Enrich context with validated patch summaries from state.
     effective_context = context or PatchGenerationContext()

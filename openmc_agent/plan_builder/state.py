@@ -209,6 +209,17 @@ class PlanBuildState(AgentBaseModel):
     plan_retry_cycle_trace: list[dict[str, Any]] = Field(default_factory=list)
     plan_retry_budget: dict[str, int] = Field(default_factory=dict)
     plan_retry_pending_request_ids: list[str] = Field(default_factory=list)
+    # Phase-3B finer-grained ledgers.  Gate invalidation, gate replay attempts
+    # and gate replay successes are kept separate so the artifacts can prove
+    # that a replay actually ran, not merely that the gate was invalidated.
+    plan_retry_gate_invalidation_counts: dict[str, int] = Field(default_factory=dict)
+    plan_retry_gate_replay_attempt_counts: dict[str, int] = Field(default_factory=dict)
+    plan_retry_gate_replay_success_counts: dict[str, int] = Field(default_factory=dict)
+    # Per-fingerprint issue trace so that cycles and no-progress on changed
+    # candidates with identical blocking issue fingerprints are detectable.
+    plan_retry_issue_fingerprints_by_request: dict[str, list[str]] = Field(default_factory=dict)
+    plan_retry_task_plan_hash_history: list[str] = Field(default_factory=list)
+    plan_retry_human_questions: dict[str, Any] = Field(default_factory=dict)
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 

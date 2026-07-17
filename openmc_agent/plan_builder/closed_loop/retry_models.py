@@ -52,10 +52,43 @@ class RetryExecutionStatus(_TextEnum):
     BLOCKED = "blocked"
     BUDGET_EXHAUSTED = "budget_exhausted"
     NO_PROGRESS = "no_progress"
+    CYCLE_DETECTED = "cycle_detected"
     UNSUPPORTED_REQUEST = "unsupported_request"
     FAILED = "failed"
     RESUMED = "resumed"
     RETRY_PLAN_RECORDED = "retry_plan_recorded"
+
+
+class RetryRequestLifecycle(_TextEnum):
+    """Lifecycle of a single retry request inside the controller.
+
+    Terminal states (``resolved``/``superseded``/``no_progress``/``blocked``/
+    ``failed``) must be removed from the pending list so the next loop pass
+    never re-selects a dead request.
+    """
+
+    PENDING = "pending"
+    EXECUTING = "executing"
+    AWAITING_HUMAN = "awaiting_human"
+    OWNER_COMMITTED = "owner_committed"
+    REBUILDING = "rebuilding"
+    REPLAYING = "replaying"
+    RESOLVED = "resolved"
+    SUPERSEDED = "superseded"
+    NO_PROGRESS = "no_progress"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+TERMINAL_RETRY_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        RetryRequestLifecycle.RESOLVED.value,
+        RetryRequestLifecycle.SUPERSEDED.value,
+        RetryRequestLifecycle.NO_PROGRESS.value,
+        RetryRequestLifecycle.BLOCKED.value,
+        RetryRequestLifecycle.FAILED.value,
+    }
+)
 
 
 class RetryTargetSpec(AgentBaseModel):
@@ -92,6 +125,11 @@ class ExecutablePlanRetryRequest(AgentBaseModel):
     repairable: bool = False
     request_fingerprint: str = ""
     created_round: int = 0
+    lifecycle: RetryRequestLifecycle = RetryRequestLifecycle.PENDING
+    owner_patch_hashes: dict[str, str | None] = Field(default_factory=dict)
+    consumer_ids: list[str] = Field(default_factory=list)
+    source_requirement_ids: list[str] = Field(default_factory=list)
+    human_ambiguity: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -151,14 +189,20 @@ class RetryRoundRecord(AgentBaseModel):
     owner_hashes_after: dict[str, str] = Field(default_factory=dict)
     invalidated_patch_types: list[str] = Field(default_factory=list)
     regenerated_patch_types: list[str] = Field(default_factory=list)
+    gates_invalidated: list[PlanGateId] = Field(default_factory=list)
     gates_replayed: list[PlanGateId] = Field(default_factory=list)
+    gate_replay_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
     issue_fingerprint_before: str | None = None
     issue_fingerprint_after: str | None = None
     resolved_issue_codes: list[str] = Field(default_factory=list)
     remaining_issue_codes: list[str] = Field(default_factory=list)
     new_issue_codes: list[str] = Field(default_factory=list)
+    checks_executed: list[str] = Field(default_factory=list)
+    checks_passed: list[str] = Field(default_factory=list)
+    checks_failed: list[str] = Field(default_factory=list)
     llm_calls: int = 0
     outcome: RetryExecutionStatus
+    reclassification: str = ""
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -169,5 +213,8 @@ class RetryExecutionOutcome(AgentBaseModel):
     request_id: str | None = None
     execution_id: str | None = None
     unresolved_request_ids: list[str] = Field(default_factory=list)
+    new_request_ids: list[str] = Field(default_factory=list)
     workflow_behavior_changed: bool = False
+    reclassification: str = ""
+    budget_snapshot: dict[str, int] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
