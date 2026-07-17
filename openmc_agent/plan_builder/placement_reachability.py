@@ -278,8 +278,16 @@ def build_localized_insert_placement_report(
             and any(t in s.role.lower() for t in ("absorber", "aic", "b4c", "poison"))
         )
 
-        # Check reachability of expected universes
-        for uid in req.expected_insert_universe_ids:
+        # Profile segment universe IDs are canonical for movable, multi-segment
+        # inserts. For direct static intents, source documents normally describe
+        # physical roles rather than implementation-specific helper universe IDs;
+        # validate the actual intent universe in the direct branch below instead.
+        universe_ids_to_check = (
+            req.expected_insert_universe_ids
+            if req.required_profile_id is not None
+            else []
+        )
+        for uid in universe_ids_to_check:
             # Determine if this universe only appears in clipped-out segments
             has_reachable_segment = False
             for seg in info.resolved_segments:
@@ -312,6 +320,27 @@ def build_localized_insert_placement_report(
                     "requirement_id": req.requirement_id,
                     "code": "localized_insert.required_universe_orphaned",
                     "message": f"Required universe '{uid}' is not root-reachable",
+                })
+        elif not info.resolved_segments:
+            # Direct finite-height intents (the legacy-compatible static path)
+            # do not use an axial profile. Their placement is validated by the
+            # materializer and their direct insert universe must be reachable.
+            direct_uid = next(
+                (
+                    uid for uid in req.expected_insert_universe_ids
+                    if uid in reachable_universe_ids
+                ),
+                None,
+            )
+            info.result = "pass" if direct_uid is not None else "fail"
+            if direct_uid is None:
+                report.issues.append({
+                    "requirement_id": req.requirement_id,
+                    "code": "localized_insert.required_segment_unreachable",
+                    "message": (
+                        f"Direct required insert for '{req.requirement_id}' "
+                        "has no root-reachable universe"
+                    ),
                 })
         elif req.required_in_detailed_domain and info.total_physical_path_count == 0:
             # Check if all absorber segments are clipped_out (which is OK for non-domain requirements)

@@ -373,7 +373,10 @@ def validate_required_localized_insert_placements(
                         ))
 
                 # 11b. Control state check
-                if req.control_state_id is not None:
+                # A control-state binding is meaningful for movable inserts.
+                # Static inserts may carry a source-state label on the requirement
+                # without needing the intent to duplicate it.
+                if req.control_state_id is not None and req.insert_kind == "control_rod":
                     if intent.control_state_id != req.control_state_id:
                         issues.append(PlacementValidationIssue(
                             code="localized_insert.control_state_mismatch",
@@ -436,6 +439,7 @@ def validate_required_localized_insert_placements(
                 wrong_intents = [
                     i for i in at.pin_map.localized_insert_intents
                     if i.insert_kind == req.insert_kind
+                    and req.required_profile_id is not None
                     and i.axial_profile_id == req.required_profile_id
                 ]
                 if wrong_intents:

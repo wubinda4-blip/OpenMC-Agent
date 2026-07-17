@@ -776,6 +776,10 @@ _THROUGH_PATH_ALLOWED_FIELDS = frozenset({
     "through_path_preserved", "assumptions", "source_note",
 })
 
+_ASSEMBLY_CATALOG_INSERT_ALLOWED_FIELDS = frozenset({
+    "localized_insert_intents", "assumptions", "source_note",
+})
+
 
 def _compute_allowed_overlay_fields(issue_codes: list[str]) -> set[str]:
     """Return the set of overlay fields that the retry is allowed to change."""
@@ -801,6 +805,40 @@ def _detect_retry_drift(
     Only checks overlay-level fields for ``axial_overlays`` patches.
     Returns a list of drift records.  Empty means no unexpected drift.
     """
+    if patch_type == "assembly_catalog" and any(
+        code.startswith("localized_insert.") for code in issue_codes
+    ):
+        previous_types = {
+            item.get("assembly_type_id"): item
+            for item in previous.get("assembly_types", [])
+            if isinstance(item, dict) and isinstance(item.get("assembly_type_id"), str)
+        }
+        retry_types = {
+            item.get("assembly_type_id"): item
+            for item in retry.get("assembly_types", [])
+            if isinstance(item, dict) and isinstance(item.get("assembly_type_id"), str)
+        }
+        if previous_types.keys() != retry_types.keys():
+            return [{
+                "json_path": "assembly_types",
+                "reason": "assembly type IDs changed during localized-insert retry",
+                "triggering_issue_codes": issue_codes,
+            }]
+        drift: list[dict[str, Any]] = []
+        for type_id, before in previous_types.items():
+            after = retry_types[type_id]
+            for field, previous_value in before.items():
+                if field in _ASSEMBLY_CATALOG_INSERT_ALLOWED_FIELDS:
+                    continue
+                if after.get(field) != previous_value:
+                    drift.append({
+                        "json_path": f"assembly_types[{type_id}].{field}",
+                        "previous": previous_value,
+                        "new": after.get(field),
+                        "allowed_paths": sorted(_ASSEMBLY_CATALOG_INSERT_ALLOWED_FIELDS),
+                        "triggering_issue_codes": issue_codes,
+                    })
+        return drift
     if patch_type != "axial_overlays":
         return []
     prev_ovs = previous.get("overlays", [])
