@@ -58,8 +58,17 @@ def _confirmed_records(confirmed_facts: dict[str, Any]) -> list[tuple[str, Any]]
 
 def allowed_paths_for_findings(findings: list[PlanReviewFinding]) -> list[str]:
     paths = {"/missing_facts", "/assumptions", "/source_notes"}
+    contract_paths = {
+        "facts.model_scope_conflicts_with_planning_features": {"/model_scope", "/assembly_count", "/core_lattice_size", "/assembly_type_counts"},
+        "facts.multi_assembly_contract_incomplete": {"/model_scope", "/assembly_count", "/core_lattice_size", "/assembly_type_counts"},
+        "facts.localized_insert_contract_missing": {"/localized_insert_requirements", "/has_special_pin_map"},
+        "facts.localized_insert_profile_contract_missing": {"/localized_insert_requirements"},
+        "facts.spacer_grid_contract_missing": {"/has_spacer_grids", "/expected_spacer_grid_count"},
+        "facts.fuel_variant_contract_missing": {"/fuel_variant_requirements"},
+    }
     for finding in findings:
         if finding.repairable_by_llm and not finding.requires_human:
+            paths.update(contract_paths.get(finding.code, set()))
             for path in finding.affected_json_paths:
                 paths.add(path)
     return sorted(paths)

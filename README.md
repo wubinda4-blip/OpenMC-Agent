@@ -540,3 +540,12 @@ python scripts/compare_material_policies.py \
 ```
 
 The resulting `comparison_report.json` records `preserve_plan` keff, `apply_alloy_library` keff, and `delta_pcm`. See `docs/evaluation.md` for details and safety boundaries.
+### Plan closed-loop Phase 1C
+
+The incremental planner now reconciles a feature contract with Facts before
+controlled downstream generation.  A persisted canonical scope selects exactly
+one patch family (`pin_map` or `assembly_catalog` plus `core_layout`), and a
+source-critical Facts preflight blocks scope/profile omissions before assembly.
+Mass-derived overlay geometry also has an owner-aware material-density
+readiness check.  These are deterministic safety checks, not Placement,
+Material–Universe, Axial, or Final Plan review gates.

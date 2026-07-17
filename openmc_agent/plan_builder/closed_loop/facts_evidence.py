@@ -69,6 +69,10 @@ def build_facts_evidence_packs(
                 "benchmark_id", "selected_variant", "model_scope", "lattice_size",
                 "assembly_count", "core_lattice_size", "active_fuel_region_cm", "axial_domain_cm",
             )},
+            "planning_feature_contract": planning_metadata.get("planning_feature_contract", {}),
+            "resolved_planning_scope": planning_metadata.get("resolved_planning_scope", {}),
+            "facts_consistency_issues": planning_metadata.get("facts_consistency_issues", []),
+            "expected_patch_family": planning_metadata.get("expected_patch_family", {}),
         }
         pack = PlanEvidencePack(
             gate_id=PlanGateId.FACTS, source_excerpts=[excerpt],

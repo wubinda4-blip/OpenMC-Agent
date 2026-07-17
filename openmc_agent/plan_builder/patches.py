@@ -255,6 +255,14 @@ class MaterialSpecPatch(_PatchBase):
     name: str
     role: str
     density_g_cm3: float | None = None
+    # Density provenance is intentionally independent from transport
+    # composition confidence.  A structural density can be source-provided or
+    # library-provided while alloy composition still needs confirmation.
+    density_status: Literal[
+        "confirmed", "source_provided", "library", "approximate", "needs_confirmation",
+    ] = "needs_confirmation"
+    density_source: str | None = None
+    density_requires_human_confirmation: bool = False
     temperature_K: float | None = None
     # Transport-ready element or nuclide names only. Source formulae belong in
     # compound_components and are deterministically resolved before rendering.

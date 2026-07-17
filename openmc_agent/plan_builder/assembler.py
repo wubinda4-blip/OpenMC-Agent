@@ -1465,12 +1465,20 @@ _REQUIRED_3D_MULTI: tuple[str, ...] = (
 def _check_required_patches(
     indexed: dict[str, Any],
     facts: FactsPatch | None,
+    resolved_planning_scope: Any | None = None,
 ) -> list[PlanAssemblyIssue]:
     issues: list[PlanAssemblyIssue] = []
 
     is_multi = False
     if facts is not None:
-        scope = getattr(facts, "model_scope", "single_assembly")
+        scope = getattr(resolved_planning_scope, "value", None) or getattr(facts, "model_scope", "single_assembly")
+        has_catalog = "assembly_catalog" in indexed
+        has_layout = "core_layout" in indexed
+        has_pin_map = "pin_map" in indexed
+        if scope in ("single_pin", "single_assembly") and (has_catalog or has_layout):
+            return [PlanAssemblyIssue(code="assembly.model_scope_patch_family_conflict", severity="error", message="single-assembly Facts conflicts with assembly_catalog/core_layout patch family; regenerate Facts", path="model_scope")]
+        if scope in ("multi_assembly_core", "full_core") and has_pin_map and not (has_catalog and has_layout):
+            return [PlanAssemblyIssue(code="assembly.model_scope_patch_family_conflict", severity="error", message="multi-assembly Facts conflicts with top-level pin_map patch family", path="model_scope")]
         if scope in ("multi_assembly_core", "full_core"):
             is_multi = True
         elif facts.assembly_count is not None and facts.assembly_count > 1:
@@ -1512,6 +1520,7 @@ def assemble_simulation_plan_from_patches(
     *,
     strict: bool = True,
     material_policy: str | MaterialCompositionPolicy | None = None,
+    resolved_planning_scope: Any | None = None,
 ) -> PlanAssemblyResult:
     """Assemble validated patches into a complete ``SimulationPlan``.
 
@@ -1563,7 +1572,7 @@ def assemble_simulation_plan_from_patches(
             is_multi_assembly = True
 
     # 1. Check required patches.
-    missing_issues = _check_required_patches(indexed, facts)
+    missing_issues = _check_required_patches(indexed, facts, resolved_planning_scope)
     issues.extend(missing_issues)
     if missing_issues and strict:
         return PlanAssemblyResult(

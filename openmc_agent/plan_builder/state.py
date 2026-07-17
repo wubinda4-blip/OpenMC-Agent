@@ -34,6 +34,7 @@ from .closed_loop.models import (
     PlanReviewFinding,
     PlanStageState,
 )
+from .planning_scope import CanonicalPatchTaskPlan, ResolvedPlanningScope, PlanningFeatureContract
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +179,16 @@ class PlanBuildState(AgentBaseModel):
     placement_revision_history: list[dict[str, Any]] = Field(default_factory=list)
     placement_dependency_requests: list[dict[str, Any]] = Field(default_factory=list)
     plan_confirmed_plan_fact_records: dict[str, ConfirmedPlanFactRecord] = Field(default_factory=dict)
+
+    # Phase-1C canonical planning contract.  These fields replace neither the
+    # original detector metadata nor FactsPatch; they persist their resolved
+    # reconciliation so every downstream consumer uses one scope truth.
+    planning_feature_contract: PlanningFeatureContract | None = None
+    resolved_planning_scope: ResolvedPlanningScope | None = None
+    canonical_task_plan: CanonicalPatchTaskPlan | None = None
+    root_cause_retry_history: list[dict[str, Any]] = Field(default_factory=list)
+    root_cause_attempts_by_fingerprint: dict[str, int] = Field(default_factory=dict)
+    root_cause_candidate_hashes: dict[str, list[str]] = Field(default_factory=dict)
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -579,6 +590,7 @@ def assemble_state_if_ready(
     *,
     strict: bool = True,
     material_policy: Any = None,
+    resolved_planning_scope: Any = None,
 ) -> PlanBuildState:
     """Attempt to assemble all valid patches in ``state`` into a SimulationPlan.
 
@@ -640,6 +652,8 @@ def assemble_state_if_ready(
     assembler_kwargs: dict[str, Any] = {"strict": strict}
     if material_policy is not None:
         assembler_kwargs["material_policy"] = material_policy
+    if resolved_planning_scope is not None:
+        assembler_kwargs["resolved_planning_scope"] = resolved_planning_scope
     result = assemble_simulation_plan_from_patches(parsed_patches, **assembler_kwargs)
 
     if result.ok and result.plan is not None:

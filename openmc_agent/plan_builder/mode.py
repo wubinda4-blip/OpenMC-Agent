@@ -179,6 +179,14 @@ _MULTI_ASSEMBLY_KEYWORDS: tuple[str, ...] = (
     "assembly array", "assembly lattice", "assemblies arranged",
     "多组件", "多个组件", "组件阵列", "全堆", "整堆", "全堆芯",
 )
+
+# These are source-feature cues, not reactor templates: they only preserve an
+# explicit localized/movable-object contract for the Facts stage.  No geometry,
+# coordinate, material, or benchmark value is inferred here.
+_LOCALIZED_INSERT_TERMS: tuple[str, ...] = (
+    "control rod", "control element", "movable absorber", "absorber insert",
+    "rod cluster", "rcca", "局部插入", "控制棒", "吸收体",
+)
 # "N assemblies" (N >= 2) — English count.
 _MULTI_ASSEMBLY_COUNT_RE = re.compile(
     r"(\d+)\s*(?:assemblies|fuel\s*assemblies|assembly\s*types)",
@@ -415,6 +423,15 @@ def should_use_incremental_planning(
         reasons.append(
             f"requirement mentions a {large_dim}x{large_dim} or larger lattice"
         )
+
+    # 6b. Localized and potentially multi-segment insert contracts.  Preserve
+    # evidence so Facts can represent an unknown profile rather than erasing
+    # the requirement merely because a numeric anchor is absent.
+    localized_terms = [term for term in _LOCALIZED_INSERT_TERMS if term in text_lower]
+    feature_summary["has_localized_insert"] = bool(localized_terms)
+    feature_summary["localized_insert_terms"] = localized_terms
+    feature_summary["has_control_state"] = bool(localized_terms)
+    feature_summary["has_multi_segment_localized_insert"] = bool(localized_terms and flags.has_axial_geometry)
 
     # 7. Multi-assembly core (core composed of multiple fuel assemblies).
     # This is the trigger that schedules assembly_catalog + core_layout;

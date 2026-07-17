@@ -368,6 +368,8 @@ _DEPENDENCIES: dict[str, list[str]] = {
 
 def default_patch_task_order(state: PlanBuildState) -> list[str]:
     """Return the default patch generation order based on state features."""
+    if state.canonical_task_plan is not None:
+        return list(state.canonical_task_plan.ordered_patch_types)
     order = list(_DEFAULT_ORDER)
     is_multi = _state_is_multi_assembly(state)
     # Remove axial_overlays if spacer grids are not expected.
@@ -413,6 +415,8 @@ def required_patch_types_for_state(state: PlanBuildState) -> list[str]:
 
     The top-level pin_map is NOT required for multi-assembly cores.
     """
+    if state.canonical_task_plan is not None:
+        return list(state.canonical_task_plan.required_patch_types)
     is_multi = _state_is_multi_assembly(state)
     has_spacer = _state_has_feature(state, "has_spacer_grid")
     has_profiles = _state_has_feature(state, "has_localized_insert_profiles")
@@ -443,6 +447,8 @@ def required_patch_types_for_state(state: PlanBuildState) -> list[str]:
 
 def _state_is_multi_assembly(state: PlanBuildState) -> bool:
     """Check whether the state describes a multi-assembly core model."""
+    if state.resolved_planning_scope is not None:
+        return state.resolved_planning_scope.value in ("multi_assembly_core", "full_core")
     pmd = state.metadata.get("planning_mode_decision", {})
     fs = pmd.get("feature_summary", {})
     if fs.get("multi_assembly_core") or fs.get("core_lattice"):
@@ -1172,6 +1178,39 @@ def run_incremental_planning(
         facts_env = next((item for item in state.patches.values() if item.patch_type == "facts" and item.status == "valid"), None)
         if facts_env is None:
             return IncrementalExecutionIssue(code="planning.facts_gate_missing_patch", severity="error", message="facts patch unavailable for review", patch_type="facts")
+        # Feature/Facts reconciliation happens before any independent reviewer.
+        # It is deterministic and therefore cannot be bypassed by a fluent but
+        # incomplete critic response.
+        from .planning_scope import planning_feature_contract, build_canonical_task_plan
+        from .closed_loop.facts_consistency import run_facts_consistency_preflight
+        contract = planning_feature_contract(state.metadata.get("planning_mode_decision"))
+        existing_types = [item.patch_type for item in state.get_valid_patches()]
+        consistency = run_facts_consistency_preflight(
+            feature_contract=contract, facts_patch=facts_env.content,
+            confirmed_facts=state.confirmed_facts, existing_valid_patch_types=existing_types,
+        )
+        state.planning_feature_contract = contract
+        state.resolved_planning_scope = consistency.scope
+        state.metadata["planning_feature_contract"] = contract.model_dump(mode="json")
+        state.metadata["resolved_planning_scope"] = consistency.scope.model_dump(mode="json")
+        state.metadata["facts_consistency_issues"] = consistency.issues
+        state.metadata["expected_patch_family"] = {"scope": consistency.scope.value, "required": "assembly_catalog+core_layout" if consistency.scope.value in {"multi_assembly_core", "full_core"} else "pin_map"}
+        for filename, payload in (
+            ("facts_feature_contract.json", contract),
+            ("planning_scope_evidence.json", {"evidence": consistency.scope.evidence}),
+            ("resolved_planning_scope.json", consistency.scope),
+            ("facts_consistency_preflight.json", consistency),
+        ):
+            path = artifact_writer._write(filename, payload)
+            if path: state.plan_loop_artifacts.append(path)
+        state.add_event("planning.feature_contract_built", "planning feature contract built", {"hash": contract.contract_hash})
+        if consistency.scope.status == "conflict":
+            state.add_event("planning.scope_conflict_detected", "Facts scope conflicts with planning features", {"scope": consistency.scope.model_dump(mode="json")})
+        state.add_event("planning.facts_consistency_preflight_started", "feature-to-Facts consistency preflight started", {})
+        if consistency.issues:
+            state.add_event("planning.facts_consistency_preflight_failed", "feature-to-Facts consistency preflight found blocking issues", {"codes": [item["code"] for item in consistency.issues]})
+        else:
+            state.add_event("planning.facts_consistency_preflight_passed", "feature-to-Facts consistency preflight passed", {})
         packs = build_facts_evidence_packs(
             requirement_text=requirement, facts_patch=facts_env.content,
             confirmed_facts=state.confirmed_facts, planning_metadata=state.metadata, policy=policy,
@@ -1211,20 +1250,32 @@ def run_incremental_planning(
         if findings_path:
             state.plan_loop_artifacts.append(findings_path)
         state.facts_review_history.append(review.model_dump(mode="json"))
-        record_findings(state, stage, review.findings)
+        consistency_findings = [
+            PlanReviewFinding(
+                gate_id=PlanGateId.FACTS, code=str(item["code"]),
+                severity=PlanFindingSeverity.ERROR, category=PlanFindingCategory.CROSS_PATCH_MISMATCH,
+                message=f"deterministic Facts contract violation: {item['code']}",
+                affected_patch_types=["facts"], affected_json_paths=[str(item.get("path", "/"))],
+                repairable_by_llm=bool(item.get("repairable_by_llm", True)),
+                requires_human=bool(item.get("requires_human", False)), confidence=1.0,
+                metadata={"deterministic": True, "evidence_hashes": [contract.contract_hash]},
+            ) for item in consistency.issues
+        ]
+        all_findings = consistency_findings + list(review.findings)
+        record_findings(state, stage, all_findings)
         if not review.ok or not review.coverage_complete:
             state.add_event("planning.facts_review_failed", review.error or "facts_review.coverage_incomplete", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
                 return IncrementalExecutionIssue(code=review.failure_code or "facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
-        review_deterministic_issues = ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
+        review_deterministic_issues = list(consistency.issues) + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
                                        if not review.ok or not review.coverage_complete else [])
-        actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=review.findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
+        actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=all_findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
         action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED
         decision = PlanReviewDecision(
             decision_id=f"facts_decision_{len(state.plan_review_decisions):03d}", gate_id=PlanGateId.FACTS,
             action=action, target_patch_types=["facts"] if action in {PlanReviewAction.REVISE_CURRENT_PATCH, PlanReviewAction.RETRY_DEPENDENCY} else [],
-            finding_ids=[item.finding_id for item in review.findings], rationale="deterministic facts-gate action policy",
+            finding_ids=[item.finding_id for item in all_findings], rationale="deterministic facts-gate action policy",
             allowed_actions_snapshot=actions or [PlanReviewAction.FAIL_CLOSED], decided_by="deterministic",
         )
         record_decision(state, stage, decision)
@@ -1237,6 +1288,17 @@ def run_incremental_planning(
             state.add_event("planning.facts_review_advisory_completed", "facts review recorded without plan mutation", {"review_success": review.ok and review.coverage_complete})
             return None
         if action is PlanReviewAction.APPROVE:
+            # Acceptance is bound to the reconciled scope and a post-Facts
+            # task plan; subsequent executor iterations never reuse the
+            # provisional feature-only order.
+            state.canonical_task_plan = build_canonical_task_plan(
+                scope=consistency.scope, contract=contract, facts_patch=facts_env.content,
+                feature_order=list(_DEFAULT_ORDER),
+            )
+            state.metadata["canonical_task_plan"] = state.canonical_task_plan.model_dump(mode="json")
+            path = artifact_writer._write("canonical_task_plan.json", state.canonical_task_plan)
+            if path: state.plan_loop_artifacts.append(path)
+            state.add_event("planning.canonical_task_plan_built", "canonical patch task plan built after Facts acceptance", {"plan_hash": state.canonical_task_plan.plan_hash, "scope": consistency.scope.value})
             transition_stage(stage, PlanStageStatus.ACCEPTED)
             state.add_event("planning.facts_gate_accepted", "facts gate accepted", {})
             return None
@@ -1258,7 +1320,7 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.REPAIRING)
             stage.repair_count += 1
             state.add_event("planning.facts_revision_started", "facts-only revision started", {})
-            blocking = [item for item in review.findings if item.severity.value == "error"]
+            blocking = [item for item in all_findings if item.severity.value == "error"]
             issue_fingerprint = compute_issue_fingerprint(
                 gate_id="facts", code="facts_review.blocking_set", affected_patch_type="facts",
                 actual=sorted(item.finding_id for item in blocking),
@@ -1880,6 +1942,14 @@ def run_incremental_planning(
                             "detail": facts_gate_issue.message,
                         },
                     )
+                if (policy.mode is PlanLoopMode.CONTROLLED and state.canonical_task_plan is not None
+                        and task_order is None and required != ["facts"]):
+                    # Mutate the iterated list in-place: the remaining work is
+                    # now authoritative canonical work, not the provisional
+                    # detector-only order calculated before Facts existed.
+                    order[:] = list(state.canonical_task_plan.ordered_patch_types)
+                    required[:] = list(state.canonical_task_plan.required_patch_types)
+                    state.add_event("planning.task_plan_reconciled", "provisional task order replaced by canonical task plan", {"plan_hash": state.canonical_task_plan.plan_hash, "order": order})
             # Placement is evaluated at the first point all of its scoped
             # inputs become valid.  In controlled mode the reordered task list
             # makes this a barrier before axial patch generation; advisory
@@ -2136,8 +2206,39 @@ def run_incremental_planning(
             plan_loop_outcome={"status": "blocked", "active_gate_id": "placement", "active_stage_id": "plan_gate_placement", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": placement_gate_issue.message},
         )
 
+    # Assembly readiness is deterministic and intentionally precedes the
+    # renderer/assembler.  It aggregates all mass-derived grid failures by
+    # material so an executor never retries eight overlays as eight causes.
+    materials_env = next((item for item in state.patches.values() if item.patch_type == "materials" and item.status == "valid"), None)
+    overlays_env = next((item for item in state.patches.values() if item.patch_type == "axial_overlays" and item.status == "valid"), None)
+    if materials_env is not None and overlays_env is not None:
+        from .material_execution_readiness import validate_material_execution_readiness
+        readiness = validate_material_execution_readiness(materials_patch=materials_env.content, axial_overlays_patch=overlays_env.content, policy=str(state.metadata.get("structural_density_policy", "source_only")))
+        readiness_path = artifact_writer._write("material_execution_readiness.json", readiness)
+        if readiness_path: state.plan_loop_artifacts.append(readiness_path)
+        requirements_path = artifact_writer._write("material_execution_requirements.json", readiness.requirements)
+        if requirements_path: state.plan_loop_artifacts.append(requirements_path)
+        state.add_event("planning.material_execution_preflight_started", "material execution-readiness preflight started", {})
+        if readiness.issues:
+            readiness_issues = [item.model_dump(mode="json") for item in readiness.issues]
+            state.validation_issues.extend(readiness_issues)
+            state.add_event("planning.material_density_required", "material density required by mass-derived geometry", {"material_ids": [item.material_id for item in readiness.issues]})
+            from .root_cause_classifier import classify_planning_root_causes, record_targeted_retry_attempt
+            from .closed_loop.fingerprints import compute_candidate_hash
+            material_hash = compute_candidate_hash(target_patch_type="materials", candidate_patch=materials_env.content)
+            causes = classify_planning_root_causes(readiness_issues, {"materials": material_hash})
+            retry_records = [record_targeted_retry_attempt(state, cause) for cause in causes]
+            artifact_writer._write("root_cause_bundle_000.json", causes)
+            artifact_writer._write("targeted_retry_trace.json", retry_records)
+            if any(record["no_progress"] for record in retry_records):
+                state.add_event("planning.retry_no_progress", "same owner candidate repeated for the same root cause", {"records": retry_records})
+                artifact_writer._write("no_progress_report.json", retry_records)
+            if policy.mode is PlanLoopMode.CONTROLLED:
+                state.add_event("planning.assembly_readiness_failed", "assembly blocked before materialization by material readiness", {"codes": [item.code for item in readiness.issues]})
+                return IncrementalExecutionResult(ok=False, state=state, issues=[IncrementalExecutionIssue(code=item.code, severity="error", message=f"material {item.material_id} lacks density required by overlays", patch_type="materials") for item in readiness.issues], summary=_build_failure_summary("materials", [item.code for item in readiness.issues], 0), plan_loop_outcome={"status": "blocked", "detail": "material execution readiness failed", "additional_llm_calls_used": state.plan_loop_additional_llm_calls})
+
     # Assemble.
-    assemble_kwargs: dict[str, Any] = {"strict": strict}
+    assemble_kwargs: dict[str, Any] = {"strict": strict, "resolved_planning_scope": state.resolved_planning_scope}
     if material_policy is not None:
         assemble_kwargs["material_policy"] = material_policy
     state = assemble_state_if_ready(state, **assemble_kwargs)

@@ -437,3 +437,12 @@ The P0 evaluation backbone now includes a report-generating workflow benchmark e
 The CLI `scripts/run_workflow_benchmark.py` defaults to `model=fake`, `mode=plan-only`, rendering disabled, and OpenMC tools disabled. Non-fake models are refused unless `--allow-real-llm` is passed, keeping the no-OpenMC/no-LLM test boundary intact. The primary local command is `make benchmark-workflow-fake`.
 
 - 2026-07-09 — P0-D/E/F workflow benchmark reporting: added workflow benchmark API, CLI report generation, fake benchmark Make target, and no-OpenMC tests for reports/traces. Validation: targeted workflow benchmark tests plus no-OpenMC suite.
+## 2026-07-17 — Phase 1C canonical planning safety boundary
+
+- Added feature-to-Facts reconciliation, one persisted canonical planning scope,
+  and canonical task-plan persistence so task selection and assembly share the
+  same patch-family decision.
+- Added source-critical localized-insert/profile checks and grouped material
+  density execution-readiness diagnostics; focused regression tests pass.
+- Boundaries remain unchanged: no generic retry controller and no additional
+  Placement, Material–Universe, Axial, or Final Plan LLM gate is claimed.
