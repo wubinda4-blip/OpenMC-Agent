@@ -23,6 +23,10 @@ class RetryOwnerPolicy(AgentBaseModel):
     protected_json_paths: list[str] = ["/patch_type"]
 
 
+_MATERIAL_UNIVERSE_FACTS_CODES = {
+    "material_universe.required_fuel_variant_missing",
+}
+
 _FACTS_CODES = {
     "facts.model_scope_conflicts_with_planning_features",
     "facts.multi_assembly_contract_incomplete",
@@ -33,13 +37,26 @@ _FACTS_CODES = {
     "facts.assembly_count_inconsistent",
     "facts.core_lattice_size_inconsistent",
     "assembly.model_scope_patch_family_conflict",
-}
+} | _MATERIAL_UNIVERSE_FACTS_CODES
 _MATERIAL_CODES = {
     "materials.execution_density_required",
     "assembly.unresolved_material_reference",
     "materials.compound_in_transport_composition",
     "materials.unsupported_compound_formula",
     "materials.unresolved_species",
+    # Phase-4 Material-Universe Gate deterministic codes routed to materials owner.
+    "material_universe.material_duplicate",
+    "material_universe.material_density_invalid",
+    "material_universe.transport_species_invalid",
+    "material_universe.compound_in_transport_composition",
+    "material_universe.compound_fraction_basis_missing",
+    "material_universe.fissile_isotope_policy_missing",
+    "material_universe.alloy_reduced_without_disclosure",
+    "material_universe.required_material_missing",
+    "material_universe.required_fuel_variant_material_missing",
+    "material_universe.fuel_variant_material_duplicate",
+    "material_universe.placeholder_material_unresolved",
+    "material_universe.enrichment_contract_mismatch",
 }
 _UNIVERSE_CODES = {
     "localized_insert.required_universe_missing",
@@ -48,6 +65,20 @@ _UNIVERSE_CODES = {
     "assembly.unresolved_universe_reference",
     "profile.segment_universe_missing",
     "required_fuel_universe_missing",
+    # Phase-4 Material-Universe Gate deterministic codes routed to universes owner.
+    "material_universe.universe_duplicate",
+    "material_universe.universe_empty",
+    "material_universe.cell_duplicate",
+    "material_universe.invalid_radial_order",
+    "material_universe.radial_gap",
+    "material_universe.radial_overlap",
+    "material_universe.background_missing",
+    "material_universe.material_reference_missing",
+    "material_universe.material_role_mismatch",
+    "material_universe.multiple_variants_in_one_universe",
+    "material_universe.fuel_variant_collapsed",
+    "material_universe.fuel_variant_material_unreachable",
+    "material_universe.variant_identity_mismatch",
 }
 _TASK_PLAN_CODES = {
     "planning.required_patch_omitted",
@@ -57,6 +88,8 @@ _TASK_PLAN_CODES = {
 }
 _PLACEMENT_CODES = {
     "localized_insert.required_placement_missing",
+    "localized_insert.required_assembly_type_missing",
+    "localized_insert.required_profile_missing",
     "localized_insert.required_profile_unused",
     "localized_insert.coordinate_count_mismatch",
     "localized_insert.coordinates_not_in_host_path",
@@ -67,6 +100,11 @@ _PLACEMENT_CODES = {
     "localized_insert.core_multiplicity_mismatch",
     "localized_insert.unexpected_assembly_scope",
 }
+
+# Phase-4 Material-Universe Gate issue codes.  These overlap with Materials/
+# Universes owner codes so the Phase-3B retry loop can drive them through the
+# same producer registry.  Fuel-variant root causes that trace back to an
+# incomplete source contract route to Facts as a dependency retry.
 
 
 def _resolve_placement_owner(issue: dict[str, Any], scope: str | None, code: str = "") -> list[str]:

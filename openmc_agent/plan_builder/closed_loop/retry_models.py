@@ -24,6 +24,7 @@ class _TextEnum(str, Enum):
 
 class RetryTriggerOrigin(_TextEnum):
     FACTS_GATE = "facts_gate"
+    MATERIAL_UNIVERSE_GATE = "material_universe_gate"
     PLACEMENT_GATE = "placement_gate"
     DETERMINISTIC_PREFLIGHT = "deterministic_preflight"
     MATERIAL_READINESS = "material_readiness"

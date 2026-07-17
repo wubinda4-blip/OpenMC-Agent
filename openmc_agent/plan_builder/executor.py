@@ -933,12 +933,16 @@ def run_incremental_planning(
     if policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.PLACEMENT, False) and not policy.gate_enabled.get(PlanGateId.FACTS, False):
         issue = IncrementalExecutionIssue(code="planning.closed_loop.invalid_gate_configuration", severity="error", message="controlled placement requires the facts gate")
         return IncrementalExecutionResult(ok=False, state=state, issues=[issue], summary={"issue_codes": [issue.code]}, plan_loop_outcome={"status": "blocked", "detail": issue.message, "additional_llm_calls_used": 0})
-    supported_controlled = {PlanGateId.FACTS, PlanGateId.PLACEMENT}
+    # Phase-4: Material-Universe gate requires Facts to be accepted first.
+    if policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.MATERIAL_UNIVERSE, False) and not policy.gate_enabled.get(PlanGateId.FACTS, False):
+        issue = IncrementalExecutionIssue(code="planning.closed_loop.invalid_gate_configuration", severity="error", message="controlled material-universe requires the facts gate")
+        return IncrementalExecutionResult(ok=False, state=state, issues=[issue], summary={"issue_codes": [issue.code]}, plan_loop_outcome={"status": "blocked", "detail": issue.message, "additional_llm_calls_used": 0})
+    supported_controlled = {PlanGateId.FACTS, PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT}
     unsupported_controlled = [gate for gate, enabled in policy.gate_enabled.items() if enabled and gate not in supported_controlled]
     if policy.mode is PlanLoopMode.CONTROLLED and unsupported_controlled:
         issue = IncrementalExecutionIssue(
             code="planning.closed_loop.gate_not_implemented", severity="error",
-            message="controlled mode currently implements only facts and placement gates",
+            message="controlled mode currently implements only facts, material_universe and placement gates",
         )
         state.add_event(
             event_type="planning.closed_loop.controlled_not_implemented",
@@ -973,12 +977,16 @@ def run_incremental_planning(
     # Only controlled Placement Gate gets a barrier.  The historical off and
     # advisory orders must remain byte-for-byte behaviourally identical.
     placement_controlled = policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.PLACEMENT, False)
-    if placement_controlled and task_order is None:
-        placement_types = {"localized_insert_profiles", "base_path_axial_profiles", "pin_map", "assembly_catalog", "core_layout"}
+    material_universe_controlled = policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.MATERIAL_UNIVERSE, False)
+    if (placement_controlled or material_universe_controlled) and task_order is None:
+        # Patches that depend on Materials/Universes must wait until the
+        # Material-Universe Gate is accepted.
+        mu_types = {"localized_insert_profiles", "base_path_axial_profiles", "pin_map", "assembly_catalog", "axial_layers", "axial_overlays", "core_layout"} if material_universe_controlled else set()
+        placement_types = {"localized_insert_profiles", "base_path_axial_profiles", "pin_map", "assembly_catalog", "core_layout"} if placement_controlled else set()
         early = [item for item in order if item in {"facts", "materials", "universes"}]
-        placement = [item for item in order if item in placement_types]
-        late = [item for item in order if item not in set(early) | set(placement)]
-        order = early + placement + late
+        gated = [item for item in order if item in (mu_types | placement_types)]
+        late = [item for item in order if item not in set(early) | set(gated)]
+        order = early + gated + late
     required = required_patch_types_for_state(state)
     advisory_enabled = policy.mode is PlanLoopMode.ADVISORY
     artifact_writer = PlanLoopArtifactWriter(plan_loop_output_dir, policy.artifact_subdir)
@@ -1104,6 +1112,52 @@ def run_incremental_planning(
 
     def _facts_stage():
         return state.plan_loop_stages.get("plan_gate_facts")
+
+    def _require_accepted_facts_gate(*, next_patch_type: str | None = None) -> IncrementalExecutionIssue | None:
+        """Prevent a controlled run from resuming below a terminal Facts gate.
+
+        A graph retry restores valid envelopes from ``PlanBuildState``.  Merely
+        skipping a valid FactsPatch is unsafe when the persisted Facts stage is
+        blocked (for example because the evidence source was not fully
+        reviewable): it would let Materials and all downstream patches bypass
+        the barrier that controlled mode promises.  A pending stage is the only
+        resumable case with a valid facts envelope; run the real gate again in
+        that case.  Terminal stages are never transitioned implicitly.
+        """
+        if (
+            policy.mode is not PlanLoopMode.CONTROLLED
+            or not policy.gate_enabled.get(PlanGateId.FACTS, False)
+            or next_patch_type == "facts"
+        ):
+            return None
+        stage = _facts_stage()
+        if stage is not None and stage.status is PlanStageStatus.ACCEPTED:
+            return None
+        if (
+            stage is not None
+            and stage.status is PlanStageStatus.PENDING
+            and _has_valid_patch(state, "facts")
+        ):
+            replay_issue = _run_facts_gate()
+            if replay_issue is not None:
+                return replay_issue
+            if stage.status is PlanStageStatus.ACCEPTED:
+                return None
+
+        if stage is not None and stage.status is PlanStageStatus.AWAITING_HUMAN:
+            return IncrementalExecutionIssue(
+                code="planning.facts_awaiting_human",
+                severity="error",
+                message="controlled planning is awaiting a Facts Gate human confirmation",
+                patch_type="facts",
+            )
+        status = stage.status.value if stage is not None else "uninitialized"
+        return IncrementalExecutionIssue(
+            code="planning.facts_gate_not_accepted",
+            severity="error",
+            message=f"controlled planning requires an accepted Facts Gate before {next_patch_type or 'assembly'} (current status={status})",
+            patch_type="facts",
+        )
 
     def _run_facts_gate() -> IncrementalExecutionIssue | None:
         if policy.mode is PlanLoopMode.OFF:
@@ -1483,6 +1537,140 @@ def run_incremental_planning(
     def _placement_stage():
         return state.plan_loop_stages.get("plan_gate_placement")
 
+    def _material_universe_stage():
+        return state.plan_loop_stages.get("plan_gate_material_universe")
+
+    def _run_material_universe_gate(
+        *, finalize_non_applicable: bool = False,
+    ) -> IncrementalExecutionIssue | None:
+        """Run the Material-Universe Gate once Materials and Universes are valid."""
+        if policy.mode is PlanLoopMode.OFF or not policy.gate_enabled.get(PlanGateId.MATERIAL_UNIVERSE, False):
+            return None
+        if policy.material_universe_review_mode == "off":
+            return None
+        from .closed_loop.material_universe_evidence import (
+            build_material_universe_evidence_pack,
+            material_universe_gate_applicable,
+            material_universe_gate_ready,
+        )
+        from .closed_loop.material_universe_preflight import run_material_universe_preflight
+        from .closed_loop.material_universe_reviewer import run_material_universe_review
+
+        stage = _material_universe_stage()
+        if stage is None:
+            return None
+        # Controlled barrier: Facts must be accepted first.
+        if policy.mode is PlanLoopMode.CONTROLLED:
+            facts_stage = _facts_stage()
+            if facts_stage is None or facts_stage.status is not PlanStageStatus.ACCEPTED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.material_universe_requires_accepted_facts", severity="error", message="controlled material-universe gate requires accepted Facts Gate", patch_type="materials")
+        applicable = material_universe_gate_applicable(state)
+        state.add_event("planning.material_universe_gate_applicability_checked", "material-universe gate applicability checked", {"applicable": applicable})
+        if not applicable:
+            if finalize_non_applicable and stage.status is PlanStageStatus.PENDING:
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+                stage.metadata["reason"] = "not_applicable"
+                state.add_event("planning.material_universe_gate_not_applicable", "material-universe gate not applicable for this task plan", {})
+            return None
+        # Reopen a stale not_applicable checkpoint if inputs became applicable.
+        if stage.status is PlanStageStatus.SKIPPED and stage.metadata.get("reason") == "not_applicable":
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            stage.metadata.pop("reason", None)
+            state.add_event("planning.material_universe_gate_reopened", "stale not_applicable material-universe stage reopened", {})
+        if not material_universe_gate_ready(state):
+            return None
+        # Skip if already accepted with same input hash.
+        input_hash = material_universe_gate_input_hash(state, policy=policy)
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") == input_hash:
+            return None
+        # Input hash changed → reopen accepted gate.
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") != input_hash:
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event("planning.material_universe_input_hash_changed", "material-universe accepted input hash changed; gate reopened", {"old": stage.metadata.get("accepted_input_hash"), "new": input_hash})
+        # Build species report (reuse the executor's resolver if available).
+        species_report: dict[str, Any] = {}
+        materials_env = next((item for item in state.patches.values() if item.patch_type == "materials" and item.status == "valid"), None)
+        if materials_env is not None:
+            try:
+                from openmc_agent.material_species import resolve_material_species_report
+                species_report = resolve_material_species_report(materials_env.content) or {}
+            except Exception:
+                species_report = {}
+        state.add_event("planning.material_universe_preflight_started", "material-universe deterministic preflight started", {})
+        preflight = run_material_universe_preflight(state=state, policy=policy, species_report=species_report)
+        artifact_writer._write("material_universe_preflight.json", preflight)
+        artifact_writer._write("material_universe_binding_view.json", preflight.binding_view)
+        artifact_writer._write("material_universe_contract_matrix.json", preflight.binding_view and build_material_universe_evidence_pack(state=state, policy=policy, species_report=species_report, deterministic_issues=preflight.issues).contract_matrix)
+        state.add_event("planning.material_universe_preflight_completed", "material-universe deterministic preflight completed", {"issue_count": len(preflight.issues), "blocking": sum(1 for i in preflight.issues if i.get("severity") == "error")})
+        # Build evidence pack (needed for review even in advisory).
+        pack = build_material_universe_evidence_pack(state=state, policy=policy, species_report=species_report, deterministic_issues=preflight.issues)
+        artifact_writer._write("material_universe_evidence_pack.json", pack)
+        # In advisory mode, run the critic if a reviewer is available; never mutate.
+        if policy.mode is PlanLoopMode.ADVISORY:
+            if plan_reviewer_client is not None:
+                transition_stage(stage, PlanStageStatus.REVIEWING)
+                review = run_material_universe_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+                state.facts_review_history.append({"material_universe_review": review.model_dump(mode="json")})
+                if review.coverage_complete and not review.failure_code:
+                    transition_stage(stage, PlanStageStatus.REVIEWED)
+                    state.add_event("planning.material_universe_gate_reviewed", "material-universe gate reviewed without mutation", {})
+                else:
+                    transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                    state.add_event("planning.material_universe_review_failed", "material-universe advisory review failed", {"failure_code": review.failure_code})
+            else:
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+                stage.metadata["review_not_implemented"] = True
+            return None
+        # Controlled mode.
+        transition_stage(stage, PlanStageStatus.REVIEWING)
+        stage.review_count += 1
+        # If deterministic preflight has no blocking issues and no reviewer, accept.
+        all_findings: list[Any] = []
+        if plan_reviewer_client is not None:
+            review = run_material_universe_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+            all_findings = list(review.findings)
+            state.facts_review_history.append({"material_universe_review": review.model_dump(mode="json")})
+            if review.failure_code and not review.coverage_complete:
+                transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                state.add_event("planning.material_universe_review_failed", "material-universe review failed coverage", {"failure_code": review.failure_code})
+                return IncrementalExecutionIssue(code="planning.material_universe_review_failed", severity="error", message=f"material-universe review failed: {review.failure_code}", patch_type="materials")
+        # Combine deterministic + critic findings.
+        from .closed_loop.models import PlanFindingSeverity as _Sev, PlanReviewFinding as _Finding
+        det_findings = [_Finding(gate_id=PlanGateId.MATERIAL_UNIVERSE, code=str(item["code"]), severity=_Sev(item.get("severity", "error")), category="cross_patch_mismatch", message=str(item.get("message", "")), confidence=1.0, affected_patch_types=[item.get("owner_patch_type", "materials")] if item.get("owner_patch_type") else ["materials", "universes"]) for item in preflight.issues]
+        all_findings = list({f.finding_id: f for f in (det_findings + all_findings)}.values())
+        for finding in all_findings:
+            state.plan_review_findings[finding.finding_id] = finding
+            if finding.finding_id not in stage.finding_ids:
+                stage.finding_ids.append(finding.finding_id)
+        error_findings = [f for f in all_findings if f.severity is _Sev.ERROR]
+        if not error_findings:
+            transition_stage(stage, PlanStageStatus.ACCEPTED)
+            stage.metadata["accepted_input_hash"] = input_hash
+            state.add_event("planning.material_universe_gate_accepted", "material-universe gate accepted", {"input_hash": input_hash})
+            return None
+        # Route blocking findings through Phase-3B retry.
+        human_required = any(f.requires_human for f in error_findings)
+        if human_required and policy.enable_human_gate:
+            transition_stage(stage, PlanStageStatus.AWAITING_HUMAN)
+            state.add_event("planning.material_universe_human_question_created", "material-universe ambiguity requires typed confirmation", {})
+            return IncrementalExecutionIssue(code="planning.material_universe_awaiting_human", severity="error", message="material-universe gate awaiting human confirmation", patch_type="materials")
+        # Build typed retry requests for blocking findings (upstream priority).
+        from .closed_loop.retry_controller import normalize_retry_request
+        from .closed_loop.retry_models import RetryTriggerOrigin
+        for finding in error_findings:
+            typed = normalize_retry_request(
+                {"code": finding.code, "issue_codes": [finding.code], "required_ids": finding.metadata.get("required_ids", []), "reason": finding.message, "material_id": finding.metadata.get("material_id"), "universe_id": finding.metadata.get("universe_id")},
+                state=state, origin=RetryTriggerOrigin.MATERIAL_UNIVERSE_GATE,
+            )
+            if typed is not None:
+                artifact_writer._write(f"material_universe_retry_request_{typed.request_id[:12]}.json", typed)
+                state.add_event("planning.material_universe_retry_requested", "material-universe blocking finding routed to Phase-3B retry", {"request_id": typed.request_id, "owner_patch_types": typed.owner_patch_types})
+        transition_stage(stage, PlanStageStatus.BLOCKED)
+        return IncrementalExecutionIssue(code="planning.material_universe_gate_blocked", severity="error", message=f"material-universe gate blocked by {len(error_findings)} finding(s)", patch_type="materials")
+
     def _run_placement_gate(
         *, finalize_non_applicable: bool = False,
     ) -> IncrementalExecutionIssue | None:
@@ -1674,17 +1862,45 @@ def run_incremental_planning(
             state.add_event("planning.placement_human_question_created", "placement ambiguity requires typed confirmation", {"input_hash": pack.input_hash})
             return IncrementalExecutionIssue(code="planning.placement_awaiting_human", severity="error", message="placement gate awaiting human confirmation", patch_type="placement")
         if action is PlanReviewAction.RETRY_DEPENDENCY:
-            request = {"request_id": f"placement_dependency_{len(state.placement_dependency_requests):03d}", "gate_id": "placement", "dependency_patch_type": placement_issue_owner(dependency["code"]).get("dependency_patch_type", "universes"), "issue_codes": [dependency["code"]], "finding_ids": [item.finding_id for item in all_findings], "reason": "placement gate dependency requires a prior gate", "downstream_patch_types": ["localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"]}
+            expected_ids = dependency.get("expected")
+            if isinstance(expected_ids, str):
+                expected_ids = [expected_ids]
+            elif not isinstance(expected_ids, list):
+                actual_id = dependency.get("actual")
+                expected_ids = [actual_id] if isinstance(actual_id, str) else []
+            expected_ids = [str(item) for item in expected_ids if item]
+            request = {
+                "request_id": f"placement_dependency_{len(state.placement_dependency_requests):03d}",
+                "gate_id": "placement",
+                "dependency_patch_type": placement_issue_owner(dependency["code"]).get("dependency_patch_type", "universes"),
+                "issue_codes": [dependency["code"]],
+                "finding_ids": [item.finding_id for item in all_findings],
+                "required_ids": expected_ids,
+                "requirement_id": dependency.get("requirement_id"),
+                "gate_input_hash": pack.input_hash,
+                "reason": "placement gate dependency requires a prior gate",
+                "downstream_patch_types": ["localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"],
+            }
             state.placement_dependency_requests.append(request)
             artifact_writer._write("placement_dependency_retry_request.json", request)
             # Phase-3 turns the legacy Placement request into a typed owner
             # retry.  Advisory remains read-only; controlled mode regenerates
             # just the Python-selected dependency in a clone before commit.
-            from .closed_loop.retry_controller import execute_plan_retry_loop, normalize_retry_request
+            from .closed_loop.retry_controller import execute_plan_retry_loop
             from .closed_loop.retry_models import RetryTriggerOrigin
 
-            typed_request = normalize_retry_request(
-                request, state=state, origin=RetryTriggerOrigin.PLACEMENT_GATE,
+            from .closed_loop.retry_request_builders import build_retry_request_from_placement_dependency
+
+            typed_request = build_retry_request_from_placement_dependency(
+                dependency_patch_type=request["dependency_patch_type"],
+                issue_codes=request["issue_codes"],
+                finding_ids=request["finding_ids"],
+                required_ids=request["required_ids"],
+                reason=request["reason"],
+                state=state,
+                downstream_patch_types=request["downstream_patch_types"],
+                gate_input_hash=pack.input_hash,
+                consumer_ids=[str(request["requirement_id"])] if request.get("requirement_id") else [],
             )
             if typed_request is None:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
@@ -1846,6 +2062,28 @@ def run_incremental_planning(
         return IncrementalExecutionIssue(code="planning.placement_gate_blocked", severity="error", message=f"placement gate action={action.value}; revision is not available for this candidate", patch_type="placement")
 
     for patch_type in order:
+        facts_barrier_issue = _require_accepted_facts_gate(next_patch_type=patch_type)
+        if facts_barrier_issue is not None:
+            issues.append(facts_barrier_issue)
+            state.add_event(
+                EVENT_INCREMENTAL_EXECUTION_FAILED,
+                "controlled Facts Gate blocked downstream patch generation",
+                {"issue_code": facts_barrier_issue.code, "next_patch_type": patch_type},
+            )
+            status = "awaiting_human" if facts_barrier_issue.code == "planning.facts_awaiting_human" else "blocked"
+            return IncrementalExecutionResult(
+                ok=False,
+                state=state,
+                issues=issues,
+                summary=_build_failure_summary("facts", [facts_barrier_issue.code], 0),
+                plan_loop_outcome={
+                    "status": status,
+                    "active_gate_id": "facts",
+                    "active_stage_id": "plan_gate_facts",
+                    "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                    "detail": facts_barrier_issue.message,
+                },
+            )
         # Skip if already valid.
         if _has_valid_patch(state, patch_type):
             state.add_event(
@@ -2023,6 +2261,25 @@ def run_incremental_planning(
                     order[:] = list(state.canonical_task_plan.ordered_patch_types)
                     required[:] = list(state.canonical_task_plan.required_patch_types)
                     state.add_event("planning.task_plan_reconciled", "provisional task order replaced by canonical task plan", {"plan_hash": state.canonical_task_plan.plan_hash, "order": order})
+            # Phase-4: Material-Universe Gate runs after Materials and
+            # Universes become valid, before any downstream patch that
+            # consumes them.
+            material_universe_gate_issue = _run_material_universe_gate()
+            if material_universe_gate_issue is not None:
+                issues.append(material_universe_gate_issue)
+                state.add_event(
+                    event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
+                    message="material-universe gate blocked downstream patch generation",
+                    data={"issue_code": material_universe_gate_issue.code},
+                )
+                return IncrementalExecutionResult(
+                    ok=False, state=state, issues=issues,
+                    summary=_build_failure_summary("materials", [material_universe_gate_issue.code], len(result.attempts)),
+                    plan_loop_outcome={
+                        "status": "blocked", "active_gate_id": "material_universe", "active_stage_id": "plan_gate_material_universe",
+                        "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": material_universe_gate_issue.message,
+                    },
+                )
             # Placement is evaluated at the first point all of its scoped
             # inputs become valid.  In controlled mode the reordered task list
             # makes this a barrier before axial patch generation; advisory
@@ -2268,12 +2525,23 @@ def run_incremental_planning(
     # Resume paths may skip every already-valid patch, so give the Placement
     # Gate one final opportunity before assembly.  The input-hash guard makes
     # this idempotent.
-    facts_stage_for_final = _facts_stage()
-    if facts_stage_for_final is not None and facts_stage_for_final.status is PlanStageStatus.PENDING and _has_valid_patch(state, "facts"):
-        facts_gate_issue = _run_facts_gate()
-        if facts_gate_issue is not None:
-            issues.append(facts_gate_issue)
-            return IncrementalExecutionResult(ok=False, state=state, issues=issues, summary=_build_failure_summary("facts", [facts_gate_issue.code], 0), plan_loop_outcome={"status": "blocked", "active_gate_id": "facts", "active_stage_id": "plan_gate_facts", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": facts_gate_issue.message})
+    facts_gate_issue = _require_accepted_facts_gate()
+    if facts_gate_issue is not None:
+        issues.append(facts_gate_issue)
+        status = "awaiting_human" if facts_gate_issue.code == "planning.facts_awaiting_human" else "blocked"
+        return IncrementalExecutionResult(
+            ok=False,
+            state=state,
+            issues=issues,
+            summary=_build_failure_summary("facts", [facts_gate_issue.code], 0),
+            plan_loop_outcome={
+                "status": status,
+                "active_gate_id": "facts",
+                "active_stage_id": "plan_gate_facts",
+                "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                "detail": facts_gate_issue.message,
+            },
+        )
     placement_gate_issue = _run_placement_gate(finalize_non_applicable=True)
     if placement_gate_issue is not None:
         issues.append(placement_gate_issue)
