@@ -26,6 +26,8 @@ class FactsReviewResult(AgentBaseModel):
     schema_retries: int = 0
     error: str = ""
     raw_outputs: list[str] = Field(default_factory=list)
+    call_metadata: list[dict[str, Any]] = Field(default_factory=list)
+    failure_code: str = ""
 
 
 def _call(client: Any, prompt: str) -> str | dict[str, Any]:
@@ -35,6 +37,50 @@ def _call(client: Any, prompt: str) -> str | dict[str, Any]:
             json_schema=FactsReviewModelOutput.model_json_schema(), temperature=0,
         )
     return client(prompt)
+
+
+def _parse_json_payload(raw: str | dict[str, Any]) -> dict[str, Any]:
+    """Recover a single JSON object from a provider which ignored JSON mode.
+
+    We never treat prose as a finding.  The scan is intentionally conservative:
+    it accepts a complete object only, preferring the final object because
+    reasoning models commonly prepend an explanatory draft.
+    """
+    if isinstance(raw, dict):
+        return raw
+    text = raw.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            candidates.append(parsed)
+    if not candidates:
+        raise ValueError("facts_review.output_not_json")
+    # A top-level review contract is more specific than nested JSON objects
+    # such as ``coverage_summary``.  Prefer it even when it is followed by
+    # nested objects in the same response.
+    return next((item for item in reversed(candidates) if "review_status" in item), candidates[-1])
+
+
+def _output_mode_metadata(client: Any) -> dict[str, Any]:
+    return {
+        "requested_output_mode": getattr(client, "last_output_mode_requested", "protocol_or_plain_prompt"),
+        "actual_output_mode": getattr(client, "last_output_mode_used", "protocol_or_plain_prompt"),
+        "structured_fallback_used": bool(getattr(client, "last_output_fallback_used", False)),
+        "fallback_reasons": list(getattr(client, "last_output_fallback_reasons", [])),
+    }
 
 
 def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[list[PlanReviewFinding], list[dict[str, Any]]]:
@@ -84,12 +130,22 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
         raw: Any = None
         for attempt in range(2):
             try:
-                raw = _call(reviewer_client, build_facts_review_prompt(pack) if attempt == 0 else build_facts_review_schema_retry_prompt("schema_invalid"))
+                if state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
+                    result.error = "facts_review.budget_exhausted"
+                    result.failure_code = "facts_review.budget_exhausted"
+                    return result
+                prompt = (
+                    build_facts_review_prompt(pack)
+                    if attempt == 0
+                    else build_facts_review_schema_retry_prompt(pack, "facts_review.schema_invalid", raw if isinstance(raw, str) else None)
+                )
+                raw = _call(reviewer_client, prompt)
                 if isinstance(raw, str):
                     result.raw_outputs.append(raw)
                 result.reviewer_calls += 1
                 state.plan_loop_additional_llm_calls += 1
-                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                result.call_metadata.append({"pack_id": pack.evidence_pack_id, "attempt": attempt + 1, **_output_mode_metadata(reviewer_client)})
+                parsed = _parse_json_payload(raw)
                 output = FactsReviewModelOutput.model_validate(parsed)
                 findings, rejected = _normalize(output, pack)
                 all_findings.extend(findings)
@@ -101,11 +157,14 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
                     result.schema_retries += 1
                     continue
                 result.error = f"facts_review.schema_invalid: {exc}"
+                result.failure_code = "facts_review.schema_invalid"
                 return result
     result.findings = list({finding.finding_id: finding for finding in all_findings}.values())
     result.rejected = all_rejected
     expected = {item.evidence_hash for pack in evidence_packs for item in pack.source_excerpts}
     reviewed = {key for output in result.outputs for key in output["output"].get("reviewed_evidence_hashes", [])}
     result.coverage_complete = bool(expected) and expected.issubset(reviewed)
+    if not result.coverage_complete:
+        result.failure_code = "facts_review.coverage_incomplete"
     result.ok = not result.error
     return result

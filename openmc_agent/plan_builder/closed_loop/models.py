@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.2"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.3"
 
 
 class _TextEnum(str, Enum):
@@ -43,6 +43,9 @@ class PlanStageStatus(_TextEnum):
     VALIDATING = "validating"
     REVIEWING = "reviewing"
     REVIEWED = "reviewed"
+    # A reviewer was invoked but no trustworthy, coverage-complete review was
+    # produced.  This is deliberately distinct from REVIEWED.
+    REVIEW_FAILED = "review_failed"
     REPAIRING = "repairing"
     AWAITING_HUMAN = "awaiting_human"
     ACCEPTED = "accepted"
@@ -365,7 +368,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2

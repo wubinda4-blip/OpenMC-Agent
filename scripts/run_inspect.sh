@@ -38,6 +38,8 @@ MAX_PLAN_ADDITIONAL_LLM_CALLS=""
 PLAN_REVIEWER_MODEL=""
 PLAN_REPAIR_MODEL=""
 PLAN_HUMAN_MODE="off"
+FACTS_REVIEW_CHUNK_CHARS=""
+MAX_FACTS_REVIEW_CHUNKS=""
 
 usage() {
   cat <<'EOF'
@@ -100,6 +102,11 @@ Options:
   --max-plan-human-rounds N
   --max-plan-no-progress-rounds N
   --max-plan-additional-llm-calls N
+  --plan-reviewer-model MODEL
+  --plan-repair-model MODEL
+  --facts-review-chunk-chars N
+  --max-facts-review-chunks N
+  --plan-human-mode MODE     off or ambiguity_only
   -h, --help              Show this help.
 
 Providers:
@@ -270,6 +277,14 @@ while [[ $# -gt 0 ]]; do
       PLAN_HUMAN_MODE="${2:-}"
       shift 2
       ;;
+    --facts-review-chunk-chars)
+      FACTS_REVIEW_CHUNK_CHARS="${2:-}"
+      shift 2
+      ;;
+    --max-facts-review-chunks)
+      MAX_FACTS_REVIEW_CHUNKS="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1" >&2
       usage >&2
@@ -394,6 +409,8 @@ cmd+=(--plan-loop-mode "$PLAN_LOOP_MODE")
 [[ -n "$PLAN_REVIEWER_MODEL" ]] && cmd+=(--plan-reviewer-model "$PLAN_REVIEWER_MODEL")
 [[ -n "$PLAN_REPAIR_MODEL" ]] && cmd+=(--plan-repair-model "$PLAN_REPAIR_MODEL")
 cmd+=(--plan-human-mode "$PLAN_HUMAN_MODE")
+[[ -n "$FACTS_REVIEW_CHUNK_CHARS" ]] && cmd+=(--facts-review-chunk-chars "$FACTS_REVIEW_CHUNK_CHARS")
+[[ -n "$MAX_FACTS_REVIEW_CHUNKS" ]] && cmd+=(--max-facts-review-chunks "$MAX_FACTS_REVIEW_CHUNKS")
 [[ -n "$MAX_PLAN_REVIEW_ROUNDS" ]] && cmd+=(--max-plan-review-rounds "$MAX_PLAN_REVIEW_ROUNDS")
 [[ -n "$MAX_PLAN_REPAIR_ROUNDS" ]] && cmd+=(--max-plan-repair-rounds "$MAX_PLAN_REPAIR_ROUNDS")
 [[ -n "$MAX_PLAN_HUMAN_ROUNDS" ]] && cmd+=(--max-plan-human-rounds "$MAX_PLAN_HUMAN_ROUNDS")

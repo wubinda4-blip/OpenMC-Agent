@@ -206,6 +206,13 @@ class GraphState(TypedDict, total=False):
     plan_loop_policy: dict[str, Any]
     plan_loop_outcome: dict[str, Any]
     plan_loop_artifacts: list[str]
+    # Facts-gate human confirmation is intentionally separate from the older
+    # capability-expert free-text protocol.
+    plan_human_questions: list[dict[str, Any]]
+    plan_human_answers: dict[str, dict[str, Any]]
+    plan_awaiting_human: bool
+    plan_resume_requested: bool
+    plan_human_interactive: bool
     incremental_regeneration_pending: bool
     incremental_patch_repair_accepted: bool
     use_incremental_executor: bool
@@ -454,6 +461,8 @@ def build_plan_graph(
         max_no_progress=run_supervisor_max_no_progress,
     ))
     graph.add_node("ask_expert", _ask_expert)
+    graph.add_node("ask_plan_expert", _ask_plan_expert)
+    graph.add_node("resume_plan_closed_loop", _resume_plan_closed_loop)
     graph.add_node("classify_expert_feedback", _classify_expert_feedback)
     graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
     graph.add_node("render_plan_script", _render_plan_script)
@@ -525,7 +534,15 @@ def build_plan_graph(
     graph.add_edge("receive_requirement", "retrieve_openmc_docs")
     graph.add_edge("retrieve_openmc_docs", "select_few_shots")
     graph.add_edge("select_few_shots", "generate_plan")
-    graph.add_edge("generate_plan", "validate_plan")
+    graph.add_conditional_edges(
+        "generate_plan", _plan_generation_router,
+        {"ask_plan_expert": "ask_plan_expert", "validate": "validate_plan"},
+    )
+    graph.add_conditional_edges(
+        "ask_plan_expert", _plan_human_router,
+        {"resume": "resume_plan_closed_loop", "stop": "save_record"},
+    )
+    graph.add_edge("resume_plan_closed_loop", "generate_plan")
     graph.add_conditional_edges(
         "validate_plan",
         _make_plan_validation_router(max_retries),
@@ -1610,6 +1627,10 @@ def _run_incremental_plan_generation(
         "plan_loop_policy": build_state.plan_loop_policy,
         "plan_loop_outcome": exec_result.plan_loop_outcome or {},
         "plan_loop_artifacts": list(build_state.plan_loop_artifacts),
+        "plan_human_questions": [question.model_dump(mode="json") for question in build_state.plan_human_questions.values()],
+        "plan_human_answers": {key: answer.model_dump(mode="json") for key, answer in build_state.plan_human_answers.items()},
+        "plan_awaiting_human": any(stage.status.value == "awaiting_human" for stage in build_state.plan_loop_stages.values()),
+        "plan_resume_requested": False,
         "incremental_regeneration_pending": False,
         "plan_artifacts": list(state.get("plan_artifacts", [])) + inc_artifact_paths,
     }
@@ -3813,6 +3834,80 @@ def _make_assess_plan_capability_node(max_retries: int):
         return updates
 
     return _assess_plan_capability
+
+
+def _plan_generation_router(state: GraphState) -> str:
+    """Route only the typed Facts Gate wait state into its own interrupt."""
+    build_state = state.get("plan_build_state") or {}
+    stages = build_state.get("plan_loop_stages", {}) if isinstance(build_state, dict) else {}
+    facts_stage = stages.get("plan_gate_facts", {}) if isinstance(stages, dict) else {}
+    if isinstance(facts_stage, dict) and facts_stage.get("status") == "awaiting_human":
+        return "ask_plan_expert"
+    return "validate"
+
+
+def _plan_human_router(state: GraphState) -> str:
+    return "resume" if state.get("plan_resume_requested") else "stop"
+
+
+def _ask_plan_expert(state: GraphState) -> GraphState:
+    """Issue a typed Facts-only interrupt without touching expert_feedback."""
+    build_state = state.get("plan_build_state") or {}
+    raw_questions = build_state.get("plan_human_questions", {}) if isinstance(build_state, dict) else {}
+    questions = list(raw_questions.values()) if isinstance(raw_questions, dict) else []
+    unanswered = [q for q in questions if isinstance(q, dict) and q.get("question_id") not in state.get("plan_human_answers", {})]
+    if not unanswered:
+        return {"plan_human_questions": questions, "plan_awaiting_human": False, "plan_resume_requested": False}
+    if not state.get("plan_human_interactive", False):
+        return {"plan_human_questions": unanswered, "plan_awaiting_human": True, "plan_resume_requested": False}
+    payload = interrupt({
+        "kind": "plan_facts_human_confirmation",
+        "questions": unanswered,
+        "instruction": "Submit a typed HumanPlanAnswer for each question_id; do not provide free-text patch JSON.",
+    })
+    answer_payload = payload.get("answers", payload) if isinstance(payload, dict) else {}
+    if not isinstance(answer_payload, dict):
+        return {"plan_human_questions": unanswered, "plan_awaiting_human": True, "plan_resume_requested": False}
+    return {
+        "plan_human_questions": unanswered,
+        "plan_human_answers": answer_payload,
+        "plan_awaiting_human": False,
+        "plan_resume_requested": True,
+    }
+
+
+def _resume_plan_closed_loop(state: GraphState) -> GraphState:
+    """Persist validated typed answers into PlanBuildState before regeneration."""
+    from openmc_agent.plan_builder.closed_loop.models import HumanPlanAnswer
+    from openmc_agent.plan_builder.state import PlanBuildState
+
+    try:
+        build_state = PlanBuildState.model_validate(state.get("plan_build_state") or {})
+    except Exception:
+        return {"plan_resume_requested": False, "plan_awaiting_human": True}
+    answers = state.get("plan_human_answers", {})
+    if not isinstance(answers, dict):
+        return {"plan_resume_requested": False, "plan_awaiting_human": True}
+    invalid: list[str] = []
+    for question_id, raw in answers.items():
+        try:
+            answer = HumanPlanAnswer.model_validate({**raw, "question_id": question_id} if isinstance(raw, dict) else raw)
+            question = build_state.plan_human_questions.get(question_id)
+            if question is None:
+                raise ValueError("unknown question")
+            option_ids = {option.option_id for option in question.options}
+            if answer.selected_option_id is not None and answer.selected_option_id not in option_ids:
+                raise ValueError("invalid option")
+            build_state.plan_human_answers[question_id] = answer
+        except Exception:
+            invalid.append(str(question_id))
+    if invalid:
+        return {"plan_build_state": build_state.model_dump(mode="json"), "plan_awaiting_human": True, "plan_resume_requested": False}
+    return {
+        "plan_build_state": build_state.model_dump(mode="json"),
+        "plan_awaiting_human": False,
+        "plan_resume_requested": False,
+    }
 
 
 def _ask_expert(state: GraphState) -> GraphState:

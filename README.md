@@ -50,7 +50,7 @@ receive_requirement
 
 Plan closed-loop Phase 0 提供了可持久化 gate/stage 协议、预算和 JSON artifacts；`off` 始终保持既有工作流行为。
 
-Plan closed-loop Phase 1：Facts Gate 已可用。Facts Proposer、独立 Facts Evidence Critic 与（后续按 finding 触发的）Facts Revision Agent 是分离角色，即使模型名相同也独立计数。`advisory` 真实执行 Critic 但不修改 FactsPatch 或 Plan；`controlled` 仅覆盖 Facts Gate，须经 Python action policy 批准后才生成下游 patch。Placement Gate、通用 executable retry loop 与 LLM Supervisor 尚未实现。
+Plan closed-loop Phase 1B：Facts Gate 的 structured critic I/O、事务式 Facts revision 与 typed human resume 已加固。Facts Proposer、独立 Facts Evidence Critic 与 Facts Revision Agent 是分离角色，即使模型名相同也独立计数。`advisory` 真实执行 Critic 但不修改 FactsPatch 或 Plan；`controlled` 仅覆盖 Facts Gate，须经 Python action policy 批准后才生成下游 patch。Placement Gate、通用任意-patch executable retry loop 与 LLM Supervisor 尚未实现。
 
 ### 渲染能力分级
 

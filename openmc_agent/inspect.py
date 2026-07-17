@@ -443,6 +443,7 @@ def _inspect_plan_requirement(
         "expert_feedback": expert_feedback,
         "max_expert_rounds": max_expert_rounds if interactive_feedback else 0,
         "verbose": verbose,
+        "plan_human_interactive": bool(interactive_feedback and plan_human_mode == "ambiguity_only"),
     }
     config = (
         {"configurable": {"thread_id": f"inspect-plan-{uuid.uuid4().hex}"}}

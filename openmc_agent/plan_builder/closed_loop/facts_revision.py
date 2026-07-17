@@ -24,6 +24,38 @@ class FactsRevisionEvaluation(AgentBaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+def _pointer_value(value: Any, pointer: str) -> Any:
+    """Resolve RFC6901 pointer without treating a nested confirmation as a
+    top-level key.  Missing values remain distinct from JSON null."""
+    current = value
+    for token in pointer.lstrip("/").split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict) and token in current:
+            current = current[token]
+        elif isinstance(current, list) and token.isdigit() and int(token) < len(current):
+            current = current[int(token)]
+        else:
+            return _MISSING
+    return current
+
+
+_MISSING = object()
+
+
+def _confirmed_records(confirmed_facts: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Supports the stable typed record store and the legacy namespaced map."""
+    records = confirmed_facts.get("plan_closed_loop_records", []) if isinstance(confirmed_facts, dict) else []
+    result: list[tuple[str, Any]] = []
+    for record in records if isinstance(records, list) else []:
+        if isinstance(record, dict) and isinstance(record.get("json_path"), str):
+            result.append((record["json_path"], record.get("value")))
+    facts = confirmed_facts.get("plan_closed_loop", {}).get("facts", {}) if isinstance(confirmed_facts, dict) else {}
+    if isinstance(facts, dict):
+        for path, value in facts.items():
+            result.append((path if str(path).startswith("/") else "/" + str(path), value))
+    return result
+
+
 def allowed_paths_for_findings(findings: list[PlanReviewFinding]) -> list[str]:
     paths = {"/missing_facts", "/assumptions", "/source_notes"}
     for finding in findings:
@@ -69,7 +101,7 @@ def evaluate_facts_revision(*, facts_patch: dict[str, Any], proposal: FactsRevis
         return FactsRevisionEvaluation(candidate_hash=candidate_hash, reasons=[f"facts_revision.schema_invalid: {exc}"])
     if not validation.ok:
         return FactsRevisionEvaluation(candidate_hash=candidate_hash, reasons=["facts_revision.validator_failed"])
-    for key, value in confirmed_facts.get("plan_closed_loop", {}).get("facts", {}).items() if isinstance(confirmed_facts, dict) else []:
-        if candidate.get(key) != value:
+    for path, value in _confirmed_records(confirmed_facts):
+        if _pointer_value(candidate, path) != value:
             return FactsRevisionEvaluation(candidate_hash=candidate_hash, reasons=["facts_revision.confirmed_fact_changed"])
     return FactsRevisionEvaluation(accepted=True, candidate=candidate, candidate_hash=candidate_hash)

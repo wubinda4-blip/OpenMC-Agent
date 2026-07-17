@@ -33,6 +33,19 @@ class PlanLoopArtifactWriter:
         except Exception:
             return None
 
+    def write_text(self, filename: str, value: str) -> str | None:
+        """Best-effort prompt artifact.  Prompts contain no credentials and
+        are not part of the JSON protocol artifact set."""
+        if self.root is None:
+            return None
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            path = self.root / filename
+            path.write_text(value, encoding="utf-8")
+            return str(path)
+        except Exception:
+            return None
+
     def write_plan_loop_policy(self, policy: Any) -> str | None:
         return self._write("plan_loop_policy.json", _payload(policy))
 

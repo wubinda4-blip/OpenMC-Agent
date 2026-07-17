@@ -6,6 +6,8 @@
 
 ### 2026-07-17
 
+- **P2 Plan Closed-Loop Facts Gate Phase 1B**：Facts Gate contract 升级至 0.3；新增 `review_failed`、完整 EvidencePack+schema retry、JSON-object recovery、structured-mode telemetry、review/validation/budget ledger；Facts revision 改为 clone→re-review→atomic commit，human ambiguity 改为 namespaced LangGraph interrupt/resume 并以 typed confirmed fact 驱动 facts regeneration。历史 VERA4 critic 失败已复盘为非 JSON 输出与无上下文 retry，尚未重跑真实资格 canary。验证：Facts/closed-loop/graph targeted tests。
+
 - **P2 Plan Closed-Loop Phase 0**：新增 reactor-neutral typed protocol、SHA-256 semantic fingerprints、deterministic gate/action/state-machine policy，以及持久化到 `PlanBuildState` 的独立预算和 no-progress ledger。advisory 仅写 JSON artifacts；off 不进入框架；controlled 明确 fail-closed 为未实现。
   验证：新增 closed-loop targeted tests（11 passed）；未新增 Critic/Repair/Supervisor LLM 调用或 human interrupt。边界：Facts Gate 及后续 executable repair loop 尚未实现。
 

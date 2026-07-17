@@ -952,15 +952,20 @@ def run_incremental_planning(
     from .closed_loop.artifacts import PlanLoopArtifactWriter
     from .closed_loop.controller import (
         build_advisory_outcome,
+        check_stage_budget,
         initialize_plan_loop_state,
+        record_candidate,
         record_decision,
         record_findings,
+        record_no_progress,
         transition_stage,
     )
     from .closed_loop.facts_evidence import build_facts_evidence_packs
+    from .closed_loop.facts_review_prompts import build_facts_review_prompt
     from .closed_loop.facts_reviewer import run_facts_review
     from .closed_loop.models import PlanClosedLoopPolicy, PlanGateId, PlanLoopMode, PlanReviewAction, PlanReviewDecision, PlanStageStatus
     from .closed_loop.policy import canonical_gate_order, compute_allowed_actions
+    from .closed_loop.fingerprints import compute_issue_fingerprint
 
     policy = PlanClosedLoopPolicy.model_validate(plan_loop_policy or {})
     # Advisory is explicitly useful as an observability mode.  Its default
@@ -1034,6 +1039,18 @@ def run_incremental_planning(
             "human_interrupts": 0,
             "workflow_behavior_changed": False,
         }
+        facts_stage = state.plan_loop_stages.get("plan_gate_facts")
+        facts_history = state.facts_review_history[-1] if state.facts_review_history else {}
+        summary.update({
+            "facts_review_executed": bool(state.facts_review_history),
+            "facts_stage_status": facts_stage.status.value if facts_stage else None,
+            "facts_reviewer_calls": int(facts_history.get("reviewer_calls", 0)),
+            "facts_review_schema_retries": int(facts_history.get("schema_retries", 0)),
+            "facts_review_coverage_complete": bool(facts_history.get("coverage_complete", False)),
+            "facts_revision_calls": sum(1 for item in state.facts_revision_history if "proposal" in item),
+            "confirmed_fact_count": len(state.plan_confirmed_fact_records),
+            "budget_remaining": max(0, policy.max_total_additional_llm_calls - state.plan_loop_additional_llm_calls),
+        })
         writes = [
             artifact_writer.write_plan_loop_policy(policy),
             artifact_writer.write_plan_loop_state(state),
@@ -1065,12 +1082,17 @@ def run_incremental_planning(
         from .closed_loop.facts_human import consume_facts_answer
         consumed = []
         for question_id, question in list(state.plan_human_questions.items()):
+            if any(record.question_id == question_id for record in state.plan_confirmed_fact_records.values()):
+                continue
             answer = state.plan_human_answers.get(question_id)
             if answer is None:
                 continue
             record = consume_facts_answer(question=question, answer=answer, round_index=facts_stage_for_resume.human_round_count + 1)
             state.plan_confirmed_fact_records[record.fact_id] = record
-            state.confirmed_facts.setdefault("plan_closed_loop", {}).setdefault("facts", {})[record.json_path.lstrip("/")] = record.value
+            # Keep the legacy namespaced view for old prompts while preserving
+            # the typed RFC6901 path in a replayable record list.
+            state.confirmed_facts.setdefault("plan_closed_loop", {}).setdefault("facts", {})[record.json_path] = record.value
+            state.confirmed_facts.setdefault("plan_closed_loop_records", []).append(record.model_dump(mode="json"))
             consumed.append(record)
         if consumed:
             facts_stage_for_resume.human_round_count += 1
@@ -1091,7 +1113,14 @@ def run_incremental_planning(
             return None
         if stage.status is PlanStageStatus.PROPOSING:
             transition_stage(stage, PlanStageStatus.VALIDATING)
+            stage.validation_count += 1
         transition_stage(stage, PlanStageStatus.REVIEWING)
+        stage.review_count += 1
+        budget = check_stage_budget(state, stage, policy)
+        if budget is not None:
+            transition_stage(stage, PlanStageStatus.BLOCKED)
+            state.add_event("planning.closed_loop_budget_exhausted", "facts gate budget exhausted before review", {"budget": budget})
+            return IncrementalExecutionIssue(code="planning.closed_loop.budget_exhausted", severity="error", message=f"facts gate budget exhausted: {budget}", patch_type="facts")
         state.add_event("planning.facts_gate_started", "facts evidence review gate started", {})
         facts_env = next((item for item in state.patches.values() if item.patch_type == "facts" and item.status == "valid"), None)
         if facts_env is None:
@@ -1104,6 +1133,9 @@ def run_incremental_planning(
             path = artifact_writer._write(f"facts_evidence_pack_{index:03d}.json", pack)
             if path:
                 state.plan_loop_artifacts.append(path)
+            prompt_path = artifact_writer.write_text(f"facts_review_prompt_{index:03d}.txt", build_facts_review_prompt(pack))
+            if prompt_path:
+                state.plan_loop_artifacts.append(prompt_path)
         state.add_event("planning.facts_evidence_built", "facts evidence packs built", {"pack_count": len(packs)})
         if len(requirement) > policy.max_facts_review_source_chars or any(pack.metadata.get("source_truncated") for pack in packs):
             code = "facts.review_source_too_large"
@@ -1116,7 +1148,7 @@ def run_incremental_planning(
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
                 return IncrementalExecutionIssue(code="planning.facts_reviewer_unavailable", severity="error", message="controlled facts review requires a reviewer", patch_type="facts")
-            transition_stage(stage, PlanStageStatus.REVIEWED)
+            transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
             return None
         state.add_event("planning.facts_review_started", "independent facts critic called", {"pack_count": len(packs)})
         review = run_facts_review(evidence_packs=packs, reviewer_client=plan_reviewer_client, state=state, policy=policy)
@@ -1137,7 +1169,7 @@ def run_incremental_planning(
             state.add_event("planning.facts_review_failed", review.error or "facts_review.coverage_incomplete", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
-                return IncrementalExecutionIssue(code="facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
+                return IncrementalExecutionIssue(code=review.failure_code or "facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
         review_deterministic_issues = ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
                                        if not review.ok or not review.coverage_complete else [])
         actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=review.findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
@@ -1154,8 +1186,8 @@ def run_incremental_planning(
             state.plan_loop_artifacts.append(decision_path)
         state.add_event("planning.facts_review_completed", "facts critic result normalized", {"finding_count": len(review.findings), "rejected_count": len(review.rejected)})
         if policy.mode is PlanLoopMode.ADVISORY:
-            transition_stage(stage, PlanStageStatus.REVIEWED)
-            state.add_event("planning.facts_review_advisory_completed", "facts review recorded without plan mutation", {})
+            transition_stage(stage, PlanStageStatus.REVIEWED if review.ok and review.coverage_complete else PlanStageStatus.REVIEW_FAILED)
+            state.add_event("planning.facts_review_advisory_completed", "facts review recorded without plan mutation", {"review_success": review.ok and review.coverage_complete})
             return None
         if action is PlanReviewAction.APPROVE:
             transition_stage(stage, PlanStageStatus.ACCEPTED)
@@ -1175,37 +1207,76 @@ def run_incremental_planning(
         if action is PlanReviewAction.REVISE_CURRENT_PATCH and plan_repair_client is not None:
             from .closed_loop.facts_revision import evaluate_facts_revision, normalize_facts_revision, allowed_paths_for_findings
             from .closed_loop.facts_revision_prompts import build_facts_revision_prompt
+            from .closed_loop.models import FactsRevisionProposal
             transition_stage(stage, PlanStageStatus.REPAIRING)
             stage.repair_count += 1
             state.add_event("planning.facts_revision_started", "facts-only revision started", {})
+            blocking = [item for item in review.findings if item.severity.value == "error"]
+            issue_fingerprint = compute_issue_fingerprint(
+                gate_id="facts", code="facts_review.blocking_set", affected_patch_type="facts",
+                actual=sorted(item.finding_id for item in blocking),
+            )
+            stage.issue_fingerprint = issue_fingerprint
+            if state.plan_loop_issue_attempts_by_fingerprint.get(issue_fingerprint, 0) >= policy.max_attempts_per_issue_fingerprint:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.closed_loop.issue_attempt_budget_exhausted", severity="error", message="facts revision attempt budget exhausted", patch_type="facts")
+            prompt = build_facts_revision_prompt(
+                facts_patch=facts_env.content,
+                findings=[item.model_dump(mode="json") for item in blocking],
+                evidence=[item.model_dump(mode="json") for pack in packs for item in pack.source_excerpts],
+                allowed_paths=allowed_paths_for_findings(blocking), confirmed_facts=state.confirmed_facts,
+            )
+            prompt_path = artifact_writer.write_text(f"facts_revision_prompt_{stage.repair_count - 1:03d}.txt", prompt)
+            if prompt_path:
+                state.plan_loop_artifacts.append(prompt_path)
             try:
-                raw = plan_repair_client(build_facts_revision_prompt(
-                    facts_patch=facts_env.content,
-                    findings=[item.model_dump(mode="json") for item in review.findings],
-                    evidence=[item.model_dump(mode="json") for pack in packs for item in pack.source_excerpts],
-                    allowed_paths=allowed_paths_for_findings(review.findings), confirmed_facts=state.confirmed_facts,
-                ))
+                if state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
+                    raise RuntimeError("planning.closed_loop.budget_exhausted")
+                raw = (plan_repair_client.generate_patch_json(
+                    prompt=prompt, patch_type="facts_revision",
+                    json_schema=FactsRevisionProposal.model_json_schema(), temperature=0,
+                ) if hasattr(plan_repair_client, "generate_patch_json") else plan_repair_client(prompt))
                 state.plan_loop_additional_llm_calls += 1
                 proposal = normalize_facts_revision(raw)
                 evaluation = evaluate_facts_revision(
-                    facts_patch=facts_env.content, proposal=proposal, findings=review.findings,
+                    facts_patch=facts_env.content, proposal=proposal, findings=blocking,
                     confirmed_facts=state.confirmed_facts,
-                    prior_candidate_hashes=state.plan_loop_candidate_hashes_by_fingerprint.get(stage.issue_fingerprint or "facts", []),
+                    prior_candidate_hashes=state.plan_loop_candidate_hashes_by_fingerprint.get(issue_fingerprint, []),
                 )
-                state.facts_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json")})
+                proposal_path = artifact_writer._write(f"facts_revision_proposal_{stage.repair_count - 1:03d}.json", proposal)
+                candidate_path = artifact_writer._write(f"facts_revision_candidate_{stage.repair_count - 1:03d}.json", evaluation.candidate or {})
+                evaluation_path = artifact_writer._write(f"facts_revision_evaluation_{stage.repair_count - 1:03d}.json", evaluation)
+                for path in (proposal_path, candidate_path, evaluation_path):
+                    if path:
+                        state.plan_loop_artifacts.append(path)
+                if evaluation.candidate_hash:
+                    duplicate = record_no_progress(state, stage, issue_fingerprint, evaluation.candidate_hash)
+                    if duplicate:
+                        evaluation.accepted = False
+                        evaluation.reasons.append("facts_revision.no_progress")
+                state.facts_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json"), "issue_fingerprint": issue_fingerprint})
                 if evaluation.accepted and evaluation.candidate is not None:
-                    facts_env.status = "invalid"
-                    facts_env.metadata["superseded_by_facts_revision"] = proposal.proposal_id
-                    repaired = PlanPatchEnvelope(patch_id=f"{facts_env.patch_id}_repair_{stage.repair_count}", patch_type="facts", content=evaluation.candidate, source="repair", status="valid")
-                    state.add_patch(repaired)
+                    # The candidate is still isolated.  Re-review it before
+                    # touching the durable envelope or any downstream patch.
                     transition_stage(stage, PlanStageStatus.VALIDATING)
+                    stage.validation_count += 1
                     transition_stage(stage, PlanStageStatus.REVIEWING)
-                    state.add_event("planning.facts_revision_accepted", "facts revision accepted on clone", {"proposal_id": proposal.proposal_id})
-                    # A second independent review must approve the candidate.
+                    stage.review_count += 1
                     rereview = run_facts_review(evidence_packs=build_facts_evidence_packs(requirement_text=requirement, facts_patch=evaluation.candidate, confirmed_facts=state.confirmed_facts, planning_metadata=state.metadata, policy=policy), reviewer_client=plan_reviewer_client, state=state, policy=policy)
                     if rereview.ok and rereview.coverage_complete and not any(item.severity.value == "error" for item in rereview.findings):
+                        before_path = artifact_writer._write("facts_patch_before.json", facts_env.content)
+                        after_path = artifact_writer._write("facts_patch_after.json", evaluation.candidate)
+                        for path in (before_path, after_path):
+                            if path:
+                                state.plan_loop_artifacts.append(path)
+                        state.invalidate_patch_types(_expand_patch_repair_targets(["facts"]), reason="accepted facts revision", issues=[{"code": "facts_revision.accepted", "proposal_id": proposal.proposal_id}])
+                        repaired = PlanPatchEnvelope(patch_id=f"{facts_env.patch_id}_repair_{stage.repair_count}", patch_type="facts", content=evaluation.candidate, source="repair", status="valid", metadata={"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash})
+                        state.add_patch(repaired)
+                        record_findings(state, stage, rereview.findings)
                         transition_stage(stage, PlanStageStatus.ACCEPTED)
+                        state.add_event("planning.facts_revision_accepted", "facts revision atomically committed after clone re-review", {"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash})
                         return None
+                    state.facts_revision_history.append({"proposal_id": proposal.proposal_id, "re_review": rereview.model_dump(mode="json"), "committed": False})
             except Exception as exc:
                 state.facts_revision_history.append({"error": str(exc)})
             transition_stage(stage, PlanStageStatus.BLOCKED)
@@ -1480,8 +1551,9 @@ def run_incremental_planning(
         )
         if patch_type == "facts" and policy.mode is not PlanLoopMode.OFF:
             facts_stage = _facts_stage()
-            if facts_stage is not None and facts_stage.status is PlanStageStatus.PENDING:
+            if facts_stage is not None and facts_stage.status in {PlanStageStatus.PENDING, PlanStageStatus.REPAIRING}:
                 transition_stage(facts_stage, PlanStageStatus.PROPOSING)
+                facts_stage.attempt_count += 1
 
         # Generate patch with retry. We intentionally do NOT pass max_tokens:
         # provider defaults (e.g. DeepSeek ~8192) are larger than any safe
@@ -1512,6 +1584,13 @@ def run_incremental_planning(
                     return IncrementalExecutionResult(
                         ok=False, state=state, issues=issues,
                         summary=_build_failure_summary("facts", [facts_gate_issue.code], len(result.attempts)),
+                        plan_loop_outcome={
+                            "status": "awaiting_human" if facts_gate_issue.code == "planning.facts_awaiting_human" else "blocked",
+                            "active_gate_id": "facts",
+                            "active_stage_id": "plan_gate_facts",
+                            "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                            "detail": facts_gate_issue.message,
+                        },
                     )
             # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
             _sync_benchmark_from_facts()

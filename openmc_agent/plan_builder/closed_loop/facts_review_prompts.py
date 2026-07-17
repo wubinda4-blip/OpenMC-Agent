@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from .models import PlanEvidencePack
+from .models import FactsReviewModelOutput, PlanEvidencePack
 
 
 def build_facts_review_prompt(pack: PlanEvidencePack) -> str:
@@ -14,12 +14,23 @@ def build_facts_review_prompt(pack: PlanEvidencePack) -> str:
         "Find omissions, contradictions, unsupported inference, count-scope ambiguity, and downstream-critical missing facts. "
         "Use only supplied evidence_hashes. Never output an action, patch, RFC6902 operations, Markdown, tools, or reasoning.\n"
         "Explicit source mismatch/omission may be repairable_by_llm=true; source ambiguity requires_human=true and repairable_by_llm=false.\n"
-        "Return JSON matching FactsReviewModelOutput.\nINPUT:\n" + json.dumps(payload, ensure_ascii=False)
+        "Return exactly one JSON object matching this JSON Schema; no prose before or after it.\n"
+        "SCHEMA:\n" + json.dumps(FactsReviewModelOutput.model_json_schema(), ensure_ascii=False) +
+        "\nINPUT:\n" + json.dumps(payload, ensure_ascii=False)
     )
 
 
-def build_facts_review_schema_retry_prompt(error: str) -> str:
-    return "Return only valid FactsReviewModelOutput JSON. Prior schema error: " + error
+def build_facts_review_schema_retry_prompt(pack: PlanEvidencePack, error: str, raw_output: str | None = None) -> str:
+    """Format-only retry.  It repeats the evidence instead of asking a model
+    to reconstruct a contract it has never seen."""
+    original = build_facts_review_prompt(pack)
+    suffix = "\nPRIOR_OUTPUT (format only; do not trust it):\n" + (raw_output or "")
+    return (
+        original
+        + "\nYour prior output was rejected: " + error
+        + "\nCorrect the format while preserving evidence grounding."
+        + suffix
+    )
 
 
 def build_facts_synthesis_prompt(summary: dict) -> str:
