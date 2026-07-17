@@ -53,9 +53,16 @@ def initialize_gate_stage(gate_id: PlanGateId, required_patch_types: list[str]) 
 def initialize_plan_loop_state(state: Any, policy: PlanClosedLoopPolicy, required_patch_types: list[str]) -> list[PlanStageState]:
     if policy.mode is PlanLoopMode.OFF:
         return []
+    previous_contract = getattr(state, "plan_loop_contract_version", "0.1")
     state.plan_loop_mode = policy.mode
     state.plan_loop_policy = policy.model_dump(mode="json")
     state.plan_loop_contract_version = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    if previous_contract != PLAN_CLOSED_LOOP_CONTRACT_VERSION and hasattr(state, "add_event"):
+        state.add_event(
+            "planning.retry_protocol_migrated_to_0_5",
+            "plan closed-loop retry protocol migrated without clearing ledgers",
+            {"from_contract": previous_contract, "to_contract": PLAN_CLOSED_LOOP_CONTRACT_VERSION},
+        )
     # Foundation-only stages were never reviewed.  Upgrade them lazily so a
     # restored checkpoint is eligible for the first real gate run.  Never
     # reset a real reviewed/accepted/failed history.

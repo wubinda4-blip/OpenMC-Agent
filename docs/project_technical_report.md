@@ -446,3 +446,9 @@ The CLI `scripts/run_workflow_benchmark.py` defaults to `model=fake`, `mode=plan
   density execution-readiness diagnostics; focused regression tests pass.
 - Boundaries remain unchanged: no generic retry controller and no additional
   Placement, Material–Universe, Axial, or Final Plan LLM gate is claimed.
+## 2026-07-17 — Phase 3 executable dependency retry foundation
+
+Added protocol v0.5 typed retry requests, owner routing, a single patch
+dependency graph, clone/atomic owner transaction, and resumable invalidation
+ledger.  Added reactor-neutral protocol and graph tests; no new reviewer,
+runtime repair, or monolithic fallback path was introduced.

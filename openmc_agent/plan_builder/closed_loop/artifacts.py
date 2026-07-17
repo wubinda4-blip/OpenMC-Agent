@@ -78,6 +78,17 @@ class PlanLoopArtifactWriter:
             "contract_version": PLAN_CLOSED_LOOP_CONTRACT_VERSION, **summary,
         })
 
+    def write_retry_artifact(self, filename: str, value: Any, *, text: bool = False) -> str | None:
+        """Write Phase-3 retry artifacts under a stable, namespaced folder."""
+        if self.root is None:
+            return None
+        original = self.root
+        self.root = original / "retry"
+        try:
+            return self.write_text(filename, str(value)) if text else self._write(filename, value)
+        finally:
+            self.root = original
+
 
 def write_plan_loop_policy(writer: PlanLoopArtifactWriter, policy: Any) -> str | None:
     return writer.write_plan_loop_policy(policy)

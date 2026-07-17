@@ -1,0 +1,123 @@
+"""Deterministic owner/action registry for executable retry requests."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from openmc_agent.schemas import AgentBaseModel
+
+from .models import PlanGateId
+from .retry_models import PlanRetryAction
+
+
+class RetryOwnerPolicy(AgentBaseModel):
+    owner_patch_types: list[str]
+    preferred_action: PlanRetryAction
+    fallback_action: PlanRetryAction = PlanRetryAction.FAIL_CLOSED
+    invalidated_dependents: bool = True
+    gates_to_invalidate: list[PlanGateId] = []
+    required_acceptance_checks: list[str] = []
+    requires_human_when_ambiguous: bool = True
+    max_attempts: int = 2
+    supported_modes: list[str] = ["controlled", "advisory"]
+    protected_json_paths: list[str] = ["/patch_type"]
+
+
+_FACTS_CODES = {
+    "facts.model_scope_conflicts_with_planning_features",
+    "facts.multi_assembly_contract_incomplete",
+    "facts.localized_insert_contract_missing",
+    "facts.localized_insert_profile_contract_missing",
+    "facts.control_state_contract_missing",
+    "facts.fuel_variant_contract_missing",
+    "facts.assembly_count_inconsistent",
+    "facts.core_lattice_size_inconsistent",
+    "assembly.model_scope_patch_family_conflict",
+}
+_MATERIAL_CODES = {
+    "materials.execution_density_required",
+    "assembly.unresolved_material_reference",
+    "materials.compound_in_transport_composition",
+    "materials.unsupported_compound_formula",
+    "materials.unresolved_species",
+}
+_UNIVERSE_CODES = {
+    "localized_insert.required_universe_missing",
+    "patch.pin_map.default_universe_missing",
+    "assembly_catalog.universe_missing",
+    "assembly.unresolved_universe_reference",
+    "profile.segment_universe_missing",
+    "required_fuel_universe_missing",
+}
+_TASK_PLAN_CODES = {
+    "planning.required_patch_omitted",
+    "planning.mixed_patch_family",
+    "planning.stale_canonical_task_plan",
+    "planning.task_plan_hash_mismatch",
+}
+_PLACEMENT_CODES = {
+    "localized_insert.required_placement_missing",
+    "localized_insert.required_profile_unused",
+    "localized_insert.coordinate_count_mismatch",
+    "localized_insert.coordinates_not_in_host_path",
+    "localized_insert.coordinate_duplicate",
+    "localized_insert.instrument_path_misused",
+    "localized_insert.anchor_mismatch",
+    "localized_insert.control_state_mismatch",
+    "localized_insert.core_multiplicity_mismatch",
+    "localized_insert.unexpected_assembly_scope",
+}
+
+
+def retry_owner_policy(code: str, issue: dict[str, Any] | None = None) -> RetryOwnerPolicy | None:
+    if code in _FACTS_CODES:
+        return RetryOwnerPolicy(
+            owner_patch_types=["facts"], preferred_action=PlanRetryAction.REVISE_OWNER_PATCH,
+            fallback_action=PlanRetryAction.REGENERATE_OWNER_PATCH,
+            gates_to_invalidate=[PlanGateId.FACTS, PlanGateId.PLACEMENT],
+            required_acceptance_checks=["facts_schema", "facts_consistency", "resolved_scope", "facts_critic", "canonical_task_plan"],
+        )
+    if code in _MATERIAL_CODES:
+        return RetryOwnerPolicy(
+            owner_patch_types=["materials"], preferred_action=PlanRetryAction.REVISE_OWNER_PATCH,
+            fallback_action=PlanRetryAction.REGENERATE_OWNER_PATCH,
+            gates_to_invalidate=[PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT],
+            required_acceptance_checks=["materials_schema", "material_species", "material_readiness", "fuel_variant_identity"],
+            protected_json_paths=["/patch_type", "/materials/*/material_id", "/materials/*/role", "/materials/*/fuel_enrichment"],
+        )
+    if code in _UNIVERSE_CODES:
+        return RetryOwnerPolicy(
+            owner_patch_types=["universes"], preferred_action=PlanRetryAction.REGENERATE_OWNER_PATCH,
+            gates_to_invalidate=[PlanGateId.PLACEMENT],
+            required_acceptance_checks=["universes_schema", "material_references", "required_universe_ids", "placement_preflight"],
+            protected_json_paths=["/patch_type", "/universes/*/fuel_variant_id"],
+        )
+    if code in _TASK_PLAN_CODES:
+        return RetryOwnerPolicy(
+            owner_patch_types=["planning_task_plan"], preferred_action=PlanRetryAction.RECOMPUTE_TASK_PLAN,
+            gates_to_invalidate=[PlanGateId.PLACEMENT],
+            required_acceptance_checks=["canonical_task_plan", "patch_family"],
+        )
+    if code in _PLACEMENT_CODES:
+        owner = str((issue or {}).get("owner_patch_type") or "")
+        owner_types = [owner] if owner in {"localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"} else ["assembly_catalog", "pin_map"]
+        return RetryOwnerPolicy(
+            owner_patch_types=owner_types, preferred_action=PlanRetryAction.REVISE_OWNER_PATCH,
+            fallback_action=PlanRetryAction.REGENERATE_OWNER_PATCH,
+            gates_to_invalidate=[PlanGateId.PLACEMENT],
+            required_acceptance_checks=["placement_preflight", "placement_critic", "placement_contract_coverage"],
+            protected_json_paths=["/patch_type", "/facts", "/materials", "/universes"],
+        )
+    if code.startswith("patch.axial_") or code.startswith("patch.base_path_axial_profiles"):
+        owner = str((issue or {}).get("patch_type") or "axial_overlays")
+        if owner in {"axial_layers", "axial_overlays", "base_path_axial_profiles"}:
+            return RetryOwnerPolicy(
+                owner_patch_types=[owner], preferred_action=PlanRetryAction.REGENERATE_OWNER_PATCH,
+                gates_to_invalidate=[PlanGateId.AXIAL_GEOMETRY],
+                required_acceptance_checks=["patch_schema", "patch_validation"],
+            )
+    return None
+
+
+def registered_retry_issue_codes() -> set[str]:
+    return _FACTS_CODES | _MATERIAL_CODES | _UNIVERSE_CODES | _TASK_PLAN_CODES | _PLACEMENT_CODES

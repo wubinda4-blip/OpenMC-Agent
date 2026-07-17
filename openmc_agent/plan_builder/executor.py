@@ -18,6 +18,7 @@ from pydantic import Field
 from openmc_agent.schemas import AgentBaseModel
 
 from .assembler import assemble_simulation_plan_from_patches
+from .dependency_graph import DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH
 from .patches import (
     AxialLayersPatch,
     AxialOverlaysPatch,
@@ -79,60 +80,17 @@ EVENT_REFERENCE_COUNTS_APPLIED: str = "patch.pin_map.reference_counts_applied"
 EVENT_PATCH_PLAN_VALIDATION_REPAIR_STARTED: str = "planning.plan_validation_repair_started"
 
 
+# Compatibility alias.  New logic must use the typed graph rather than
+# maintaining a second hand-written dependency table.
 _PATCH_DEPENDENTS: dict[str, tuple[str, ...]] = {
-    "facts": (
-        "materials",
-        "universes",
-        "localized_insert_profiles",
-        "pin_map",
-        "assembly_catalog",
-        "axial_layers",
-        "axial_overlays",
-        "core_layout",
-        "settings",
-    ),
-    "materials": (
-        "universes",
-        "pin_map",
-        "assembly_catalog",
-        "axial_layers",
-        "axial_overlays",
-    ),
-    "universes": (
-        "localized_insert_profiles",
-        "pin_map",
-        "assembly_catalog",
-        "axial_layers",
-        "axial_overlays",
-    ),
-    "localized_insert_profiles": (
-        "pin_map",
-        "assembly_catalog",
-        "axial_layers",
-        "axial_overlays",
-    ),
-    "pin_map": ("axial_layers", "axial_overlays"),
-    "assembly_catalog": ("axial_layers", "axial_overlays", "core_layout"),
-    "axial_layers": ("axial_overlays",),
-    "axial_overlays": (),
-    "core_layout": (),
-    "settings": (),
+    patch_type: tuple(DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH.dependents_of(patch_type))
+    for patch_type in DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH._ORDER
 }
 
 
 def _expand_patch_repair_targets(patch_types: list[str]) -> list[str]:
     """Return patch types plus downstream dependents in canonical order."""
-    targets = set(patch_types)
-    changed = True
-    while changed:
-        changed = False
-        for patch_type, dependents in _PATCH_DEPENDENTS.items():
-            if patch_type in targets:
-                before = len(targets)
-                targets.update(dependents)
-                changed = changed or len(targets) != before
-    canonical_order = list(_PATCH_DEPENDENTS)
-    return [patch_type for patch_type in canonical_order if patch_type in targets]
+    return DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH.transitive_dependents(patch_types)
 
 
 # ---------------------------------------------------------------------------
@@ -352,17 +310,8 @@ _DEFAULT_ORDER: tuple[str, ...] = (
 )
 
 _DEPENDENCIES: dict[str, list[str]] = {
-    "facts": [],
-    "materials": ["facts"],
-    "universes": ["facts", "materials"],
-    "localized_insert_profiles": ["facts", "universes"],
-    "base_path_axial_profiles": ["facts", "universes"],
-    "pin_map": ["facts", "universes"],
-    "assembly_catalog": ["facts", "universes", "localized_insert_profiles"],
-    "axial_layers": ["facts"],
-    "axial_overlays": ["facts", "materials", "axial_layers"],
-    "core_layout": ["facts", "assembly_catalog"],
-    "settings": [],
+    patch_type: DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH.dependencies_of(patch_type)
+    for patch_type in _DEFAULT_ORDER
 }
 
 
@@ -1686,9 +1635,91 @@ def run_incremental_planning(
             request = {"request_id": f"placement_dependency_{len(state.placement_dependency_requests):03d}", "gate_id": "placement", "dependency_patch_type": placement_issue_owner(dependency["code"]).get("dependency_patch_type", "universes"), "issue_codes": [dependency["code"]], "finding_ids": [item.finding_id for item in all_findings], "reason": "placement gate dependency requires a prior gate", "downstream_patch_types": ["localized_insert_profiles", "pin_map", "assembly_catalog", "core_layout"]}
             state.placement_dependency_requests.append(request)
             artifact_writer._write("placement_dependency_retry_request.json", request)
+            # Phase-3 turns the legacy Placement request into a typed owner
+            # retry.  Advisory remains read-only; controlled mode regenerates
+            # just the Python-selected dependency in a clone before commit.
+            from .closed_loop.retry_controller import execute_plan_retry_loop, normalize_retry_request
+            from .closed_loop.retry_models import RetryTriggerOrigin
+
+            typed_request = normalize_retry_request(
+                request, state=state, origin=RetryTriggerOrigin.PLACEMENT_GATE,
+            )
+            if typed_request is None:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.retry.unsupported_request", severity="error", message="placement dependency is not registered for retry", patch_type="placement")
+            artifact_writer.write_retry_artifact(f"retry_request_{len(state.plan_retry_rounds):03d}.json", typed_request)
+            if policy.mode is PlanLoopMode.ADVISORY:
+                outcome = execute_plan_retry_loop(state=state, policy=policy)
+                artifact_writer.write_retry_artifact("retry_outcome.json", outcome)
+                state.add_event("planning.placement_dependency_retry_requested", "placement dependency retry plan recorded in advisory mode", {"request_id": typed_request.request_id})
+                return None
+
+            def _produce_owner_candidate(retry_request: Any, _execution_plan: Any, clone_state: PlanBuildState) -> dict[str, dict[str, Any]]:
+                candidates: dict[str, dict[str, Any]] = {}
+                for owner_patch_type in retry_request.owner_patch_types:
+                    if owner_patch_type == "planning_task_plan":
+                        continue
+                    generated = generate_patch(
+                        patch_type=owner_patch_type,
+                        requirement=requirement,
+                        state=clone_state,
+                        context=build_generation_context_from_state(clone_state, owner_patch_type, few_shot_case_ids=few_shot_case_ids),
+                        llm_client=llm_client,
+                        max_attempts=max_patch_attempts,
+                    )
+                    if not generated.ok or generated.parsed_patch is None:
+                        raise ValueError(f"retry owner generation failed: {owner_patch_type}")
+                    candidates[owner_patch_type] = generated.parsed_patch
+                return candidates
+
+            def _validate_owner_candidate(retry_request: Any, _execution_plan: Any, clone_state: PlanBuildState) -> list[dict[str, Any]]:
+                # Universe retries must satisfy the requested IDs before any
+                # downstream profile/catalog can be rebuilt.  Other schema
+                # checks have already run in the retry controller.
+                requested_ids = {item for target in retry_request.targets for item in target.required_ids}
+                if "universes" in retry_request.owner_patch_types and requested_ids:
+                    env = next((item for item in clone_state.patches.values() if item.patch_type == "universes" and item.status == "valid"), None)
+                    found = {str(item.get("universe_id")) for item in (env.content.get("universes", []) if env else []) if isinstance(item, dict)}
+                    missing = sorted(requested_ids - found)
+                    if missing:
+                        return [{"code": "retry.required_universe_ids_missing", "severity": "error", "missing_ids": missing}]
+                return []
+
+            outcome = execute_plan_retry_loop(
+                state=state, policy=policy,
+                candidate_producer=_produce_owner_candidate,
+                candidate_validator=_validate_owner_candidate,
+            )
+            artifact_writer.write_retry_artifact(f"retry_execution_plan_{len(state.plan_retry_rounds):03d}.json", state.plan_retry_execution_plans)
+            artifact_writer.write_retry_artifact("retry_outcome.json", outcome)
+            if outcome.status.value == "resumed":
+                # Resume only invalidated downstream tasks.  The recursive
+                # call observes committed owner envelopes and skips them; it
+                # never clears the state or enters a monolithic fallback.
+                state.add_event("planning.retry_downstream_resume_started", "resuming incremental generation after dependency owner commit", {"request_id": typed_request.request_id})
+                depth = int(state.metadata.get("phase3_retry_resume_depth", 0))
+                if depth >= policy.max_retry_rounds:
+                    transition_stage(stage, PlanStageStatus.BLOCKED)
+                    return IncrementalExecutionIssue(code="planning.retry_budget_exhausted", severity="error", message="retry resume budget exhausted", patch_type="placement")
+                state.metadata["phase3_retry_resume_depth"] = depth + 1
+                resumed = run_incremental_planning(
+                    requirement=requirement, state=state, llm_client=llm_client,
+                    max_patch_attempts=max_patch_attempts, strict=strict,
+                    task_order=None, reference_patch_policy=reference_patch_policy,
+                    reference_path=reference_path, few_shot_case_ids=few_shot_case_ids,
+                    material_policy=material_policy, plan_loop_policy=policy,
+                    plan_loop_output_dir=plan_loop_output_dir,
+                    plan_reviewer_client=plan_reviewer_client,
+                    plan_repair_client=plan_repair_client,
+                )
+                state.metadata["phase3_retry_resume_depth"] = depth
+                if resumed.ok:
+                    state.add_event("planning.retry_downstream_resume_completed", "incremental downstream rebuild completed", {"request_id": typed_request.request_id})
+                    return None
+                return IncrementalExecutionIssue(code="planning.retry_downstream_rebuild_failed", severity="error", message="owner committed but downstream rebuild remains blocked", patch_type="placement")
             transition_stage(stage, PlanStageStatus.BLOCKED)
-            state.add_event("planning.placement_dependency_retry_requested", "placement dependency retry recorded but not executed", request)
-            return IncrementalExecutionIssue(code="planning.placement.blocked_dependency", severity="error", message="placement requires facts/universes dependency retry", patch_type="placement")
+            state.add_event("planning.placement_dependency_retry_requested", "placement dependency retry did not resolve", {"request_id": typed_request.request_id, "outcome": outcome.status.value})
+            return IncrementalExecutionIssue(code=f"planning.retry.{outcome.status.value}", severity="error", message=outcome.detail, patch_type="placement")
         if action is PlanReviewAction.REVISE_CURRENT_PATCH and plan_repair_client is not None:
             from .closed_loop.fingerprints import compute_issue_fingerprint
             from .closed_loop.placement_evidence import build_placement_evidence_pack

@@ -549,3 +549,11 @@ source-critical Facts preflight blocks scope/profile omissions before assembly.
 Mass-derived overlay geometry also has an owner-aware material-density
 readiness check.  These are deterministic safety checks, not Placement,
 Material–Universe, Axial, or Final Plan review gates.
+### Plan closed-loop Phase 3
+
+Phase 3 adds a typed executable dependency-retry protocol for registered
+Facts, Materials, Universes, canonical-task-plan, and placement-owner issues.
+It uses clone validation, atomic owner commits, dependency-aware invalidation,
+and resumable downstream rebuilds.  The protocol is disabled in `off`, records
+only an execution plan in `advisory`, and never invokes a monolithic fallback
+or an LLM Supervisor.

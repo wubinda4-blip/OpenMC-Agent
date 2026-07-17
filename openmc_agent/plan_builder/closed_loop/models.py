@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.4"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.5"
 
 
 class _TextEnum(str, Enum):
@@ -612,7 +612,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2", "0.3", "0.4"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2
@@ -630,10 +630,18 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     plan_human_mode: Literal["off", "ambiguity_only"] = "off"
     plan_gates: list[PlanGateId] = Field(default_factory=list)
     placement_review_mode: Literal["off", "advisory", "controlled"] = "off"
+    # Phase-3 executable retry budget.  It remains independent from reviewer
+    # calls so checkpoint restore cannot silently refresh retry authority.
+    max_retry_rounds: int = 6
+    max_attempts_per_retry_request: int = 2
+    max_same_candidate_attempts: int = 1
+    max_owner_regenerations_per_patch: int = 2
+    max_gate_replays_per_gate: int = 3
+    max_total_retry_llm_calls: int = 12
     gate_enabled: dict[PlanGateId, bool] = Field(default_factory=_default_gate_enabled)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("max_review_rounds_per_gate", "max_repair_rounds_per_gate", "max_human_rounds_per_gate", "max_attempts_per_issue_fingerprint", "max_no_progress_rounds", "max_total_additional_llm_calls", "max_facts_review_chunks")
+    @field_validator("max_review_rounds_per_gate", "max_repair_rounds_per_gate", "max_human_rounds_per_gate", "max_attempts_per_issue_fingerprint", "max_no_progress_rounds", "max_total_additional_llm_calls", "max_facts_review_chunks", "max_retry_rounds", "max_attempts_per_retry_request", "max_same_candidate_attempts", "max_owner_regenerations_per_patch", "max_gate_replays_per_gate", "max_total_retry_llm_calls")
     @classmethod
     def _budget_bounds(cls, value: int) -> int:
         if not 0 <= value <= 10000:

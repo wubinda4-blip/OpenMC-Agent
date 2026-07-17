@@ -35,6 +35,12 @@ from .closed_loop.models import (
     PlanStageState,
 )
 from .planning_scope import CanonicalPatchTaskPlan, ResolvedPlanningScope, PlanningFeatureContract
+from .closed_loop.retry_models import (
+    ExecutablePlanRetryRequest,
+    RetryExecutionPlan,
+    RetryExecutionOutcome,
+    RetryRoundRecord,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +116,8 @@ class PlanPatchEnvelope(AgentBaseModel):
     patch_type: str
     schema_version: str = "v1"
     content: dict[str, Any] = Field(default_factory=dict)
-    source: Literal["llm", "deterministic", "user", "fixture", "repair"] = "llm"
-    status: Literal["pending", "valid", "invalid", "repaired", "skipped"] = "pending"
+    source: Literal["llm", "deterministic", "user", "fixture", "repair", "retry"] = "llm"
+    status: Literal["pending", "valid", "invalid", "repaired", "superseded", "skipped"] = "pending"
     issues: list[dict[str, Any]] = Field(default_factory=list)
     raw_text: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -160,7 +166,7 @@ class PlanBuildState(AgentBaseModel):
     plan_loop_mode: PlanLoopMode = PlanLoopMode.OFF
     # Older persisted ledgers deliberately remain valid.  The controller
     # upgrades behaviour lazily instead of rewriting checkpoint files.
-    plan_loop_contract_version: str = "0.4"
+    plan_loop_contract_version: str = "0.5"
     plan_loop_policy: dict[str, Any] = Field(default_factory=dict)
     plan_loop_stages: dict[str, PlanStageState] = Field(default_factory=dict)
     plan_review_findings: dict[str, PlanReviewFinding] = Field(default_factory=dict)
@@ -189,6 +195,20 @@ class PlanBuildState(AgentBaseModel):
     root_cause_retry_history: list[dict[str, Any]] = Field(default_factory=list)
     root_cause_attempts_by_fingerprint: dict[str, int] = Field(default_factory=dict)
     root_cause_candidate_hashes: dict[str, list[str]] = Field(default_factory=dict)
+
+    # Phase-3 executable retry ledger.  It is deliberately typed and kept
+    # distinct from legacy validation/runtime retry metadata.
+    plan_retry_requests: dict[str, ExecutablePlanRetryRequest] = Field(default_factory=dict)
+    plan_retry_execution_plans: dict[str, RetryExecutionPlan] = Field(default_factory=dict)
+    plan_retry_rounds: list[RetryRoundRecord] = Field(default_factory=list)
+    plan_retry_outcome: RetryExecutionOutcome | None = None
+    plan_retry_attempts_by_fingerprint: dict[str, int] = Field(default_factory=dict)
+    plan_retry_candidate_hashes_by_fingerprint: dict[str, list[str]] = Field(default_factory=dict)
+    plan_retry_owner_regenerations: dict[str, int] = Field(default_factory=dict)
+    plan_retry_gate_replay_counts: dict[str, int] = Field(default_factory=dict)
+    plan_retry_cycle_trace: list[dict[str, Any]] = Field(default_factory=list)
+    plan_retry_budget: dict[str, int] = Field(default_factory=dict)
+    plan_retry_pending_request_ids: list[str] = Field(default_factory=list)
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
