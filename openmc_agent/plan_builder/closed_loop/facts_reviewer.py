@@ -25,6 +25,7 @@ class FactsReviewResult(AgentBaseModel):
     reviewer_calls: int = 0
     schema_retries: int = 0
     error: str = ""
+    raw_outputs: list[str] = Field(default_factory=list)
 
 
 def _call(client: Any, prompt: str) -> str | dict[str, Any]:
@@ -84,6 +85,8 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
         for attempt in range(2):
             try:
                 raw = _call(reviewer_client, build_facts_review_prompt(pack) if attempt == 0 else build_facts_review_schema_retry_prompt("schema_invalid"))
+                if isinstance(raw, str):
+                    result.raw_outputs.append(raw)
                 result.reviewer_calls += 1
                 state.plan_loop_additional_llm_calls += 1
                 parsed = json.loads(raw) if isinstance(raw, str) else raw

@@ -1120,6 +1120,10 @@ def run_incremental_planning(
             return None
         state.add_event("planning.facts_review_started", "independent facts critic called", {"pack_count": len(packs)})
         review = run_facts_review(evidence_packs=packs, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+        for index, raw_output in enumerate(review.raw_outputs):
+            path = artifact_writer._write(f"facts_review_raw_{index:03d}.json", {"raw": raw_output})
+            if path:
+                state.plan_loop_artifacts.append(path)
         for index, output in enumerate(review.outputs):
             path = artifact_writer._write(f"facts_review_normalized_{index:03d}.json", output)
             if path:
@@ -1134,7 +1138,9 @@ def run_incremental_planning(
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
                 return IncrementalExecutionIssue(code="facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
-        actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=review.findings, deterministic_issues=[], additional_llm_calls_used=state.plan_loop_additional_llm_calls)
+        review_deterministic_issues = ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
+                                       if not review.ok or not review.coverage_complete else [])
+        actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=review.findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
         action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED
         decision = PlanReviewDecision(
             decision_id=f"facts_decision_{len(state.plan_review_decisions):03d}", gate_id=PlanGateId.FACTS,
