@@ -2302,9 +2302,25 @@ def run_incremental_planning(
             state.add_event("planning.material_density_required", "material density required by mass-derived geometry", {"material_ids": [item.material_id for item in readiness.issues]})
             from .root_cause_classifier import classify_planning_root_causes, record_targeted_retry_attempt
             from .closed_loop.fingerprints import compute_candidate_hash
+            from .closed_loop.retry_request_builders import build_retry_request_from_material_readiness
             material_hash = compute_candidate_hash(target_patch_type="materials", candidate_patch=materials_env.content)
             causes = classify_planning_root_causes(readiness_issues, {"materials": material_hash})
             retry_records = [record_targeted_retry_attempt(state, cause) for cause in causes]
+            # Phase-3B: also register a typed ExecutablePlanRetryRequest per
+            # distinct material so the retry loop can drive a real owner
+            # producer with exact required IDs and properties.
+            typed_requests = []
+            for issue in readiness.issues:
+                typed = build_retry_request_from_material_readiness(
+                    material_id=issue.material_id,
+                    consumer_ids=issue.affected_consumer_ids,
+                    required_property=issue.required_property,
+                    state=state,
+                )
+                if typed is not None:
+                    typed_requests.append(typed)
+            if typed_requests:
+                artifact_writer._write("retry_material_readiness_requests.json", typed_requests)
             artifact_writer._write("root_cause_bundle_000.json", causes)
             artifact_writer._write("targeted_retry_trace.json", retry_records)
             if any(record["no_progress"] for record in retry_records):
