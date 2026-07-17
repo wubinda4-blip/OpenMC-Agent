@@ -492,3 +492,12 @@ runtime repair, or monolithic fallback path was introduced.
   validation before assembly; executor results retain the assembler's concrete
   issue codes alongside the generic failure wrapper.
 - Validation: focused patch-validator and incremental-executor regressions.
+
+## 2026-07-18 — Controlled Facts resume barrier and evidence coverage
+
+- Coalesced line-aligned Markdown evidence paragraphs before applying the Facts
+  review chunk limit; a controlled gate failure is terminal for ordinary Graph
+  regeneration and cannot be bypassed by reusing a valid FactsPatch.
+- Placement dependency requests now retain required universe IDs and gate-input
+  hash; focused tests plus the non-OpenMC/non-real-LLM suite and fake workflow
+  benchmark passed.

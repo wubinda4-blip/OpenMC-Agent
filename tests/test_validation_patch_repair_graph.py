@@ -195,6 +195,39 @@ def test_incremental_patch_generation_failure_schedules_targeted_resume() -> Non
     assert updates["requirement"] == "VERA3B assembly model"
 
 
+def test_terminal_controlled_gate_failure_does_not_schedule_graph_regeneration() -> None:
+    """A gate result is not a generic patch-generation retry opportunity."""
+    from openmc_agent.graph import _make_plan_validation_router, _make_validate_plan_node
+
+    state = {
+        "simulation_plan": None,
+        "requirement": "source",
+        "retry_count": 0,
+        "error": "incremental.execution_failed: planning.facts_gate_not_accepted",
+        "plan_loop_outcome": {
+            "status": "blocked",
+            "active_gate_id": "facts",
+            "active_stage_id": "plan_gate_facts",
+        },
+        "plan_build_state": {
+            "plan_loop_mode": "controlled",
+            "plan_loop_stages": {"plan_gate_facts": {"status": "blocked"}},
+            "patches": {"facts": {"content": {}}},
+        },
+        "incremental_execution_result": {
+            "planning_mode": "incremental",
+            "monolithic_reflect_plan_allowed": False,
+            "ok": False,
+            "issues": [{"code": "planning.facts_gate_not_accepted", "severity": "error"}],
+        },
+    }
+
+    updates = _make_validate_plan_node(3)(state)
+    assert not updates.get("incremental_regeneration_pending")
+    assert updates.get("retry_count", 0) == 0
+    assert _make_plan_validation_router(3)(updates) == "stop"
+
+
 def test_incremental_patch_generation_failure_respects_retry_budget() -> None:
     """When retry_count >= max_retries, no regeneration is scheduled."""
     from openmc_agent.graph import _make_validate_plan_node

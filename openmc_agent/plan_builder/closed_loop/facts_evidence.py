@@ -9,41 +9,72 @@ from .models import PlanClosedLoopPolicy, PlanEvidencePack, PlanGateId, SourceEx
 
 
 def _paragraphs(text: str, limit: int) -> list[tuple[int, int, str]]:
-    lines = text.splitlines() or [""]
+    """Build stable, line-aligned review chunks without losing source text.
+
+    Markdown headings and blank-line-delimited paragraphs are semantic boundaries,
+    but they are deliberately *not* a one-pack-per-paragraph policy.  A resolved
+    requirement can contain hundreds of short Markdown paragraphs; sending each
+    one to the reviewer turns a modest source file into an artificial chunk-limit
+    failure.  Adjacent semantic groups are therefore coalesced up to ``limit``.
+
+    ``keepends=True`` is important here: evidence excerpts are source evidence,
+    so a trailing newline (and blank lines between paragraphs) must survive a
+    build/replay round trip.  A single physical line may exceed the configured
+    limit; it remains intact rather than being split mid-line.
+    """
+    lines = text.splitlines(keepends=True) or [""]
     groups: list[tuple[int, int, str]] = []
     start = 1
     current: list[str] = []
     for index, line in enumerate(lines, 1):
-        if line.startswith("#") and current:
-            groups.append((start, index - 1, "\n".join(current)))
+        content = line.rstrip("\r\n")
+        if content.startswith("#") and current:
+            groups.append((start, index - 1, "".join(current)))
             start, current = index, [line]
-        elif not line.strip() and current:
+        elif not content.strip() and current:
             current.append(line)
-            groups.append((start, index, "\n".join(current)))
+            groups.append((start, index, "".join(current)))
             start, current = index + 1, []
         else:
             if not current:
                 start = index
             current.append(line)
     if current:
-        groups.append((start, len(lines), "\n".join(current)))
+        groups.append((start, len(lines), "".join(current)))
 
-    chunks: list[tuple[int, int, str]] = []
+    line_aligned_groups: list[tuple[int, int, str]] = []
     for start, end, group in groups:
         if len(group) <= limit:
-            chunks.append((start, end, group))
+            line_aligned_groups.append((start, end, group))
             continue
         part: list[str] = []
         part_start = start
-        for offset, line in enumerate(group.splitlines(), start):
-            proposed = "\n".join(part + [line])
+        for offset, line in enumerate(group.splitlines(keepends=True), start):
+            proposed = "".join(part + [line])
             if part and len(proposed) > limit:
-                chunks.append((part_start, offset - 1, "\n".join(part)))
+                line_aligned_groups.append((part_start, offset - 1, "".join(part)))
                 part, part_start = [line], offset
             else:
                 part.append(line)
         if part:
-            chunks.append((part_start, end, "\n".join(part)))
+            line_aligned_groups.append((part_start, end, "".join(part)))
+
+    chunks: list[tuple[int, int, str]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_parts: list[str] = []
+    for start, end, group in line_aligned_groups:
+        current_text = "".join(current_parts)
+        if current_parts and len(current_text) + len(group) > limit:
+            chunks.append((current_start or start, current_end or start, current_text))
+            current_start, current_end, current_parts = start, end, [group]
+            continue
+        if not current_parts:
+            current_start = start
+        current_end = end
+        current_parts.append(group)
+    if current_parts:
+        chunks.append((current_start or 1, current_end or len(lines), "".join(current_parts)))
     return chunks
 
 

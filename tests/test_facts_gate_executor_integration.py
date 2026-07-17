@@ -1,9 +1,12 @@
 import json
 
 from openmc_agent.plan_builder import executor
+from openmc_agent.plan_builder.closed_loop.controller import initialize_plan_loop_state, transition_stage
+from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanStageStatus
 from openmc_agent.plan_builder.executor import run_incremental_planning
 from openmc_agent.plan_builder.patch_generator import FakePatchLLM
-from openmc_agent.plan_builder.state import PlanBuildState
+from openmc_agent.plan_builder.patches import FactsPatch
+from openmc_agent.plan_builder.state import PlanBuildState, PlanPatchEnvelope
 
 
 def test_controlled_facts_approve_precedes_downstream(monkeypatch) -> None:
@@ -21,3 +24,32 @@ def test_controlled_facts_approve_precedes_downstream(monkeypatch) -> None:
     result = run_incremental_planning(requirement="small source", state=PlanBuildState(state_id="s", requirement_text="small source"), llm_client=llm, plan_loop_policy={"mode": "controlled"}, plan_reviewer_client=reviewer)
     assert result.ok and captured["called"]
     assert result.state.plan_loop_stages["plan_gate_facts"].status.value == "accepted"
+
+
+def test_controlled_resume_never_bypasses_blocked_facts_gate(monkeypatch) -> None:
+    """A graph retry must not skip a valid facts envelope below a blocked gate."""
+    monkeypatch.setattr(executor, "default_patch_task_order", lambda _: ["facts", "materials"])
+    monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: ["facts", "materials"])
+
+    state = PlanBuildState(state_id="blocked", requirement_text="source")
+    state.add_patch(PlanPatchEnvelope(
+        patch_id="facts_1",
+        patch_type="facts",
+        content=FactsPatch().model_dump(mode="json"),
+        status="valid",
+    ))
+    policy = PlanClosedLoopPolicy(mode="controlled", gate_enabled={"facts": True})
+    initialize_plan_loop_state(state, policy, ["facts", "materials"])
+    transition_stage(state.plan_loop_stages["plan_gate_facts"], PlanStageStatus.BLOCKED)
+
+    result = run_incremental_planning(
+        requirement="source",
+        state=state,
+        llm_client=lambda _prompt: (_ for _ in ()).throw(AssertionError("downstream proposer must not run")),
+        plan_loop_policy=policy,
+    )
+
+    assert not result.ok
+    assert [issue.code for issue in result.issues] == ["planning.facts_gate_not_accepted"]
+    assert result.plan_loop_outcome["active_gate_id"] == "facts"
+    assert not any(env.patch_type == "materials" for env in state.patches.values())

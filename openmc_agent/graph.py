@@ -2924,6 +2924,7 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                 plan is None
                 and retry_count < max_retries
                 and _is_incremental_patch_generation_failure(state, report)
+                and not _incremental_gate_outcome_is_terminal(state)
             ):
                 dependency_repair = _incremental_dependency_repair_metadata(state)
                 if dependency_repair is not None:
@@ -3659,6 +3660,34 @@ def _is_incremental_patch_generation_failure(
         "patch_generation_failed" in error_text
         or "incremental.execution_failed" in error_text
         or "incremental.assembled_plan_schema_invalid" in error_text
+    )
+
+
+def _incremental_gate_outcome_is_terminal(state: GraphState) -> bool:
+    """Return whether a controlled plan gate intentionally stopped execution.
+
+    Incremental patch failures are normally resumable.  A Facts/Placement gate
+    in ``blocked`` or ``awaiting_human`` is different: retrying
+    ``generate_plan`` without an accepted revision or typed human answer only
+    reuses the same envelopes and can bypass the gate.  The executor is the
+    primary barrier; this graph-level check keeps generic graph retries from
+    turning that terminal result into a full downstream regeneration.
+    """
+    outcome = state.get("plan_loop_outcome")
+    if isinstance(outcome, dict) and outcome.get("status") in {"blocked", "awaiting_human"}:
+        return bool(outcome.get("active_gate_id"))
+    build_state = state.get("plan_build_state")
+    if not isinstance(build_state, dict):
+        return False
+    if build_state.get("plan_loop_mode") != "controlled":
+        return False
+    stages = build_state.get("plan_loop_stages")
+    if not isinstance(stages, dict):
+        return False
+    return any(
+        isinstance(stage, dict)
+        and stage.get("status") in {"blocked", "awaiting_human"}
+        for stage in stages.values()
     )
 
 

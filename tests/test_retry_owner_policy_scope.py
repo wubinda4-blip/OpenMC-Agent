@@ -76,3 +76,11 @@ def test_universes_owner_registered_for_missing_universe() -> None:
     policy = retry_owner_policy("localized_insert.required_universe_missing", {})
     assert policy is not None
     assert policy.owner_patch_types == ["universes"]
+
+
+def test_required_profile_missing_has_a_registered_placement_owner() -> None:
+    policy = retry_owner_policy(
+        "localized_insert.required_profile_missing", {}, canonical_scope="multi_assembly",
+    )
+    assert policy is not None
+    assert policy.owner_patch_types == ["localized_insert_profiles"]
