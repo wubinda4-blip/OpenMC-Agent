@@ -216,6 +216,51 @@ def test_incremental_patch_generation_failure_respects_retry_budget() -> None:
     assert "incremental_regeneration_pending" not in updates or updates.get("incremental_regeneration_pending") is not True
 
 
+def test_missing_axial_universe_dependency_invalidates_owner_and_downstream() -> None:
+    """A dependency retry must not silently reuse its known-bad owner patch."""
+    from openmc_agent.graph import _make_validate_plan_node
+    from openmc_agent.plan_builder.state import PlanBuildState, PlanPatchEnvelope
+
+    build_state = PlanBuildState(state_id="dependency-retry", requirement_text="r")
+    for patch_type in ("facts", "materials", "universes", "pin_map", "axial_layers"):
+        build_state.add_patch(PlanPatchEnvelope(
+            patch_id=patch_type,
+            patch_type=patch_type,
+            content={"patch_type": patch_type},
+            status="valid",
+        ))
+    build_state.metadata["incremental_dependency_repair"] = {
+        "missing_universe_ids": ["replacement_universe"],
+    }
+    build_state.metadata["plan_validation_repair"] = {
+        "target_patch_types": ["universes"],
+        "issues": [],
+    }
+
+    updates = _make_validate_plan_node(3)({
+        "simulation_plan": None,
+        "requirement": "reactor-neutral requirement",
+        "retry_count": 0,
+        "error": "incremental.execution_failed: incremental.patch_generation_failed",
+        "plan_build_state": build_state.model_dump(mode="json"),
+        "incremental_execution_result": {
+            "planning_mode": "incremental",
+            "monolithic_reflect_plan_allowed": False,
+            "ok": False,
+            "issues": [{"code": "incremental.patch_generation_failed", "patch_type": "axial_layers"}],
+        },
+    })
+
+    resumed = PlanBuildState.model_validate(updates["plan_build_state"])
+    assert resumed.patches["facts"].status == "valid"
+    assert resumed.patches["materials"].status == "valid"
+    assert resumed.patches["universes"].status == "invalid"
+    assert resumed.patches["pin_map"].status == "invalid"
+    assert resumed.patches["axial_layers"].status == "invalid"
+    assert resumed.metadata["plan_validation_repair"]["target_patch_types"] == ["universes", "axial_layers"]
+    assert updates["requirement"] == "reactor-neutral requirement"
+
+
 def test_non_incremental_failure_does_not_trigger_regeneration() -> None:
     """A non-incremental plan=None failure must not trigger the regeneration path."""
     from openmc_agent.graph import _make_validate_plan_node

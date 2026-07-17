@@ -2194,7 +2194,11 @@ def run_incremental_planning(
                     if issue.get("code") == "lattice_transform.replacement_universe_missing"
                 ]
                 state.metadata["plan_validation_repair"] = {
-                    "target_patch_types": ["universes"],
+                    # The missing IDs are owned by UniversesPatch, but the
+                    # failing axial patch must also be regenerated after that
+                    # owner changes.  This is a bounded dependency replay,
+                    # not a request to restart the whole plan.
+                    "target_patch_types": ["universes", "axial_layers"],
                     "issues": dependency_issues,
                 }
                 state.metadata["incremental_dependency_repair"] = {

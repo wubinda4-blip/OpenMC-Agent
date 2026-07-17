@@ -829,7 +829,7 @@ def test_missing_axial_replacement_universe_schedules_targeted_repair() -> None:
     repair = state.metadata["incremental_dependency_repair"]
     assert repair["missing_universe_ids"] == ["fuel_pin_end_plug", "fuel_pin_plenum"]
     request = state.metadata["plan_validation_repair"]
-    assert request["target_patch_types"] == ["universes"]
+    assert request["target_patch_types"] == ["universes", "axial_layers"]
     assert state.patches["pre_facts"].status == "valid"
     assert state.patches["pre_materials"].status == "valid"
 

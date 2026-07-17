@@ -470,3 +470,12 @@ runtime repair, or monolithic fallback path was introduced.
   A stale `not_applicable` checkpoint is explicitly reopened if its inputs later
   become applicable; this prevents an illegal `skipped → reviewing` transition.
 - Validation: placement, incremental, graph, and controller regressions: 41 passed.
+
+## 2026-07-18 — Axial replacement-universe dependency replay
+
+- An axial layer that references a missing replacement universe now invalidates
+  the `universes` owner, its dependency-graph descendants, and the failed
+  axial consumer before Graph replay. The next pass regenerates that bounded
+  path instead of skipping a stale valid `UniversesPatch` three times.
+- Validation: incremental executor, retry router, graph replay, and repair
+  regressions: 49 passed.

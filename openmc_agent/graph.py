@@ -2923,6 +2923,11 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
             ):
                 dependency_repair = _incremental_dependency_repair_metadata(state)
                 if dependency_repair is not None:
+                    repaired_build_state, invalidated_patch_types = (
+                        _prepare_incremental_dependency_regeneration(
+                            state.get("plan_build_state"), dependency_repair
+                        )
+                    )
                     _progress(
                         state,
                         "validate_plan",
@@ -2936,7 +2941,7 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                         "retry_count": retry_count + 1,
                         "error": "",
                         "incremental_regeneration_pending": True,
-                        "plan_build_state": state.get("plan_build_state", {}),
+                        "plan_build_state": repaired_build_state,
                         "requirement": state.get("requirement", ""),
                         **_trace_event_update(
                             state,
@@ -2951,6 +2956,7 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                                 "missing_universe_ids": dependency_repair.get(
                                     "missing_universe_ids", []
                                 ),
+                                "invalidated_patch_types": invalidated_patch_types,
                             },
                         ),
                     }
@@ -3667,6 +3673,69 @@ def _incremental_dependency_repair_metadata(state: GraphState) -> dict[str, Any]
     if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
         return None
     return repair
+
+
+def _prepare_incremental_dependency_regeneration(
+    build_state_data: Any,
+    repair: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Persist a real, bounded dependency invalidation before graph replay.
+
+    The legacy axial-universe path previously emitted a retry request but left
+    the old valid ``UniversesPatch`` intact.  A subsequent incremental run
+    therefore skipped it and retried the same invalid axial patch.  This
+    helper invalidates only the universe owner and its true dependents; the
+    failed axial producer is included explicitly because its replacement-ID
+    reference is the origin of this retry, even though that relationship is
+    dynamic rather than a static dependency-graph edge.
+    """
+    if not isinstance(build_state_data, dict):
+        return {}, []
+    try:
+        from openmc_agent.plan_builder.dependency_graph import (
+            DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH,
+        )
+
+        build_state = PlanBuildState.model_validate(build_state_data)
+        targets = DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH.transitive_dependents(
+            ["universes"]
+        )
+        for patch_type in ("axial_layers", "axial_overlays"):
+            if patch_type not in targets:
+                targets.append(patch_type)
+        invalidated = build_state.invalidate_patch_types(
+            targets,
+            reason="axial replacement-universe dependency retry",
+            issues=[
+                {
+                    "code": "lattice_transform.replacement_universe_missing",
+                    "actual": universe_id,
+                }
+                for universe_id in repair.get("missing_universe_ids", [])
+                if isinstance(universe_id, str)
+            ],
+        )
+        # Preserve a typed request for the executor, including the failed
+        # consumer, so it supplies the exact IDs to the regenerated universe
+        # prompt and then resumes only the invalidated downstream path.
+        request = build_state.metadata.get("plan_validation_repair")
+        if isinstance(request, dict):
+            request["target_patch_types"] = ["universes", "axial_layers"]
+        build_state.add_event(
+            "planning.incremental_dependency_regeneration_prepared",
+            "invalidated universe owner and downstream patches for axial dependency retry",
+            {
+                "missing_universe_ids": list(repair.get("missing_universe_ids", [])),
+                "invalidated_patch_types": targets,
+                "invalidated_patch_ids": invalidated,
+            },
+        )
+        return build_state.model_dump(mode="json"), targets
+    except Exception:
+        # Never discard the persisted retry request merely because an older
+        # checkpoint cannot be reconstructed.  The executor will retain its
+        # previous safe failure behaviour and report the original issue.
+        return build_state_data, []
 
 
 def _make_assess_plan_capability_node(max_retries: int):
