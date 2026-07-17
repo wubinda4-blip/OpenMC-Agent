@@ -2334,6 +2334,7 @@ def run_incremental_planning(
     assemble_kwargs: dict[str, Any] = {"strict": strict, "resolved_planning_scope": state.resolved_planning_scope}
     if material_policy is not None:
         assemble_kwargs["material_policy"] = material_policy
+    validation_issue_count_before_assembly = len(state.validation_issues)
     state = assemble_state_if_ready(state, **assemble_kwargs)
     if state.assembled_plan is not None:
         state.add_event(
@@ -2373,6 +2374,32 @@ def run_incremental_planning(
             plan_loop_outcome=_write_advisory_artifacts(),
         )
     else:
+        # ``assemble_state_if_ready`` preserves the assembler's structured
+        # diagnostics in ``validation_issues``.  Surface the diagnostics in
+        # the executor result as well: callers otherwise only see the generic
+        # ``incremental.assembly_failed`` wrapper and cannot route a local
+        # repair to the owning patch.
+        detailed_assembly_issues: list[IncrementalExecutionIssue] = []
+        for raw_issue in state.validation_issues[validation_issue_count_before_assembly:]:
+            if not isinstance(raw_issue, dict):
+                continue
+            code = str(raw_issue.get("code") or "assembly.unknown")
+            severity = str(raw_issue.get("severity") or "error")
+            if severity not in {"error", "warning", "info"}:
+                severity = "error"
+            detailed_assembly_issues.append(IncrementalExecutionIssue(
+                code=code,
+                severity=severity,  # type: ignore[arg-type]
+                message=str(raw_issue.get("message") or code),
+                patch_type=raw_issue.get("patch_type"),
+                patch_id=raw_issue.get("patch_id"),
+                path=raw_issue.get("path"),
+            ))
+        known_issue_codes = {issue.code for issue in issues}
+        for detail in detailed_assembly_issues:
+            if detail.code not in known_issue_codes:
+                issues.append(detail)
+                known_issue_codes.add(detail.code)
         issues.append(IncrementalExecutionIssue(
             code="incremental.assembly_failed",
             severity="error",

@@ -68,6 +68,53 @@ def _init_3b_state() -> PlanBuildState:
     return state
 
 
+def test_executor_surfaces_detailed_assembly_issues(monkeypatch) -> None:
+    """Assembly diagnostics must not be reduced to a generic wrapper only."""
+    import openmc_agent.plan_builder.executor as executor_module
+
+    state = PlanBuildState(state_id="assembly-detail", requirement_text="r")
+    state.validation_issues.append({
+        "code": "preexisting.warning",
+        "severity": "warning",
+        "message": "must not be duplicated",
+    })
+    monkeypatch.setattr(executor_module, "default_patch_task_order", lambda _state: [])
+    monkeypatch.setattr(executor_module, "required_patch_types_for_state", lambda _state: [])
+
+    def fail_assembly(current_state, **_kwargs):
+        current_state.validation_issues.extend([
+            {
+                "code": "localized_insert.loading_missing",
+                "severity": "error",
+                "message": "AIC has no overlapping lattice layer",
+                "path": "axial_layers.layers",
+            },
+            {
+                "code": "localized_insert.loading_missing",
+                "severity": "error",
+                "message": "B4C has no overlapping lattice layer",
+                "path": "axial_layers.layers",
+            },
+        ])
+        return current_state
+
+    monkeypatch.setattr(executor_module, "assemble_state_if_ready", fail_assembly)
+    result = run_incremental_planning(
+        requirement="r",
+        state=state,
+        llm_client=lambda _prompt: (_ for _ in ()).throw(AssertionError("no LLM")),
+        task_order=[],
+    )
+
+    assert result.ok is False
+    codes = [issue.code for issue in result.issues]
+    assert "localized_insert.loading_missing" in codes
+    assert "incremental.assembly_failed" in codes
+    assert "preexisting.warning" not in codes
+    assert result.summary["failed_stage"] == "assembly"
+    assert "localized_insert.loading_missing" in result.summary["issue_codes"]
+
+
 # ---------------------------------------------------------------------------
 # 1. Executor generates patches in dependency order
 # ---------------------------------------------------------------------------

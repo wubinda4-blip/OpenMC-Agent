@@ -445,6 +445,43 @@ def test_axial_layers_fill_missing() -> None:
     assert "patch.axial_layers.fill_missing" in _codes(result)
 
 
+def test_axial_layers_rejects_incomplete_unknown_layer() -> None:
+    """A schema-valid placeholder layer must not be accepted for assembly."""
+    patch = AxialLayersPatch(layers=[
+        AxialLayerPatchItem(
+            layer_id="lower_buffer",
+            role="lower_moderator_buffer",
+            z_min_cm=-55.0,
+            z_max_cm=None,
+            fill_type="unknown",
+        ),
+    ])
+    result = validate_patch(patch)
+    assert result.ok is False
+    assert "patch.axial_layers.invalid_range" in _codes(result)
+    assert "patch.axial_layers.fill_unknown" in _codes(result)
+
+
+def test_axial_layers_rejects_unattached_lattice_loading() -> None:
+    """Declared localized-insert loading must be referenced by a layer."""
+    patch = AxialLayersPatch(layers=[
+        AxialLayerPatchItem(
+            layer_id="fuel",
+            role="active_fuel",
+            z_min_cm=0.0,
+            z_max_cm=100.0,
+            fill_type="lattice",
+            fill_id="assembly_lattice",
+        ),
+    ], lattice_loadings=[{
+        "loading_id": "rcca_loading",
+        "base_lattice_id": "assembly_lattice",
+    }])
+    result = validate_patch(patch)
+    assert result.ok is False
+    assert "patch.axial_layers.loading_unattached" in _codes(result)
+
+
 # ---------------------------------------------------------------------------
 # 12. AxialLayersPatch default z=-1..1 flagged for 3D benchmark
 # ---------------------------------------------------------------------------

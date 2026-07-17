@@ -1009,17 +1009,37 @@ def _validate_axial_layers(
                     actual=(layer.z_min_cm, layer.z_max_cm),
                 ))
             layers_with_z.append((layer.layer_id, layer.z_min_cm, layer.z_max_cm))
-        elif layer.z_min_cm is None and layer.z_max_cm is None:
-            if not layer.requires_human_confirmation:
-                issues.append(PatchValidationIssue(
-                    code="patch.axial_layers.invalid_range",
-                    severity="warning",
-                    message=(
-                        f"layer {layer.layer_id!r} has no z values and "
-                        "requires_human_confirmation is False"
-                    ),
-                    path=f"layers[{layer.layer_id}]",
-                ))
+        else:
+            # A layer cannot be materialized with a half-specified (or wholly
+            # unspecified) z interval.  Treating this as a warning lets a
+            # syntactically valid but unusable patch reach the assembler,
+            # where it can obscure the owner error as a generic assembly
+            # failure.  Human confirmation is not a substitute for a usable
+            # interval: a controlled run must wait before accepting it.
+            issues.append(PatchValidationIssue(
+                code="patch.axial_layers.invalid_range",
+                severity="error",
+                message=(
+                    f"layer {layer.layer_id!r} must provide both z_min_cm and "
+                    "z_max_cm before it can be used in an axial plan"
+                ),
+                path=f"layers[{layer.layer_id}]",
+                actual=(layer.z_min_cm, layer.z_max_cm),
+            ))
+
+        if layer.fill_type == "unknown" and (
+            layer.z_min_cm is None or layer.z_max_cm is None
+        ):
+            issues.append(PatchValidationIssue(
+                code="patch.axial_layers.fill_unknown",
+                severity="error",
+                message=(
+                    f"layer {layer.layer_id!r} has an incomplete interval and "
+                    "fill_type='unknown'; use a finite interval and an explicit "
+                    "lattice, material, universe, or void fill"
+                ),
+                path=f"layers[{layer.layer_id}].fill_type",
+            ))
 
         if layer.fill_type in ("lattice", "material", "universe") and not layer.fill_id:
             issues.append(PatchValidationIssue(
@@ -1150,6 +1170,26 @@ def _validate_axial_layers(
             severity=sev,
             message="no layer with role='active_fuel' found",
             path="layers",
+        ))
+
+    # Every declared lattice loading must be attached to at least one layer.
+    # Otherwise localized-insert intents can look valid in the pin map but
+    # have no physical axial interval in which to be applied.
+    declared_loading_ids = {loading.loading_id for loading in patch.lattice_loadings}
+    attached_loading_ids = {
+        loading_id
+        for layer in patch.layers
+        for loading_id in ([layer.loading_id] if layer.loading_id else []) + list(layer.loading_ids)
+    }
+    for loading_id in sorted(declared_loading_ids - attached_loading_ids):
+        issues.append(PatchValidationIssue(
+            code="patch.axial_layers.loading_unattached",
+            severity="error",
+            message=(
+                f"lattice loading {loading_id!r} is not referenced by any "
+                "axial layer"
+            ),
+            path=f"lattice_loadings[{loading_id}]",
         ))
 
     # Default unit slab check

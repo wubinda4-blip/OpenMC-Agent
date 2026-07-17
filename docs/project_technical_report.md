@@ -483,3 +483,10 @@ runtime repair, or monolithic fallback path was introduced.
   path instead of skipping a stale valid `UniversesPatch` three times.
 - Validation: incremental executor, retry router, graph replay, and repair
   regressions: 49 passed.
+
+## 2026-07-18 — Axial patch admission and assembly diagnostics
+
+- Incomplete axial intervals and unattached lattice loadings now fail patch
+  validation before assembly; executor results retain the assembler's concrete
+  issue codes alongside the generic failure wrapper.
+- Validation: focused patch-validator and incremental-executor regressions.
