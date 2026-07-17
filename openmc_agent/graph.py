@@ -202,6 +202,10 @@ class GraphState(TypedDict, total=False):
     # production planning never provides this field.
     accepted_plan_build_state: dict[str, Any]
     incremental_execution_result: dict[str, Any]
+    plan_loop_mode: str
+    plan_loop_policy: dict[str, Any]
+    plan_loop_outcome: dict[str, Any]
+    plan_loop_artifacts: list[str]
     incremental_regeneration_pending: bool
     incremental_patch_repair_accepted: bool
     use_incremental_executor: bool
@@ -337,6 +341,7 @@ def build_plan_graph(
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    plan_loop_policy: Any = None,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -407,6 +412,7 @@ def build_plan_graph(
             allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback_for_incremental_failure,
             reference_patch_policy=reference_patch_policy,
             material_policy=material_policy,
+            plan_loop_policy=plan_loop_policy,
         ),
     )
     graph.add_node(
@@ -1488,6 +1494,7 @@ def _run_incremental_plan_generation(
     allow_fallback: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    plan_loop_policy: Any = None,
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -1572,6 +1579,8 @@ def _run_incremental_plan_generation(
         reference_patch_policy=reference_patch_policy,
         few_shot_case_ids=few_shot_case_ids,
         material_policy=material_policy,
+        plan_loop_policy=plan_loop_policy,
+        plan_loop_output_dir=state.get("output_dir"),
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -1589,6 +1598,10 @@ def _run_incremental_plan_generation(
             "reference_patch_policy": reference_patch_policy,
             "monolithic_reflect_plan_allowed": bool(allow_fallback),
         },
+        "plan_loop_mode": build_state.plan_loop_mode.value,
+        "plan_loop_policy": build_state.plan_loop_policy,
+        "plan_loop_outcome": exec_result.plan_loop_outcome or {},
+        "plan_loop_artifacts": list(build_state.plan_loop_artifacts),
         "incremental_regeneration_pending": False,
         "plan_artifacts": list(state.get("plan_artifacts", [])) + inc_artifact_paths,
     }
@@ -1732,6 +1745,7 @@ def _make_generate_plan_node(
     allow_monolithic_fallback_for_incremental_failure: bool = False,
     reference_patch_policy: str = "off",
     material_policy: Any = None,
+    plan_loop_policy: Any = None,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -1761,6 +1775,7 @@ def _make_generate_plan_node(
                 allow_fallback=False,
                 reference_patch_policy=reference_patch_policy,
                 material_policy=material_policy,
+                plan_loop_policy=plan_loop_policy,
             )
         if (
             pmd.get("mode") == "incremental"
@@ -1773,6 +1788,7 @@ def _make_generate_plan_node(
                 allow_fallback=allow_monolithic_fallback_for_incremental_failure,
                 reference_patch_policy=reference_patch_policy,
                 material_policy=material_policy,
+                plan_loop_policy=plan_loop_policy,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -1802,6 +1818,7 @@ def _make_generate_plan_node(
                     allow_fallback=False,
                     reference_patch_policy=reference_patch_policy,
                     material_policy=material_policy,
+                    plan_loop_policy=plan_loop_policy,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

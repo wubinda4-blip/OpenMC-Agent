@@ -4,6 +4,11 @@
 
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
 
+### 2026-07-17
+
+- **P2 Plan Closed-Loop Phase 0**：新增 reactor-neutral typed protocol、SHA-256 semantic fingerprints、deterministic gate/action/state-machine policy，以及持久化到 `PlanBuildState` 的独立预算和 no-progress ledger。advisory 仅写 JSON artifacts；off 不进入框架；controlled 明确 fail-closed 为未实现。
+  验证：新增 closed-loop targeted tests（11 passed）；未新增 Critic/Repair/Supervisor LLM 调用或 human interrupt。边界：Facts Gate 及后续 executable repair loop 尚未实现。
+
 ## 1. 项目定位
 
 OpenMC-Agent 的目标是把自然语言反应堆建模需求转成可审查、可校验、尽可能可运行的 OpenMC Python 模型。系统的核心安全边界是：

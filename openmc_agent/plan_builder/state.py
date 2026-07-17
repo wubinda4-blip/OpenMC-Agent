@@ -24,6 +24,13 @@ from pydantic import Field
 from openmc_agent.schemas import AgentBaseModel
 
 from .mode import PlanningModeDecision
+from .closed_loop.models import (
+    HumanPlanQuestion,
+    PlanLoopMode,
+    PlanReviewDecision,
+    PlanReviewFinding,
+    PlanStageState,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +52,16 @@ EVENT_ASSEMBLY_FAILED: str = "planning.assembly_failed"
 EVENT_PATCH_GENERATION_STARTED: str = "planning.patch_generation_started"
 EVENT_PATCH_GENERATED: str = "planning.patch_generated"
 EVENT_PATCH_GENERATION_FAILED: str = "planning.patch_generation_failed"
+EVENT_CLOSED_LOOP_INITIALIZED: str = "planning.closed_loop_initialized"
+EVENT_CLOSED_LOOP_DISABLED: str = "planning.closed_loop_disabled"
+EVENT_GATE_INITIALIZED: str = "planning.gate_initialized"
+EVENT_GATE_TRANSITIONED: str = "planning.gate_transitioned"
+EVENT_REVIEW_FINDING_RECORDED: str = "planning.review_finding_recorded"
+EVENT_REVIEW_DECISION_RECORDED: str = "planning.review_decision_recorded"
+EVENT_NO_PROGRESS_DETECTED: str = "planning.no_progress_detected"
+EVENT_CLOSED_LOOP_BUDGET_EXHAUSTED: str = "planning.closed_loop_budget_exhausted"
+EVENT_CLOSED_LOOP_ARTIFACT_WRITTEN: str = "planning.closed_loop_artifact_written"
+EVENT_CLOSED_LOOP_ARTIFACT_WARNING: str = "planning.closed_loop_artifact_warning"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +149,22 @@ class PlanBuildState(AgentBaseModel):
     validation_repair_attempts_by_fingerprint: dict[str, int] = Field(default_factory=dict)
     validation_repair_candidate_hashes: dict[str, list[str]] = Field(default_factory=dict)
     validation_full_patch_regenerations_by_fingerprint: dict[str, int] = Field(default_factory=dict)
+
+    # Phase-0 plan closed-loop state.  These ledgers are deliberately
+    # namespaced from validation/runtime repair so checkpoint restore preserves
+    # the future review protocol without changing existing retry semantics.
+    plan_loop_mode: PlanLoopMode = PlanLoopMode.OFF
+    plan_loop_contract_version: str = "0.1"
+    plan_loop_policy: dict[str, Any] = Field(default_factory=dict)
+    plan_loop_stages: dict[str, PlanStageState] = Field(default_factory=dict)
+    plan_review_findings: dict[str, PlanReviewFinding] = Field(default_factory=dict)
+    plan_review_decisions: dict[str, PlanReviewDecision] = Field(default_factory=dict)
+    plan_human_questions: dict[str, HumanPlanQuestion] = Field(default_factory=dict)
+    plan_loop_issue_attempts_by_fingerprint: dict[str, int] = Field(default_factory=dict)
+    plan_loop_candidate_hashes_by_fingerprint: dict[str, list[str]] = Field(default_factory=dict)
+    plan_loop_additional_llm_calls: int = 0
+    plan_loop_no_progress_events: list[dict[str, Any]] = Field(default_factory=list)
+    plan_loop_artifacts: list[str] = Field(default_factory=list)
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 

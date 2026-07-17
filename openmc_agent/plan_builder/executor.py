@@ -46,6 +46,11 @@ from .state import (
     EVENT_PATCH_GENERATION_FAILED,
     PlanBuildState,
     PlanPatchEnvelope,
+    EVENT_CLOSED_LOOP_INITIALIZED,
+    EVENT_GATE_INITIALIZED,
+    EVENT_CLOSED_LOOP_ARTIFACT_WRITTEN,
+    EVENT_CLOSED_LOOP_ARTIFACT_WARNING,
+    EVENT_GATE_TRANSITIONED,
     add_validated_patch_to_state,
     assemble_state_if_ready,
 )
@@ -149,6 +154,7 @@ class IncrementalExecutionResult(AgentBaseModel):
     assembled_plan: dict[str, Any] | None = None
     issues: list[IncrementalExecutionIssue] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    plan_loop_outcome: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -921,6 +927,8 @@ def run_incremental_planning(
     reference_path: str | Path | None = None,
     few_shot_case_ids: list[str] | None = None,
     material_policy: Any = None,
+    plan_loop_policy: Any = None,
+    plan_loop_output_dir: str | Path | None = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -939,6 +947,36 @@ def run_incremental_planning(
         Optional material composition policy forwarded to the assembler.
         Accepts the enum, a string value, or None (assembler default).
     """
+    from .closed_loop.artifacts import PlanLoopArtifactWriter
+    from .closed_loop.controller import (
+        build_advisory_outcome,
+        initialize_plan_loop_state,
+        transition_stage,
+    )
+    from .closed_loop.models import PlanClosedLoopPolicy, PlanLoopMode, PlanStageStatus
+    from .closed_loop.policy import canonical_gate_order
+
+    policy = PlanClosedLoopPolicy.model_validate(plan_loop_policy or {})
+    # Advisory is explicitly useful as an observability mode.  Its default
+    # effective registry is all gates while the model default remains inert.
+    if policy.mode is PlanLoopMode.ADVISORY and not any(policy.gate_enabled.values()):
+        policy = policy.model_copy(update={"gate_enabled": {gate: True for gate in canonical_gate_order()}})
+    if policy.mode is PlanLoopMode.CONTROLLED:
+        issue = IncrementalExecutionIssue(
+            code="planning.closed_loop.controlled_not_implemented", severity="error",
+            message="controlled plan closed-loop execution is not implemented in Phase 0",
+        )
+        state.add_event(
+            event_type="planning.closed_loop.controlled_not_implemented",
+            message=issue.message,
+            data={"mode": policy.mode.value},
+        )
+        return IncrementalExecutionResult(
+            ok=False, state=state, issues=[issue],
+            summary={"issue_codes": [issue.code], "controlled_not_implemented": True},
+            plan_loop_outcome={"status": "blocked", "detail": issue.message, "additional_llm_calls_used": 0},
+        )
+
     issues: list[IncrementalExecutionIssue] = []
     reference_data: dict[str, Any] | None = None
     reference_patches_used: list[str] = []
@@ -959,6 +997,56 @@ def run_incremental_planning(
 
     order = task_order or default_patch_task_order(state)
     required = required_patch_types_for_state(state)
+    advisory_enabled = policy.mode is PlanLoopMode.ADVISORY
+    artifact_writer = PlanLoopArtifactWriter(plan_loop_output_dir, policy.artifact_subdir)
+
+    def _write_advisory_artifacts() -> dict[str, Any] | None:
+        if not advisory_enabled:
+            return None
+        for stage in state.plan_loop_stages.values():
+            if stage.status is PlanStageStatus.PENDING and (
+                not stage.patch_types or all(_has_valid_patch(state, patch_type) for patch_type in stage.patch_types)
+            ):
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+                stage.metadata["review_not_implemented"] = True
+                state.add_event(
+                    EVENT_GATE_TRANSITIONED, "plan closed-loop advisory gate skipped without review",
+                    {"stage_id": stage.stage_id, "from": "pending", "to": "skipped", "review_not_implemented": True},
+                )
+        outcome = build_advisory_outcome(state, policy)
+        summary = {
+            "mode": policy.mode.value,
+            "foundation_version": "0.1",
+            "enabled_gates": [gate.value for gate in canonical_gate_order() if policy.gate_enabled.get(gate, False)],
+            "stage_count": len(state.plan_loop_stages),
+            "additional_llm_calls": 0,
+            "reviewer_calls": 0,
+            "repair_calls": 0,
+            "human_interrupts": 0,
+            "workflow_behavior_changed": False,
+        }
+        writes = [
+            artifact_writer.write_plan_loop_policy(policy),
+            artifact_writer.write_plan_loop_state(state),
+            artifact_writer.write_plan_loop_summary(summary),
+            artifact_writer.write_gate_registry(),
+        ]
+        for path in writes:
+            if path:
+                state.plan_loop_artifacts.append(path)
+                state.add_event(EVENT_CLOSED_LOOP_ARTIFACT_WRITTEN, "plan closed-loop artifact written", {"path": path})
+            elif plan_loop_output_dir is not None:
+                state.add_event(EVENT_CLOSED_LOOP_ARTIFACT_WARNING, "plan closed-loop artifact write failed", {})
+        return outcome.model_dump(mode="json")
+
+    if advisory_enabled:
+        created = initialize_plan_loop_state(state, policy, required)
+        state.add_event(
+            EVENT_CLOSED_LOOP_INITIALIZED, "plan closed-loop foundation initialized",
+            {"mode": policy.mode.value, "foundation_only": True},
+        )
+        for stage in created:
+            state.add_event(EVENT_GATE_INITIALIZED, "plan closed-loop gate initialized", {"gate_id": stage.gate_id.value, "stage_id": stage.stage_id})
 
     repair_request = state.metadata.pop("plan_validation_repair", None)
     if isinstance(repair_request, dict):
@@ -1093,6 +1181,7 @@ def run_incremental_planning(
             state=state,
             issues=issues,
             summary=_build_failure_summary(pt, issue_codes, 0),
+            plan_loop_outcome=_write_advisory_artifacts(),
         )
 
     for patch_type in order:
@@ -1422,6 +1511,7 @@ def run_incremental_planning(
                 state=state,
                 issues=issues,
                 summary=_build_failure_summary(patch_type, error_codes, attempt_count),
+                plan_loop_outcome=_write_advisory_artifacts(),
             )
 
     # Check required patches.
@@ -1454,6 +1544,7 @@ def run_incremental_planning(
                 "reference_path": state.metadata.get("reference_path"),
                 "reference_patches_used": reference_patches_used,
             },
+            plan_loop_outcome=_write_advisory_artifacts(),
         )
 
     # Assemble.
@@ -1496,6 +1587,7 @@ def run_incremental_planning(
                 ),
                 "material_composition_report_present": state.material_composition_report is not None,
             },
+            plan_loop_outcome=_write_advisory_artifacts(),
         )
     else:
         issues.append(IncrementalExecutionIssue(
@@ -1526,6 +1618,7 @@ def run_incremental_planning(
                 "lattice_loading_count": _latest_assembly_summary(state).get("lattice_loading_count", 0),
                 "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
             },
+            plan_loop_outcome=_write_advisory_artifacts(),
         )
 
 

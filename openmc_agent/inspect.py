@@ -82,6 +82,12 @@ def inspect_requirement(
     reference_patch_policy: str = "off",
     use_gold_few_shots: bool = True,
     allow_monolithic_fallback: bool = False,
+    plan_loop_mode: str = "off",
+    max_plan_review_rounds: int = 2,
+    max_plan_repair_rounds: int = 2,
+    max_plan_human_rounds: int = 2,
+    max_plan_no_progress_rounds: int = 1,
+    max_plan_additional_llm_calls: int = 20,
     verbose: bool = False,
 ) -> InspectResult:
     configure_logging("INFO" if verbose else "WARNING")
@@ -116,6 +122,12 @@ def inspect_requirement(
             reference_patch_policy=reference_patch_policy,
             use_gold_few_shots=use_gold_few_shots,
             allow_monolithic_fallback=allow_monolithic_fallback,
+            plan_loop_mode=plan_loop_mode,
+            max_plan_review_rounds=max_plan_review_rounds,
+            max_plan_repair_rounds=max_plan_repair_rounds,
+            max_plan_human_rounds=max_plan_human_rounds,
+            max_plan_no_progress_rounds=max_plan_no_progress_rounds,
+            max_plan_additional_llm_calls=max_plan_additional_llm_calls,
             verbose=verbose,
         )
 
@@ -313,6 +325,12 @@ def _inspect_plan_requirement(
     reference_patch_policy: str,
     use_gold_few_shots: bool,
     allow_monolithic_fallback: bool,
+    plan_loop_mode: str,
+    max_plan_review_rounds: int,
+    max_plan_repair_rounds: int,
+    max_plan_human_rounds: int,
+    max_plan_no_progress_rounds: int,
+    max_plan_additional_llm_calls: int,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -345,6 +363,16 @@ def _inspect_plan_requirement(
                 llm=make_patch_llm_client(model_name=model), model_name=model
             )
 
+    from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy
+
+    plan_loop_policy = PlanClosedLoopPolicy(
+        mode=plan_loop_mode,
+        max_review_rounds_per_gate=max_plan_review_rounds,
+        max_repair_rounds_per_gate=max_plan_repair_rounds,
+        max_human_rounds_per_gate=max_plan_human_rounds,
+        max_no_progress_rounds=max_plan_no_progress_rounds,
+        max_total_additional_llm_calls=max_plan_additional_llm_calls,
+    )
     graph = build_plan_graph(
         generate_plan=generate_plan,
         repair_plan=repair_plan,
@@ -371,6 +399,7 @@ def _inspect_plan_requirement(
         run_supervisor_model=model,
         reference_patch_policy=reference_patch_policy,
         allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback,
+        plan_loop_policy=plan_loop_policy,
         select_examples=functools.partial(
             select_few_shots, include_gold=use_gold_few_shots
         ),
@@ -1059,6 +1088,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Allow monolithic plan fallback when incremental patch generation fails "
         "(default: off).",
     )
+    parser.add_argument(
+        "--plan-loop-mode", choices=["off", "advisory", "controlled"], default="off",
+        help="Phase-0 plan closed-loop mode (default: off). advisory writes only foundation artifacts.",
+    )
+    parser.add_argument("--max-plan-review-rounds", type=int, default=2)
+    parser.add_argument("--max-plan-repair-rounds", type=int, default=2)
+    parser.add_argument("--max-plan-human-rounds", type=int, default=2)
+    parser.add_argument("--max-plan-no-progress-rounds", type=int, default=1)
+    parser.add_argument("--max-plan-additional-llm-calls", type=int, default=20)
     args = parser.parse_args(argv)
     if args.compact and args.json_output:
         parser.error("Use either --compact or --json, not both")
@@ -1072,6 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
 
     use_plan = (
         args.plan
+        or args.plan_loop_mode != "off"
         or args.plot
         or args.smoke_test
         or interactive_feedback
@@ -1104,6 +1143,12 @@ def main(argv: list[str] | None = None) -> int:
             reference_patch_policy=args.reference_patch_policy,
             use_gold_few_shots=args.gold_few_shots,
             allow_monolithic_fallback=args.allow_monolithic_fallback,
+            plan_loop_mode=args.plan_loop_mode,
+            max_plan_review_rounds=args.max_plan_review_rounds,
+            max_plan_repair_rounds=args.max_plan_repair_rounds,
+            max_plan_human_rounds=args.max_plan_human_rounds,
+            max_plan_no_progress_rounds=args.max_plan_no_progress_rounds,
+            max_plan_additional_llm_calls=args.max_plan_additional_llm_calls,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -1130,6 +1175,12 @@ def main(argv: list[str] | None = None) -> int:
             reference_patch_policy=args.reference_patch_policy,
             use_gold_few_shots=args.gold_few_shots,
             allow_monolithic_fallback=args.allow_monolithic_fallback,
+            plan_loop_mode=args.plan_loop_mode,
+            max_plan_review_rounds=args.max_plan_review_rounds,
+            max_plan_repair_rounds=args.max_plan_repair_rounds,
+            max_plan_human_rounds=args.max_plan_human_rounds,
+            max_plan_no_progress_rounds=args.max_plan_no_progress_rounds,
+            max_plan_additional_llm_calls=args.max_plan_additional_llm_calls,
         )
     else:
         parser.error("Provide a requirement or --md-file")

@@ -29,6 +29,12 @@ DISABLE_SUPERVISOR=0
 REFERENCE_PATCH_POLICY="off"
 GOLD_FEW_SHOTS=0
 MONOLITHIC_FALLBACK=0
+PLAN_LOOP_MODE="off"
+MAX_PLAN_REVIEW_ROUNDS=""
+MAX_PLAN_REPAIR_ROUNDS=""
+MAX_PLAN_HUMAN_ROUNDS=""
+MAX_PLAN_NO_PROGRESS_ROUNDS=""
+MAX_PLAN_ADDITIONAL_LLM_CALLS=""
 
 usage() {
   cat <<'EOF'
@@ -85,6 +91,12 @@ Options:
   --allow-monolithic-fallback
                           Allow monolithic plan fallback when incremental
                           patch generation fails (default: off).
+  --plan-loop-mode MODE   Phase-0 closed-loop mode: off, advisory, controlled.
+  --max-plan-review-rounds N
+  --max-plan-repair-rounds N
+  --max-plan-human-rounds N
+  --max-plan-no-progress-rounds N
+  --max-plan-additional-llm-calls N
   -h, --help              Show this help.
 
 Providers:
@@ -219,6 +231,30 @@ while [[ $# -gt 0 ]]; do
       MONOLITHIC_FALLBACK=1
       shift
       ;;
+    --plan-loop-mode)
+      PLAN_LOOP_MODE="${2:-}"
+      shift 2
+      ;;
+    --max-plan-review-rounds)
+      MAX_PLAN_REVIEW_ROUNDS="${2:-}"
+      shift 2
+      ;;
+    --max-plan-repair-rounds)
+      MAX_PLAN_REPAIR_ROUNDS="${2:-}"
+      shift 2
+      ;;
+    --max-plan-human-rounds)
+      MAX_PLAN_HUMAN_ROUNDS="${2:-}"
+      shift 2
+      ;;
+    --max-plan-no-progress-rounds)
+      MAX_PLAN_NO_PROGRESS_ROUNDS="${2:-}"
+      shift 2
+      ;;
+    --max-plan-additional-llm-calls)
+      MAX_PLAN_ADDITIONAL_LLM_CALLS="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1" >&2
       usage >&2
@@ -339,6 +375,12 @@ if [[ "$DISABLE_SUPERVISOR" -eq 0 ]]; then
 fi
 
 cmd+=(--reference-patch-policy "$REFERENCE_PATCH_POLICY")
+cmd+=(--plan-loop-mode "$PLAN_LOOP_MODE")
+[[ -n "$MAX_PLAN_REVIEW_ROUNDS" ]] && cmd+=(--max-plan-review-rounds "$MAX_PLAN_REVIEW_ROUNDS")
+[[ -n "$MAX_PLAN_REPAIR_ROUNDS" ]] && cmd+=(--max-plan-repair-rounds "$MAX_PLAN_REPAIR_ROUNDS")
+[[ -n "$MAX_PLAN_HUMAN_ROUNDS" ]] && cmd+=(--max-plan-human-rounds "$MAX_PLAN_HUMAN_ROUNDS")
+[[ -n "$MAX_PLAN_NO_PROGRESS_ROUNDS" ]] && cmd+=(--max-plan-no-progress-rounds "$MAX_PLAN_NO_PROGRESS_ROUNDS")
+[[ -n "$MAX_PLAN_ADDITIONAL_LLM_CALLS" ]] && cmd+=(--max-plan-additional-llm-calls "$MAX_PLAN_ADDITIONAL_LLM_CALLS")
 [[ "$GOLD_FEW_SHOTS" -eq 1 ]] && cmd+=(--gold-few-shots)
 [[ "$MONOLITHIC_FALLBACK" -eq 1 ]] && cmd+=(--allow-monolithic-fallback)
 
