@@ -124,6 +124,10 @@ class PatchValidationContext(AgentBaseModel):
     material_summaries: list[dict[str, Any]] = Field(default_factory=list)
     universe_summaries: list[dict[str, Any]] = Field(default_factory=list)
     assembly_fuel_binding_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    # P2-FULLCORE-2C-C: localized insert placement contract
+    localized_insert_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    localized_insert_universe_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    assembly_insert_binding_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

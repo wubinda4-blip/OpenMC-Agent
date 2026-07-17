@@ -1895,6 +1895,57 @@ def assemble_simulation_plan_from_patches(
                     message=gi.message,
                 ))
 
+        # P2-FULLCORE-2C-C: Source-driven localized insert placement gate.
+        # Verify that all source-declared placement requirements are fulfilled
+        # by matching intents, profiles, and universes.
+        from openmc_agent.plan_builder.required_placement_validator import (
+            validate_required_localized_insert_placements,
+        )
+        placement_validation = validate_required_localized_insert_placements(
+            facts,
+            universes_patch,
+            profiles_patch,
+            assembly_catalog_patch,
+            core_layout_patch,
+            axial_domain_cm=(
+                facts.axial_domain_cm
+                if facts and facts.axial_domain_cm
+                else None
+            ),
+        )
+        if not placement_validation.ok:
+            for pi in placement_validation.issues:
+                issues.append(PlanAssemblyIssue(
+                    code=pi.code,
+                    severity=pi.severity,
+                    message=pi.message,
+                ))
+
+        # P2-FULLCORE-2C-C: Final placement reachability report.
+        from openmc_agent.plan_builder.placement_reachability import (
+            build_localized_insert_placement_report,
+        )
+        placement_report = build_localized_insert_placement_report(
+            facts,
+            universes_patch,
+            profiles_patch,
+            assembly_catalog_patch,
+            core_layout_patch,
+            complex_model=complex_model,
+            axial_domain_cm=(
+                facts.axial_domain_cm
+                if facts and facts.axial_domain_cm
+                else None
+            ),
+        )
+        if placement_report.overall_result == "fail":
+            for pri in placement_report.issues:
+                issues.append(PlanAssemblyIssue(
+                    code=pri.get("code", "localized_insert.required_segment_unreachable"),
+                    severity="error",
+                    message=pri.get("message", ""),
+                ))
+
         errors = [i for i in issues if i.severity == "error"]
         warnings = [i for i in issues if i.severity == "warning"]
         infos = [i for i in issues if i.severity == "info"]
@@ -1921,6 +1972,7 @@ def assemble_simulation_plan_from_patches(
                 "core_total_guide_tube": hier.core_count_aggregation.core_total_for_role("guide_tube") if hier.core_count_aggregation else 0,
                 "localized_inserts_in_base_lattice": False,
                 "internal_assembly_boundary": "transmission",
+                "localized_insert_placement_report": placement_report.to_dict(),
             },
         )
 

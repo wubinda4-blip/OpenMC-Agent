@@ -58,6 +58,12 @@ Schema fields: benchmark_id, selected_variant, geometry_type, lattice_size [int,
   material_roles [list[str]],
   fuel_variant_requirements [list of {{"variant_id", "source_label", "enrichment_wt_percent",
     "density_g_cm3", "assembly_type_ids", "expected_assembly_count", "source_note"}}],
+  localized_insert_requirements [list of {{"requirement_id", "insert_kind",
+    "assembly_type_ids", "expected_coordinate_count_per_assembly",
+    "expected_assembly_instance_count", "host_kind", "required_profile_id",
+    "required_segment_roles", "expected_insert_universe_ids",
+    "anchor_z_cm", "control_state_id", "required_in_detailed_domain",
+    "source_note", "requires_human_confirmation"}}],
   missing_facts [list[str]], assumptions [list[str]],
   source_notes [list[str]].
 
@@ -75,6 +81,26 @@ Rules:
 - If the source specifies multiple fuel enrichments or compositions, declare each as a
   fuel_variant_requirements entry with variant_id, enrichment, density, and which
   assembly_type_ids use it. This is the source-of-truth for fuel identity.
+- If the source document says certain assembly types contain control rods, RCCA,
+  absorber inserts, burnable poisons, or other localized inserts that must be
+  PHYSICALLY PLACED at specific coordinates, declare a localized_insert_requirements
+  entry for each kind. Defining materials, universes, or profiles for an insert
+  does NOT satisfy this requirement — the entry declares that placement is REQUIRED.
+  Fields:
+  * requirement_id: unique identifier for this requirement
+  * insert_kind: pyrex_rod|thimble_plug|control_rod|absorber_insert|instrumentation_insert|custom
+  * assembly_type_ids: which assembly type IDs must contain this insert
+  * expected_coordinate_count_per_assembly: how many paths per assembly instance
+  * expected_assembly_instance_count: how many assembly instances have this insert
+  * host_kind: guide_tube|instrument_tube|custom
+  * required_profile_id: the axial profile ID this insert must reference (or null)
+  * required_segment_roles: roles of the required profile segments (e.g., ["absorber","plenum"])
+  * expected_insert_universe_ids: universe IDs the insert should use
+  * anchor_z_cm: the source-specified operating position (e.g., poison bottom)
+  * control_state_id: the current operating state label
+  * required_in_detailed_domain: whether the insert must appear in the detailed lattice
+- A requirement entry must NOT be omitted just because the insert has materials or
+  universes defined. The requirement is the source contract for placement.
 
 Minimal example (single assembly):
 {{"patch_type": "facts", "benchmark_id": "EXAMPLE", "selected_variant": "3B",
@@ -420,21 +446,43 @@ Rules:
 - default_universe_id must use a universe whose fuel material has the same
   source_variant_id as the assembly type's fuel_variant_id.
 - The multiplicity_hint is advisory; the core_layout patch determines actual placement.
+- Every localized_insert_requirement in Context MUST be fulfilled by a matching
+  localized_insert_intent in the corresponding assembly type's pin_map.
+- An assembly type whose name or role contains "control" or "RCCA" MUST have a
+  localized_insert_intent with insert_kind="control_rod" — the name alone does
+  NOT satisfy the placement requirement.
+- Defining control-rod universes or profiles does NOT satisfy placement. You MUST
+  create a localized_insert_intent with actual coordinates, axial_profile_id,
+  anchor_z_cm, and control_state_id matching the requirement.
+- Multi-segment control rods MUST reference an axial_profile_id from Context.
+  The insert_universe_id is the initial/compatible segment universe; the actual
+  multi-segment structure is resolved from the profile.
+- Intent coordinates MUST be actual positions — do NOT leave empty.
+- Intent anchor_z_cm must match the source operating state.
+- control_state_id must match the current selected variant/state.
+- Localized inserts MUST NOT be written to axial_overlays.
+- Do NOT permanently bake control rods into the base pin lattice.
+- Do NOT put instrument-tube coordinates in a control_rod intent.
 
-Reactor-neutral example (2 types, different fuel variants):
+Reactor-neutral multi-segment control rod example:
 {{"patch_type": "assembly_catalog",
   "assembly_types": [
-    {{"assembly_type_id": "type_a", "fuel_variant_id": "fuel_low", "pin_map": {{
-      "lattice_size": [3, 3], "default_universe_id": "fuel_pin_low",
-      "guide_tube_coords": [[1, 1]]}}}},
-    {{"assembly_type_id": "type_b", "fuel_variant_id": "fuel_high", "pin_map": {{
-      "lattice_size": [3, 3], "default_universe_id": "fuel_pin_high",
-      "guide_tube_coords": [[0, 0], [2, 2]],
-      "localized_insert_intents": [
-        {{"insert_id": "abs1", "insert_kind": "absorber_insert",
-          "host_kind": "guide_tube", "insert_universe_id": "absorber",
-          "coordinates": [[0, 0]], "application_mode": "coordinate_override"}}
-      ]}}}}
+    {{"assembly_type_id": "controlled_type", "fuel_variant_id": "fuel_a",
+      "pin_map": {{
+        "lattice_size": [5, 5], "default_universe_id": "fuel_pin_a",
+        "coordinate_convention": {{"index_base": 0, "row_origin": "top", "col_origin": "left", "ordering": "row_col"}},
+        "guide_tube_coords": [[1,1], [1,3], [3,1], [3,3]],
+        "localized_insert_intents": [
+          {{"insert_id": "bank_a", "insert_kind": "control_rod",
+            "host_kind": "guide_tube", "host_universe_id": "guide_tube",
+            "insert_universe_id": "rod_absorber_lower",
+            "coordinates": [[1,1], [1,3], [3,1], [3,3]],
+            "axial_profile_id": "rod_profile_a",
+            "anchor_z_cm": 120.0,
+            "control_state_id": "state_1",
+            "application_mode": "coordinate_override"}}
+        ]
+      }}}}
   ]}}""",
 
     "localized_insert_profiles": """\
@@ -799,6 +847,36 @@ def build_retry_prompt(
             f"with geometry_mode \"mass_conserving_outer_frame\" or \"homogenized_open_region\".\n"
             f"Affected overlays: {id_list}\n"
             f"Output ONLY JSON — no reasoning, no prose."
+        )
+    elif any("localized_insert.required_placement_missing" in c for c in issue_codes):
+        placement_lines: list[str] = []
+        for issue in issues:
+            if "localized_insert" not in issue.get("code", ""):
+                continue
+            placement_lines.append(
+                f"  - {issue.get('code')}: {issue.get('message')}"
+            )
+        forbidden_block = (
+            "\n\nTARGETED ASSEMBLY_CATALOG RETRY — add missing localized_insert_intent.\n"
+            "Each localized_insert_requirement in Context MUST be fulfilled by a\n"
+            "matching intent in the assembly type's pin_map.localized_insert_intents.\n"
+            "Creating universes or profiles is NOT sufficient — you MUST create an intent\n"
+            "with actual coordinates, axial_profile_id, anchor_z_cm, and control_state_id.\n"
+            "Only modify: assembly_types[type_id].pin_map.localized_insert_intents\n"
+            "Do NOT change: fuel_variant_id, default_universe_id, other assembly types,\n"
+            "core layout, materials, universes, or grid overlays.\n\n"
+            "Placement failures:\n"
+            + "\n".join(placement_lines)
+        )
+    elif any("localized_insert.coordinate_count_mismatch" in c or
+             "localized_insert.anchor_mismatch" in c or
+             "localized_insert.control_state_mismatch" in c for c in issue_codes):
+        forbidden_block = (
+            "\n\nFIX the localized_insert_intent fields:\n"
+            "- coordinates must match the exact count from Context\n"
+            "- anchor_z_cm must match the source operating position\n"
+            "- control_state_id must match the current state\n"
+            "Only modify the affected intent fields.\n"
         )
     else:
         forbidden_block = ""

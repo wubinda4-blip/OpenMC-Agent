@@ -128,6 +128,42 @@ class FuelVariantRequirementPatchItem(_PatchBase):
     source_note: str | None = None
 
 
+class LocalizedInsertPlacementRequirementPatchItem(_PatchBase):
+    """Source-driven placement requirement for a localized insert.
+
+    Declares that the source document requires a specific kind of
+    localized insert (e.g., control rod) to be physically placed in
+    certain assembly types.  This is distinct from *defining* universes
+    or profiles — it is a source-level contract that downstream patches
+    (assembly_catalog intents, profiles, universes) must fulfill.
+
+    Reactor-neutral: no reactor-specific names, values, or identifiers
+    are hardcoded.  All specifics come from the source document.
+    """
+
+    requirement_id: str
+    insert_kind: Literal[
+        "pyrex_rod",
+        "thimble_plug",
+        "control_rod",
+        "absorber_insert",
+        "instrumentation_insert",
+        "custom",
+    ]
+    assembly_type_ids: list[str] = Field(default_factory=list)
+    expected_coordinate_count_per_assembly: int | None = None
+    expected_assembly_instance_count: int | None = None
+    host_kind: Literal["guide_tube", "instrument_tube", "custom"] = "guide_tube"
+    required_profile_id: str | None = None
+    required_segment_roles: list[str] = Field(default_factory=list)
+    expected_insert_universe_ids: list[str] = Field(default_factory=list)
+    anchor_z_cm: float | None = None
+    control_state_id: str | None = None
+    required_in_detailed_domain: bool = True
+    source_note: str | None = None
+    requires_human_confirmation: bool = False
+
+
 # ---------------------------------------------------------------------------
 # FactsPatch
 # ---------------------------------------------------------------------------
@@ -176,6 +212,10 @@ class FactsPatch(_PatchBase):
     fuel_variant_requirements: list[FuelVariantRequirementPatchItem] = Field(
         default_factory=list,
         description="Distinct fuel variants required by the source document.",
+    )
+    localized_insert_requirements: list[LocalizedInsertPlacementRequirementPatchItem] = Field(
+        default_factory=list,
+        description="Source-driven placement requirements for localized inserts (e.g., control rods).",
     )
     missing_facts: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)

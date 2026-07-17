@@ -348,8 +348,11 @@ def test_assembly_catalog_prompt_no_unconditional_sharing():
 def test_assembly_catalog_prompt_has_fuel_variant_example():
     rules = _PATCH_RULES["assembly_catalog"]
     assert "fuel_variant_id" in rules
-    assert "fuel_pin_low" in rules
-    assert "fuel_pin_high" in rules
+    assert "fuel_pin" in rules
+    # Multi-segment control rod example must be present
+    assert "control_rod" in rules
+    assert "axial_profile_id" in rules
+    assert "localized_insert_requirement" in rules
 
 
 def test_materials_prompt_mentions_source_variant_id():

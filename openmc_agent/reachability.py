@@ -133,6 +133,15 @@ def collect_active_dependencies_from_model(model: ComplexModelSpec) -> ActiveDep
             seed_lattices.append(assembly.lattice_id)
     if model.core is not None and model.core.lattice_id:
         seed_lattices.append(model.core.lattice_id)
+    # Axial layers reference derived core lattices via fill.id — these are
+    # critical entry points for derived lattices that contain localized inserts
+    # (e.g., RCCA control rods, burnable poisons). Without seeding from axial
+    # layers, derived lattices would be unreachable and falsely reported as inactive.
+    if model.core is not None:
+        for layer in model.core.axial_layers:
+            if layer.fill and layer.fill.type == "lattice" and layer.fill.id:
+                if layer.fill.id in lattices_by_id:
+                    seed_lattices.append(layer.fill.id)
     # Fall back to declared lattices when no root container points at one, so a
     # bare lattice-only model still resolves an active graph.
     if not seed_lattices:

@@ -490,6 +490,9 @@ def build_generation_context_from_state(
     material_summaries: list[dict[str, Any]] = []
     universe_summaries: list[dict[str, Any]] = []
     assembly_fuel_binding_summaries: list[dict[str, Any]] = []
+    localized_insert_requirements: list[dict[str, Any]] = []
+    localized_insert_universe_summaries: list[dict[str, Any]] = []
+    assembly_insert_binding_summaries: list[dict[str, Any]] = []
     reference_expected_counts: dict[str, int] = {
         str(k): int(v)
         for k, v in state.metadata.get("reference_expected_counts", {}).items()
@@ -543,6 +546,26 @@ def build_generation_context_from_state(
                                 "variant_id", "source_label",
                                 "enrichment_wt_percent", "density_g_cm3",
                                 "assembly_type_ids", "expected_assembly_count",
+                                "source_note",
+                            )
+                        })
+            # P2-FULLCORE-2C-C: extract localized insert placement requirements.
+            lir = content.get("localized_insert_requirements")
+            if isinstance(lir, list):
+                for item in lir:
+                    if isinstance(item, dict) and item.get("requirement_id"):
+                        localized_insert_requirements.append({
+                            k: item.get(k)
+                            for k in (
+                                "requirement_id", "insert_kind",
+                                "assembly_type_ids",
+                                "expected_coordinate_count_per_assembly",
+                                "expected_assembly_instance_count",
+                                "host_kind", "required_profile_id",
+                                "required_segment_roles",
+                                "expected_insert_universe_ids",
+                                "anchor_z_cm", "control_state_id",
+                                "required_in_detailed_domain",
                                 "source_note",
                             )
                         })
@@ -743,6 +766,9 @@ def build_generation_context_from_state(
     ctx.material_summaries = material_summaries
     ctx.universe_summaries = universe_summaries
     ctx.assembly_fuel_binding_summaries = assembly_fuel_binding_summaries
+    ctx.localized_insert_requirements = localized_insert_requirements
+    ctx.localized_insert_universe_summaries = localized_insert_universe_summaries
+    ctx.assembly_insert_binding_summaries = assembly_insert_binding_summaries
 
     state.add_event(
         event_type=EVENT_PATCH_DEPENDENCY_CONTEXT_BUILT,
