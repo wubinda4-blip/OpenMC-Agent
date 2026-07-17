@@ -25,6 +25,8 @@ from openmc_agent.schemas import AgentBaseModel
 
 from .mode import PlanningModeDecision
 from .closed_loop.models import (
+    ConfirmedFactRecord,
+    HumanPlanAnswer,
     HumanPlanQuestion,
     PlanLoopMode,
     PlanReviewDecision,
@@ -154,7 +156,7 @@ class PlanBuildState(AgentBaseModel):
     # namespaced from validation/runtime repair so checkpoint restore preserves
     # the future review protocol without changing existing retry semantics.
     plan_loop_mode: PlanLoopMode = PlanLoopMode.OFF
-    plan_loop_contract_version: str = "0.1"
+    plan_loop_contract_version: str = "0.2"
     plan_loop_policy: dict[str, Any] = Field(default_factory=dict)
     plan_loop_stages: dict[str, PlanStageState] = Field(default_factory=dict)
     plan_review_findings: dict[str, PlanReviewFinding] = Field(default_factory=dict)
@@ -165,6 +167,10 @@ class PlanBuildState(AgentBaseModel):
     plan_loop_additional_llm_calls: int = 0
     plan_loop_no_progress_events: list[dict[str, Any]] = Field(default_factory=list)
     plan_loop_artifacts: list[str] = Field(default_factory=list)
+    plan_human_answers: dict[str, HumanPlanAnswer] = Field(default_factory=dict)
+    plan_confirmed_fact_records: dict[str, ConfirmedFactRecord] = Field(default_factory=dict)
+    facts_review_history: list[dict[str, Any]] = Field(default_factory=list)
+    facts_revision_history: list[dict[str, Any]] = Field(default_factory=list)
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 

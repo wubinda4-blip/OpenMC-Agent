@@ -88,6 +88,11 @@ def inspect_requirement(
     max_plan_human_rounds: int = 2,
     max_plan_no_progress_rounds: int = 1,
     max_plan_additional_llm_calls: int = 20,
+    plan_reviewer_model: str | None = None,
+    plan_repair_model: str | None = None,
+    facts_review_chunk_chars: int = 12000,
+    max_facts_review_chunks: int = 8,
+    plan_human_mode: str = "off",
     verbose: bool = False,
 ) -> InspectResult:
     configure_logging("INFO" if verbose else "WARNING")
@@ -128,6 +133,11 @@ def inspect_requirement(
             max_plan_human_rounds=max_plan_human_rounds,
             max_plan_no_progress_rounds=max_plan_no_progress_rounds,
             max_plan_additional_llm_calls=max_plan_additional_llm_calls,
+            plan_reviewer_model=plan_reviewer_model,
+            plan_repair_model=plan_repair_model,
+            facts_review_chunk_chars=facts_review_chunk_chars,
+            max_facts_review_chunks=max_facts_review_chunks,
+            plan_human_mode=plan_human_mode,
             verbose=verbose,
         )
 
@@ -331,6 +341,11 @@ def _inspect_plan_requirement(
     max_plan_human_rounds: int,
     max_plan_no_progress_rounds: int,
     max_plan_additional_llm_calls: int,
+    plan_reviewer_model: str | None,
+    plan_repair_model: str | None,
+    facts_review_chunk_chars: int,
+    max_facts_review_chunks: int,
+    plan_human_mode: str,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -372,6 +387,18 @@ def _inspect_plan_requirement(
         max_human_rounds_per_gate=max_plan_human_rounds,
         max_no_progress_rounds=max_plan_no_progress_rounds,
         max_total_additional_llm_calls=max_plan_additional_llm_calls,
+        facts_review_chunk_chars=facts_review_chunk_chars,
+        max_facts_review_chunks=max_facts_review_chunks,
+        plan_human_mode=plan_human_mode,
+        enable_human_gate=plan_human_mode == "ambiguity_only",
+    )
+    plan_reviewer_client = (
+        make_patch_llm_client(model_name=plan_reviewer_model or model)
+        if plan_loop_mode != "off" else None
+    )
+    plan_repair_client = (
+        make_patch_llm_client(model_name=plan_repair_model or model)
+        if plan_loop_mode == "controlled" else None
     )
     graph = build_plan_graph(
         generate_plan=generate_plan,
@@ -400,6 +427,8 @@ def _inspect_plan_requirement(
         reference_patch_policy=reference_patch_policy,
         allow_monolithic_fallback_for_incremental_failure=allow_monolithic_fallback,
         plan_loop_policy=plan_loop_policy,
+        plan_reviewer_client=plan_reviewer_client,
+        plan_repair_client=plan_repair_client,
         select_examples=functools.partial(
             select_few_shots, include_gold=use_gold_few_shots
         ),
@@ -1097,6 +1126,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-plan-human-rounds", type=int, default=2)
     parser.add_argument("--max-plan-no-progress-rounds", type=int, default=1)
     parser.add_argument("--max-plan-additional-llm-calls", type=int, default=20)
+    parser.add_argument("--plan-reviewer-model", default=None)
+    parser.add_argument("--plan-repair-model", default=None)
+    parser.add_argument("--facts-review-chunk-chars", type=int, default=12000)
+    parser.add_argument("--max-facts-review-chunks", type=int, default=8)
+    parser.add_argument("--plan-human-mode", choices=["off", "ambiguity_only"], default="off")
     args = parser.parse_args(argv)
     if args.compact and args.json_output:
         parser.error("Use either --compact or --json, not both")
@@ -1149,6 +1183,11 @@ def main(argv: list[str] | None = None) -> int:
             max_plan_human_rounds=args.max_plan_human_rounds,
             max_plan_no_progress_rounds=args.max_plan_no_progress_rounds,
             max_plan_additional_llm_calls=args.max_plan_additional_llm_calls,
+            plan_reviewer_model=args.plan_reviewer_model,
+            plan_repair_model=args.plan_repair_model,
+            facts_review_chunk_chars=args.facts_review_chunk_chars,
+            max_facts_review_chunks=args.max_facts_review_chunks,
+            plan_human_mode=args.plan_human_mode,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -1181,6 +1220,11 @@ def main(argv: list[str] | None = None) -> int:
             max_plan_human_rounds=args.max_plan_human_rounds,
             max_plan_no_progress_rounds=args.max_plan_no_progress_rounds,
             max_plan_additional_llm_calls=args.max_plan_additional_llm_calls,
+            plan_reviewer_model=args.plan_reviewer_model,
+            plan_repair_model=args.plan_repair_model,
+            facts_review_chunk_chars=args.facts_review_chunk_chars,
+            max_facts_review_chunks=args.max_facts_review_chunks,
+            plan_human_mode=args.plan_human_mode,
         )
     else:
         parser.error("Provide a requirement or --md-file")

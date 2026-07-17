@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.1"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.2"
 
 
 class _TextEnum(str, Enum):
@@ -42,6 +42,7 @@ class PlanStageStatus(_TextEnum):
     PROPOSING = "proposing"
     VALIDATING = "validating"
     REVIEWING = "reviewing"
+    REVIEWED = "reviewed"
     REPAIRING = "repairing"
     AWAITING_HUMAN = "awaiting_human"
     ACCEPTED = "accepted"
@@ -139,6 +140,99 @@ class PlanReviewFinding(AgentBaseModel):
         if not self.finding_id:
             self.finding_id = fingerprint
         return self
+
+
+class FactsInterpretationOption(AgentBaseModel):
+    option_id: str
+    label: str
+    value: Any
+    consequence: str
+    source_evidence_hashes: list[str] = Field(default_factory=list)
+
+
+class FactsReviewFindingDraft(AgentBaseModel):
+    """Untrusted critic output; Python binds it to the supplied evidence."""
+    code: str
+    severity: PlanFindingSeverity
+    category: PlanFindingCategory
+    message: str
+    evidence_hashes: list[str] = Field(default_factory=list)
+    affected_json_paths: list[str] = Field(default_factory=list)
+    repairable_by_llm: bool = False
+    requires_human: bool = False
+    confidence: float
+    expected_value: Any | None = None
+    current_value: Any | None = None
+    candidate_interpretations: list[FactsInterpretationOption] = Field(default_factory=list)
+    downstream_impact: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("confidence")
+    @classmethod
+    def _confidence_in_range(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        return value
+
+    @model_validator(mode="after")
+    def _human_is_not_repairable(self) -> "FactsReviewFindingDraft":
+        if self.requires_human and self.repairable_by_llm:
+            raise ValueError("requires_human findings cannot be repairable_by_llm")
+        return self
+
+
+class FactsReviewCoverageSummary(AgentBaseModel):
+    reviewed_source_excerpt_count: int = 0
+    omitted_source_excerpt_count: int = 0
+    facts_fields_reviewed: list[str] = Field(default_factory=list)
+    high_risk_topics_reviewed: list[str] = Field(default_factory=list)
+
+
+class FactsReviewModelOutput(AgentBaseModel):
+    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    findings: list[FactsReviewFindingDraft] = Field(default_factory=list)
+    reviewed_evidence_hashes: list[str] = Field(default_factory=list)
+    coverage_summary: FactsReviewCoverageSummary = Field(default_factory=FactsReviewCoverageSummary)
+    concise_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FactsRevisionProposal(AgentBaseModel):
+    proposal_id: str
+    target_patch_type: Literal["facts"] = "facts"
+    operations: list[Any] = Field(default_factory=list)
+    resolved_finding_ids: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    confidence: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("confidence")
+    @classmethod
+    def _proposal_confidence(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        return value
+
+
+class HumanPlanAnswer(AgentBaseModel):
+    question_id: str
+    selected_option_id: str | None = None
+    custom_value: Any | None = None
+    answer_text: str | None = None
+    answered_by: Literal["user", "expert", "test"]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfirmedFactRecord(AgentBaseModel):
+    fact_id: str
+    json_path: str
+    value: Any
+    source: Literal["human_confirmation"] = "human_confirmation"
+    question_id: str
+    evidence_hashes: list[str] = Field(default_factory=list)
+    affected_patch_types: list[str] = Field(default_factory=lambda: ["facts"])
+    confirmed_round: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanReviewDecision(AgentBaseModel):
@@ -271,7 +365,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2
@@ -282,14 +376,26 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     enable_human_gate: bool = False
     fail_closed_on_budget_exhaustion: bool = True
     artifact_subdir: str = "plan_closed_loop"
+    facts_review_chunk_chars: int = 12000
+    max_facts_review_chunks: int = 8
+    max_facts_review_source_chars: int = 96000
+    enable_facts_review_synthesis: bool = True
+    plan_human_mode: Literal["off", "ambiguity_only"] = "off"
     gate_enabled: dict[PlanGateId, bool] = Field(default_factory=_default_gate_enabled)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("max_review_rounds_per_gate", "max_repair_rounds_per_gate", "max_human_rounds_per_gate", "max_attempts_per_issue_fingerprint", "max_no_progress_rounds", "max_total_additional_llm_calls")
+    @field_validator("max_review_rounds_per_gate", "max_repair_rounds_per_gate", "max_human_rounds_per_gate", "max_attempts_per_issue_fingerprint", "max_no_progress_rounds", "max_total_additional_llm_calls", "max_facts_review_chunks")
     @classmethod
     def _budget_bounds(cls, value: int) -> int:
         if not 0 <= value <= 10000:
             raise ValueError("budget must be between 0 and 10000")
+        return value
+
+    @field_validator("facts_review_chunk_chars", "max_facts_review_source_chars")
+    @classmethod
+    def _source_bounds(cls, value: int) -> int:
+        if not 1 <= value <= 1_000_000:
+            raise ValueError("facts review source limit must be between 1 and 1000000")
         return value
 
 

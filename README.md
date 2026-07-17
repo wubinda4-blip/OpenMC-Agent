@@ -48,7 +48,9 @@ receive_requirement
 
 关键容错点：`generate_structured_output` 支持传入 `normalizer`，默认对 plan 启用 `normalize_capability_report`——LLM 若给出"非可执行却带具体 renderer"的矛盾 capability_report，会在 Pydantic 校验前被修正为 `supported_renderer="none"`，避免整个 plan 坍缩为 null。若模型返回坏 JSON 或 schema 不合格，Plan 工作流会先尝试格式修复；incremental assembled plan 校验失败时先以 validator issue 定位原 patch，LLM 仅能提交受 allowlist 约束的 RFC6902 patch edit，并在 clone 上经过 patch/assembly/full-plan validation 后才提交。无改善或重复候选才退回 targeted full-patch regeneration。
 
-Plan closed-loop Phase 0：`--plan-loop-mode off` 是默认值且不改变既有工作流。`advisory` 只初始化可持久化 gate/stage 协议并在 `incremental/plan_closed_loop/` 写 JSON artifacts，不调用额外 Critic、Repair 或 Supervisor LLM，也不会改变 Plan 结果。`controlled` 目前明确返回 `planning.closed_loop.controlled_not_implemented`；Facts/Placement review gate 将在后续阶段实现。
+Plan closed-loop Phase 0 提供了可持久化 gate/stage 协议、预算和 JSON artifacts；`off` 始终保持既有工作流行为。
+
+Plan closed-loop Phase 1：Facts Gate 已可用。Facts Proposer、独立 Facts Evidence Critic 与（后续按 finding 触发的）Facts Revision Agent 是分离角色，即使模型名相同也独立计数。`advisory` 真实执行 Critic 但不修改 FactsPatch 或 Plan；`controlled` 仅覆盖 Facts Gate，须经 Python action policy 批准后才生成下游 patch。Placement Gate、通用 executable retry loop 与 LLM Supervisor 尚未实现。
 
 ### 渲染能力分级
 

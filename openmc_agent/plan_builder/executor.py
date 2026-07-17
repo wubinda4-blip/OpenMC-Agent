@@ -929,6 +929,8 @@ def run_incremental_planning(
     material_policy: Any = None,
     plan_loop_policy: Any = None,
     plan_loop_output_dir: str | Path | None = None,
+    plan_reviewer_client: Any = None,
+    plan_repair_client: Any = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -951,29 +953,36 @@ def run_incremental_planning(
     from .closed_loop.controller import (
         build_advisory_outcome,
         initialize_plan_loop_state,
+        record_decision,
+        record_findings,
         transition_stage,
     )
-    from .closed_loop.models import PlanClosedLoopPolicy, PlanLoopMode, PlanStageStatus
-    from .closed_loop.policy import canonical_gate_order
+    from .closed_loop.facts_evidence import build_facts_evidence_packs
+    from .closed_loop.facts_reviewer import run_facts_review
+    from .closed_loop.models import PlanClosedLoopPolicy, PlanGateId, PlanLoopMode, PlanReviewAction, PlanReviewDecision, PlanStageStatus
+    from .closed_loop.policy import canonical_gate_order, compute_allowed_actions
 
     policy = PlanClosedLoopPolicy.model_validate(plan_loop_policy or {})
     # Advisory is explicitly useful as an observability mode.  Its default
     # effective registry is all gates while the model default remains inert.
     if policy.mode is PlanLoopMode.ADVISORY and not any(policy.gate_enabled.values()):
         policy = policy.model_copy(update={"gate_enabled": {gate: True for gate in canonical_gate_order()}})
-    if policy.mode is PlanLoopMode.CONTROLLED:
+    if policy.mode is PlanLoopMode.CONTROLLED and not any(policy.gate_enabled.values()):
+        policy = policy.model_copy(update={"gate_enabled": {PlanGateId.FACTS: True}})
+    unsupported_controlled = [gate for gate, enabled in policy.gate_enabled.items() if enabled and gate is not PlanGateId.FACTS]
+    if policy.mode is PlanLoopMode.CONTROLLED and unsupported_controlled:
         issue = IncrementalExecutionIssue(
-            code="planning.closed_loop.controlled_not_implemented", severity="error",
-            message="controlled plan closed-loop execution is not implemented in Phase 0",
+            code="planning.closed_loop.gate_not_implemented", severity="error",
+            message="controlled mode currently implements only the facts gate",
         )
         state.add_event(
             event_type="planning.closed_loop.controlled_not_implemented",
             message=issue.message,
-            data={"mode": policy.mode.value},
+            data={"mode": policy.mode.value, "gates": [gate.value for gate in unsupported_controlled]},
         )
         return IncrementalExecutionResult(
             ok=False, state=state, issues=[issue],
-            summary={"issue_codes": [issue.code], "controlled_not_implemented": True},
+            summary={"issue_codes": [issue.code], "gate_not_implemented": True},
             plan_loop_outcome={"status": "blocked", "detail": issue.message, "additional_llm_calls_used": 0},
         )
 
@@ -1016,11 +1025,11 @@ def run_incremental_planning(
         outcome = build_advisory_outcome(state, policy)
         summary = {
             "mode": policy.mode.value,
-            "foundation_version": "0.1",
+            "foundation_version": policy.contract_version,
             "enabled_gates": [gate.value for gate in canonical_gate_order() if policy.gate_enabled.get(gate, False)],
             "stage_count": len(state.plan_loop_stages),
-            "additional_llm_calls": 0,
-            "reviewer_calls": 0,
+            "additional_llm_calls": state.plan_loop_additional_llm_calls,
+            "reviewer_calls": sum(int(item.get("reviewer_calls", 0)) for item in state.facts_review_history),
             "repair_calls": 0,
             "human_interrupts": 0,
             "workflow_behavior_changed": False,
@@ -1047,6 +1056,158 @@ def run_incremental_planning(
         )
         for stage in created:
             state.add_event(EVENT_GATE_INITIALIZED, "plan closed-loop gate initialized", {"gate_id": stage.gate_id.value, "stage_id": stage.stage_id})
+    elif policy.mode is PlanLoopMode.CONTROLLED:
+        created = initialize_plan_loop_state(state, policy, required)
+        state.add_event(EVENT_CLOSED_LOOP_INITIALIZED, "controlled facts gate initialized", {"mode": policy.mode.value})
+
+    facts_stage_for_resume = state.plan_loop_stages.get("plan_gate_facts")
+    if facts_stage_for_resume is not None and facts_stage_for_resume.status is PlanStageStatus.AWAITING_HUMAN and state.plan_human_answers:
+        from .closed_loop.facts_human import consume_facts_answer
+        consumed = []
+        for question_id, question in list(state.plan_human_questions.items()):
+            answer = state.plan_human_answers.get(question_id)
+            if answer is None:
+                continue
+            record = consume_facts_answer(question=question, answer=answer, round_index=facts_stage_for_resume.human_round_count + 1)
+            state.plan_confirmed_fact_records[record.fact_id] = record
+            state.confirmed_facts.setdefault("plan_closed_loop", {}).setdefault("facts", {})[record.json_path.lstrip("/")] = record.value
+            consumed.append(record)
+        if consumed:
+            facts_stage_for_resume.human_round_count += 1
+            transition_stage(facts_stage_for_resume, PlanStageStatus.REPAIRING)
+            state.invalidate_patch_types(_expand_patch_repair_targets(["facts"]), reason="facts human confirmation", issues=[{"code": "facts.human_confirmation"}])
+            artifact_writer._write("facts_human_answers.json", list(state.plan_human_answers.values()))
+            artifact_writer._write("facts_confirmed_fact_records.json", consumed)
+            state.add_event("planning.facts_human_answer_consumed", "typed facts confirmation consumed", {"count": len(consumed)})
+
+    def _facts_stage():
+        return state.plan_loop_stages.get("plan_gate_facts")
+
+    def _run_facts_gate() -> IncrementalExecutionIssue | None:
+        if policy.mode is PlanLoopMode.OFF:
+            return None
+        stage = _facts_stage()
+        if stage is None:
+            return None
+        if stage.status is PlanStageStatus.PROPOSING:
+            transition_stage(stage, PlanStageStatus.VALIDATING)
+        transition_stage(stage, PlanStageStatus.REVIEWING)
+        state.add_event("planning.facts_gate_started", "facts evidence review gate started", {})
+        facts_env = next((item for item in state.patches.values() if item.patch_type == "facts" and item.status == "valid"), None)
+        if facts_env is None:
+            return IncrementalExecutionIssue(code="planning.facts_gate_missing_patch", severity="error", message="facts patch unavailable for review", patch_type="facts")
+        packs = build_facts_evidence_packs(
+            requirement_text=requirement, facts_patch=facts_env.content,
+            confirmed_facts=state.confirmed_facts, planning_metadata=state.metadata, policy=policy,
+        )
+        for index, pack in enumerate(packs):
+            path = artifact_writer._write(f"facts_evidence_pack_{index:03d}.json", pack)
+            if path:
+                state.plan_loop_artifacts.append(path)
+        state.add_event("planning.facts_evidence_built", "facts evidence packs built", {"pack_count": len(packs)})
+        if len(requirement) > policy.max_facts_review_source_chars or any(pack.metadata.get("source_truncated") for pack in packs):
+            code = "facts.review_source_too_large"
+            state.add_event("planning.facts_review_failed", code, {})
+            if policy.mode is PlanLoopMode.CONTROLLED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code=code, severity="error", message="source exceeds facts review coverage budget", patch_type="facts")
+        if plan_reviewer_client is None:
+            state.add_event("planning.facts_reviewer_unavailable", "facts reviewer client unavailable", {})
+            if policy.mode is PlanLoopMode.CONTROLLED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.facts_reviewer_unavailable", severity="error", message="controlled facts review requires a reviewer", patch_type="facts")
+            transition_stage(stage, PlanStageStatus.REVIEWED)
+            return None
+        state.add_event("planning.facts_review_started", "independent facts critic called", {"pack_count": len(packs)})
+        review = run_facts_review(evidence_packs=packs, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+        for index, output in enumerate(review.outputs):
+            path = artifact_writer._write(f"facts_review_normalized_{index:03d}.json", output)
+            if path:
+                state.plan_loop_artifacts.append(path)
+        findings_path = artifact_writer._write("facts_review_findings.json", review.findings)
+        if findings_path:
+            state.plan_loop_artifacts.append(findings_path)
+        state.facts_review_history.append(review.model_dump(mode="json"))
+        record_findings(state, stage, review.findings)
+        if not review.ok or not review.coverage_complete:
+            state.add_event("planning.facts_review_failed", review.error or "facts_review.coverage_incomplete", {})
+            if policy.mode is PlanLoopMode.CONTROLLED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
+        actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=review.findings, deterministic_issues=[], additional_llm_calls_used=state.plan_loop_additional_llm_calls)
+        action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED
+        decision = PlanReviewDecision(
+            decision_id=f"facts_decision_{len(state.plan_review_decisions):03d}", gate_id=PlanGateId.FACTS,
+            action=action, target_patch_types=["facts"] if action in {PlanReviewAction.REVISE_CURRENT_PATCH, PlanReviewAction.RETRY_DEPENDENCY} else [],
+            finding_ids=[item.finding_id for item in review.findings], rationale="deterministic facts-gate action policy",
+            allowed_actions_snapshot=actions or [PlanReviewAction.FAIL_CLOSED], decided_by="deterministic",
+        )
+        record_decision(state, stage, decision)
+        decision_path = artifact_writer._write("facts_review_decision.json", decision)
+        if decision_path:
+            state.plan_loop_artifacts.append(decision_path)
+        state.add_event("planning.facts_review_completed", "facts critic result normalized", {"finding_count": len(review.findings), "rejected_count": len(review.rejected)})
+        if policy.mode is PlanLoopMode.ADVISORY:
+            transition_stage(stage, PlanStageStatus.REVIEWED)
+            state.add_event("planning.facts_review_advisory_completed", "facts review recorded without plan mutation", {})
+            return None
+        if action is PlanReviewAction.APPROVE:
+            transition_stage(stage, PlanStageStatus.ACCEPTED)
+            state.add_event("planning.facts_gate_accepted", "facts gate accepted", {})
+            return None
+        if action is PlanReviewAction.ASK_HUMAN:
+            from .closed_loop.facts_human import build_facts_human_question
+            transition_stage(stage, PlanStageStatus.AWAITING_HUMAN)
+            for finding in review.findings:
+                if finding.requires_human:
+                    question = build_facts_human_question(finding)
+                    if question.question_id not in state.plan_human_answers:
+                        state.plan_human_questions[question.question_id] = question
+            artifact_writer._write("facts_human_questions.json", list(state.plan_human_questions.values()))
+            state.add_event("planning.facts_awaiting_human", "facts ambiguity requires typed confirmation", {"question_count": len(state.plan_human_questions)})
+            return IncrementalExecutionIssue(code="planning.facts_awaiting_human", severity="error", message="facts gate awaiting human confirmation", patch_type="facts")
+        if action is PlanReviewAction.REVISE_CURRENT_PATCH and plan_repair_client is not None:
+            from .closed_loop.facts_revision import evaluate_facts_revision, normalize_facts_revision, allowed_paths_for_findings
+            from .closed_loop.facts_revision_prompts import build_facts_revision_prompt
+            transition_stage(stage, PlanStageStatus.REPAIRING)
+            stage.repair_count += 1
+            state.add_event("planning.facts_revision_started", "facts-only revision started", {})
+            try:
+                raw = plan_repair_client(build_facts_revision_prompt(
+                    facts_patch=facts_env.content,
+                    findings=[item.model_dump(mode="json") for item in review.findings],
+                    evidence=[item.model_dump(mode="json") for pack in packs for item in pack.source_excerpts],
+                    allowed_paths=allowed_paths_for_findings(review.findings), confirmed_facts=state.confirmed_facts,
+                ))
+                state.plan_loop_additional_llm_calls += 1
+                proposal = normalize_facts_revision(raw)
+                evaluation = evaluate_facts_revision(
+                    facts_patch=facts_env.content, proposal=proposal, findings=review.findings,
+                    confirmed_facts=state.confirmed_facts,
+                    prior_candidate_hashes=state.plan_loop_candidate_hashes_by_fingerprint.get(stage.issue_fingerprint or "facts", []),
+                )
+                state.facts_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json")})
+                if evaluation.accepted and evaluation.candidate is not None:
+                    facts_env.status = "invalid"
+                    facts_env.metadata["superseded_by_facts_revision"] = proposal.proposal_id
+                    repaired = PlanPatchEnvelope(patch_id=f"{facts_env.patch_id}_repair_{stage.repair_count}", patch_type="facts", content=evaluation.candidate, source="repair", status="valid")
+                    state.add_patch(repaired)
+                    transition_stage(stage, PlanStageStatus.VALIDATING)
+                    transition_stage(stage, PlanStageStatus.REVIEWING)
+                    state.add_event("planning.facts_revision_accepted", "facts revision accepted on clone", {"proposal_id": proposal.proposal_id})
+                    # A second independent review must approve the candidate.
+                    rereview = run_facts_review(evidence_packs=build_facts_evidence_packs(requirement_text=requirement, facts_patch=evaluation.candidate, confirmed_facts=state.confirmed_facts, planning_metadata=state.metadata, policy=policy), reviewer_client=plan_reviewer_client, state=state, policy=policy)
+                    if rereview.ok and rereview.coverage_complete and not any(item.severity.value == "error" for item in rereview.findings):
+                        transition_stage(stage, PlanStageStatus.ACCEPTED)
+                        return None
+            except Exception as exc:
+                state.facts_revision_history.append({"error": str(exc)})
+            transition_stage(stage, PlanStageStatus.BLOCKED)
+            state.add_event("planning.facts_revision_rejected", "facts revision rejected", {})
+            return IncrementalExecutionIssue(code="planning.facts_revision_rejected", severity="error", message="facts revision did not pass clone/review acceptance", patch_type="facts")
+        transition_stage(stage, PlanStageStatus.BLOCKED)
+        state.add_event("planning.facts_gate_blocked", "facts gate blocked by deterministic policy", {"action": action.value})
+        return IncrementalExecutionIssue(code="planning.facts_gate_blocked", severity="error", message=f"facts gate action={action.value}", patch_type="facts")
 
     repair_request = state.metadata.pop("plan_validation_repair", None)
     if isinstance(repair_request, dict):
@@ -1311,6 +1472,10 @@ def run_incremental_planning(
         ctx = build_generation_context_from_state(
             state, patch_type, few_shot_case_ids=few_shot_case_ids
         )
+        if patch_type == "facts" and policy.mode is not PlanLoopMode.OFF:
+            facts_stage = _facts_stage()
+            if facts_stage is not None and facts_stage.status is PlanStageStatus.PENDING:
+                transition_stage(facts_stage, PlanStageStatus.PROPOSING)
 
         # Generate patch with retry. We intentionally do NOT pass max_tokens:
         # provider defaults (e.g. DeepSeek ~8192) are larger than any safe
@@ -1329,6 +1494,19 @@ def run_incremental_planning(
 
         if result.ok and result.envelope is not None:
             state.add_patch(result.envelope)
+            if patch_type == "facts":
+                facts_gate_issue = _run_facts_gate()
+                if facts_gate_issue is not None:
+                    issues.append(facts_gate_issue)
+                    state.add_event(
+                        event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
+                        message="facts gate blocked downstream patch generation",
+                        data={"issue_code": facts_gate_issue.code},
+                    )
+                    return IncrementalExecutionResult(
+                        ok=False, state=state, issues=issues,
+                        summary=_build_failure_summary("facts", [facts_gate_issue.code], len(result.attempts)),
+                    )
             # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
             _sync_benchmark_from_facts()
 

@@ -342,6 +342,8 @@ def build_plan_graph(
     reference_patch_policy: str = "off",
     material_policy: Any = None,
     plan_loop_policy: Any = None,
+    plan_reviewer_client: Any = None,
+    plan_repair_client: Any = None,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -413,6 +415,8 @@ def build_plan_graph(
             reference_patch_policy=reference_patch_policy,
             material_policy=material_policy,
             plan_loop_policy=plan_loop_policy,
+            plan_reviewer_client=plan_reviewer_client,
+            plan_repair_client=plan_repair_client,
         ),
     )
     graph.add_node(
@@ -1495,6 +1499,8 @@ def _run_incremental_plan_generation(
     reference_patch_policy: str = "off",
     material_policy: Any = None,
     plan_loop_policy: Any = None,
+    plan_reviewer_client: Any = None,
+    plan_repair_client: Any = None,
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -1581,6 +1587,8 @@ def _run_incremental_plan_generation(
         material_policy=material_policy,
         plan_loop_policy=plan_loop_policy,
         plan_loop_output_dir=state.get("output_dir"),
+        plan_reviewer_client=plan_reviewer_client,
+        plan_repair_client=plan_repair_client,
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -1746,6 +1754,8 @@ def _make_generate_plan_node(
     reference_patch_policy: str = "off",
     material_policy: Any = None,
     plan_loop_policy: Any = None,
+    plan_reviewer_client: Any = None,
+    plan_repair_client: Any = None,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -1776,6 +1786,8 @@ def _make_generate_plan_node(
                 reference_patch_policy=reference_patch_policy,
                 material_policy=material_policy,
                 plan_loop_policy=plan_loop_policy,
+                plan_reviewer_client=plan_reviewer_client,
+                plan_repair_client=plan_repair_client,
             )
         if (
             pmd.get("mode") == "incremental"
@@ -1789,6 +1801,8 @@ def _make_generate_plan_node(
                 reference_patch_policy=reference_patch_policy,
                 material_policy=material_policy,
                 plan_loop_policy=plan_loop_policy,
+                plan_reviewer_client=plan_reviewer_client,
+                plan_repair_client=plan_repair_client,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -1819,6 +1833,8 @@ def _make_generate_plan_node(
                     reference_patch_policy=reference_patch_policy,
                     material_policy=material_policy,
                     plan_loop_policy=plan_loop_policy,
+                    plan_reviewer_client=plan_reviewer_client,
+                    plan_repair_client=plan_repair_client,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

@@ -44,7 +44,7 @@ def test_off_is_quiet_and_advisory_writes_without_llm(monkeypatch, tmp_path) -> 
     assert (tmp_path / "incremental" / "plan_closed_loop" / "plan_loop_state.json").exists()
 
 
-def test_controlled_fails_closed_without_calling_llm() -> None:
+def test_controlled_no_longer_silently_downgrades_to_off() -> None:
     state = PlanBuildState(state_id="controlled", requirement_text="r")
     result = run_incremental_planning(
         requirement="r", state=state,
@@ -52,7 +52,8 @@ def test_controlled_fails_closed_without_calling_llm() -> None:
         plan_loop_policy={"mode": "controlled"},
     )
     assert not result.ok
-    assert [issue.code for issue in result.issues] == ["planning.closed_loop.controlled_not_implemented"]
+    assert [issue.code for issue in result.issues] == ["incremental.patch_generation_failed"]
+    assert "planning.closed_loop.controlled_not_implemented" not in [issue.code for issue in result.issues]
 
 
 def test_advisory_preserves_real_fixture_patch_and_plan_hashes(tmp_path) -> None:

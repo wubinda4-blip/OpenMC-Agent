@@ -620,6 +620,12 @@ def build_patch_prompt(
 
     contract = _OUTPUT_CONTRACT.format(patch_type=patch_type)
     context_block = _context_block(context)
+    if patch_type == "facts" and getattr(context, "confirmed_facts", None):
+        context_block = (
+            "Confirmed facts from human review (authoritative only at their stated JSON paths; "
+            "preserve source=human_confirmation provenance and do not re-ask these facts):\n"
+            f"{getattr(context, 'confirmed_facts')}\n\n" + context_block
+        )
     few_shot_block = _few_shot_block(patch_type, context)
 
     # Phase 7C: add allowed/forbidden keys.

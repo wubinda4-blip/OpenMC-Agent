@@ -25,12 +25,13 @@ _ALLOWED: dict[PlanStageStatus, set[PlanStageStatus]] = {
     PlanStageStatus.PENDING: {PlanStageStatus.PROPOSING, PlanStageStatus.SKIPPED, PlanStageStatus.BLOCKED},
     PlanStageStatus.PROPOSING: {PlanStageStatus.VALIDATING, PlanStageStatus.BLOCKED},
     PlanStageStatus.VALIDATING: {PlanStageStatus.REVIEWING, PlanStageStatus.BLOCKED},
-    PlanStageStatus.REVIEWING: {PlanStageStatus.ACCEPTED, PlanStageStatus.REPAIRING, PlanStageStatus.AWAITING_HUMAN, PlanStageStatus.BLOCKED},
+    PlanStageStatus.REVIEWING: {PlanStageStatus.REVIEWED, PlanStageStatus.ACCEPTED, PlanStageStatus.REPAIRING, PlanStageStatus.AWAITING_HUMAN, PlanStageStatus.BLOCKED},
     PlanStageStatus.REPAIRING: {PlanStageStatus.VALIDATING, PlanStageStatus.BLOCKED},
     PlanStageStatus.AWAITING_HUMAN: {PlanStageStatus.REPAIRING, PlanStageStatus.BLOCKED},
     PlanStageStatus.ACCEPTED: set(),
     PlanStageStatus.BLOCKED: set(),
     PlanStageStatus.SKIPPED: set(),
+    PlanStageStatus.REVIEWED: set(),
 }
 
 
@@ -50,6 +51,12 @@ def initialize_plan_loop_state(state: Any, policy: PlanClosedLoopPolicy, require
         return []
     state.plan_loop_mode = policy.mode
     state.plan_loop_policy = policy.model_dump(mode="json")
+    legacy = state.plan_loop_stages.get("plan_gate_facts")
+    if legacy and legacy.status is PlanStageStatus.SKIPPED and legacy.metadata.get("review_not_implemented"):
+        legacy.status = PlanStageStatus.PENDING
+        legacy.completed_at = None
+        legacy.metadata["review_not_implemented"] = False
+        legacy.metadata["migrated_from_contract"] = "0.1"
     created: list[PlanStageState] = []
     for gate_id in enabled_gates(policy):
         stage_id = f"plan_gate_{gate_id.value}"
@@ -69,7 +76,7 @@ def transition_stage(stage: PlanStageState, target: PlanStageStatus) -> PlanStag
         stage.started_at = now
     stage.status = target
     stage.updated_at = now
-    if target in {PlanStageStatus.ACCEPTED, PlanStageStatus.BLOCKED, PlanStageStatus.SKIPPED}:
+    if target in {PlanStageStatus.ACCEPTED, PlanStageStatus.BLOCKED, PlanStageStatus.SKIPPED, PlanStageStatus.REVIEWED}:
         stage.completed_at = now
     return stage
 

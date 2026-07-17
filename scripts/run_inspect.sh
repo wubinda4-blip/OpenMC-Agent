@@ -35,6 +35,9 @@ MAX_PLAN_REPAIR_ROUNDS=""
 MAX_PLAN_HUMAN_ROUNDS=""
 MAX_PLAN_NO_PROGRESS_ROUNDS=""
 MAX_PLAN_ADDITIONAL_LLM_CALLS=""
+PLAN_REVIEWER_MODEL=""
+PLAN_REPAIR_MODEL=""
+PLAN_HUMAN_MODE="off"
 
 usage() {
   cat <<'EOF'
@@ -255,6 +258,18 @@ while [[ $# -gt 0 ]]; do
       MAX_PLAN_ADDITIONAL_LLM_CALLS="${2:-}"
       shift 2
       ;;
+    --plan-reviewer-model)
+      PLAN_REVIEWER_MODEL="${2:-}"
+      shift 2
+      ;;
+    --plan-repair-model)
+      PLAN_REPAIR_MODEL="${2:-}"
+      shift 2
+      ;;
+    --plan-human-mode)
+      PLAN_HUMAN_MODE="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $1" >&2
       usage >&2
@@ -376,6 +391,9 @@ fi
 
 cmd+=(--reference-patch-policy "$REFERENCE_PATCH_POLICY")
 cmd+=(--plan-loop-mode "$PLAN_LOOP_MODE")
+[[ -n "$PLAN_REVIEWER_MODEL" ]] && cmd+=(--plan-reviewer-model "$PLAN_REVIEWER_MODEL")
+[[ -n "$PLAN_REPAIR_MODEL" ]] && cmd+=(--plan-repair-model "$PLAN_REPAIR_MODEL")
+cmd+=(--plan-human-mode "$PLAN_HUMAN_MODE")
 [[ -n "$MAX_PLAN_REVIEW_ROUNDS" ]] && cmd+=(--max-plan-review-rounds "$MAX_PLAN_REVIEW_ROUNDS")
 [[ -n "$MAX_PLAN_REPAIR_ROUNDS" ]] && cmd+=(--max-plan-repair-rounds "$MAX_PLAN_REPAIR_ROUNDS")
 [[ -n "$MAX_PLAN_HUMAN_ROUNDS" ]] && cmd+=(--max-plan-human-rounds "$MAX_PLAN_HUMAN_ROUNDS")
