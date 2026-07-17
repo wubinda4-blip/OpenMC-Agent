@@ -69,6 +69,109 @@ def _normalize_nuclide_name(name: str) -> str:
     return f"{match.group(1)}{match.group(2)}{match.group(3)}"
 
 
+# ---------------------------------------------------------------------------
+# Compound formula expansion (reactor-neutral)
+# ---------------------------------------------------------------------------
+
+# All standard element symbols for compound detection.
+_ELEMENT_SYMBOLS: frozenset[str] = frozenset({
+    "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",
+    "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca",
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr",
+    "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn",
+    "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd",
+    "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb",
+    "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th",
+    "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf",
+})
+
+_COMPOUND_TOKEN_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+
+def _try_parse_compound(name: str) -> list[tuple[str, int]] | None:
+    """Try to parse *name* as a multi-element chemical compound formula.
+
+    Returns ``[(element, count), ...]`` for compounds like ``"B2O3"``,
+    ``"SiO2"``, ``"UO2"``.  Returns ``None`` for single-element names
+    (nuclides like ``"B10"``, element symbols like ``"Zr"``).
+
+    A name is treated as a compound only when it parses into **2+ known
+    element symbols**.  This correctly distinguishes ``"UO2"`` (compound:
+    U+O) from ``"U235"`` (nuclide: single element U).
+    """
+    tokens = _COMPOUND_TOKEN_RE.findall(name)
+    if not tokens:
+        return None
+    elements: list[tuple[str, int]] = []
+    pos = 0
+    for elem_sym, count_str in tokens:
+        if elem_sym not in _ELEMENT_SYMBOLS:
+            return None
+        count = int(count_str) if count_str else 1
+        elements.append((elem_sym, count))
+        pos += len(elem_sym) + len(count_str)
+    # Must consume the entire string (no trailing garbage).
+    if pos != len(name):
+        return None
+    # Must have at least 2 distinct elements to be a compound.
+    if len({e for e, _ in elements}) < 2:
+        return None
+    return elements
+
+
+def _expand_compound_composition(
+    components: list,
+) -> list:
+    """Expand compound formula names (B2O3, SiO2, UO2) in a composition list.
+
+    Each compound is replaced by individual ``add_element`` entries with
+    weight fractions distributed by the element's mass fraction in the
+    compound.  Non-compound names are passed through unchanged.
+
+    Works with both :class:`NuclideSpec` and plain tuples.
+    """
+    expanded: list = []
+    for comp in components:
+        name = comp.name if hasattr(comp, "name") else comp[0]
+        parsed = _try_parse_compound(name)
+        if parsed is None:
+            expanded.append(comp)
+            continue
+
+        # Calculate molecular weight from element atomic masses.
+        mw = 0.0
+        for elem, count in parsed:
+            mw += count * _get_atomic_mass(elem)
+        if mw <= 0:
+            expanded.append(comp)
+            continue
+
+        # Expand each element in the compound.
+        percent = comp.percent if hasattr(comp, "percent") else comp[1]
+        percent_type = comp.percent_type if hasattr(comp, "percent_type") else comp[2]
+
+        for elem, count in parsed:
+            if percent_type == "wo":
+                # Weight fraction: distribute by mass contribution.
+                elem_frac = count * _get_atomic_mass(elem) / mw
+            else:
+                # Atom fraction: distribute by atom count ratio.
+                total_atoms = sum(c for _, c in parsed)
+                elem_frac = count / total_atoms
+            if hasattr(comp, "model_copy"):
+                new_comp = comp.model_copy(update={
+                    "name": elem,
+                    "percent": percent * elem_frac,
+                    "kind": "element",
+                })
+                expanded.append(new_comp)
+            else:
+                expanded.append((elem, percent * elem_frac, percent_type))
+    return expanded
+
+
 def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
     if _material_has_mixed_percent_types(spec) and spec.chemical_formula is None:
         raise ValueError(
@@ -89,7 +192,7 @@ def build_openmc_material(spec: MaterialSpec) -> openmc.Material:
             **_material_enrichment_kwargs(spec),
         )
     else:
-        for component in spec.composition:
+        for component in _expand_compound_composition(spec.composition):
             if component.kind == "element":
                 material.add_element(
                     component.name,
@@ -149,7 +252,7 @@ def build_openmc_complex_material(spec: ComplexMaterialSpec) -> openmc.Material:
             **_complex_enrichment_kwargs(spec),
         )
     elif spec.composition:
-        for component in spec.composition:
+        for component in _expand_compound_composition(spec.composition):
             if component.kind == "element" or _is_element_symbol(component.name):
                 material.add_element(
                     component.name,
@@ -664,7 +767,7 @@ def _render_material_definition(spec: MaterialSpec, variable_name: str) -> str:
             f"{spec.chemical_formula!r}{enrichment_args})"
         )
     else:
-        for component in spec.composition:
+        for component in _expand_compound_composition(spec.composition):
             if component.kind == "element" or _is_element_symbol(component.name):
                 lines.append(
                     f"{variable_name}.add_element("
@@ -1207,7 +1310,7 @@ def _render_mixture_material_definition(
     lines.append(f"{variable_name}.set_density('g/cm3', {rho_mix!r})")
     if spec.temperature_k is not None:
         lines.append(f"{variable_name}.temperature = {spec.temperature_k!r}")
-    for name, percent, ptype in composition:
+    for name, percent, ptype in _expand_compound_composition(composition):
         if _is_element_symbol(name):
             lines.append(
                 f"{variable_name}.add_element({name!r}, {percent!r}, {ptype!r})"
@@ -1250,7 +1353,7 @@ def _render_complex_material_definition(spec: ComplexMaterialSpec) -> str:
             f"{enrichment_args})"
         )
     elif spec.composition:
-        for component in spec.composition:
+        for component in _expand_compound_composition(spec.composition):
             if component.kind == "element" or _is_element_symbol(component.name):
                 lines.append(
                     f"{variable_name}.add_element("

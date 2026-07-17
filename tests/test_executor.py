@@ -165,6 +165,45 @@ def test_normalize_nuclide_name_strips_gnd_hyphens() -> None:
     assert _normalize_nuclide_name("U") == "U"
 
 
+def test_compound_formula_detection() -> None:
+    """Compound formulas (B2O3, SiO2) are detected; single-element names are not."""
+    from openmc_agent.executor import _try_parse_compound
+    # Compounds
+    assert _try_parse_compound("B2O3") == [("B", 2), ("O", 3)]
+    assert _try_parse_compound("SiO2") == [("Si", 1), ("O", 2)]
+    assert _try_parse_compound("UO2") == [("U", 1), ("O", 2)]
+    assert _try_parse_compound("H2O") == [("H", 2), ("O", 1)]
+    # NOT compounds (single element)
+    assert _try_parse_compound("B10") is None
+    assert _try_parse_compound("O16") is None
+    assert _try_parse_compound("U235") is None
+    assert _try_parse_compound("Zr") is None
+    assert _try_parse_compound("In115") is None
+
+
+def test_compound_expansion_preserves_mass() -> None:
+    """Expanding B2O3 + SiO2 preserves total weight fraction."""
+    from openmc_agent.executor import _expand_compound_composition
+    comps = [
+        NuclideSpec(name="B2O3", percent=12.5, percent_type="wo", kind="nuclide"),
+        NuclideSpec(name="SiO2", percent=87.5, percent_type="wo", kind="nuclide"),
+    ]
+    expanded = _expand_compound_composition(comps)
+    # Should have 4 elements (B, O from B2O3; Si, O from SiO2)
+    assert len(expanded) == 4
+    # All should be kind=element
+    assert all(c.kind == "element" for c in expanded)
+    # Total mass conserved
+    total = sum(c.percent for c in expanded)
+    assert abs(total - 100.0) < 0.001
+    # B should be ~3.88%
+    b_comp = [c for c in expanded if c.name == "B"][0]
+    assert abs(b_comp.percent - 3.882) < 0.01
+    # Si should be ~40.9%
+    si_comp = [c for c in expanded if c.name == "Si"][0]
+    assert abs(si_comp.percent - 40.901) < 0.01
+
+
 def test_build_openmc_material_normalizes_hyphenated_boron() -> None:
     """A borated-water spec written with GND 'B-10' must reach OpenMC as 'B10'
     so the smoke test does not abort with 'Could not find nuclide B-10'."""
