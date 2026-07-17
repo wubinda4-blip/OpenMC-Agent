@@ -65,6 +65,10 @@ def run_diagnostic() -> bool:
     (out_dir / "vera4_plan.json").write_text(
         json.dumps(plan.model_dump(), indent=2, default=str)
     )
+    if result.material_species_resolution_report is not None:
+        (out_dir / "material_species_resolution_report.json").write_text(
+            json.dumps(result.material_species_resolution_report, indent=2, default=str)
+        )
 
     # ---- 3. Plan-level acceptance ----
     print("\n3. Plan-level acceptance...")
