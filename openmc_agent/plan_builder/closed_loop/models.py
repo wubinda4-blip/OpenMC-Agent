@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.5"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.6"
 
 
 class _TextEnum(str, Enum):
@@ -578,6 +578,217 @@ class PlacementDependencyRetryRequest(AgentBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Phase-4 Material-Universe Review Gate models
+# ---------------------------------------------------------------------------
+
+
+class MaterialRecord(AgentBaseModel):
+    """Static view of one MaterialsPatch entry, augmented with resolver info."""
+
+    material_id: str
+    name: str = ""
+    role: str = ""
+    source_variant_id: str | None = None
+    density_g_cm3: float | None = None
+    density_status: str = "needs_confirmation"
+    density_source: str | None = None
+    temperature_K: float | None = None
+    composition_status: str = "needs_confirmation"
+    composition: dict[str, float] = Field(default_factory=dict)
+    composition_basis: str = "unknown"
+    compound_component_count: int = 0
+    resolver_status: str = "unknown"
+    resolver_normalized_species: dict[str, float] = Field(default_factory=dict)
+    resolver_warnings: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    required_by_source: list[str] = Field(default_factory=list)
+    static_consumers: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UniverseRecord(AgentBaseModel):
+    """Static view of one UniversesPatch entry."""
+
+    universe_id: str
+    kind: str = "custom"
+    fuel_variant_id: str | None = None
+    cell_count: int = 0
+    material_ids: list[str] = Field(default_factory=list)
+    cell_roles: list[str] = Field(default_factory=list)
+    background_cell_id: str | None = None
+    required_by_source: list[str] = Field(default_factory=list)
+    consumers: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CellMaterialBinding(AgentBaseModel):
+    """One row per (universe, cell) describing the material reference."""
+
+    binding_id: str
+    universe_id: str
+    universe_kind: str = "custom"
+    cell_id: str
+    cell_role: str = ""
+    region_kind: str = "unknown"
+    r_min_cm: float | None = None
+    r_max_cm: float | None = None
+    material_id: str | None = None
+    material_role: str | None = None
+    material_source_variant_id: str | None = None
+    expected_roles: list[str] = Field(default_factory=list)
+    expected_variant_id: str | None = None
+    status: Literal["pass", "fail", "ambiguous", "unresolved"] = "pass"
+    issue_codes: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class FuelVariantBinding(AgentBaseModel):
+    """One row per source fuel variant requirement."""
+
+    variant_id: str
+    source_enrichment_wt_percent: float | None = None
+    material_id: str | None = None
+    material_source_variant_id: str | None = None
+    material_enrichment_wt_percent: float | None = None
+    active_fuel_universe_ids: list[str] = Field(default_factory=list)
+    active_fuel_cell_ids: list[str] = Field(default_factory=list)
+    variant_count: int = 0
+    collapsed_with_variants: list[str] = Field(default_factory=list)
+    status: Literal["pass", "fail", "ambiguous"] = "pass"
+    issue_codes: list[str] = Field(default_factory=list)
+
+
+class MaterialUniverseBindingView(AgentBaseModel):
+    """Static, deterministic view of the Materials → Universes edge."""
+
+    planning_scope: str = "unknown"
+    facts_patch_hash: str = ""
+    materials_patch_hash: str = ""
+    universes_patch_hash: str = ""
+    feature_contract_hash: str = ""
+    canonical_task_plan_hash: str = ""
+    required_material_contracts: list[dict[str, Any]] = Field(default_factory=list)
+    material_records: list[MaterialRecord] = Field(default_factory=list)
+    universe_records: list[UniverseRecord] = Field(default_factory=list)
+    cell_material_bindings: list[CellMaterialBinding] = Field(default_factory=list)
+    fuel_variant_bindings: list[FuelVariantBinding] = Field(default_factory=list)
+    unresolved_references: list[dict[str, Any]] = Field(default_factory=list)
+    static_reachability_edges: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MaterialUniverseContractRow(AgentBaseModel):
+    """One row of the deterministic Material-Universe contract matrix.
+
+    Four row kinds share this shape via ``row_kind``:
+    - ``source_material_coverage``
+    - ``material_to_cell_binding``
+    - ``fuel_variant_identity``
+    - ``required_universe_material_structure``
+    """
+
+    row_id: str
+    row_kind: Literal[
+        "source_material_coverage",
+        "material_to_cell_binding",
+        "fuel_variant_identity",
+        "required_universe_material_structure",
+    ]
+    requirement_id: str = ""
+    material_id: str | None = None
+    material_role: str | None = None
+    universe_id: str | None = None
+    cell_id: str | None = None
+    cell_role: str | None = None
+    variant_id: str | None = None
+    expected_roles: list[str] = Field(default_factory=list)
+    actual_roles: list[str] = Field(default_factory=list)
+    expected_material_roles: list[str] = Field(default_factory=list)
+    actual_material_roles: list[str] = Field(default_factory=list)
+    expected_variant_id: str | None = None
+    actual_variant_ids: list[str] = Field(default_factory=list)
+    coverage_status: Literal["pass", "fail", "ambiguous", "not_applicable"] = "not_applicable"
+    issue_codes: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MaterialUniverseContractMatrix(AgentBaseModel):
+    rows: list[MaterialUniverseContractRow] = Field(default_factory=list)
+    input_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MaterialUniverseEvidencePack(AgentBaseModel):
+    gate_id: Literal[PlanGateId.MATERIAL_UNIVERSE] = PlanGateId.MATERIAL_UNIVERSE
+    input_hash: str = ""
+    evidence_pack_id: str = ""
+    binding_view: MaterialUniverseBindingView
+    contract_matrix: MaterialUniverseContractMatrix
+    material_species_report: dict[str, Any] = Field(default_factory=dict)
+    deterministic_issues: list[dict[str, Any]] = Field(default_factory=list)
+    relevant_patch_hashes: dict[str, str] = Field(default_factory=dict)
+    accepted_facts_hash: str = ""
+    evidence_items: list[PlanEvidenceItem] = Field(default_factory=list)
+    confirmed_records: list[dict[str, Any]] = Field(default_factory=list)
+    allowed_actions: list[PlanReviewAction] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MaterialUniverseReviewFindingDraft(AgentBaseModel):
+    """Untrusted critic output; Python binds it to supplied evidence."""
+
+    code: str
+    severity: PlanFindingSeverity
+    category: PlanFindingCategory
+    message: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    contract_row_ids: list[str] = Field(default_factory=list)
+    affected_json_paths: list[str] = Field(default_factory=list)
+    repairable_by_llm: bool = False
+    requires_human: bool = False
+    confidence: float
+    expected_semantics: Any | None = None
+    current_semantics: Any | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("confidence")
+    @classmethod
+    def _confidence_in_range(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        return value
+
+    @model_validator(mode="after")
+    def _human_not_repairable(self) -> "MaterialUniverseReviewFindingDraft":
+        if self.requires_human and self.repairable_by_llm:
+            raise ValueError("requires_human findings cannot be repairable_by_llm")
+        return self
+
+
+class MaterialUniverseReviewCoverageSummary(AgentBaseModel):
+    reviewed_source_requirement_ids: list[str] = Field(default_factory=list)
+    reviewed_material_ids: list[str] = Field(default_factory=list)
+    reviewed_universe_ids: list[str] = Field(default_factory=list)
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    omitted_material_count: int = 0
+    omitted_universe_count: int = 0
+    omitted_contract_row_count: int = 0
+    unresolved_evidence_count: int = 0
+
+
+class MaterialUniverseReviewModelOutput(AgentBaseModel):
+    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    findings: list[MaterialUniverseReviewFindingDraft] = Field(default_factory=list)
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    coverage_summary: MaterialUniverseReviewCoverageSummary = Field(default_factory=MaterialUniverseReviewCoverageSummary)
+    concise_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PlanStageState(AgentBaseModel):
     stage_id: str
     gate_id: PlanGateId
@@ -612,7 +823,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2
@@ -630,6 +841,9 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     plan_human_mode: Literal["off", "ambiguity_only"] = "off"
     plan_gates: list[PlanGateId] = Field(default_factory=list)
     placement_review_mode: Literal["off", "advisory", "controlled"] = "off"
+    # Phase-4 Material-Universe Review Gate mode.  Independent of placement
+    # so users can enable one without the other.
+    material_universe_review_mode: Literal["off", "advisory", "controlled"] = "off"
     # Phase-3 executable retry budget.  It remains independent from reviewer
     # calls so checkpoint restore cannot silently refresh retry authority.
     max_retry_rounds: int = 6
