@@ -95,6 +95,12 @@ def inspect_requirement(
     plan_human_mode: str = "off",
     plan_gates: str | None = None,
     placement_review_mode: str = "off",
+    patch_output_mode: str = "auto",
+    patch_max_tokens: int | None = None,
+    patch_reasoning_effort: str | None = None,
+    plan_reviewer_output_mode: str | None = None,
+    plan_reviewer_max_tokens: int | None = None,
+    plan_reviewer_reasoning_effort: str | None = None,
     verbose: bool = False,
 ) -> InspectResult:
     configure_logging("INFO" if verbose else "WARNING")
@@ -142,6 +148,12 @@ def inspect_requirement(
             plan_human_mode=plan_human_mode,
             plan_gates=plan_gates,
             placement_review_mode=placement_review_mode,
+            patch_output_mode=patch_output_mode,
+            patch_max_tokens=patch_max_tokens,
+            patch_reasoning_effort=patch_reasoning_effort,
+            plan_reviewer_output_mode=plan_reviewer_output_mode,
+            plan_reviewer_max_tokens=plan_reviewer_max_tokens,
+            plan_reviewer_reasoning_effort=plan_reviewer_reasoning_effort,
             verbose=verbose,
         )
 
@@ -352,6 +364,12 @@ def _inspect_plan_requirement(
     plan_human_mode: str,
     plan_gates: str | None,
     placement_review_mode: str,
+    patch_output_mode: str,
+    patch_max_tokens: int | None,
+    patch_reasoning_effort: str | None,
+    plan_reviewer_output_mode: str | None,
+    plan_reviewer_max_tokens: int | None,
+    plan_reviewer_reasoning_effort: str | None,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -362,6 +380,12 @@ def _inspect_plan_requirement(
         print(
             "[agent] Steps: retrieve docs -> few-shot -> LLM plan -> validate -> "
             "capability -> render/tools or structured-only -> reflection.",
+            file=sys.stderr,
+        )
+        print(
+            "[planning] patch_output_mode="
+            f"{patch_output_mode} patch_max_tokens={patch_max_tokens or 'provider_default'} "
+            f"patch_reasoning_effort={patch_reasoning_effort or 'provider_default'}",
             file=sys.stderr,
         )
 
@@ -411,12 +435,31 @@ def _inspect_plan_requirement(
         placement_review_mode=placement_review_mode,
         gate_enabled={gate: gate in selected_gates for gate in PlanGateId},
     )
+    patch_llm_client = make_patch_llm_client(
+        model_name=model,
+        max_tokens=patch_max_tokens,
+        output_mode=patch_output_mode,
+        reasoning_effort=patch_reasoning_effort,
+    )
+    reviewer_output_mode = plan_reviewer_output_mode or patch_output_mode
+    reviewer_max_tokens = plan_reviewer_max_tokens or patch_max_tokens
+    reviewer_reasoning_effort = plan_reviewer_reasoning_effort or patch_reasoning_effort
     plan_reviewer_client = (
-        make_patch_llm_client(model_name=plan_reviewer_model or model)
+        make_patch_llm_client(
+            model_name=plan_reviewer_model or model,
+            max_tokens=reviewer_max_tokens,
+            output_mode=reviewer_output_mode,
+            reasoning_effort=reviewer_reasoning_effort,
+        )
         if plan_loop_mode != "off" else None
     )
     plan_repair_client = (
-        make_patch_llm_client(model_name=plan_repair_model or model)
+        make_patch_llm_client(
+            model_name=plan_repair_model or model,
+            max_tokens=patch_max_tokens,
+            output_mode=patch_output_mode,
+            reasoning_effort=patch_reasoning_effort,
+        )
         if plan_loop_mode == "controlled" else None
     )
     graph = build_plan_graph(
@@ -448,6 +491,7 @@ def _inspect_plan_requirement(
         plan_loop_policy=plan_loop_policy,
         plan_reviewer_client=plan_reviewer_client,
         plan_repair_client=plan_repair_client,
+        patch_llm_client=patch_llm_client,
         select_examples=functools.partial(
             select_few_shots, include_gold=use_gold_few_shots
         ),
@@ -1153,6 +1197,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-human-mode", choices=["off", "ambiguity_only"], default="off")
     parser.add_argument("--plan-gates", default=None, help="Comma-separated enabled gates, for example facts,placement")
     parser.add_argument("--placement-review-mode", choices=["off", "advisory", "controlled"], default="off")
+    parser.add_argument(
+        "--patch-output-mode",
+        choices=["auto", "plain_prompt", "json_object", "json_schema"],
+        default="auto",
+        help="Patch proposer structured-output request mode (default: auto).",
+    )
+    parser.add_argument(
+        "--patch-max-tokens", type=int, default=None,
+        help="Optional output-token limit for each patch proposer call.",
+    )
+    parser.add_argument(
+        "--patch-reasoning-effort",
+        choices=["none", "low", "medium", "high"],
+        default=None,
+        help="Optional provider reasoning budget for patch proposer calls.",
+    )
+    parser.add_argument(
+        "--plan-reviewer-output-mode",
+        choices=["auto", "plain_prompt", "json_object", "json_schema"],
+        default=None,
+        help="Optional structured-output mode override for plan reviewers.",
+    )
+    parser.add_argument(
+        "--plan-reviewer-max-tokens", type=int, default=None,
+        help="Optional output-token limit override for plan reviewer calls.",
+    )
+    parser.add_argument(
+        "--plan-reviewer-reasoning-effort",
+        choices=["none", "low", "medium", "high"],
+        default=None,
+        help="Optional provider reasoning budget override for plan reviewers.",
+    )
     args = parser.parse_args(argv)
     if args.compact and args.json_output:
         parser.error("Use either --compact or --json, not both")
@@ -1212,6 +1288,12 @@ def main(argv: list[str] | None = None) -> int:
             plan_human_mode=args.plan_human_mode,
             plan_gates=args.plan_gates,
             placement_review_mode=args.placement_review_mode,
+            patch_output_mode=args.patch_output_mode,
+            patch_max_tokens=args.patch_max_tokens,
+            patch_reasoning_effort=args.patch_reasoning_effort,
+            plan_reviewer_output_mode=args.plan_reviewer_output_mode,
+            plan_reviewer_max_tokens=args.plan_reviewer_max_tokens,
+            plan_reviewer_reasoning_effort=args.plan_reviewer_reasoning_effort,
         )
     elif args.requirement:
         result = inspect_requirement(
@@ -1251,6 +1333,12 @@ def main(argv: list[str] | None = None) -> int:
             plan_human_mode=args.plan_human_mode,
             plan_gates=args.plan_gates,
             placement_review_mode=args.placement_review_mode,
+            patch_output_mode=args.patch_output_mode,
+            patch_max_tokens=args.patch_max_tokens,
+            patch_reasoning_effort=args.patch_reasoning_effort,
+            plan_reviewer_output_mode=args.plan_reviewer_output_mode,
+            plan_reviewer_max_tokens=args.plan_reviewer_max_tokens,
+            plan_reviewer_reasoning_effort=args.plan_reviewer_reasoning_effort,
         )
     else:
         parser.error("Provide a requirement or --md-file")

@@ -157,9 +157,9 @@ def test_malformed_operations_get_one_schema_only_correction(tmp_path) -> None:
     assert (tmp_path / "validation_repair" / "raw_response_0_format_correction_1.json").exists()
 
 
-def test_incremental_patch_generation_failure_schedules_regeneration() -> None:
+def test_incremental_patch_generation_failure_schedules_targeted_resume() -> None:
     """When incremental patch generation fails (plan=None), the workflow must
-    schedule a fresh regeneration instead of dead-ending."""
+    schedule a targeted resume instead of dead-ending."""
     from openmc_agent.graph import _make_validate_plan_node
 
     updates = _make_validate_plan_node(3)({
@@ -189,7 +189,10 @@ def test_incremental_patch_generation_failure_schedules_regeneration() -> None:
     # Valid patches must be preserved (not cleared) for incremental retry.
     assert "patches" in updates["plan_build_state"]
     assert "facts" in updates["plan_build_state"]["patches"]
-    assert "Incremental planner correction required" in updates["requirement"]
+    # Patch-generation diagnostics stay structured in the execution state;
+    # they must not be appended to the source requirement for every later
+    # patch prompt.
+    assert updates["requirement"] == "VERA3B assembly model"
 
 
 def test_incremental_patch_generation_failure_respects_retry_budget() -> None:

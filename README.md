@@ -159,6 +159,26 @@ python -m openmc_agent.inspect "建立一个 2x2 组件模型" --plan --plot --s
 
 常用参数：`--plan`（强制 plan 工作流）、`--plot` / `--smoke-test` / `--full`、`--output-dir`、`--compact` / `--json` / `--text`（输出格式）、`--enable-semantic-audit`、`--enable-llm-repair`、`--enable-run-supervisor`、`--controlled-route`、`--expert-feedback`、`--interactive-feedback`、`--max-expert-rounds`、`--verbose`。
 
+对于会输出较大 JSON patch 的 OpenAI-compatible 模型，可显式选择 JSON
+对象模式、增加输出预算并关闭可选 reasoning 预算；这些参数默认均不改变原有
+provider 行为：
+
+```bash
+conda run -n openmc-env python -u -m openmc_agent.inspect \
+  --plan --verbose --md-file Input/case2.md --model ds:deepseek-v4-flash \
+  --output-dir data/runs/case2_json \
+  --patch-output-mode json_object --patch-max-tokens 12000 \
+  --patch-reasoning-effort none \
+  --plan-loop-mode advisory --plan-reviewer-output-mode json_object \
+  --plan-reviewer-max-tokens 12000 --plan-reviewer-reasoning-effort none
+```
+
+`--patch-*` 作用于 Facts Proposer 与各 patch proposer；`--plan-reviewer-*`
+可单独覆盖 Facts/Placement Critic。真实 provider 不支持 JSON mode 时会记录
+fallback 实际模式；不可解析输出会保留原始 source requirement，并只从第一个
+缺失或无效 patch 继续增量恢复，不会把诊断拼进后续 patch prompt 或调用
+monolithic fallback。
+
 交互式专家反馈：
 
 ```bash
@@ -557,3 +577,13 @@ It uses clone validation, atomic owner commits, dependency-aware invalidation,
 and resumable downstream rebuilds.  The protocol is disabled in `off`, records
 only an execution plan in `advisory`, and never invokes a monolithic fallback
 or an LLM Supervisor.
+
+### Real-model structured-output recovery
+
+The patch adapter now exposes provider-neutral controls for JSON response mode,
+output-token budget, and optional reasoning effort.  Incremental
+patch-generation failure preserves validated upstream envelopes and resumes at
+the failed patch; its validator text remains structured execution metadata
+rather than becoming part of the source requirement.  Large-lattice detection
+accepts only explicit `NxM`/`N×M` notation, avoiding accidental interpretation
+of hyphenated document identifiers as core dimensions.

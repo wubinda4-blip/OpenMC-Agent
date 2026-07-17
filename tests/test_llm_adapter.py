@@ -130,3 +130,52 @@ def test_json_schema_provider_rejection_falls_back_to_json_object() -> None:
     assert client.last_output_mode_used == "json_object"
     assert client.last_output_fallback_used is True
     assert "json_schema unsupported: RuntimeError" in client.last_output_fallback_reasons
+
+
+def test_reasoning_effort_is_forwarded_when_explicitly_requested() -> None:
+    calls = []
+
+    class FakeChoice:
+        class message:
+            content = "{}"
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    return FakeResponse()
+
+    client = StructuredPatchLLMClient(
+        FakeClient(), model_name="test:model", output_mode="json_object", reasoning_effort="none"
+    )
+    client.generate_patch_json(prompt="prompt", patch_type="facts")
+    assert calls[0]["reasoning_effort"] == "none"
+
+
+def test_reasoning_effort_is_omitted_by_default() -> None:
+    calls = []
+
+    class FakeChoice:
+        class message:
+            content = "{}"
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    return FakeResponse()
+
+    StructuredPatchLLMClient(FakeClient(), model_name="test:model", output_mode="json_object").generate_patch_json(
+        prompt="prompt", patch_type="facts"
+    )
+    assert "reasoning_effort" not in calls[0]

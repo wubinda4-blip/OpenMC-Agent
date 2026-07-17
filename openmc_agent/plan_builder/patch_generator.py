@@ -592,7 +592,11 @@ def _call_llm_for_patch(
                 json_schema=json_schema,
                 max_tokens=max_tokens,
             )
-            return raw, "structured"
+            # Preserve the provider mode actually used (json_schema,
+            # json_object, or plain-prompt fallback) in diagnostics.  This is
+            # essential when a provider advertises structured output but emits
+            # prose after falling back.
+            return raw, str(getattr(llm_client, "last_output_mode_used", "structured"))
         except Exception:
             pass  # fall through to plain callable
 

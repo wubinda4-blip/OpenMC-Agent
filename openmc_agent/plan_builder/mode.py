@@ -81,7 +81,6 @@ _MULTI_UNIVERSE_TERMS: tuple[str, ...] = (
 
 _LARGE_LATTICE_PATTERN: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(\d{2,})\s*[x×]\s*(\d{2,})\b", re.IGNORECASE),
-    re.compile(r"\b(\d{2,})\s*[-·]\s*(\d{2,})\b"),
 )
 
 _LARGE_LATTICE_THRESHOLD: int = 20

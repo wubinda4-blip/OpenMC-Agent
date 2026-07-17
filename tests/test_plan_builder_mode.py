@@ -187,6 +187,12 @@ def test_large_lattice_alone_selects_incremental() -> None:
     assert TRIGGER_FEATURE_LARGE_LATTICE in decision.triggers
 
 
+def test_hyphenated_document_identifier_is_not_a_lattice_dimension() -> None:
+    """Publication IDs such as CASL-U-2012-0131-004 are not lattice sizes."""
+    decision = should_use_incremental_planning("Reference CASL-U-2012-0131-004")
+    assert decision.feature_summary["large_lattice_dimension"] is None
+
+
 # ---------------------------------------------------------------------------
 # 10. Feature summary is populated correctly
 # ---------------------------------------------------------------------------

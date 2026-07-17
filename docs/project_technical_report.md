@@ -452,3 +452,13 @@ Added protocol v0.5 typed retry requests, owner routing, a single patch
 dependency graph, clone/atomic owner transaction, and resumable invalidation
 ledger.  Added reactor-neutral protocol and graph tests; no new reviewer,
 runtime repair, or monolithic fallback path was introduced.
+
+## 2026-07-17 — Real-model JSON output and targeted patch recovery
+
+- Added opt-in CLI/client controls for JSON-object/schema mode, per-call output
+  tokens, and provider reasoning effort; actual structured fallback mode is
+  retained in patch/review artifacts. Defaults remain provider-compatible.
+- Patch-generation failure now preserves the source requirement and valid
+  envelopes, resuming at the failed patch instead of contaminating every prompt
+  with a full-plan correction. Hyphenated document identifiers no longer count
+  as lattice dimensions. Focused regression tests: 65 passed.

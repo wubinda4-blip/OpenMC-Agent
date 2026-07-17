@@ -33,6 +33,7 @@ PATCH_MAX_TOKENS: dict[str, int] = {
 }
 
 OutputMode = Literal["auto", "plain_prompt", "json_object", "json_schema", "tool_call"]
+ReasoningEffort = Literal["none", "low", "medium", "high"]
 
 
 class StructuredPatchLLMClient:
@@ -50,12 +51,14 @@ class StructuredPatchLLMClient:
         temperature: float = 0.0,
         max_tokens: int | None = None,
         output_mode: OutputMode = "auto",
+        reasoning_effort: ReasoningEffort | None = None,
     ) -> None:
         self._client = client
         self._model_name = model_name
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._output_mode = output_mode
+        self._reasoning_effort = reasoning_effort
         self.last_output_mode_requested: str = output_mode
         self.last_output_mode_used: str = "plain_prompt"
         self.last_output_fallback_used: bool = False
@@ -146,6 +149,12 @@ class StructuredPatchLLMClient:
             kwargs["max_tokens"] = max_tokens or self._max_tokens
         if response_format is not None:
             kwargs["response_format"] = response_format
+        # Some OpenAI-compatible providers reserve part of the response token
+        # budget for hidden reasoning unless this is explicitly disabled.  This
+        # is deliberately opt-in so existing callers retain their provider's
+        # default behaviour.
+        if self._reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self._reasoning_effort
         response = self._client.chat.completions.create(**kwargs)
         try:
             return response.choices[0].message.content
@@ -164,6 +173,7 @@ def make_patch_llm_client(
     timeout_s: float | None = None,
     metadata: dict[str, Any] | None = None,
     output_mode: OutputMode = "auto",
+    reasoning_effort: ReasoningEffort | None = None,
 ) -> Callable[[str], str]:
     """Create a patch LLM client from an existing provider or model name.
 
@@ -178,6 +188,10 @@ def make_patch_llm_client(
         ``"plain_prompt"`` (no response_format),
         ``"json_object"`` (require JSON mode),
         ``"json_schema"`` (require structured output).
+    reasoning_effort
+        Optional provider reasoning budget.  ``"none"`` is useful for
+        large JSON-only patch responses on providers that otherwise consume
+        output tokens with hidden reasoning.
     """
     # If llm is already a callable (e.g. FakePatchLLM), use it directly.
     if llm is not None and callable(llm) and not hasattr(llm, "chat"):
@@ -191,6 +205,7 @@ def make_patch_llm_client(
             temperature=temperature,
             max_tokens=max_tokens,
             output_mode=output_mode,
+            reasoning_effort=reasoning_effort,
         )
 
     # Construct from model_name.
@@ -208,6 +223,7 @@ def make_patch_llm_client(
         temperature=temperature,
         max_tokens=max_tokens,
         output_mode=output_mode,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -216,4 +232,5 @@ __all__ = [
     "PATCH_MAX_TOKENS",
     "StructuredPatchLLMClient",
     "OutputMode",
+    "ReasoningEffort",
 ]

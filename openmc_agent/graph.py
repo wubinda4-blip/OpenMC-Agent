@@ -2957,7 +2957,7 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                 _progress(
                     state,
                     "validate_plan",
-                    "incremental patch generation failed; scheduling fresh regeneration",
+                    "incremental patch generation failed; preserving valid patches for targeted resume",
                 )
                 return {
                     "simulation_plan": None,
@@ -2968,20 +2968,24 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                     "error": "",
                     "incremental_regeneration_pending": True,
                     "plan_build_state": state.get("plan_build_state", {}),
-                    "requirement": _incremental_regeneration_requirement(
-                        state.get("requirement", ""), report
-                    ),
+                    # The incremental executor restores valid envelopes from
+                    # plan_build_state and will regenerate only the failed or
+                    # invalid patch.  Do not append a full-plan correction
+                    # transcript to the source requirement: that polluted
+                    # subsequent patch prompts and encouraged broad replans.
+                    "requirement": state.get("requirement", ""),
                     **_trace_event_update(
                         state,
                         "incremental_regeneration_scheduled",
                         summary=(
                             "incremental patch generation failed; scheduling "
-                            "a fresh patch-planner pass"
+                            "a targeted patch resume"
                         ),
                         report=report,
                         metadata={
                             "retry_count": retry_count + 1,
                             "reason": "patch_generation_failure",
+                            "resume_strategy": "preserve_valid_patches",
                         },
                     ),
                 }
