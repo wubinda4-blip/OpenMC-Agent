@@ -1,0 +1,119 @@
+"""Phase 4: Material-Universe deterministic preflight."""
+
+from __future__ import annotations
+
+from openmc_agent.plan_builder.closed_loop.material_universe_preflight import run_material_universe_preflight
+from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy
+from openmc_agent.plan_builder.state import PlanBuildState, PlanPatchEnvelope
+
+
+def _state(*, materials=None, universes=None, facts=None) -> PlanBuildState:
+    state = PlanBuildState(state_id="mu-pre", requirement_text="r")
+    state.add_patch(PlanPatchEnvelope(patch_id="facts", patch_type="facts", content=facts or {"patch_type": "facts", "model_scope": "single_assembly"}, status="valid"))
+    state.add_patch(PlanPatchEnvelope(patch_id="materials", patch_type="materials", content=materials or {"patch_type": "materials", "materials": [
+        {"material_id": "fuel", "name": "f", "role": "fuel", "density_g_cm3": 10.0},
+        {"material_id": "clad", "name": "c", "role": "cladding", "density_g_cm3": 6.5},
+        {"material_id": "coolant", "name": "w", "role": "coolant", "density_g_cm3": 0.99},
+    ]}, status="valid"))
+    state.add_patch(PlanPatchEnvelope(patch_id="universes", patch_type="universes", content=universes or {"patch_type": "universes", "universes": [
+        {"universe_id": "fuel", "kind": "fuel_pin", "cells": [
+            {"id": "pellet", "role": "fuel", "material_id": "fuel", "region_kind": "cylinder", "r_min_cm": 0, "r_max_cm": 0.4},
+            {"id": "clad", "role": "clad", "material_id": "clad", "region_kind": "annulus", "r_min_cm": 0.4, "r_max_cm": 0.45},
+            {"id": "bg", "role": "background", "material_id": "coolant", "region_kind": "background"},
+        ]},
+    ]}, status="valid"))
+    return state
+
+
+def _policy() -> PlanClosedLoopPolicy:
+    return PlanClosedLoopPolicy(mode="controlled", gate_enabled={"facts": True, "material_universe": True})
+
+
+def test_clean_state_passes_preflight() -> None:
+    state = _state()
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    assert result.ok
+    assert not [i for i in result.issues if i.get("severity") == "error"]
+
+
+def test_duplicate_material_detected() -> None:
+    state = _state(materials={"patch_type": "materials", "materials": [
+        {"material_id": "dup", "name": "a", "role": "fuel", "density_g_cm3": 10.0},
+        {"material_id": "dup", "name": "b", "role": "fuel", "density_g_cm3": 10.0},
+    ]}, universes={"patch_type": "universes", "universes": [{"universe_id": "u", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "dup", "region_kind": "cylinder"}]}]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.material_duplicate" in codes
+
+
+def test_invalid_density_detected() -> None:
+    state = _state(materials={"patch_type": "materials", "materials": [{"material_id": "fuel", "name": "f", "role": "fuel", "density_g_cm3": -1.0}]}, universes={"patch_type": "universes", "universes": [{"universe_id": "u", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "fuel", "region_kind": "cylinder"}]}]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.material_density_invalid" in codes
+
+
+def test_unknown_material_reference_detected() -> None:
+    state = _state(universes={"patch_type": "universes", "universes": [
+        {"universe_id": "u", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "does_not_exist", "region_kind": "cylinder"}]},
+    ]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.material_reference_missing" in codes
+
+
+def test_duplicate_universe_detected() -> None:
+    state = _state(universes={"patch_type": "universes", "universes": [
+        {"universe_id": "dup", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "fuel", "region_kind": "cylinder"}]},
+        {"universe_id": "dup", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "fuel", "region_kind": "cylinder"}]},
+    ]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.universe_duplicate" in codes
+
+
+def test_radial_overlap_detected() -> None:
+    state = _state(universes={"patch_type": "universes", "universes": [
+        {"universe_id": "u", "kind": "fuel_pin", "cells": [
+            {"id": "a", "role": "fuel", "material_id": "fuel", "region_kind": "cylinder", "r_min_cm": 0, "r_max_cm": 0.5},
+            {"id": "b", "role": "clad", "material_id": "clad", "region_kind": "annulus", "r_min_cm": 0.3, "r_max_cm": 0.6},
+        ]},
+    ]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.radial_overlap" in codes
+
+
+def test_required_fuel_variant_material_missing_detected() -> None:
+    state = _state(facts={"patch_type": "facts", "model_scope": "single_assembly", "fuel_variant_requirements": [{"variant_id": "v1", "enrichment_wt_percent": 3.0}]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.required_fuel_variant_material_missing" in codes
+
+
+def test_fuel_variant_collapse_detected() -> None:
+    """Two variants sharing the same source_variant_id → duplicate material error."""
+    state = PlanBuildState(state_id="mu-collapse", requirement_text="r")
+    state.add_patch(PlanPatchEnvelope(patch_id="facts", patch_type="facts", content={"patch_type": "facts", "model_scope": "single_assembly", "fuel_variant_requirements": [{"variant_id": "v1", "enrichment_wt_percent": 2.0}, {"variant_id": "v2", "enrichment_wt_percent": 3.0}]}, status="valid"))
+    # Both variants map to materials with the SAME source_variant_id → duplicate.
+    state.add_patch(PlanPatchEnvelope(patch_id="materials", patch_type="materials", content={"patch_type": "materials", "materials": [
+        {"material_id": "v1_m", "name": "f1", "role": "fuel", "density_g_cm3": 10.0, "source_variant_id": "v1"},
+        {"material_id": "v2_m", "name": "f2", "role": "fuel", "density_g_cm3": 10.0, "source_variant_id": "v1"},  # wrong variant!
+    ]}, status="valid"))
+    state.add_patch(PlanPatchEnvelope(patch_id="universes", patch_type="universes", content={"patch_type": "universes", "universes": [
+        {"universe_id": "fuel", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "v1_m", "region_kind": "cylinder", "r_min_cm": 0, "r_max_cm": 0.4}]},
+    ]}, status="valid"))
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    # v2 has no material; v1 has two materials.
+    assert "material_universe.required_fuel_variant_material_missing" in codes or "material_universe.fuel_variant_material_duplicate" in codes
+
+
+def test_role_mismatch_detected() -> None:
+    """Fuel cell referencing a cladding material → role mismatch."""
+    state = _state(universes={"patch_type": "universes", "universes": [
+        {"universe_id": "u", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "clad", "region_kind": "cylinder"}]},
+    ]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "material_universe.material_role_mismatch" in codes
