@@ -84,6 +84,16 @@ class SymmetryPolicy:
 
 
 def _lattice_bounds(model: ComplexModelSpec) -> tuple[float, float, float, float, int, int] | None:
+    """Return bounds for the **largest** rectangular lattice in the model.
+
+    For a multi-assembly core, the model contains both assembly-level
+    lattices (e.g. 17×17 pins at small pitch) and the core-level lattice
+    (e.g. 3×3 assemblies at large pitch).  We pick the one with the largest
+    physical area so that geometry-derived plots cover the full core, not
+    a single assembly.
+    """
+    best: tuple[float, float, float, float, int, int] | None = None
+    best_area = 0.0
     for lat in model.lattices:
         if lat.kind != "rect" or not lat.universe_pattern or not lat.universe_pattern[0]:
             continue
@@ -92,12 +102,14 @@ def _lattice_bounds(model: ComplexModelSpec) -> tuple[float, float, float, float
         rows = len(lat.universe_pattern)
         lower_left = lat.lower_left_cm
         if lower_left is None or len(lower_left) < 2:
-            # Default OpenMC RectLattice: lower_left at origin.
             lx, ly = 0.0, 0.0
         else:
             lx, ly = float(lower_left[0]), float(lower_left[1])
-        return (lx, ly, lx + cols * pitch_x, ly + rows * pitch_y, rows, cols)
-    return None
+        area = (cols * pitch_x) * (rows * pitch_y)
+        if area > best_area:
+            best_area = area
+            best = (lx, ly, lx + cols * pitch_x, ly + rows * pitch_y, rows, cols)
+    return best
 
 
 def _active_fuel_z(model: ComplexModelSpec) -> tuple[float, float] | None:

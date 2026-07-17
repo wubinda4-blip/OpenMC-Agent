@@ -65,6 +65,11 @@ from ..material_policy import (
     build_composition_report,
     policy_from_value,
 )
+from openmc_agent.material_species import (
+    MaterialSpeciesResolution,
+    build_material_species_report,
+    resolve_material_species,
+)
 from .patches import (
     AssemblyCatalogPatch,
     AxialLayerPatchItem,
@@ -112,6 +117,104 @@ class PlanAssemblyResult(AgentBaseModel):
     issues: list[PlanAssemblyIssue] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
     material_composition_report: MaterialCompositionReport | None = None
+    material_species_resolution_report: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Multi-assembly plot derivation (reactor-neutral)
+# ---------------------------------------------------------------------------
+
+
+def _derive_multi_assembly_plots(
+    axial_layers: list[Any],
+    overlays: list[Any],
+    core_width: float,
+) -> list[PlotSpec]:
+    """Derive plot specifications for a multi-assembly core.
+
+    Generates XY slices at key axial elevations (active fuel, spacer grid,
+    lower/upper structural) plus an XZ axial cross-section — all sized to
+    cover the full core footprint.  Reactor-neutral: heights are derived
+    from the actual axial layers and overlays, not hardcoded.
+    """
+    if not axial_layers:
+        return [
+            PlotSpec(
+                basis="xy", origin=(0.0, 0.0, 0.0),
+                width_cm=(core_width, core_width),
+                filename="full_core_xy.png",
+            ),
+        ]
+
+    z_min_all = min(L.z_min_cm for L in axial_layers)
+    z_max_all = max(L.z_max_cm for L in axial_layers)
+    axial_height = z_max_all - z_min_all
+
+    # Active-fuel region: all lattice-filled layers.
+    lattice_layers = [L for L in axial_layers if L.fill.type == "lattice"]
+    if lattice_layers:
+        af_z_min = min(L.z_min_cm for L in lattice_layers)
+        af_z_max = max(L.z_max_cm for L in lattice_layers)
+        af_mid = (af_z_min + af_z_max) / 2.0
+    else:
+        af_mid = (z_min_all + z_max_all) / 2.0
+
+    plots: list[PlotSpec] = []
+
+    # 1. XY at active-fuel midplane — shows the pin lattice.
+    plots.append(PlotSpec(
+        basis="xy", origin=(0.0, 0.0, af_mid),
+        width_cm=(core_width, core_width),
+        filename="full_core_xy_active_fuel.png",
+        purpose=f"XY slice at active-fuel midplane (z={af_mid:.1f} cm).",
+    ))
+
+    # 2. XY at spacer-grid mid-elevation — shows grid-decorated universes.
+    if overlays:
+        mid_idx = len(overlays) // 2
+        ov = overlays[mid_idx]
+        grid_mid = (ov.z_min_cm + ov.z_max_cm) / 2.0
+        plots.append(PlotSpec(
+            basis="xy", origin=(0.0, 0.0, grid_mid),
+            width_cm=(core_width, core_width),
+            filename="full_core_xy_grid_mid.png",
+            purpose=f"XY slice at spacer-grid mid-elevation (z={grid_mid:.1f} cm).",
+        ))
+
+    # 3. XY at lower structural region (bottom nozzle / core plate).
+    material_layers = [L for L in axial_layers if L.fill.type == "material"]
+    lower_struct = [L for L in material_layers if L.z_max_cm <= af_mid]
+    if lower_struct:
+        ls = lower_struct[-1]
+        ls_mid = (ls.z_min_cm + ls.z_max_cm) / 2.0
+        plots.append(PlotSpec(
+            basis="xy", origin=(0.0, 0.0, ls_mid),
+            width_cm=(core_width, core_width),
+            filename="full_core_xy_lower_struct.png",
+            purpose=f"XY slice at lower structural region (z={ls_mid:.1f} cm).",
+        ))
+
+    # 4. XY at upper structural region (upper nozzle / top plate).
+    upper_struct = [L for L in material_layers if L.z_min_cm >= af_mid]
+    if upper_struct:
+        us = upper_struct[0]
+        us_mid = (us.z_min_cm + us.z_max_cm) / 2.0
+        plots.append(PlotSpec(
+            basis="xy", origin=(0.0, 0.0, us_mid),
+            width_cm=(core_width, core_width),
+            filename="full_core_xy_upper_struct.png",
+            purpose=f"XY slice at upper structural region (z={us_mid:.1f} cm).",
+        ))
+
+    # 5. XZ full-height axial cross-section.
+    plots.append(PlotSpec(
+        basis="xz", origin=(0.0, 0.0, (z_min_all + z_max_all) / 2.0),
+        width_cm=(core_width, axial_height),
+        filename="full_core_xz.png",
+        purpose=f"XZ slice covering full axial domain ({axial_height:.1f} cm).",
+    ))
+
+    return plots
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +345,12 @@ def _assemble_materials(
     patch: MaterialsPatch,
     *,
     policy: MaterialCompositionPolicy = DEFAULT_MATERIAL_POLICY,
-) -> tuple[list[ComplexMaterialSpec], list[PlanAssemblyIssue], MaterialCompositionReport]:
+) -> tuple[list[ComplexMaterialSpec], list[PlanAssemblyIssue], MaterialCompositionReport, dict[str, Any]]:
     issues: list[PlanAssemblyIssue] = []
     materials: list[ComplexMaterialSpec] = []
     decisions: dict[str, Any] = {}
     rewritten_patches: list[MaterialSpecPatch] = []
+    species_resolutions: list[MaterialSpeciesResolution] = []
 
     for mat in patch.materials:
         rewritten, decision = apply_policy_to_material_patch(mat, policy)
@@ -275,23 +379,37 @@ def _assemble_materials(
             percent_type = "ao"  # absolute densities, used with set_density('sum')
         else:
             percent_type = "ao"
-        for name, fraction in mat.composition.items():
-            if fraction <= 0:
-                continue
-            try:
-                composition.append(NuclideSpec(
-                    name=name,
-                    percent=fraction,
-                    percent_type=percent_type,
-                    kind="nuclide",
-                ))
-            except Exception:
-                composition.append(NuclideSpec(
-                    name=name,
-                    percent=fraction,
-                    percent_type="ao",
-                    kind="element",
-                ))
+        species_resolution = resolve_material_species(
+            material_id=mat.material_id,
+            role=mat.role,
+            composition=mat.composition,
+            composition_basis=mat.composition_basis,
+            compound_components=mat.compound_components,
+            # Assembly accepts explicitly-audited historical plans. New LLM
+            # patch generation is rejected earlier by the static validator.
+            strict_composition=False,
+            legacy_compatibility=True,
+        )
+        species_resolutions.append(species_resolution)
+        for code in species_resolution.errors:
+            issues.append(PlanAssemblyIssue(
+                code=code,
+                severity="error",
+                message=(f"material {mat.material_id!r} species resolution failed: {code}"),
+                path=f"materials[{mat.material_id}]",
+            ))
+        for warning in species_resolution.warnings:
+            issues.append(PlanAssemblyIssue(
+                code="material_resolution.warning", severity="warning", message=warning,
+                path=f"materials[{mat.material_id}]",
+            ))
+        for component in species_resolution.species:
+            composition.append(NuclideSpec(
+                name=component.name,
+                percent=component.fraction,
+                percent_type=percent_type,
+                kind=component.kind,
+            ))
 
         assumptions = list(mat.warnings)
         if mat.composition_status in ("approximate", "needs_library", "placeholder"):
@@ -428,7 +546,14 @@ def _assemble_materials(
             ))
 
     report = build_composition_report(rewritten_patches, policy=policy, decisions=decisions)
-    return materials, issues, report
+    report.notes.append("material species resolution is recorded separately in material_species_resolution_report")
+    # The caller carries the report in summary/result; attaching it to the
+    # composition report avoids a second incompatible legacy report type.
+    report.notes.extend([
+        f"species:{r.material_id}: errors={len(r.errors)} warnings={len(r.warnings)}"
+        for r in species_resolutions
+    ])
+    return materials, issues, report, build_material_species_report(species_resolutions)
 
 
 def _assemble_universes(
@@ -1414,6 +1539,7 @@ def assemble_simulation_plan_from_patches(
     actual_pin_counts: dict[str, int] = {}
     material_aliases_applied: dict[str, str] = {}
     material_composition_report: MaterialCompositionReport | None = None
+    material_species_resolution_report: dict[str, Any] | None = None
 
     facts: FactsPatch | None = indexed.get("facts")
     materials_patch: MaterialsPatch | None = indexed.get("materials")
@@ -1449,7 +1575,7 @@ def assemble_simulation_plan_from_patches(
     # 2. Assemble materials.
     if materials_patch is None:
         materials_patch = MaterialsPatch(materials=[])
-    plan_materials, mat_issues, material_composition_report = _assemble_materials(
+    plan_materials, mat_issues, material_composition_report, material_species_resolution_report = _assemble_materials(
         materials_patch, policy=policy,
     )
     issues.extend(mat_issues)
@@ -1725,20 +1851,10 @@ def assemble_simulation_plan_from_patches(
             requires_human_confirmation=list(dict.fromkeys(all_confirms)),
         )
 
-        plot_specs = [
-            PlotSpec(
-                basis="xy",
-                origin=(0.0, 0.0, 0.0),
-                width_cm=(assembly_pitch * 3, assembly_pitch * 3),
-                filename="full_core_xy.png",
-            ),
-            PlotSpec(
-                basis="xz",
-                origin=(0.0, 0.0, 0.0),
-                width_cm=(assembly_pitch * 3, 400.0),
-                filename="full_core_xz.png",
-            ),
-        ]
+        core_width = assembly_pitch * (core_layout_patch.shape[0] if core_layout_patch else 3)
+        plot_specs = _derive_multi_assembly_plots(
+            axial_layers, axial_overlays, core_width,
+        )
 
         run_settings = RunSettingsSpec(
             batches=5, inactive=1, particles=100,
@@ -1789,6 +1905,7 @@ def assemble_simulation_plan_from_patches(
             plan_dict=plan.model_dump(),
             issues=issues,
             material_composition_report=material_composition_report,
+            material_species_resolution_report=material_species_resolution_report,
             summary={
                 "path": "multi_assembly_core",
                 "kind": "core",
@@ -2103,8 +2220,10 @@ def assemble_simulation_plan_from_patches(
             "material_aliases_applied": material_aliases_applied,
             "material_composition_policy": policy.value,
             "material_composition_report_present": material_composition_report is not None,
+            "material_species_resolution_report_present": material_species_resolution_report is not None,
         },
         material_composition_report=material_composition_report,
+        material_species_resolution_report=material_species_resolution_report,
     )
 
 
