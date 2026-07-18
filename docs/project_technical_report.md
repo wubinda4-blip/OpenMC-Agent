@@ -501,3 +501,12 @@ runtime repair, or monolithic fallback path was introduced.
 - Placement dependency requests now retain required universe IDs and gate-input
   hash; focused tests plus the non-OpenMC/non-real-LLM suite and fake workflow
   benchmark passed.
+
+## 2026-07-18 — Axial JSON schema recovery and bounded controlled retry
+
+- Axial prompts now enumerate canonical layer roles and forbid null ordering
+  priorities; two exact lexical role aliases and an omitted-default priority
+  are normalized with attempt-level audit records only.
+- Controlled Graph execution stops after the failed patch's local budget is
+  exhausted, retains its checkpoint/candidate hashes, and does not reopen a
+  whole-plan retry. Validation: focused generator, executor, and Graph tests.

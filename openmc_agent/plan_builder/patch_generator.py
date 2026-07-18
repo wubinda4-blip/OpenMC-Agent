@@ -34,6 +34,7 @@ from .patches import (
 )
 from .patch_prompts import build_patch_prompt, build_retry_prompt
 from .state import PlanBuildState, PlanPatchEnvelope
+from .closed_loop.fingerprints import compute_candidate_hash
 from .validators import (
     PatchValidationContext,
     PatchValidationResult,
@@ -131,6 +132,7 @@ class PatchGenerationAttempt(AgentBaseModel):
     raw_chars: int = 0
     parsed: bool = False
     parsed_content: dict[str, Any] | None = None
+    candidate_hash: str | None = None
     validated: bool = False
     issues: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
@@ -733,6 +735,61 @@ def _normalize_known_universe_references(
                 transformation["source_universe_ids"] = normalized_values
 
 
+_AXIAL_LAYER_ROLE_ALIASES: dict[str, str] = {
+    # These are lexical separator variants of schema literals, not alternate
+    # physical roles.  Keeping this mapping deliberately finite prevents a
+    # spelling normalizer from becoming an unreviewed semantic repair path.
+    "lower_endplug": "lower_end_plug",
+    "upper_endplug": "upper_end_plug",
+}
+
+
+def _normalize_axial_schema_defaults(content: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize only unambiguous axial JSON spelling/default variants.
+
+    Pydantic assigns ``priority=0`` when the field is absent.  A model-emitted
+    ``null`` therefore means the same *unspecified* ordering, while the wire
+    schema quite correctly rejects null for an integer.  We drop that null
+    rather than inventing an ordering.  Every change is returned for attempt
+    artifacts; unknown roles and all other invalid values remain hard errors.
+    """
+    normalizations: list[dict[str, Any]] = []
+
+    for index, layer in enumerate(content.get("layers", [])):
+        if not isinstance(layer, dict):
+            continue
+        role = layer.get("role")
+        canonical = _AXIAL_LAYER_ROLE_ALIASES.get(role) if isinstance(role, str) else None
+        if canonical is not None:
+            layer["role"] = canonical
+            normalizations.append({
+                "kind": "axial_role_lexical_alias",
+                "json_path": f"/layers/{index}/role",
+                "from": role,
+                "to": canonical,
+            })
+
+    for loading_index, loading in enumerate(content.get("lattice_loadings", [])):
+        if not isinstance(loading, dict):
+            continue
+        for transform_index, transformation in enumerate(loading.get("transformations", [])):
+            if not isinstance(transformation, dict) or transformation.get("priority") is not None:
+                continue
+            if "priority" not in transformation:
+                continue
+            transformation.pop("priority")
+            normalizations.append({
+                "kind": "axial_priority_default_omitted",
+                "json_path": (
+                    f"/lattice_loadings/{loading_index}/transformations/"
+                    f"{transform_index}/priority"
+                ),
+                "from": None,
+                "to": "schema_default:0",
+            })
+    return normalizations
+
+
 # ---------------------------------------------------------------------------
 # Semantic normalization detection (through_path_preserved derivation audit)
 # ---------------------------------------------------------------------------
@@ -973,6 +1030,9 @@ def generate_patch(
     attempts: list[PatchGenerationAttempt] = []
     last_issues: list[dict[str, Any]] = []
     previous_parsed_content: dict[str, Any] | None = None
+    prior_candidate_hashes = set(
+        retry_context.prior_candidate_hashes if retry_context is not None else []
+    )
 
     for attempt_idx in range(max_attempts):
         attempt = PatchGenerationAttempt(attempt_index=attempt_idx, patch_type=patch_type)
@@ -1077,6 +1137,40 @@ def generate_patch(
         _normalize_known_universe_references(
             patch_type, content, effective_context
         )
+        schema_normalizations: list[dict[str, Any]] = []
+        if patch_type == "axial_layers":
+            schema_normalizations = _normalize_axial_schema_defaults(content)
+        attempt.semantic_normalizations = schema_normalizations
+
+        # Record a canonical candidate before model parsing.  Schema-invalid
+        # candidates are still candidates: retaining this hash is what lets a
+        # resumed controlled run stop a repeated bad response before another
+        # whole planning pass is scheduled.
+        attempt.parsed_content = content
+        attempt.candidate_hash = compute_candidate_hash(
+            target_patch_type=patch_type,
+            candidate_patch=content,
+        )
+        if attempt.candidate_hash in prior_candidate_hashes:
+            attempt.semantic_normalizations = schema_normalizations
+            attempt.issues.append({
+                "code": "patch_generation.no_progress_duplicate_candidate",
+                "severity": "error",
+                "message": (
+                    f"{patch_type} returned a candidate JSON already rejected "
+                    "for the same upstream patch context"
+                ),
+                "candidate_hash": attempt.candidate_hash,
+            })
+            attempts.append(attempt)
+            all_issues = [issue for item in attempts for issue in item.issues]
+            return PatchGenerationResult(
+                ok=False,
+                patch_type=patch_type,
+                attempts=attempts,
+                issues=all_issues,
+            )
+        prior_candidate_hashes.add(attempt.candidate_hash)
 
         # Phase 7C: validate patch contract (patch_type, allowed/forbidden keys).
         contract_issues = validate_patch_contract(
@@ -1106,14 +1200,13 @@ def generate_patch(
             continue
 
         attempt.parsed = True
-        attempt.parsed_content = content
 
         # Detect semantic normalizations (e.g. through_path_preserved derived
         # from None by model_validator).
         normalizations = _detect_semantic_normalizations(
             patch_type, content, parsed_model,
         )
-        attempt.semantic_normalizations = normalizations
+        attempt.semantic_normalizations = [*schema_normalizations, *normalizations]
 
         # Retry drift detection: if this is a retry and we have the previous
         # parsed patch, check that only allowed fields changed.

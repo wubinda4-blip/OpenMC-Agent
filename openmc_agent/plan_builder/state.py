@@ -160,6 +160,13 @@ class PlanBuildState(AgentBaseModel):
     validation_repair_candidate_hashes: dict[str, list[str]] = Field(default_factory=dict)
     validation_full_patch_regenerations_by_fingerprint: dict[str, int] = Field(default_factory=dict)
 
+    # Patch-generation candidates can fail before a patch model exists (for
+    # example, a schema-invalid LLM response).  Persist their hashes by the
+    # upstream-context fingerprint so resume does not repeatedly call an LLM
+    # for an identical rejected JSON candidate.
+    patch_generation_candidate_hashes_by_context: dict[str, list[str]] = Field(default_factory=dict)
+    patch_generation_attempts_by_context: dict[str, int] = Field(default_factory=dict)
+
     # Phase-0 plan closed-loop state.  These ledgers are deliberately
     # namespaced from validation/runtime repair so checkpoint restore preserves
     # the future review protocol without changing existing retry semantics.

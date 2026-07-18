@@ -254,7 +254,11 @@ def test_missing_axial_universe_dependency_invalidates_owner_and_downstream() ->
     from openmc_agent.graph import _make_validate_plan_node
     from openmc_agent.plan_builder.state import PlanBuildState, PlanPatchEnvelope
 
-    build_state = PlanBuildState(state_id="dependency-retry", requirement_text="r")
+    build_state = PlanBuildState(
+        state_id="dependency-retry",
+        requirement_text="r",
+        plan_loop_mode="controlled",
+    )
     for patch_type in ("facts", "materials", "universes", "pin_map", "axial_layers"):
         build_state.add_patch(PlanPatchEnvelope(
             patch_id=patch_type,
@@ -274,12 +278,14 @@ def test_missing_axial_universe_dependency_invalidates_owner_and_downstream() ->
         "simulation_plan": None,
         "requirement": "reactor-neutral requirement",
         "retry_count": 0,
+        "plan_loop_mode": "controlled",
         "error": "incremental.execution_failed: incremental.patch_generation_failed",
         "plan_build_state": build_state.model_dump(mode="json"),
         "incremental_execution_result": {
             "planning_mode": "incremental",
             "monolithic_reflect_plan_allowed": False,
             "ok": False,
+            "summary": {"patch_generation_exhausted": True},
             "issues": [{"code": "incremental.patch_generation_failed", "patch_type": "axial_layers"}],
         },
     })
@@ -292,6 +298,33 @@ def test_missing_axial_universe_dependency_invalidates_owner_and_downstream() ->
     assert resumed.patches["axial_layers"].status == "invalid"
     assert resumed.metadata["plan_validation_repair"]["target_patch_types"] == ["universes", "axial_layers"]
     assert updates["requirement"] == "reactor-neutral requirement"
+
+
+def test_controlled_exhausted_patch_failure_does_not_schedule_graph_regeneration() -> None:
+    """The patch's own retry budget is authoritative in controlled mode."""
+    from openmc_agent.graph import _make_validate_plan_node
+
+    updates = _make_validate_plan_node(3)({
+        "simulation_plan": None,
+        "requirement": "reactor-neutral requirement",
+        "retry_count": 0,
+        "plan_loop_mode": "controlled",
+        "plan_build_state": {"plan_loop_mode": "controlled", "patches": {}},
+        "incremental_execution_result": {
+            "planning_mode": "incremental",
+            "monolithic_reflect_plan_allowed": False,
+            "ok": False,
+            "summary": {
+                "failed_patch_type": "axial_layers",
+                "patch_generation_exhausted": True,
+                "next_recommended_action": "resume_from_failed_patch",
+            },
+            "issues": [{"code": "incremental.patch_generation_failed", "patch_type": "axial_layers"}],
+        },
+    })
+
+    assert updates.get("incremental_regeneration_pending") is not True
+    assert updates.get("retry_count", 0) == 0
 
 
 def test_non_incremental_failure_does_not_trigger_regeneration() -> None:

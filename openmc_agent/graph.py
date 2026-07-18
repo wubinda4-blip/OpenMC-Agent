@@ -2925,6 +2925,7 @@ def _make_validate_plan_node(max_retries: int, *, patch_repair_llm_client: Any |
                 and retry_count < max_retries
                 and _is_incremental_patch_generation_failure(state, report)
                 and not _incremental_gate_outcome_is_terminal(state)
+                and not _incremental_patch_generation_retry_exhausted(state)
             ):
                 dependency_repair = _incremental_dependency_repair_metadata(state)
                 if dependency_repair is not None:
@@ -3688,6 +3689,45 @@ def _incremental_gate_outcome_is_terminal(state: GraphState) -> bool:
         isinstance(stage, dict)
         and stage.get("status") in {"blocked", "awaiting_human"}
         for stage in stages.values()
+    )
+
+
+def _incremental_patch_generation_retry_exhausted(state: GraphState) -> bool:
+    """Prevent controlled-mode Graph retries from reopening an exhausted patch.
+
+    ``generate_patch`` already retries the current patch with its schema
+    diagnostics.  Once that bounded local retry has failed, a generic
+    ``generate_plan`` loop only spends calls on the same target again.  The
+    checkpoint remains resumable, but a controlled invocation must return the
+    owner-aware failure instead of performing a third whole-workflow pass.
+    Off and advisory retain their historical Graph retry semantics.
+    """
+    build_state = state.get("plan_build_state")
+    mode = state.get("plan_loop_mode")
+    if not mode and isinstance(build_state, dict):
+        mode = build_state.get("plan_loop_mode")
+    if mode != "controlled":
+        return False
+    incremental = state.get("incremental_execution_result")
+    if not isinstance(incremental, dict):
+        return False
+    summary = incremental.get("summary")
+    if not isinstance(summary, dict):
+        return False
+    # A duplicate candidate has no new information even if it also exposed a
+    # dependency issue.  A typed dependency request, on the other hand,
+    # legitimately changes the upstream context and must still take the
+    # existing bounded owner-replay route.
+    if summary.get("no_progress"):
+        return True
+    if not summary.get("patch_generation_exhausted"):
+        return False
+    return not (
+        isinstance(build_state, dict)
+        and isinstance(build_state.get("metadata"), dict)
+        and isinstance(
+            build_state["metadata"].get("incremental_dependency_repair"), dict
+        )
     )
 
 

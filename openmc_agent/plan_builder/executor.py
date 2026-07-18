@@ -31,8 +31,10 @@ from .patches import (
 )
 from .patch_generator import (
     PatchGenerationContext,
+    RetryPatchGenerationContext,
     generate_patch,
 )
+from .closed_loop.fingerprints import compute_candidate_hash
 from .validators import validate_patch
 from .scoped_counts import resolve_expected_counts_for_pin_map
 from .reference_patches import (
@@ -744,6 +746,39 @@ def build_generation_context_from_state(
         },
     )
     return ctx
+
+
+def _patch_generation_context_fingerprint(
+    state: PlanBuildState,
+    patch_type: str,
+) -> str:
+    """Fingerprint the validated upstream contract for one patch candidate.
+
+    Candidate reuse is only unsafe when the same patch is requested against
+    the same accepted upstream content.  Including the canonical task plan
+    avoids treating a post-Facts-revision retry as a duplicate of an older
+    task plan.
+    """
+    upstream_hashes = {
+        envelope.patch_type: compute_candidate_hash(
+            target_patch_type=envelope.patch_type,
+            candidate_patch=envelope.content,
+        )
+        for envelope in state.patches.values()
+        if envelope.status == "valid" and envelope.patch_type != patch_type
+    }
+    task_plan_hash = (
+        state.canonical_task_plan.plan_hash
+        if state.canonical_task_plan is not None
+        else None
+    )
+    return compute_candidate_hash(
+        target_patch_type=patch_type,
+        candidate_patch={
+            "upstream_patch_hashes": upstream_hashes,
+            "canonical_task_plan_hash": task_plan_hash,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1477,7 +1512,13 @@ def run_incremental_planning(
         if var and not state.selected_variant:
             state.selected_variant = var
 
-    def _build_failure_summary(pt: str, error_codes: list[str], attempt_count: int) -> dict[str, Any]:
+    def _build_failure_summary(
+        pt: str,
+        error_codes: list[str],
+        attempt_count: int,
+        *,
+        no_progress: bool = False,
+    ) -> dict[str, Any]:
         valid_types = sorted({
             e.patch_type for e in state.patches.values() if e.status == "valid"
         })
@@ -1494,7 +1535,14 @@ def run_incremental_planning(
             "issue_codes": error_codes,
             "valid_patch_types": valid_types,
             "invalid_patch_types": invalid_types,
-            "next_recommended_action": "resume_from_failed_patch",
+            "next_recommended_action": (
+                "stop_no_progress" if no_progress else "resume_from_failed_patch"
+            ),
+            "patch_generation_exhausted": (
+                "patch_generation.max_attempts_exceeded" in error_codes
+                or no_progress
+            ),
+            "no_progress": no_progress,
             "monolithic_fallback_attempted": False,
             "reference_patches_used": reference_patches_used,
             "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
@@ -2210,6 +2258,21 @@ def run_incremental_planning(
         ctx = build_generation_context_from_state(
             state, patch_type, few_shot_case_ids=few_shot_case_ids
         )
+        candidate_context_fingerprint = _patch_generation_context_fingerprint(
+            state, patch_type
+        )
+        prior_candidate_hashes = list(
+            state.patch_generation_candidate_hashes_by_context.get(
+                candidate_context_fingerprint, []
+            )
+        )
+        generation_context: PatchGenerationContext | RetryPatchGenerationContext = ctx
+        if prior_candidate_hashes:
+            generation_context = RetryPatchGenerationContext(
+                base_context=ctx,
+                reason_code="patch_generation_resume",
+                prior_candidate_hashes=prior_candidate_hashes,
+            )
         if patch_type == "facts" and policy.mode is not PlanLoopMode.OFF:
             facts_stage = _facts_stage()
             if facts_stage is not None and facts_stage.status in {PlanStageStatus.PENDING, PlanStageStatus.REPAIRING}:
@@ -2226,7 +2289,7 @@ def run_incremental_planning(
             patch_type=patch_type,
             requirement=requirement,
             state=state,
-            context=ctx,
+            context=generation_context,
             llm_client=llm_client,
             max_attempts=max_patch_attempts,
         )
@@ -2420,8 +2483,28 @@ def run_incremental_planning(
                     "prompt_text": (att.prompt_text or "")[:60000],
                     "issues": att.issues,
                     "output_mode_used": att.output_mode_used,
+                    "candidate_hash": att.candidate_hash,
+                    "semantic_normalizations": att.semantic_normalizations,
                     "error": att.error,
                 }
+
+            candidate_hashes = [
+                attempt.candidate_hash
+                for attempt in result.attempts
+                if attempt.candidate_hash
+            ]
+            if candidate_hashes:
+                ledger = state.patch_generation_candidate_hashes_by_context.setdefault(
+                    candidate_context_fingerprint, []
+                )
+                for candidate_hash in candidate_hashes:
+                    if candidate_hash not in ledger:
+                        ledger.append(candidate_hash)
+                state.patch_generation_attempts_by_context[
+                    candidate_context_fingerprint
+                ] = state.patch_generation_attempts_by_context.get(
+                    candidate_context_fingerprint, 0
+                ) + 1
 
             decision = route_retry(
                 failed_patch_type=patch_type,
@@ -2481,11 +2564,33 @@ def run_incremental_planning(
                 message=f"execution stopped: {patch_type} generation failed",
                 data={"failed_patch_type": patch_type, "error_codes": error_codes},
             )
+            no_progress = any(
+                issue.get("code") == "patch_generation.no_progress_duplicate_candidate"
+                for issue in result.issues
+            )
+            if no_progress:
+                state.add_event(
+                    event_type="planning.patch_generation_no_progress",
+                    message=(
+                        f"{patch_type} repeated a rejected candidate; "
+                        "stopping targeted generation"
+                    ),
+                    data={
+                        "patch_type": patch_type,
+                        "candidate_context_fingerprint": candidate_context_fingerprint,
+                        "candidate_hashes": candidate_hashes,
+                    },
+                )
             return IncrementalExecutionResult(
                 ok=False,
                 state=state,
                 issues=issues,
-                summary=_build_failure_summary(patch_type, error_codes, attempt_count),
+                summary=_build_failure_summary(
+                    patch_type,
+                    error_codes,
+                    attempt_count,
+                    no_progress=no_progress,
+                ),
                 plan_loop_outcome=_write_advisory_artifacts(),
             )
 

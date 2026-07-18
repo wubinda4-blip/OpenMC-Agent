@@ -298,6 +298,17 @@ Schema: {{"patch_type": "axial_layers", "axial_domain_cm": [float,float],
   "overrides": {{"universe_id": [[int,int]]}}, "purpose"}}]}}
 
 Rules:
+- layer.role MUST be exactly one of: "lower_moderator_buffer",
+  "lower_core_plate", "lower_nozzle", "lower_shoulder_gap",
+  "lower_fuel_endplug", "lower_end_plug", "lower_plenum",
+  "active_fuel", "gas_gap", "upper_fuel_endplug", "upper_end_plug",
+  "fuel_upper_plenum", "upper_plenum", "upper_shoulder_gap",
+  "upper_nozzle", "upper_core_plate", "upper_moderator_buffer",
+  "core_plate", "reflector", "shoulder_gap", or "custom".  In
+  particular, use "lower_end_plug" / "upper_end_plug", never
+  "lower_endplug" / "upper_endplug".
+- transformation.priority is optional.  Omit it when no ordering is needed;
+  if present it MUST be an integer such as 0.  Never emit null for priority.
 - Do NOT generate materials/universes/lattice/full plan.
 - For fill_type="material", fill_id MUST be one of Context.known_material_ids. Do not
   invent homogenized mixture IDs; use an existing ID or mark the layer for human
