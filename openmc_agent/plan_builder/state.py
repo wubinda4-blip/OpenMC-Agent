@@ -230,6 +230,17 @@ class PlanBuildState(AgentBaseModel):
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # Phase-8A Step 1 plan-investigation slots.  These are deliberately
+    # inert here: no graph node, gate, patch generator or renderer reads or
+    # writes them.  They exist so a later step can populate them from the
+    # plan_investigation package outputs without another state migration.
+    # Central access helpers live in
+    # openmc_agent.plan_investigation.state_compat; callers MUST go through
+    # those helpers rather than hand-writing metadata keys.
+    planning_source_manifest: dict[str, Any] | None = None
+    planning_evidence_ledger: dict[str, Any] | None = None
+    plan_investigation_schema_version: str | None = None
+
     # ------------------------------------------------------------------
     # Helper methods
     # ------------------------------------------------------------------
