@@ -94,6 +94,13 @@ class PatchGenerationContext(AgentBaseModel):
     localized_insert_requirements: list[dict[str, Any]] = Field(default_factory=list)
     localized_insert_universe_summaries: list[dict[str, Any]] = Field(default_factory=list)
     assembly_insert_binding_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase-8A Step 3: structured evidence claims produced by the optional
+    # investigation stage.  Each entry is the canonical claim payload
+    # produced by ``collect_evidence_for_patch_prompt`` (claim_id, subject,
+    # predicate, value, status, criticality, source_spans).  Empty list
+    # (the default) means no investigation was run; existing patch prompts
+    # are unchanged in that case.
+    investigation_evidence: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RetryPatchGenerationContext(AgentBaseModel):

@@ -693,15 +693,45 @@ def build_patch_prompt(
         f"  {', '.join(forbidden)}\n\n"
     )
 
+    # Phase 8A Step 3: structured investigation evidence.  Empty list (the
+    # default) produces an empty section, so legacy prompts are unchanged.
+    evidence_block = _investigation_evidence_block(context)
+
     return (
         f"{contract}\n\n"
         f"{keys_block}"
         f"{patch_rules}\n\n"
         f"{few_shot_block}"
         f"{context_block}"
+        f"{evidence_block}"
         f"Requirement:\n{requirement}\n\n"
         f'Return ONLY the JSON object with patch_type="{patch_type}". No other text.'
     )
+
+
+def _investigation_evidence_block(context: Any | None) -> str:
+    """Render the Phase 8A Step 3 investigation-evidence section.
+
+    Returns "" when ``context.investigation_evidence`` is empty or
+    absent.  This keeps the legacy prompt byte-identical when the
+    investigation stage is disabled (which is the default).
+    """
+
+    if context is None:
+        return ""
+    evidence = getattr(context, "investigation_evidence", None)
+    if not evidence:
+        return ""
+    # Imported lazily so plan_builder does not pay for the
+    # plan_investigation package import when the flag is off.
+    from openmc_agent.plan_investigation.prompt import (
+        render_investigation_evidence_for_prompt,
+    )
+
+    rendered = render_investigation_evidence_for_prompt(evidence)
+    if not rendered:
+        return ""
+    return rendered + "\n\n"
 
 
 # ---------------------------------------------------------------------------
