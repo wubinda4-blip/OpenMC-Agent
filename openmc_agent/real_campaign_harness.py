@@ -693,6 +693,16 @@ def compute_resume_fingerprint(
     requirement_sha: str,
     human_answer_sha: str,
     git_sha: str,
+    plan_investigation_mode: str = "off",
+    plan_investigation_patch_types: tuple[str, ...] = (),
+    plan_investigation_model: str | None = None,
+    plan_investigation_reasoning_effort: str | None = None,
+    plan_investigation_output_mode: str | None = None,
+    plan_investigation_budget_hash: str = "",
+    plan_investigation_policy_hash: str = "",
+    plan_investigation_tool_registry_hash: str = "",
+    plan_investigation_schema_version: str = "0.1",
+    require_source_backed_evidence: bool = True,
 ) -> CampaignResumeFingerprint:
     return CampaignResumeFingerprint(
         git_sha=git_sha,
@@ -718,6 +728,16 @@ def compute_resume_fingerprint(
         material_policy=material_policy,
         runtime_mode=runtime_mode,
         openmc_cross_sections_fingerprint=_cross_sections_fingerprint(env_status),
+        plan_investigation_mode=plan_investigation_mode,
+        plan_investigation_patch_types=plan_investigation_patch_types,
+        plan_investigation_model=plan_investigation_model,
+        plan_investigation_reasoning_effort=plan_investigation_reasoning_effort,
+        plan_investigation_output_mode=plan_investigation_output_mode,
+        plan_investigation_budget_hash=plan_investigation_budget_hash,
+        plan_investigation_policy_hash=plan_investigation_policy_hash,
+        plan_investigation_tool_registry_hash=plan_investigation_tool_registry_hash,
+        plan_investigation_schema_version=plan_investigation_schema_version,
+        require_source_backed_evidence=require_source_backed_evidence,
     )
 
 
@@ -983,6 +1003,20 @@ class CanaryRunConfig:
     human_answer_hash: str = ""
     acceptance_callback: Callable[[Any], tuple[bool, list[str]]] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Phase 8A Step 4: plan investigation knobs.  Defaults preserve
+    # legacy behaviour (mode=off, no investigator client, no extra
+    # budget consumed).
+    plan_investigation_mode: str = "off"
+    plan_investigation_patch_types: tuple[str, ...] = ()
+    plan_investigation_model: str | None = None
+    plan_investigation_reasoning_effort: str | None = None
+    plan_investigation_output_mode: str | None = None
+    plan_investigation_max_tool_calls: int = 5
+    plan_investigation_max_results_per_tool: int = 50
+    plan_investigation_max_evidence_claims: int = 100
+    plan_investigation_max_sessions_per_patch_type: int = 1
+    plan_investigation_require_source_backed_evidence: bool = True
+    plan_investigation_max_tokens: int | None = None
 
 
 def run_real_canary_once(
@@ -1058,11 +1092,17 @@ def run_real_canary_once(
 
     # --- Create fresh client bundle (real reviewer + real repair) ---------
     try:
+        plan_investigation_enabled = config.plan_investigation_mode in {"advisory", "controlled"}
         bundle = _create_client_bundle(
             base_cfg,
             recorder=recorder,
             plan_reviewer_enabled=True,
             plan_repair_enabled=True,
+            plan_investigation_enabled=plan_investigation_enabled,
+            plan_investigation_model=config.plan_investigation_model,
+            plan_investigation_max_tokens=config.plan_investigation_max_tokens,
+            plan_investigation_reasoning_effort=config.plan_investigation_reasoning_effort,
+            plan_investigation_output_mode=config.plan_investigation_output_mode,
         )
         result.provider = bundle.provider
         recorder.provider = bundle.provider
@@ -1109,6 +1149,31 @@ def run_real_canary_once(
             "max_runtime_iterations": config.max_runtime_iterations,
         },
     }
+    # Phase 8A Step 4: pass plan investigation config + client to the
+    # graph when enabled.  The graph forwards them to the incremental
+    # executor's Facts investigation stage.
+    if config.plan_investigation_mode in {"advisory", "controlled"}:
+        from openmc_agent.plan_investigation.runner import (
+            PlanInvestigationConfig as _PlanInvCfg,
+            PlanInvestigationMode as _PIMode,
+        )
+
+        mode_value = config.plan_investigation_mode
+        try:
+            inv_mode = _PIMode(mode_value)
+        except ValueError:
+            inv_mode = _PIMode.OFF
+        plan_inv_cfg = _PlanInvCfg(
+            mode=inv_mode,
+            patch_types=tuple(config.plan_investigation_patch_types) or ("facts",),
+            require_source_backed_evidence=config.plan_investigation_require_source_backed_evidence,
+            investigator_model=config.plan_investigation_model,
+            investigator_reasoning_effort=config.plan_investigation_reasoning_effort,
+            investigator_output_mode=config.plan_investigation_output_mode,
+        )
+        graph_kwargs["plan_investigation_config"] = plan_inv_cfg
+        graph_kwargs["plan_investigation_client"] = bundle.plan_investigation_client
+        graph_kwargs["plan_investigation_output_dir"] = str(run_dir / "workflow")
     # Stage gates: when planning-only, skip render/export/smoke entirely.
     if config.planning_stage == _PLANNING_STAGE:
         graph_kwargs["enable_smoke_test"] = False
@@ -1438,6 +1503,20 @@ class CanaryCampaignConfig:
     fail_fast: bool = False
     resume: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Phase 8A Step 4: campaign-level plan investigation knobs.  Defaults
+    # preserve legacy behaviour (mode=off → no investigator client, no
+    # extra budget, no fingerprint mismatch).
+    plan_investigation_mode: str = "off"
+    plan_investigation_patch_types: tuple[str, ...] = ()
+    plan_investigation_model: str | None = None
+    plan_investigation_reasoning_effort: str | None = None
+    plan_investigation_output_mode: str | None = None
+    plan_investigation_max_tool_calls: int = 5
+    plan_investigation_max_results_per_tool: int = 50
+    plan_investigation_max_evidence_claims: int = 100
+    plan_investigation_max_sessions_per_patch_type: int = 1
+    plan_investigation_require_source_backed_evidence: bool = True
+    plan_investigation_max_tokens: int | None = None
 
 
 def run_real_canary_campaign(
@@ -1482,12 +1561,18 @@ def run_real_canary_campaign(
         strict_structured_patch_output=campaign.strict_structured_patch_output,
         material_policy=campaign.material_policy,
         runtime_mode=campaign.runtime_supervisor_mode,
-        reasoning_effort="default",
-        output_mode="auto",
+        reasoning_effort=campaign.plan_investigation_reasoning_effort or "default",
+        output_mode=campaign.plan_investigation_output_mode or "auto",
         input_sha=input_sha,
         requirement_sha=requirement_sha,
         human_answer_sha=campaign.human_answer_hash,
         git_sha=git_sha,
+        plan_investigation_mode=campaign.plan_investigation_mode,
+        plan_investigation_patch_types=campaign.plan_investigation_patch_types,
+        plan_investigation_model=campaign.plan_investigation_model,
+        plan_investigation_reasoning_effort=campaign.plan_investigation_reasoning_effort,
+        plan_investigation_output_mode=campaign.plan_investigation_output_mode,
+        require_source_backed_evidence=campaign.plan_investigation_require_source_backed_evidence,
     )
 
     # Determine campaign-level status from environment.
@@ -1512,6 +1597,8 @@ def run_real_canary_campaign(
         max_runtime_iterations=campaign.max_runtime_iterations,
         universes_generation_mode=campaign.universes_generation_mode,
         enable_runtime_supervisor=campaign.runtime_supervisor_mode == "real",
+        plan_investigation_patch_types=campaign.plan_investigation_patch_types,
+        plan_investigation_max_sessions_per_patch_type=campaign.plan_investigation_max_sessions_per_patch_type,
     )
     effective_max_calls = campaign.max_llm_calls or llm_budget.total
 
@@ -1658,6 +1745,17 @@ def run_real_canary_campaign(
             human_answer_hash=campaign.human_answer_hash,
             acceptance_callback=campaign.acceptance_callback,
             metadata={"llm_budget": llm_budget.to_dict()},
+            plan_investigation_mode=campaign.plan_investigation_mode,
+            plan_investigation_patch_types=campaign.plan_investigation_patch_types,
+            plan_investigation_model=campaign.plan_investigation_model,
+            plan_investigation_reasoning_effort=campaign.plan_investigation_reasoning_effort,
+            plan_investigation_output_mode=campaign.plan_investigation_output_mode,
+            plan_investigation_max_tool_calls=campaign.plan_investigation_max_tool_calls,
+            plan_investigation_max_results_per_tool=campaign.plan_investigation_max_results_per_tool,
+            plan_investigation_max_evidence_claims=campaign.plan_investigation_max_evidence_claims,
+            plan_investigation_max_sessions_per_patch_type=campaign.plan_investigation_max_sessions_per_patch_type,
+            plan_investigation_require_source_backed_evidence=campaign.plan_investigation_require_source_backed_evidence,
+            plan_investigation_max_tokens=campaign.plan_investigation_max_tokens,
         )
 
         result = run_real_canary_once(

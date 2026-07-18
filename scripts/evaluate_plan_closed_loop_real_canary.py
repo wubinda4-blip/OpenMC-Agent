@@ -117,7 +117,52 @@ def main() -> int:
     )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--json", action="store_true")
+    # Phase 8A Step 4: plan investigation flags.  Default mode=off keeps
+    # legacy behaviour.  Controlled real canary in this step only allows
+    # the facts patch type; materials/universes controlled qualification
+    # is reserved for Step 5+.
+    parser.add_argument(
+        "--plan-investigation-mode",
+        choices=("off", "advisory", "controlled"),
+        default="off",
+        help="Plan investigation mode (default: off).",
+    )
+    parser.add_argument(
+        "--plan-investigation-patch-types",
+        type=str,
+        default="facts",
+        help="Comma-separated patch types to investigate (Step 4: facts only).",
+    )
+    parser.add_argument("--plan-investigation-max-tool-calls", type=int, default=5)
+    parser.add_argument("--plan-investigation-max-results-per-tool", type=int, default=50)
+    parser.add_argument("--plan-investigation-max-evidence-claims", type=int, default=100)
+    parser.add_argument("--plan-investigation-model", type=str, default=None)
+    parser.add_argument("--plan-investigation-reasoning-effort", type=str, default=None)
+    parser.add_argument("--plan-investigation-output-mode", type=str, default=None)
+    parser.add_argument("--plan-investigation-max-tokens", type=int, default=None)
+    parser.add_argument(
+        "--no-plan-investigation-require-source-backed-evidence",
+        dest="plan_investigation_require_source_backed_evidence",
+        action="store_false",
+        default=True,
+    )
     args = parser.parse_args()
+
+    # Step 4 scope gate: only facts is allowed for controlled real canary.
+    requested_patch_types = tuple(
+        p.strip() for p in args.plan_investigation_patch_types.split(",") if p.strip()
+    )
+    if args.plan_investigation_mode in {"advisory", "controlled"}:
+        disallowed = [p for p in requested_patch_types if p != "facts"]
+        if disallowed:
+            print(
+                f"ERROR: Phase 8A Step 4 controlled/advisory investigation only "
+                f"supports the 'facts' patch type.  Requested: {requested_patch_types}.  "
+                f"Disallowed: {disallowed}.  Materials/Universes controlled "
+                f"qualification is reserved for Step 5.",
+                file=sys.stderr,
+            )
+            return 2
 
     if not args.confirm_real_campaign:
         print(
@@ -200,6 +245,16 @@ def main() -> int:
         human_answer_hash=human_answer_hash,
         fail_fast=args.fail_fast,
         resume=args.resume,
+        plan_investigation_mode=args.plan_investigation_mode,
+        plan_investigation_patch_types=requested_patch_types,
+        plan_investigation_model=args.plan_investigation_model,
+        plan_investigation_reasoning_effort=args.plan_investigation_reasoning_effort,
+        plan_investigation_output_mode=args.plan_investigation_output_mode,
+        plan_investigation_max_tool_calls=args.plan_investigation_max_tool_calls,
+        plan_investigation_max_results_per_tool=args.plan_investigation_max_results_per_tool,
+        plan_investigation_max_evidence_claims=args.plan_investigation_max_evidence_claims,
+        plan_investigation_require_source_backed_evidence=args.plan_investigation_require_source_backed_evidence,
+        plan_investigation_max_tokens=args.plan_investigation_max_tokens,
     )
 
     manifest = run_real_canary_campaign(args.output_dir, campaign)
