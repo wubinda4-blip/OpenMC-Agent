@@ -923,6 +923,10 @@ def run_incremental_planning(
     plan_loop_output_dir: str | Path | None = None,
     plan_reviewer_client: Any = None,
     plan_repair_client: Any = None,
+    universes_generation_mode: str = "auto",
+    universe_fragment_max_tokens: int | None = None,
+    large_patch_safe_output_ratio: float = 0.6,
+    strict_structured_patch_output: bool = False,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -2550,15 +2554,29 @@ def run_incremental_planning(
         # LARGE_PATCH_MAX_TOKENS; other patch types keep the provider default.
         # For thinking-mode providers (ds:), reasoning_effort is capped in the
         # client instead — see DSChatClient.adjust_payload.
-        result = generate_patch(
-            patch_type=patch_type,
-            requirement=requirement,
-            state=state,
-            context=generation_context,
-            llm_client=llm_client,
-            max_attempts=max_patch_attempts,
-            max_tokens=LARGE_PATCH_MAX_TOKENS.get(patch_type),
-        )
+        # P0-LARGE-STRUCTURED-PATCH: for universes, use the fragmented pipeline
+        # which auto-decides monolithic vs fragmented based on estimated size.
+        if patch_type == "universes" and universes_generation_mode != "off":
+            from .universe_patch_pipeline import generate_universes_patch
+            result = generate_universes_patch(
+                requirement=requirement,
+                state=state,
+                llm_client=llm_client,
+                mode=universes_generation_mode,
+                max_tokens=universe_fragment_max_tokens or LARGE_PATCH_MAX_TOKENS.get(patch_type),
+                safe_output_ratio=large_patch_safe_output_ratio,
+                strict_structured=strict_structured_patch_output,
+            )
+        else:
+            result = generate_patch(
+                patch_type=patch_type,
+                requirement=requirement,
+                state=state,
+                context=generation_context,
+                llm_client=llm_client,
+                max_attempts=max_patch_attempts,
+                max_tokens=LARGE_PATCH_MAX_TOKENS.get(patch_type),
+            )
 
         if result.ok and result.envelope is not None:
             state.add_patch(result.envelope)

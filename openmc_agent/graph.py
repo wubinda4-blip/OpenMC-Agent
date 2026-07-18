@@ -351,6 +351,10 @@ def build_plan_graph(
     plan_loop_policy: Any = None,
     plan_reviewer_client: Any = None,
     plan_repair_client: Any = None,
+    universes_generation_mode: str = "auto",
+    universe_fragment_max_tokens: int | None = None,
+    large_patch_safe_output_ratio: float = 0.6,
+    strict_structured_patch_output: bool = False,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -424,6 +428,10 @@ def build_plan_graph(
             plan_loop_policy=plan_loop_policy,
             plan_reviewer_client=plan_reviewer_client,
             plan_repair_client=plan_repair_client,
+            universes_generation_mode=universes_generation_mode,
+            universe_fragment_max_tokens=universe_fragment_max_tokens,
+            large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+            strict_structured_patch_output=strict_structured_patch_output,
         ),
     )
     graph.add_node(
@@ -1522,6 +1530,10 @@ def _run_incremental_plan_generation(
     plan_loop_policy: Any = None,
     plan_reviewer_client: Any = None,
     plan_repair_client: Any = None,
+    universes_generation_mode: str = "auto",
+    universe_fragment_max_tokens: int | None = None,
+    large_patch_safe_output_ratio: float = 0.6,
+    strict_structured_patch_output: bool = False,
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -1610,6 +1622,10 @@ def _run_incremental_plan_generation(
         plan_loop_output_dir=state.get("output_dir"),
         plan_reviewer_client=plan_reviewer_client,
         plan_repair_client=plan_repair_client,
+        universes_generation_mode=universes_generation_mode,
+        universe_fragment_max_tokens=universe_fragment_max_tokens,
+        large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+        strict_structured_patch_output=strict_structured_patch_output,
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -1781,6 +1797,10 @@ def _make_generate_plan_node(
     plan_loop_policy: Any = None,
     plan_reviewer_client: Any = None,
     plan_repair_client: Any = None,
+    universes_generation_mode: str = "auto",
+    universe_fragment_max_tokens: int | None = None,
+    large_patch_safe_output_ratio: float = 0.6,
+    strict_structured_patch_output: bool = False,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -1828,6 +1848,10 @@ def _make_generate_plan_node(
                 plan_loop_policy=plan_loop_policy,
                 plan_reviewer_client=plan_reviewer_client,
                 plan_repair_client=plan_repair_client,
+                universes_generation_mode=universes_generation_mode,
+                universe_fragment_max_tokens=universe_fragment_max_tokens,
+                large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+                strict_structured_patch_output=strict_structured_patch_output,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -1860,6 +1884,10 @@ def _make_generate_plan_node(
                     plan_loop_policy=plan_loop_policy,
                     plan_reviewer_client=plan_reviewer_client,
                     plan_repair_client=plan_repair_client,
+                    universes_generation_mode=universes_generation_mode,
+                    universe_fragment_max_tokens=universe_fragment_max_tokens,
+                    large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+                    strict_structured_patch_output=strict_structured_patch_output,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

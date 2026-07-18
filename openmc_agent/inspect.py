@@ -107,6 +107,10 @@ def inspect_requirement(
     assembled_plan_review_mode: str | None = None,
     patch_max_tokens: int | None = None,
     patch_reasoning_effort: str | None = None,
+    universes_generation_mode: str = "auto",
+    universe_fragment_max_tokens: int | None = None,
+    large_patch_safe_output_ratio: float = 0.6,
+    strict_structured_patch_output: bool = False,
     plan_reviewer_output_mode: str | None = None,
     plan_reviewer_max_tokens: int | None = None,
     plan_reviewer_reasoning_effort: str | None = None,
@@ -162,6 +166,10 @@ def inspect_requirement(
             assembled_plan_review_mode=assembled_plan_review_mode,
             patch_max_tokens=patch_max_tokens,
             patch_reasoning_effort=patch_reasoning_effort,
+            universes_generation_mode=universes_generation_mode,
+            universe_fragment_max_tokens=universe_fragment_max_tokens,
+            large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+            strict_structured_patch_output=strict_structured_patch_output,
             plan_reviewer_output_mode=plan_reviewer_output_mode,
             plan_reviewer_max_tokens=plan_reviewer_max_tokens,
             plan_reviewer_reasoning_effort=plan_reviewer_reasoning_effort,
@@ -381,9 +389,13 @@ def _inspect_plan_requirement(
     patch_output_mode: str,
     patch_max_tokens: int | None,
     patch_reasoning_effort: str | None,
-    plan_reviewer_output_mode: str | None,
-    plan_reviewer_max_tokens: int | None,
-    plan_reviewer_reasoning_effort: str | None,
+    universes_generation_mode: str = "auto",
+    universe_fragment_max_tokens: int | None = None,
+    large_patch_safe_output_ratio: float = 0.6,
+    strict_structured_patch_output: bool = False,
+    plan_reviewer_output_mode: str | None = None,
+    plan_reviewer_max_tokens: int | None = None,
+    plan_reviewer_reasoning_effort: str | None = None,
     verbose: bool,
 ) -> InspectResult:
     output_path = Path(output_dir)
@@ -539,6 +551,10 @@ def _inspect_plan_requirement(
         plan_reviewer_client=plan_reviewer_client,
         plan_repair_client=plan_repair_client,
         patch_llm_client=patch_llm_client,
+        universes_generation_mode=universes_generation_mode,
+        universe_fragment_max_tokens=universe_fragment_max_tokens,
+        large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+        strict_structured_patch_output=strict_structured_patch_output,
         select_examples=functools.partial(
             select_few_shots, include_gold=use_gold_few_shots
         ),
@@ -1283,6 +1299,36 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional provider reasoning budget for patch proposer calls.",
     )
     parser.add_argument(
+        "--universes-generation-mode",
+        choices=["auto", "monolithic", "fragmented"],
+        default="auto",
+        help="Universes patch generation strategy (default: auto).",
+    )
+    parser.add_argument(
+        "--universe-fragment-max-tokens",
+        type=int,
+        default=None,
+        help="Max output tokens per universe fragment call.",
+    )
+    parser.add_argument(
+        "--large-patch-safe-output-ratio",
+        type=float,
+        default=0.6,
+        help="Fraction of provider max output considered safe for monolithic patch (default: 0.6).",
+    )
+    parser.add_argument(
+        "--strict-structured-patch-output",
+        action="store_true",
+        default=False,
+        help="Fail closed if structured output (json_schema/json_object) is unavailable.",
+    )
+    parser.add_argument(
+        "--no-strict-structured-patch-output",
+        action="store_true",
+        default=False,
+        help="Explicitly disable strict structured output (default behaviour).",
+    )
+    parser.add_argument(
         "--plan-reviewer-output-mode",
         choices=["auto", "plain_prompt", "json_object", "json_schema"],
         default=None,
@@ -1363,6 +1409,10 @@ def main(argv: list[str] | None = None) -> int:
             patch_output_mode=args.patch_output_mode,
             patch_max_tokens=args.patch_max_tokens,
             patch_reasoning_effort=args.patch_reasoning_effort,
+            universes_generation_mode=args.universes_generation_mode,
+            universe_fragment_max_tokens=args.universe_fragment_max_tokens,
+            large_patch_safe_output_ratio=args.large_patch_safe_output_ratio,
+            strict_structured_patch_output=args.strict_structured_patch_output,
             plan_reviewer_output_mode=args.plan_reviewer_output_mode,
             plan_reviewer_max_tokens=args.plan_reviewer_max_tokens,
             plan_reviewer_reasoning_effort=args.plan_reviewer_reasoning_effort,
@@ -1411,6 +1461,10 @@ def main(argv: list[str] | None = None) -> int:
             patch_output_mode=args.patch_output_mode,
             patch_max_tokens=args.patch_max_tokens,
             patch_reasoning_effort=args.patch_reasoning_effort,
+            universes_generation_mode=args.universes_generation_mode,
+            universe_fragment_max_tokens=args.universe_fragment_max_tokens,
+            large_patch_safe_output_ratio=args.large_patch_safe_output_ratio,
+            strict_structured_patch_output=args.strict_structured_patch_output,
             plan_reviewer_output_mode=args.plan_reviewer_output_mode,
             plan_reviewer_max_tokens=args.plan_reviewer_max_tokens,
             plan_reviewer_reasoning_effort=args.plan_reviewer_reasoning_effort,
