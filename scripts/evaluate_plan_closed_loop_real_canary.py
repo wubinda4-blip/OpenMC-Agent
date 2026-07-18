@@ -1,0 +1,228 @@
+"""Phase 7A real controlled five-gate canary CLI.
+
+Reactor-neutral real-LLM campaign that drives the full production
+planning stack with the five-gate controlled Plan Closed Loop, fragmented
+universes, strict structured patch output, and (optionally) real OpenMC
+export / geometry debug / smoke.
+
+Stage modes:
+
+    planning        Run until Assembled Plan Gate accepted (no render).
+    render-compile  Add renderer invocation, model.py, validate_openmc_script.
+    openmc-smoke    Add real XML export, geometry debug and low-cost OpenMC smoke.
+
+Built-in case presets (``--case``):
+
+    vera3-3a, vera3-3b, vera4
+
+``--input`` always overrides the preset's input path.  Production code
+never branches on a case name.
+
+Examples
+--------
+
+VERA3 3B planning canary (offline-safe: environment-gated)::
+
+    python scripts/evaluate_plan_closed_loop_real_canary.py \\
+        --case vera3-3b --stage planning \\
+        --model ds:deepseek-v4-flash \\
+        --runs 1 --confirm-real-campaign \\
+        --output-dir data/runs/phase7a_vera3_3b
+
+VERA4 planning canary with fragmented universes::
+
+    python scripts/evaluate_plan_closed_loop_real_canary.py \\
+        --case vera4 --stage planning \\
+        --model ds:deepseek-v4-flash \\
+        --universes-generation-mode fragmented \\
+        --runs 1 --confirm-real-campaign \\
+        --output-dir data/runs/phase7a_vera4
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Phase 7A real controlled five-gate canary campaign."
+    )
+    parser.add_argument(
+        "--case",
+        choices=("vera3-3a", "vera3-3b", "vera4"),
+        help="Labelled case preset.  --input always overrides the preset's input path.",
+    )
+    parser.add_argument(
+        "--input", type=Path,
+        help="Override the case input requirement document.",
+    )
+    parser.add_argument(
+        "--operating-state", default="",
+        help="Substate identifier inside the document (3A / 3B / empty).",
+    )
+    parser.add_argument(
+        "--stage", choices=("planning", "render-compile", "openmc-smoke"),
+        default="planning",
+        help="How far to run.",
+    )
+    parser.add_argument("--model", default="ds:deepseek-v4-flash")
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--confirm-real-campaign", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--human-answer-file", type=Path)
+    parser.add_argument(
+        "--universes-generation-mode",
+        choices=("auto", "monolithic", "fragmented"),
+        default="auto",
+    )
+    parser.add_argument("--universe-fragment-max-tokens", type=int)
+    parser.add_argument("--large-patch-safe-output-ratio", type=float, default=0.6)
+    parser.add_argument(
+        "--strict-structured-patch-output", action="store_true", default=True,
+    )
+    parser.add_argument(
+        "--no-strict-structured-patch-output", dest="strict_structured_patch_output",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--material-policy", choices=("strict", "permissive"), default="strict",
+    )
+    parser.add_argument(
+        "--runtime-supervisor-mode",
+        choices=("deterministic", "real"), default="deterministic",
+    )
+    parser.add_argument(
+        "--runtime-repair-mode",
+        choices=("diagnose_only", "apply_if_safe", "off"), default="diagnose_only",
+    )
+    parser.add_argument("--max-runtime-iterations", type=int, default=0)
+    parser.add_argument("--enable-runtime-llm-repair", action="store_true")
+    parser.add_argument("--enable-plots", action="store_true")
+    parser.add_argument("--wall-time-limit-seconds", type=float, default=1800.0)
+    parser.add_argument("--campaign-timeout-seconds", type=float, default=14400.0)
+    parser.add_argument(
+        "--max-llm-calls", type=int,
+        help="Override the estimated budget; --max-llm-calls always wins.",
+    )
+    parser.add_argument("--expected-patch-count", type=int, default=8)
+    parser.add_argument("--expected-universe-count", type=int, default=0)
+    parser.add_argument(
+        "--acceptance-profile", choices=("pilot", "qualification"), default="pilot",
+    )
+    parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    if not args.confirm_real_campaign:
+        print(
+            "ERROR: pass --confirm-real-campaign to acknowledge this makes real "
+            "LLM (and optionally OpenMC) calls.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from openmc_agent.real_campaign_harness import (
+        CanaryCampaignConfig,
+        builtin_case_registry,
+        detect_provider_environment,
+        load_human_answer_file,
+        resolve_case,
+        run_real_canary_campaign,
+    )
+
+    env_status = detect_provider_environment(args.model)
+    if not env_status.llm_environment_available:
+        print(
+            f"BLOCKED_BY_LLM_ENVIRONMENT: {env_status.api_key_env} not set "
+            f"(provider={env_status.provider}).",
+            file=sys.stderr,
+        )
+        if not args.json:
+            return 2
+
+    if args.stage in {"render-compile", "openmc-smoke"} and not env_status.openmc_environment_available:
+        print(
+            f"BLOCKED_BY_OPENMC_ENVIRONMENT: openmc library or "
+            f"OPENMC_CROSS_SECTIONS not available for stage={args.stage}.",
+            file=sys.stderr,
+        )
+        if not args.json:
+            return 2
+
+    # Load human answers (typed JSON) if supplied.
+    try:
+        human_answers, human_answer_hash = load_human_answer_file(
+            str(args.human_answer_file) if args.human_answer_file else None
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    # Resolve case (preset + overrides).
+    case = resolve_case(
+        case=args.case,
+        input_path=str(args.input) if args.input else None,
+        operating_state=args.operating_state,
+        model=args.model,
+        output_dir=str(args.output_dir),
+        planning_stage=args.stage,
+        human_answer_file=str(args.human_answer_file) if args.human_answer_file else None,
+        acceptance_profile=args.acceptance_profile,
+    )
+
+    campaign = CanaryCampaignConfig(
+        case=case,
+        runs=args.runs,
+        model=args.model,
+        planning_stage=args.stage,
+        universes_generation_mode=args.universes_generation_mode,
+        universe_fragment_max_tokens=args.universe_fragment_max_tokens,
+        large_patch_safe_output_ratio=args.large_patch_safe_output_ratio,
+        strict_structured_patch_output=args.strict_structured_patch_output,
+        material_policy=args.material_policy,
+        runtime_supervisor_mode=args.runtime_supervisor_mode,
+        runtime_repair_mode=args.runtime_repair_mode,
+        max_runtime_iterations=args.max_runtime_iterations,
+        enable_runtime_llm_repair=args.enable_runtime_llm_repair,
+        enable_plots=args.enable_plots,
+        wall_time_limit_s=args.wall_time_limit_seconds,
+        campaign_timeout_s=args.campaign_timeout_seconds,
+        max_llm_calls=args.max_llm_calls,
+        expected_patch_count=args.expected_patch_count,
+        expected_universe_count=args.expected_universe_count,
+        human_answers=human_answers,
+        human_answer_hash=human_answer_hash,
+        fail_fast=args.fail_fast,
+        resume=args.resume,
+    )
+
+    manifest = run_real_canary_campaign(args.output_dir, campaign)
+
+    status = manifest.get("aggregate_status", "UNKNOWN")
+    if args.json:
+        print(json.dumps(manifest, indent=2, default=str))
+    else:
+        print(f"Status: {status}")
+        print(f"Completed: {manifest.get('completed_runs', 0)}/{manifest.get('requested_runs', 0)}")
+        print(f"Successful: {manifest.get('successful_runs', 0)}")
+        if manifest.get("resume_mismatches"):
+            print(f"Resume mismatches: {manifest['resume_mismatches']}")
+
+    # Exit codes.
+    if "BLOCKED_BY" in status or "CONFIG_MISMATCH" in status:
+        return 2
+    if "PASSED" in status or status == "CAMPAIGN_RUNNING" and manifest.get("successful_runs", 0) > 0:
+        return 0
+    if "FAIL" in status:
+        return 1
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
