@@ -30,9 +30,9 @@ def test_phase2_placement_preflight_unchanged() -> None:
     assert owners == ["assembly_catalog"]
 
 
-def test_contract_version_0_7() -> None:
+def test_contract_version_0_8() -> None:
     from openmc_agent.plan_builder.closed_loop.models import PLAN_CLOSED_LOOP_CONTRACT_VERSION
-    assert PLAN_CLOSED_LOOP_CONTRACT_VERSION == "0.7"
+    assert PLAN_CLOSED_LOOP_CONTRACT_VERSION == "0.8"
 
 
 def test_legacy_0_5_checkpoint_loads_without_clearing() -> None:
@@ -45,6 +45,6 @@ def test_legacy_0_5_checkpoint_loads_without_clearing() -> None:
     state.plan_loop_stages["plan_gate_material_universe"] = PlanStageState(stage_id="plan_gate_material_universe", gate_id=PlanGateId.MATERIAL_UNIVERSE, status=PlanStageStatus.SKIPPED, metadata={"review_not_implemented": True})
     policy = PlanClosedLoopPolicy(mode="advisory", gate_enabled={PlanGateId.MATERIAL_UNIVERSE: True})
     initialize_plan_loop_state(state, policy, ["materials", "universes"])
-    assert state.plan_loop_contract_version == "0.7"
+    assert state.plan_loop_contract_version == "0.8"
     assert state.plan_loop_stages["plan_gate_material_universe"].status is PlanStageStatus.PENDING
     assert any(e.event_type == "planning.material_universe_gate_migrated_to_0_6" for e in state.build_log)

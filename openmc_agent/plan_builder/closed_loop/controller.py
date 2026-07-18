@@ -97,10 +97,26 @@ def initialize_plan_loop_state(state: Any, policy: PlanClosedLoopPolicy, require
                     "placeholder axial-geometry stage migrated to pending",
                     {"stage_id": ax_legacy.stage_id, "from_contract": previous_contract},
                 )
+    # 0.7 -> 0.8 migration: the Assembled-Plan stage was previously a
+    # placeholder (skipped + review_not_implemented).  Upgrade it to pending
+    # so the new gate can actually run.
+    if previous_contract in {"0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"}:
+        ap_legacy = state.plan_loop_stages.get("plan_gate_assembled_plan")
+        if ap_legacy and ap_legacy.status is PlanStageStatus.SKIPPED and ap_legacy.metadata.get("review_not_implemented"):
+            ap_legacy.status = PlanStageStatus.PENDING
+            ap_legacy.completed_at = None
+            ap_legacy.metadata["review_not_implemented"] = False
+            ap_legacy.metadata["migrated_from_contract"] = previous_contract
+            if hasattr(state, "add_event"):
+                state.add_event(
+                    "planning.assembled_plan_gate_migrated_to_0_8",
+                    "placeholder assembled-plan stage migrated to pending",
+                    {"stage_id": ap_legacy.stage_id, "from_contract": previous_contract},
+                )
     # Foundation-only stages were never reviewed.  Upgrade them lazily so a
     # restored checkpoint is eligible for the first real gate run.  Never
     # reset a real reviewed/accepted/failed history.
-    for gate_id in (PlanGateId.FACTS, PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT, PlanGateId.AXIAL_GEOMETRY):
+    for gate_id in (PlanGateId.FACTS, PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT, PlanGateId.AXIAL_GEOMETRY, PlanGateId.ASSEMBLED_PLAN):
         legacy = state.plan_loop_stages.get(f"plan_gate_{gate_id.value}")
         if legacy and legacy.status is PlanStageStatus.SKIPPED and legacy.metadata.get("review_not_implemented"):
             legacy.status = PlanStageStatus.PENDING

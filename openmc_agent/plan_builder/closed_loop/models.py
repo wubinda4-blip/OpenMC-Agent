@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.7"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.8"
 
 
 class _TextEnum(str, Enum):
@@ -1085,6 +1085,201 @@ class AxialGeometryReviewModelOutput(AgentBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Phase-6 Final / Assembled Plan Review Gate models
+# ---------------------------------------------------------------------------
+
+
+class ObjectGraphNode(AgentBaseModel):
+    node_id: str
+    node_kind: str
+    source_path: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ObjectGraphEdge(AgentBaseModel):
+    source_id: str
+    target_id: str
+    edge_kind: str = ""
+    source_path: str = ""
+    status: str = "pass"
+
+
+class AssembledObjectGraph(AgentBaseModel):
+    nodes: list[ObjectGraphNode] = Field(default_factory=list)
+    edges: list[ObjectGraphEdge] = Field(default_factory=list)
+    duplicate_ids: list[str] = Field(default_factory=list)
+    cycles: list[list[str]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReachabilityRecord(AgentBaseModel):
+    object_id: str
+    object_kind: str
+    reachable: bool = False
+    required: bool = False
+    source_requirement_ids: list[str] = Field(default_factory=list)
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RendererCapabilityRow(AgentBaseModel):
+    renderer_name: str
+    supported_kinds: list[str] = Field(default_factory=list)
+    renderability: str = "none"
+    is_executable: bool = False
+    executable_subsystems: list[str] = Field(default_factory=list)
+    unsupported_subsystems: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    required_human_confirmations: list[str] = Field(default_factory=list)
+    structured_issue_codes: list[str] = Field(default_factory=list)
+    rank: int = 0
+
+
+class StaticSourceFeasibility(AgentBaseModel):
+    source_strategy: str = "unknown"
+    feasible: bool = False
+    bounds_valid: bool = False
+    has_reachable_fissionable: bool = False
+    intersection_nonzero: bool = False
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlotCoverageRecord(AgentBaseModel):
+    plot_id: str
+    plot_type: str = ""
+    within_domain: bool = True
+    positive_extent: bool = True
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionCheckRecord(AgentBaseModel):
+    enabled: bool = False
+    inactive_lt_batches: bool = True
+    within_smoke_limits: bool = True
+    consistent_with_renderability: bool = True
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssembledPlanBindingView(AgentBaseModel):
+    assembled_plan_hash: str = ""
+    assembly_input_hash: str = ""
+    canonical_task_plan_hash: str = ""
+    patch_hashes: dict[str, str] = Field(default_factory=dict)
+    accepted_gate_hashes: dict[str, str] = Field(default_factory=dict)
+    planning_scope: str = ""
+    model_kind: str = ""
+    object_graph: AssembledObjectGraph = Field(default_factory=AssembledObjectGraph)
+    root_candidates: list[str] = Field(default_factory=list)
+    selected_roots: list[str] = Field(default_factory=list)
+    reference_edges: list[ObjectGraphEdge] = Field(default_factory=list)
+    reachability_records: list[ReachabilityRecord] = Field(default_factory=list)
+    required_object_ids: list[str] = Field(default_factory=list)
+    optional_object_ids: list[str] = Field(default_factory=list)
+    unreachable_required_ids: list[str] = Field(default_factory=list)
+    optional_orphan_ids: list[str] = Field(default_factory=list)
+    cycles: list[list[str]] = Field(default_factory=list)
+    unresolved_references: list[str] = Field(default_factory=list)
+    renderer_capability_matrix: list[RendererCapabilityRow] = Field(default_factory=list)
+    selected_renderer: str = ""
+    selected_renderability: str = "none"
+    computed_capability_report: dict[str, Any] = Field(default_factory=dict)
+    static_source_feasibility: StaticSourceFeasibility = Field(default_factory=StaticSourceFeasibility)
+    plot_coverage_records: list[PlotCoverageRecord] = Field(default_factory=list)
+    execution_check_record: ExecutionCheckRecord = Field(default_factory=ExecutionCheckRecord)
+    provenance_records: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssembledPlanContractRow(AgentBaseModel):
+    row_id: str
+    row_kind: Literal[
+        "root_selection",
+        "root_reachability",
+        "reference_integrity",
+        "renderer_capability",
+        "static_source_feasibility",
+        "plot_coverage",
+        "execution_check",
+    ]
+    object_id: str = ""
+    renderer_name: str = ""
+    expected: str = ""
+    actual: str = ""
+    coverage_status: Literal["pass", "fail", "ambiguous", "not_applicable"] = "not_applicable"
+    issue_codes: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssembledPlanContractMatrix(AgentBaseModel):
+    rows: list[AssembledPlanContractRow] = Field(default_factory=list)
+    input_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssembledPlanEvidencePack(AgentBaseModel):
+    gate_id: PlanGateId = PlanGateId.ASSEMBLED_PLAN
+    input_hash: str = ""
+    evidence_pack_id: str = ""
+    binding_view: AssembledPlanBindingView | None = None
+    contract_matrix: AssembledPlanContractMatrix = Field(default_factory=AssembledPlanContractMatrix)
+    deterministic_issues: list[dict[str, Any]] = Field(default_factory=list)
+    relevant_patch_hashes: dict[str, str] = Field(default_factory=dict)
+    accepted_facts_hash: str = ""
+    evidence_items: list[PlanEvidenceItem] = Field(default_factory=list)
+    confirmed_records: list[dict[str, Any]] = Field(default_factory=list)
+    allowed_actions: list[PlanReviewAction] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssembledPlanReviewFindingDraft(AgentBaseModel):
+    code: str
+    severity: PlanFindingSeverity = PlanFindingSeverity.WARNING
+    category: PlanFindingCategory = PlanFindingCategory.REPRESENTATION_ERROR
+    message: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    contract_row_ids: list[str] = Field(default_factory=list)
+    affected_json_paths: list[str] = Field(default_factory=list)
+    repairable_by_llm: bool = False
+    requires_human: bool = False
+    confidence: float = 0.5
+
+    @model_validator(mode="after")
+    def _human_not_repairable(self) -> "AssembledPlanReviewFindingDraft":
+        if self.requires_human and self.repairable_by_llm:
+            self.repairable_by_llm = False
+        return self
+
+    expected_semantics: str = ""
+    current_semantics: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssembledPlanReviewCoverageSummary(AgentBaseModel):
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_root_ids: list[str] = Field(default_factory=list)
+    reviewed_renderer_names: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    omitted_contract_row_count: int = 0
+    omitted_renderer_count: int = 0
+    unresolved_evidence_count: int = 0
+
+
+class AssembledPlanReviewModelOutput(AgentBaseModel):
+    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    findings: list[AssembledPlanReviewFindingDraft] = Field(default_factory=list)
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    coverage_summary: AssembledPlanReviewCoverageSummary = Field(default_factory=AssembledPlanReviewCoverageSummary)
+    concise_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PlanStageState(AgentBaseModel):
     stage_id: str
     gate_id: PlanGateId
@@ -1119,7 +1314,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2
@@ -1142,6 +1337,8 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     material_universe_review_mode: Literal["off", "advisory", "controlled"] = "off"
     # Phase-5 Axial Geometry Review Gate mode.
     axial_geometry_review_mode: Literal["off", "advisory", "controlled"] = "off"
+    # Phase-6 Final / Assembled Plan Review Gate mode.
+    assembled_plan_review_mode: Literal["off", "advisory", "controlled"] = "off"
     # Phase-3 executable retry budget.  It remains independent from reviewer
     # calls so checkpoint restore cannot silently refresh retry authority.
     max_retry_rounds: int = 6
