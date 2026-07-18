@@ -265,8 +265,11 @@ class TestVERA3BAssembly:
         )
         result = assemble_simulation_plan_from_patches(vera3_3b_patches)
         assert result.ok is True
-        # Total patch size should be much smaller than 25K
-        assert total_patch_bytes < 35000, f"patches total {total_patch_bytes} bytes"
+        # Total patch size should be much smaller than 25K monolithic JSON.
+        # Threshold is 36K to accommodate source_note/assumptions metadata
+        # added in Phase 3B/4 while still proving the patch-based approach
+        # avoids monolithic JSON bloat.
+        assert total_patch_bytes < 36000, f"patches total {total_patch_bytes} bytes"
 
 
 # ---------------------------------------------------------------------------

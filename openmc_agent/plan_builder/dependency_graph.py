@@ -27,10 +27,10 @@ class PlanPatchDependencyGraph:
         "base_path_axial_profiles": ("facts", "universes"),
         "pin_map": ("facts", "universes", "localized_insert_profiles"),
         "assembly_catalog": ("facts", "universes", "localized_insert_profiles"),
-        "axial_layers": ("facts",),
-        "axial_overlays": ("facts", "materials", "axial_layers"),
+        "axial_layers": ("facts", "pin_map", "assembly_catalog"),
+        "axial_overlays": ("facts", "materials", "axial_layers", "assembly_catalog"),
         "core_layout": ("facts", "assembly_catalog"),
-        "settings": (),
+        "settings": ("facts",),
     }
 
     def dependencies_of(self, patch_type: str) -> list[str]:
