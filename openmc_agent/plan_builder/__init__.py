@@ -43,7 +43,7 @@ from .executor import (
     route_retry,
     run_incremental_planning,
 )
-from .llm_adapter import PATCH_MAX_TOKENS, make_patch_llm_client
+from .llm_adapter import LARGE_PATCH_MAX_TOKENS, PATCH_MAX_TOKENS, make_patch_llm_client
 from .patch_generator import (
     FakePatchLLM,
     PatchGenerationAttempt,
@@ -201,6 +201,7 @@ __all__ = [
     "AssemblySummary",
     "EvaluationReport",
     "GuardSummary",
+    "LARGE_PATCH_MAX_TOKENS",
     "PATCH_MAX_TOKENS",
     "PatchMetric",
     "make_patch_llm_client",

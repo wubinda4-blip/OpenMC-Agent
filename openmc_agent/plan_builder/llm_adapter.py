@@ -32,6 +32,23 @@ PATCH_MAX_TOKENS: dict[str, int] = {
     "settings": 1500,
 }
 
+# Output budgets for large multi-assembly / full-core patches whose JSON
+# exceeds typical provider output-token defaults (DeepSeek ~8192). Unlike
+# ``PATCH_MAX_TOKENS`` above (a reference baseline that is intentionally NOT
+# applied — see its comment), these ARE passed explicitly to
+# ``generate_patch(max_tokens=...)`` by the incremental executor, overriding
+# the provider default so the response is not truncated mid-JSON. Observed:
+# a VERA4 11-universe catalog truncated at ~6500 tokens under the default
+# budget. Only patches known to exceed the provider default are listed;
+# every other patch type keeps the provider default. If a provider rejects
+# a value above its own output cap, lower the value here or make it
+# per-provider.
+LARGE_PATCH_MAX_TOKENS: dict[str, int] = {
+    "universes": 16000,        # multi-cell universes + nested component profiles
+    "assembly_catalog": 16000, # full pin_map + localized_insert_intents per type
+    "core_layout": 12000,      # full-core placement map
+}
+
 OutputMode = Literal["auto", "plain_prompt", "json_object", "json_schema", "tool_call"]
 ReasoningEffort = Literal["none", "low", "medium", "high"]
 
@@ -228,6 +245,7 @@ def make_patch_llm_client(
 
 
 __all__ = [
+    "LARGE_PATCH_MAX_TOKENS",
     "make_patch_llm_client",
     "PATCH_MAX_TOKENS",
     "StructuredPatchLLMClient",

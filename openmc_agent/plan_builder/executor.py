@@ -34,6 +34,7 @@ from .patch_generator import (
     RetryPatchGenerationContext,
     generate_patch,
 )
+from .llm_adapter import LARGE_PATCH_MAX_TOKENS
 from .closed_loop.fingerprints import compute_candidate_hash
 from .validators import validate_patch
 from .scoped_counts import resolve_expected_counts_for_pin_map
@@ -2098,6 +2099,7 @@ def run_incremental_planning(
                         context=build_generation_context_from_state(clone_state, owner_patch_type, few_shot_case_ids=few_shot_case_ids),
                         llm_client=llm_client,
                         max_attempts=max_patch_attempts,
+                        max_tokens=LARGE_PATCH_MAX_TOKENS.get(owner_patch_type),
                     )
                     if not generated.ok or generated.parsed_patch is None:
                         raise ValueError(f"retry owner generation failed: {owner_patch_type}")
@@ -2405,10 +2407,13 @@ def run_incremental_planning(
                 transition_stage(facts_stage, PlanStageStatus.PROPOSING)
                 facts_stage.attempt_count += 1
 
-        # Generate patch with retry. We intentionally do NOT pass max_tokens:
-        # provider defaults (e.g. DeepSeek ~8192) are larger than any safe
-        # per-patch cap and capping below them truncates large multi-assembly
-        # patches (a 4500-token cap truncated a ~6000-token universes patch).
+        # Generate patch with retry. By default we use the provider's output
+        # token default (e.g. DeepSeek ~8192), which is larger than any safe
+        # universal per-patch cap. Large multi-assembly / full-core patches
+        # (universes, assembly_catalog, core_layout) exceed that default and
+        # get truncated mid-JSON (observed: a VERA4 11-universe catalog cut at
+        # ~6500 tokens), so for those we pass an explicit larger budget from
+        # LARGE_PATCH_MAX_TOKENS; other patch types keep the provider default.
         # For thinking-mode providers (ds:), reasoning_effort is capped in the
         # client instead — see DSChatClient.adjust_payload.
         result = generate_patch(
@@ -2418,6 +2423,7 @@ def run_incremental_planning(
             context=generation_context,
             llm_client=llm_client,
             max_attempts=max_patch_attempts,
+            max_tokens=LARGE_PATCH_MAX_TOKENS.get(patch_type),
         )
 
         if result.ok and result.envelope is not None:

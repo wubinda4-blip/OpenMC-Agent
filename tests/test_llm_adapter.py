@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from openmc_agent.plan_builder.llm_adapter import (
+    LARGE_PATCH_MAX_TOKENS,
     PATCH_MAX_TOKENS,
     StructuredPatchLLMClient,
     make_patch_llm_client,
@@ -68,6 +69,54 @@ def test_patch_max_tokens_budgets() -> None:
     for ptype in ("facts", "materials", "universes", "pin_map", "axial_layers", "axial_overlays"):
         assert ptype in PATCH_MAX_TOKENS
         assert PATCH_MAX_TOKENS[ptype] > 0
+
+
+def test_large_patch_max_tokens_budgets() -> None:
+    """Large multi-assembly / full-core patches get an explicit output budget
+    above the provider default so their JSON is not truncated mid-generation.
+    See LARGE_PATCH_MAX_TOKENS comment (observed: a VERA4 11-universe catalog
+    truncated at ~6500 tokens under the ~8192 provider default).
+    """
+    for ptype in ("universes", "assembly_catalog", "core_layout"):
+        assert ptype in LARGE_PATCH_MAX_TOKENS
+        # Must exceed typical provider output-token defaults (DeepSeek ~8192);
+        # otherwise the override has no effect and the patch still truncates.
+        assert LARGE_PATCH_MAX_TOKENS[ptype] > 8192
+
+
+def test_per_call_max_tokens_reaches_provider() -> None:
+    """The per-call max_tokens used for large patches must reach the provider
+    kwargs and override the client-level default (effective_max = max_tokens
+    or self._max_tokens). This is the link that makes LARGE_PATCH_MAX_TOKENS
+    actually take effect at the API call.
+    """
+
+    captured: dict[str, object] = {}
+
+    class FakeChoice:
+        class message:
+            content = '{"patch_type": "universes", "universes": []}'
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    captured.update(kwargs)
+                    return FakeResponse()
+
+    client = make_patch_llm_client(
+        FakeClient(), model_name="test:model", output_mode="plain_prompt",
+    )
+    client.generate_patch_json(
+        prompt="p",
+        patch_type="universes",
+        max_tokens=LARGE_PATCH_MAX_TOKENS["universes"],
+    )
+    assert captured.get("max_tokens") == LARGE_PATCH_MAX_TOKENS["universes"]
 
 
 def test_json_schema_response_format_is_sent_to_provider() -> None:
