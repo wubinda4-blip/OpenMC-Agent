@@ -3,13 +3,73 @@
 from __future__ import annotations
 
 import json
+from typing import Any
+
+
+def _target_schema_hint() -> dict[str, Any]:
+    """Return the authoritative FactsPatch target schema.
+
+    We project :class:`openmc_agent.plan_builder.patches.FactsPatch` to its
+    JSON schema and trim ``$defs`` / titles to keep the prompt compact
+    (~6KB instead of ~10KB).  This is the source of truth — hand-writing
+    a hint risks going stale when patch fields change (e.g. when a field
+    is a typed object instead of a plain string, the LLM must know the
+    exact nested shape).
+    """
+    from openmc_agent.plan_builder.patches import FactsPatch
+
+    schema = FactsPatch.model_json_schema()
+    # Drop noisy metadata that bloats the prompt without helping the model.
+    for key in ("title", "description", "$defs"):
+        schema.pop(key, None)
+    defs = FactsPatch.model_json_schema().get("$defs", {})
+    for def_name, def_value in list(defs.items()):
+        for key in ("title",):
+            def_value.pop(key, None)
+    if defs:
+        schema["$defs"] = defs
+    return schema
+
+
+# Worked example that shows the LLM the EXACT expected response shape.
+# This is reactor-neutral: the values are placeholders, not benchmark data.
+_WORKED_EXAMPLE = """{
+  "proposal_id": "facts_revision_001",
+  "confidence": 0.9,
+  "rationale": "Corrected model scope and missing fields based on evidence.",
+  "operations": [
+    {"op": "replace", "path": "/model_scope", "value": "multi_assembly_core"},
+    {"op": "replace", "path": "/assembly_count", "value": 9},
+    {"op": "replace", "path": "/has_spacer_grids", "value": true}
+  ],
+  "resolved_finding_ids": []
+}"""
 
 
 def build_facts_revision_prompt(*, facts_patch: dict, findings: list[dict], evidence: list[dict], allowed_paths: list[str], confirmed_facts: dict) -> str:
     return (
-        "You are the Facts Revision Agent. Output only a JSON FactsRevisionProposal. "
-        "Use add/replace/remove RFC6902 operations only; do not alter patch_type, root, unlisted paths, "
-        "or confirmed facts. Do not infer facts absent from evidence. Requires-human findings are not repairable.\n"
+        "You are the Facts Revision Agent. Your task is to produce a single JSON "
+        "FactsRevisionProposal object containing a list of RFC6902 JSON Patch "
+        "operations (add / replace / remove) that fix the supplied findings.\n\n"
+        "CRITICAL: Your output is a JSON Patch proposal, NOT a FactsPatch. "
+        "You are NOT producing the corrected FactsPatch itself — you are "
+        "producing a list of edit operations. Each operation has the shape "
+        '{"op": "replace", "path": "/field_name", "value": <new value>}. '
+        "Do not output the underlying FactsPatch shape. "
+        "Do not output the input payload back.\n\n"
+        "The output object must have these fields: proposal_id (string), "
+        "confidence (float 0..1), rationale (string), operations (array of "
+        "{op, path, value} objects), and resolved_finding_ids (array of "
+        "strings, may be empty).\n\n"
+        "Worked example (placeholder values, NOT a real answer):\n"
+        + _WORKED_EXAMPLE
+        + "\n\nThe target FactsPatch JSON schema is provided ONLY so you "
+        "know which values are valid at each path (use EXACT enum string "
+        "values, EXACT tuple shapes for tuple fields, and EXACT object "
+        "shapes for nested-object fields). You still produce operations, "
+        "not a FactsPatch object:\n"
+        + json.dumps(_target_schema_hint(), ensure_ascii=False)
+        + "\n\nInput payload (do NOT echo this back):\n"
         + json.dumps({"facts_patch": facts_patch, "findings": findings, "evidence": evidence,
                       "allowed_paths": allowed_paths, "confirmed_facts": confirmed_facts}, ensure_ascii=False)
     )

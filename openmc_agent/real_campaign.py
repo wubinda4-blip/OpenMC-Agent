@@ -238,6 +238,8 @@ def _create_client_bundle(
     plan_repair_enabled: bool = False,
     plan_reviewer_model: str | None = None,
     plan_repair_model: str | None = None,
+    plan_reviewer_max_tokens: int | None = None,
+    plan_repair_max_tokens: int | None = None,
 ) -> RealCampaignClientBundle:
     """Create fresh LLM clients for one run.
 
@@ -309,17 +311,25 @@ def _create_client_bundle(
 
     # Phase 7A: dedicated real clients for the gate reviewer and the
     # Phase-3B typed retry producer.  Built only when the campaign asks
-    # for them so legacy VERA3B callers keep working unchanged.
+    # for them so legacy VERA3B callers keep working unchanged.  Both
+    # clients get a generous output budget so thinking-mode providers
+    # (e.g. DS Flash) can complete both the chain-of-thought reasoning
+    # and the final JSON answer without truncation.
     plan_reviewer_client: Any = None
     plan_repair_client: Any = None
     reviewer_cid = ""
     repair_cid = ""
+    # Default budget: 16K tokens covers reasoning trace (~10K observed)
+    # plus the final structured JSON answer (~3-6K).
+    reviewer_max = plan_reviewer_max_tokens or 16000
+    repair_max = plan_repair_max_tokens or 16000
     if plan_reviewer_enabled:
         reviewer_cid = recorder.register_client("plan_reviewer") if recorder else ""
         reviewer_client_obj = make_patch_llm_client(
             base_llm,
             model_name=plan_reviewer_model or config.model,
             temperature=config.temperature,
+            max_tokens=reviewer_max,
         )
         if recorder:
             reviewer_client_obj = recorder.wrap_planning_client(reviewer_client_obj, reviewer_cid)
@@ -330,6 +340,7 @@ def _create_client_bundle(
             base_llm,
             model_name=plan_repair_model or config.model,
             temperature=config.temperature,
+            max_tokens=repair_max,
         )
         if recorder:
             repair_client_obj = recorder.wrap_planning_client(repair_client_obj, repair_cid)

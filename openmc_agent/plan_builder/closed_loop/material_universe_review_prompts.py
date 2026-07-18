@@ -61,8 +61,48 @@ def build_material_universe_review_prompt(pack: Any) -> str:
             "Do NOT claim final root reachability — only static material-universe binding.",
             "Each finding must reference existing evidence_refs and contract_row_ids.",
             "Flag only semantic issues Python cannot determine deterministically.",
+            "Do NOT restate or duplicate deterministic_issues as findings; Python already owns those findings.",
+            "If there are no additional semantic issues, return findings=[].",
             "Coverage must be complete: every material_id, universe_id, contract_row_id must be reviewed.",
+            "Set review_status to exactly 'complete' after completing that coverage; do not use 'incomplete'.",
+            "Each finding confidence is a JSON number from 0.0 to 1.0, never a label such as high, medium, or low.",
+            "Each finding object must use exactly these field names: code, severity, category, message, evidence_refs, contract_row_ids, affected_json_paths, repairable_by_llm, requires_human, confidence, expected_semantics, current_semantics, metadata.",
+            "Do not use aliases such as finding_id or description.",
         ],
+        "required_output_shape": {
+            "review_status": "complete",
+            "findings": [
+                {
+                    "code": "string",
+                    "severity": "error|warning|info",
+                    "category": "source_coverage|unsupported_inference|cross_patch_mismatch|placement_gap|reachability_gap|physical_ambiguity|representation_error|schema_or_format|no_progress|budget_exhausted",
+                    "message": "string",
+                    "evidence_refs": ["existing evidence ref"],
+                    "contract_row_ids": ["existing row id"],
+                    "affected_json_paths": [],
+                    "repairable_by_llm": False,
+                    "requires_human": False,
+                    "confidence": 0.9,
+                    "expected_semantics": None,
+                    "current_semantics": None,
+                    "metadata": {},
+                }
+            ],
+            "reviewed_contract_row_ids": ["every contract row id"],
+            "reviewed_evidence_refs": ["every reviewed evidence ref"],
+            "coverage_summary": {
+                "reviewed_source_requirement_ids": [],
+                "reviewed_material_ids": ["every material id"],
+                "reviewed_universe_ids": ["every universe id"],
+                "reviewed_contract_row_ids": ["every contract row id"],
+                "reviewed_evidence_refs": ["every reviewed evidence ref"],
+                "omitted_material_count": 0,
+                "omitted_universe_count": 0,
+                "omitted_contract_row_count": 0,
+                "unresolved_evidence_count": 0,
+            },
+            "concise_summary": "string",
+        },
     }
     return "Review the Material-Universe binding below.\nINPUT:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -72,7 +112,14 @@ def build_material_universe_review_schema_retry_prompt(pack: Any, error: str, ra
         f"The previous response was not schema-valid: {error}\n"
         f"Raw output (truncated): {raw[:500]}\n\n"
         "Return a single JSON object matching MaterialUniverseReviewModelOutput. "
-        "Do not include prose outside the JSON object."
+        "Do not include prose outside the JSON object. Use review_status='complete' "
+        "after reviewing all IDs. Use numeric confidence values in [0.0, 1.0], "
+        "not high/medium/low strings. Do not repeat deterministic_issues as "
+        "findings; return findings=[] when there are no additional semantic issues. "
+        "You MUST still populate reviewed_contract_row_ids and all four coverage_summary "
+        "reviewed_* lists from the original input.\n\n"
+        "Original review input (use this to produce the required coverage lists):\n"
+        + build_material_universe_review_prompt(pack)
     )
 
 

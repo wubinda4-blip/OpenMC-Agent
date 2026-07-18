@@ -471,7 +471,14 @@ def build_plan_graph(
     graph.add_node("ask_expert", _ask_expert)
     graph.add_node("ask_plan_expert", _ask_plan_expert)
     graph.add_node("resume_plan_closed_loop", _resume_plan_closed_loop)
-    graph.add_node("execute_plan_retry", _execute_plan_retry)
+    graph.add_node(
+        "execute_plan_retry",
+        _make_execute_plan_retry_node(
+            patch_llm_client=patch_llm_client,
+            plan_reviewer_client=plan_reviewer_client,
+            plan_repair_client=plan_repair_client,
+        ),
+    )
     graph.add_node("resume_plan_retry", _resume_plan_retry)
     graph.add_node("classify_expert_feedback", _classify_expert_feedback)
     graph.add_node("patch_plan_from_expert_feedback", _patch_plan_from_expert_feedback)
@@ -1718,6 +1725,30 @@ def _run_incremental_plan_generation(
         "generate_plan",
         f"incremental execution failed: {error_codes}",
     )
+
+    # Phase-3B retry requests are executable work, not terminal planning
+    # failures.  Preserve the serialized build state without setting the
+    # graph-level ``error`` so _plan_generation_router can enter
+    # execute_plan_retry.  That node applies only the Python-selected owner
+    # patch repair, then loops back here for a fresh controlled-gate review.
+    # Treating this intermediate state as an error used to bypass the retry
+    # router entirely and left pending retry requests stranded in artifacts.
+    if exec_result.state.plan_retry_pending_request_ids:
+        state_updates.update({
+            "simulation_plan": None,
+            "error": "",
+            **_trace_event_update(
+                state,
+                "plan_retry_pending",
+                summary="incremental gate requested executable Phase-3B retry",
+                metadata={
+                    "planning_mode": "incremental",
+                    "pending_retry_request_ids": list(exec_result.state.plan_retry_pending_request_ids),
+                    "error_codes": error_codes,
+                },
+            ),
+        })
+        return state_updates
 
     if allow_fallback:
         _progress(
@@ -4047,6 +4078,70 @@ def _plan_human_router(state: GraphState) -> str:
     if state.get("plan_retry_human_resume"):
         return "resume_plan_retry"
     return "resume" if state.get("plan_resume_requested") else "stop"
+
+
+def _make_execute_plan_retry_node(
+    *,
+    patch_llm_client: Any | None,
+    plan_reviewer_client: Any | None,
+    plan_repair_client: Any | None,
+) -> Callable[[GraphState], GraphState]:
+    """Bind real planning clients to the Phase-3B retry node.
+
+    Retry requests created by controlled plan gates must regenerate only the
+    Python-selected owner patch.  The former global node invoked
+    ``execute_plan_retry_loop`` without a producer registry or clients, so a
+    request was recorded but could never produce a candidate.  Capturing the
+    same real patch/reviewer/repair clients used by ``generate_plan`` keeps
+    retry execution within the campaign's unified LLM recorder and budget.
+    """
+
+    def _execute(state: GraphState) -> GraphState:
+        build_state_dict = state.get("plan_build_state") or {}
+        if not isinstance(build_state_dict, dict):
+            return {"plan_build_state": build_state_dict}
+        from openmc_agent.plan_builder.state import PlanBuildState
+        from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy
+        from openmc_agent.plan_builder.closed_loop.retry_candidate_producers import (
+            default_producer_registry,
+        )
+        from openmc_agent.plan_builder.closed_loop.retry_controller import (
+            execute_plan_retry_loop,
+        )
+        from openmc_agent.plan_builder.executor import build_generation_context_from_state
+        from openmc_agent.plan_builder.patch_generator import generate_patch
+
+        build_state = PlanBuildState.model_validate(build_state_dict)
+        policy_dict = build_state.plan_loop_policy or {}
+        policy = PlanClosedLoopPolicy.model_validate(policy_dict)
+        registry = default_producer_registry(
+            generate_patch_fn=generate_patch,
+            build_context_fn=build_generation_context_from_state,
+        )
+        outcome = execute_plan_retry_loop(
+            state=build_state,
+            policy=policy,
+            producer_registry=registry,
+            requirement=str(state.get("requirement") or ""),
+            proposer_client=patch_llm_client,
+            reviewer_client=plan_reviewer_client,
+            repair_client=plan_repair_client,
+            # Commit one owner patch then return to generate_plan for the
+            # authoritative downstream rebuild and controlled Gate replay.
+            # Processing multiple stale requests against the same pre-replay
+            # snapshot can otherwise re-block an invalidated stage before
+            # the planner sees the owner change.
+            max_rounds=1,
+        )
+        return {
+            "plan_build_state": build_state.model_dump(mode="json"),
+            "plan_retry_outcome": outcome.model_dump(mode="json"),
+            # Clear the intermediate incremental failure so the graph can
+            # return to generate_plan after owner-patch commit/invalidation.
+            "error": "",
+        }
+
+    return _execute
 
 
 def _execute_plan_retry(state: GraphState) -> GraphState:

@@ -49,9 +49,15 @@ def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[
         if draft.requires_human and draft.repairable_by_llm:
             rejected.append({"code": "facts_review.invalid_finding_contract", "finding_code": draft.code})
             continue
-        if draft.severity is PlanFindingSeverity.ERROR and not draft.evidence_hashes and draft.category is not PlanFindingCategory.PHYSICAL_AMBIGUITY:
-            rejected.append({"code": "facts_review.invalid_finding_contract", "finding_code": draft.code})
-            continue
+        if draft.severity is PlanFindingSeverity.ERROR and draft.category is not PlanFindingCategory.PHYSICAL_AMBIGUITY:
+            # An error must be both evidence-grounded and actionable against
+            # a specific FactsPatch field.  This rejects self-contradictory
+            # critic output such as "this is consistent; no issue" labelled
+            # as an error with no affected path; accepting such a finding
+            # would fail-close a valid plan without a repairable contract.
+            if not draft.evidence_hashes or not draft.affected_json_paths:
+                rejected.append({"code": "facts_review.invalid_finding_contract", "finding_code": draft.code})
+                continue
         excerpts = [evidence[key] for key in draft.evidence_hashes]
         finding = PlanReviewFinding(
             gate_id=PlanGateId.FACTS, code=draft.code, severity=draft.severity,

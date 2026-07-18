@@ -143,6 +143,11 @@ Rules:
   variant. Set source_variant_id on each role="fuel" material to match the variant_id.
 - Do NOT merge different enrichments into one fuel material.
 - Do NOT define a required fuel material and leave it unused.
+- Localized insert material roles are input-driven through Context's
+  localized_insert_requirements: pyrex_rod requires at least one material with
+  role="poison"; thimble_plug requires role="structural"; control_rod and
+  absorber_insert require role="absorber".  Do not substitute a nearby role
+  (for example, role="absorber" does not satisfy a required poison material).
 - OpenMC composition entries MUST be transport-ready element or nuclide names only.
   Chemical formulas such as B2O3, SiO2, UO2, H2O, and Al2O3 are NOT nuclide names:
   never place them directly in composition.
@@ -202,7 +207,10 @@ Rules:
   (Zircaloy-4 annulus) as a guide_tube, plus a water gap between the plug and the
   wall. Do NOT make it a solid rod of cladding material with water outside.
   Correct cell order (inside→out):
-    plug (SS304 cylinder) → water_gap (water annulus) → wall (Zircaloy-4 annulus) → outer_coolant (water background)
+     plug (SS304 cylinder) → water_gap (water annulus) → wall (Zircaloy-4 annulus) → outer_coolant (water background)
+- A thimble plug's central plug cell must use the Context-required structural
+  material (normally the source-specified plug material), never the guide-tube
+  wall material.  The wall remains a separate Zircaloy-4 annulus.
 - pyrex_rod must include ALL gap layers from the input spec, not just pyrex+clad.
   A pyrex rod has concentric annuli with thin gas/water gaps between solid layers.
   Do NOT merge a gap into an adjacent solid layer. Correct cell order (inside→out):
@@ -213,8 +221,11 @@ Rules:
     → gap_2 (water or helium annulus, between pyrex and outer clad)
     → outer_clad (SS304 annulus)
     → outer_coolant (water background)
-  Use the exact radii from the input problem description for each layer boundary.
-  If the input does not specify a gap, insert a thin water annulus (0.001–0.01 cm).
+   Use the exact radii from the input problem description for each layer boundary.
+   If the input does not specify a gap, insert a thin water annulus (0.001–0.01 cm).
+- The pyrex cell must reference a material whose role is "poison" when the
+  corresponding Facts requirement is pyrex_rod; it must not reuse an absorber
+  material merely because both are neutron poisons.
 - fuel_pin should have a fuel material cell.
 - Mark through-path cells with protected_through_path=true.
 - If Context shows N distinct fuel_variant_requirements, generate at least N distinct
@@ -470,6 +481,11 @@ Rules:
   multi-segment structure is resolved from the profile.
 - Intent coordinates MUST be actual positions — do NOT leave empty.
 - Intent anchor_z_cm must match the source operating state.
+- Use EITHER axial_profile_id (for multi-segment profiled inserts) OR z_min_cm/z_max_cm
+  (for simple fixed-range inserts). NEVER set both axial_profile_id and z_min/z_max on
+  the same intent — the validator rejects this as a profile_anchor_conflict.
+- When axial_profile_id is set, anchor_z_cm provides the profile's base position; do NOT
+  also set z_min_cm or z_max_cm.
 - control_state_id must match the current selected variant/state.
 - Localized inserts MUST NOT be written to axial_overlays.
 - Do NOT permanently bake control rods into the base pin lattice.
@@ -526,6 +542,9 @@ Rules:
 - Do NOT adjust profiles based on keff or criticality targets.
 - For movable inserts (control rods), the ACTUAL position is provided by intent.anchor_z_cm,
   NOT the profile. The profile only defines the relative structure.
+- When the intent provides the anchor (all non-absolute profiles), set anchor_z_cm=null
+  (NOT 0.0). A non-null profile anchor_z_cm conflicts with the intent anchor and blocks
+  downstream assembly_catalog generation.
 - anchor_kind determines coordinate translation: bottom=additive, top=subtractive, center=bilateral.
 - Use anchor_kind="absolute" only when segments are already in global coordinates.
 

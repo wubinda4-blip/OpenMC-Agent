@@ -378,7 +378,14 @@ def build_axial_geometry_binding_view(*, state: Any) -> AxialGeometryBindingView
         profiles=profile_records, inserts=insert_records,
     )
 
-    scope = getattr(state, "resolved_planning_scope", "") or "single_assembly"
+    _scope_obj = getattr(state, "resolved_planning_scope", None)
+    if _scope_obj is None:
+        scope = "single_assembly"
+    elif isinstance(_scope_obj, str):
+        scope = _scope_obj
+    else:
+        # ResolvedPlanningScope or similar: extract a string representation.
+        scope = str(getattr(_scope_obj, "model_scope", None) or getattr(_scope_obj, "status", None) or "unknown")
     feature_contract = getattr(facts_obj, "planning_feature_contract", None)
     fc_hash = compute_candidate_hash(target_patch_type="facts", candidate_patch={"feature_contract": feature_contract.model_dump(mode="json") if feature_contract else {}}) if feature_contract else ""
     ctp_hash = getattr(state, "canonical_task_plan", None)
