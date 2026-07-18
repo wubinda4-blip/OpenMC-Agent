@@ -53,6 +53,7 @@ LARGE_PATCH_MAX_TOKENS: dict[str, int] = {
     "universes": 16000,        # multi-cell universes + nested component profiles
     "assembly_catalog": 16000, # full pin_map + localized_insert_intents per type
     "core_layout": 12000,      # full-core placement map
+    "materials": 16000,        # multi-assembly isotopic compositions + burnable poisons
 }
 
 OutputMode = Literal["auto", "plain_prompt", "json_object", "json_schema", "tool_call"]
