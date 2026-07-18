@@ -64,33 +64,6 @@ RENDERABILITY_RANK: dict[str, int] = {
 class AgentBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _remap_common_llm_aliases(cls, data: Any) -> Any:
-        """Remap common LLM field aliases to canonical schema names.
-
-        LLM-generated JSON frequently uses slightly different field names
-        than the Pydantic schema (``description``→``message``,
-        ``finding_id``→``code``).  This validator silently remaps them
-        BEFORE validation so the ``extra='forbid'`` config does not reject
-        otherwise-valid reviewer output.  Aliases are only applied when
-        the canonical field is absent AND the class actually declares it.
-        """
-        if not isinstance(data, dict):
-            return data
-        field_names = set(cls.model_fields.keys())
-        _ALIASES: dict[str, tuple[str, ...]] = {
-            "message": ("description", "detail", "reason", "explanation"),
-            "code": ("finding_id", "issue_id", "name"),
-        }
-        for canonical, aliases in _ALIASES.items():
-            if canonical not in data and canonical in field_names:
-                for alias in aliases:
-                    if alias in data:
-                        data[canonical] = data.pop(alias)
-                        break
-        return data
-
 
 def KnowledgeField(
     *args: Any,

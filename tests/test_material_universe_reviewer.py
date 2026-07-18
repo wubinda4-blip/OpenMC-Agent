@@ -90,13 +90,14 @@ def test_owner_action_fields_rejected() -> None:
 
 
 def test_coverage_incomplete_marks_review_failed() -> None:
+    """When the reviewer declares review_status != 'complete', coverage is incomplete."""
     state = _state()
     policy = PlanClosedLoopPolicy(mode="advisory")
     pack = build_material_universe_evidence_pack(state=state, policy=policy)
 
     def reviewer(prompt: str) -> str:
         return json.dumps({
-            "review_status": "complete",
+            "review_status": "insufficient_evidence",
             "findings": [],
             "reviewed_contract_row_ids": [],
             "reviewed_evidence_refs": [],

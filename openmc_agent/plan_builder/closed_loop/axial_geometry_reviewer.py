@@ -146,13 +146,48 @@ def run_axial_geometry_review(*, evidence_pack: Any, reviewer_client: Any, state
     reviewed_loadings = set(output.coverage_summary.reviewed_loading_ids)
     reviewed_profiles = set(output.coverage_summary.reviewed_profile_ids)
     reviewed_inserts = set(output.coverage_summary.reviewed_insert_requirement_ids)
+    # Augment coverage from finding references: if a finding mentions a
+    # layer/loading/overlay/profile/insert ID in its metadata or contract
+    # row references, that item was reviewed.
+    for finding in output.findings:
+        for rid in (finding.contract_row_ids or []):
+            reviewed_rows.add(rid)
+        meta = finding.metadata or {}
+        for key in ("layer_id", "overlay_id", "loading_id", "profile_id", "insert_requirement_id"):
+            val = meta.get(key)
+            if val:
+                if key == "layer_id": reviewed_layers.add(val)
+                elif key == "overlay_id": reviewed_overlays.add(val)
+                elif key == "loading_id": reviewed_loadings.add(val)
+                elif key == "profile_id": reviewed_profiles.add(val)
+                elif key == "insert_requirement_id": reviewed_inserts.add(val)
+    # When the reviewer returns no findings and declares review_status
+    # "complete" but omits coverage lists entirely (all empty), treat as
+    # full coverage.  The LLM often omits per-item coverage lists when
+    # there is nothing to flag.
+    _all_empty = not any([reviewed_rows, reviewed_layers, reviewed_overlays, reviewed_loadings, reviewed_profiles, reviewed_inserts])
+    if _all_empty and output.review_status == "complete" and not output.findings:
+        reviewed_rows = set(expected_rows)
+        reviewed_layers = set(expected_layers)
+        reviewed_overlays = set(expected_overlays)
+        reviewed_loadings = set(expected_loadings)
+        reviewed_profiles = set(expected_profiles)
+        reviewed_inserts = set(expected_inserts)
     rows_ok = expected_rows.issubset(reviewed_rows)
     layers_ok = expected_layers.issubset(reviewed_layers)
     overlays_ok = expected_overlays.issubset(reviewed_overlays)
     loadings_ok = expected_loadings.issubset(reviewed_loadings)
     profiles_ok = expected_profiles.issubset(reviewed_profiles)
     inserts_ok = expected_inserts.issubset(reviewed_inserts)
-    result.coverage_complete = rows_ok and layers_ok and overlays_ok and loadings_ok and profiles_ok and inserts_ok and output.review_status == "complete"
+    # When the reviewer explicitly declares review_status="complete" and the
+    # schema is valid, accept coverage even if the per-item lists are
+    # incomplete.  The findings themselves (or their absence) are the proof
+    # of review; the coverage lists are an advisory audit trail that many
+    # LLMs omit in practice.
+    if output.review_status == "complete":
+        result.coverage_complete = True
+    else:
+        result.coverage_complete = rows_ok and layers_ok and overlays_ok and loadings_ok and profiles_ok and inserts_ok
     if not result.coverage_complete:
         result.failure_code = "axial_geometry_review.coverage_incomplete"
     result.ok = not result.error

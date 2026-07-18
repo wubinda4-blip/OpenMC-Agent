@@ -88,7 +88,14 @@ def _collect_materials_issues(materials_patch: Any, view: MaterialUniverseBindin
             if not found:
                 issues.append(_issue("material_universe.required_fuel_variant_material_missing", f"fuel variant {variant} has no material", row_kind="source_material_coverage", row_key=contract["requirement_id"], requirement_id=contract["requirement_id"]))
         elif role:
-            found = any(m.role == role for m in materials_patch.materials)
+            # "poison" and "absorber" are semantically equivalent for
+            # material role matching — both describe neutron-absorbing
+            # materials.  LLMs may use either term depending on training
+            # data, and the physics is identical.
+            equivalent_roles = {role}
+            if role in {"poison", "absorber"}:
+                equivalent_roles = {"poison", "absorber"}
+            found = any(m.role in equivalent_roles for m in materials_patch.materials)
             if not found and role in {"absorber", "poison"}:
                 issues.append(_issue("material_universe.required_material_missing", f"required material role {role} not found", row_kind="source_material_coverage", row_key=contract["requirement_id"], requirement_id=contract["requirement_id"], expected_role=role))
     # Duplicate fuel variant materials (two materials same source_variant_id).

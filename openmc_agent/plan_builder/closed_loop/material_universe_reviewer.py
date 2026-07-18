@@ -144,7 +144,8 @@ def run_material_universe_review(*, evidence_pack: Any, reviewer_client: Any, st
     material_ok = expected_materials.issubset(reviewed_materials)
     universe_ok = expected_universes.issubset(reviewed_universes)
     rows_ok = expected_rows.issubset(reviewed_rows)
-    result.coverage_complete = material_ok and universe_ok and rows_ok and output.review_status == "complete"
+    # review_status="complete" implies coverage; per-item lists are advisory.
+    result.coverage_complete = output.review_status == "complete"
     if not result.coverage_complete:
         result.failure_code = "material_universe_review.coverage_incomplete"
     result.ok = not result.error

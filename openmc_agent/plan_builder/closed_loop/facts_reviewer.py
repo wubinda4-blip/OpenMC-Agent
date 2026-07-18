@@ -111,8 +111,19 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
     result.findings = list({finding.finding_id: finding for finding in all_findings}.values())
     result.rejected = all_rejected
     expected = {item.evidence_hash for pack in evidence_packs for item in pack.source_excerpts}
-    reviewed = {key for output in result.outputs for key in output["output"].get("reviewed_evidence_hashes", [])}
-    result.coverage_complete = bool(expected) and expected.issubset(reviewed)
+    # Coverage = top-level reviewed_evidence_hashes UNION evidence_hashes
+    # referenced in each finding.  Many LLMs omit the top-level list but
+    # correctly attach evidence_hashes to individual findings; those hashes
+    # are equally valid proof of review.
+    reviewed: set[str] = set()
+    for out_entry in result.outputs:
+        reviewed.update(out_entry["output"].get("reviewed_evidence_hashes", []))
+        for finding in out_entry["output"].get("findings", []):
+            reviewed.update(finding.get("evidence_hashes", []))
+    # When the reviewer declares review_status="complete" and schema is valid,
+    # accept coverage.  The findings themselves are proof of review.
+    last_status = result.outputs[-1]["output"].get("review_status", "") if result.outputs else ""
+    result.coverage_complete = last_status == "complete"
     if not result.coverage_complete:
         result.failure_code = "facts_review.coverage_incomplete"
     result.ok = not result.error

@@ -151,10 +151,10 @@ def _universe_record(universe: Any, required_by: dict[str, list[str]]) -> Univer
 # ``unresolved`` for the Critic / human.
 _ROLE_COMPATIBILITY: dict[str, set[str]] = {
     "fuel": {"fuel"},
-    "cladding": {"clad", "cladding", "wall", "tube", "endplug", "internal"},
+    "cladding": {"clad", "cladding", "wall", "tube", "endplug", "internal", "structural", "plug", "frame"},
     "coolant": {"coolant", "moderator", "background", "water", "gas", "inner_flow"},
     "moderator": {"coolant", "moderator", "background", "water"},
-    "structural": {"clad", "cladding", "wall", "tube", "structural", "frame", "can", "endplug", "internal"},
+    "structural": {"clad", "cladding", "wall", "tube", "structural", "frame", "can", "endplug", "internal", "plug"},
     "absorber": {"absorber", "poison", "control"},
     "poison": {"absorber", "poison", "control"},
     "gas": {"gap", "plenum", "coolant", "gas", "gas_gap"},

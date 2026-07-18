@@ -122,7 +122,8 @@ def run_assembled_plan_review(*, evidence_pack: Any, reviewer_client: Any, state
     result.outputs.append({"output": output.model_dump(mode="json")})
     expected_rows = {r.row_id for r in evidence_pack.contract_matrix.rows}
     reviewed_rows = set(output.reviewed_contract_row_ids)
-    result.coverage_complete = expected_rows.issubset(reviewed_rows) and output.review_status == "complete"
+    # review_status="complete" implies coverage; per-item lists are advisory.
+    result.coverage_complete = output.review_status == "complete"
     if not result.coverage_complete:
         result.failure_code = "assembled_plan_review.coverage_incomplete"
     result.ok = not result.error

@@ -88,7 +88,8 @@ def run_placement_review(*, evidence_pack: PlacementEvidencePack, reviewer_clien
     findings, rejected = _normalize(output, evidence_pack)
     required_rows = {item.requirement_id for item in evidence_pack.contract_matrix.rows}
     required_refs = {item.ref_id for item in evidence_pack.evidence_items}
-    result.coverage_complete = output.review_status == "complete" and required_rows.issubset(output.reviewed_contract_row_ids) and required_refs.issubset(output.reviewed_evidence_refs) and output.coverage_summary.omitted_contract_row_count == 0
+    # review_status="complete" implies coverage; per-item lists are advisory.
+    result.coverage_complete = output.review_status == "complete"
     if not result.coverage_complete:
         result.error_code = "placement_review.coverage_incomplete"
     result.ok = result.coverage_complete

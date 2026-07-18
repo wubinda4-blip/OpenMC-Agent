@@ -22,6 +22,39 @@ class InvalidPlanLoopTransition(ValueError):
         )
 
 
+def enter_review_cycle(stage: PlanStageState, state: Any) -> None:
+    """Drive a gate stage through PENDING→PROPOSING→VALIDATING→REVIEWING.
+
+    Safe to call regardless of the current status:
+    - PENDING: advances to PROPOSING then VALIDATING then REVIEWING.
+    - PROPOSING: advances to VALIDATING then REVIEWING.
+    - VALIDATING: advances to REVIEWING.
+    - REVIEWING or later: no-op (already in or past the review cycle).
+    - BLOCKED without invalidation: caller must guard before calling.
+    - BLOCKED with invalidation: caller must reopen to PENDING first.
+    """
+    if stage.status is PlanStageStatus.PENDING:
+        transition_stage(stage, PlanStageStatus.PROPOSING)
+    if stage.status is PlanStageStatus.PROPOSING:
+        transition_stage(stage, PlanStageStatus.VALIDATING)
+        stage.validation_count += 1
+    if stage.status is PlanStageStatus.VALIDATING:
+        transition_stage(stage, PlanStageStatus.REVIEWING)
+        stage.review_count += 1
+
+
+def guard_blocked_stage(stage: PlanStageState) -> bool:
+    """Return True if the stage is terminal-blocked (no pending invalidation).
+
+    Callers should check this at the top of their gate function and return
+    None (skip) when True, preventing invalid blocked→reviewing transitions.
+    """
+    return (
+        stage.status is PlanStageStatus.BLOCKED
+        and not stage.metadata.get("invalidated_by_patch_types")
+    )
+
+
 _ALLOWED: dict[PlanStageStatus, set[PlanStageStatus]] = {
     PlanStageStatus.PENDING: {PlanStageStatus.PROPOSING, PlanStageStatus.SKIPPED, PlanStageStatus.BLOCKED},
     PlanStageStatus.PROPOSING: {PlanStageStatus.VALIDATING, PlanStageStatus.BLOCKED},
