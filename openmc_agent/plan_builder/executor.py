@@ -1388,15 +1388,41 @@ def run_incremental_planning(
             prompt_path = artifact_writer.write_text(f"facts_revision_prompt_{stage.repair_count - 1:03d}.txt", prompt)
             if prompt_path:
                 state.plan_loop_artifacts.append(prompt_path)
-            try:
+            # Two-attempt retry: the first attempt uses the standard
+            # facts-revision prompt; if parsing fails (empty response from a
+            # thinking-mode provider or prose-wrapped JSON), the second
+            # attempt prepends a stricter "Output only JSON, no prose"
+            # directive.  Mirrors run_structured_review_call semantics.
+            raw: Any = None
+            parse_error: Exception | None = None
+            for attempt_index in range(2):
                 if state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
-                    raise RuntimeError("planning.closed_loop.budget_exhausted")
-                raw = (plan_repair_client.generate_patch_json(
-                    prompt=prompt, patch_type="facts_revision",
-                    json_schema=FactsRevisionProposal.model_json_schema(), temperature=0,
-                ) if hasattr(plan_repair_client, "generate_patch_json") else plan_repair_client(prompt))
-                state.plan_loop_additional_llm_calls += 1
-                proposal = normalize_facts_revision(raw)
+                    parse_error = RuntimeError("planning.closed_loop.budget_exhausted")
+                    break
+                effective_prompt = prompt
+                if attempt_index == 1:
+                    effective_prompt = (
+                        "Output only a single JSON FactsRevisionProposal object. "
+                        "Do not emit any prose, explanation, chain-of-thought, or "
+                        "markdown fences. The first character of your response must "
+                        "be '{' and the last must be '}'.\n\n" + prompt
+                    )
+                try:
+                    raw = (plan_repair_client.generate_patch_json(
+                        prompt=effective_prompt, patch_type="facts_revision",
+                        json_schema=FactsRevisionProposal.model_json_schema(), temperature=0,
+                    ) if hasattr(plan_repair_client, "generate_patch_json") else plan_repair_client(effective_prompt))
+                    state.plan_loop_additional_llm_calls += 1
+                    proposal = normalize_facts_revision(raw)
+                    parse_error = None
+                    break
+                except Exception as exc:
+                    parse_error = exc
+                    state.facts_revision_history.append({"attempt": attempt_index, "error": str(exc), "raw_chars": len(raw) if isinstance(raw, str) else 0})
+                    raw = None
+            try:
+                if parse_error is not None:
+                    raise parse_error
                 evaluation = evaluate_facts_revision(
                     facts_patch=facts_env.content, proposal=proposal, findings=blocking,
                     confirmed_facts=state.confirmed_facts,

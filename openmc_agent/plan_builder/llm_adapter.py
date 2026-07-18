@@ -80,6 +80,13 @@ class PatchLLMResponse:
     structured_fallback_reasons: list[str] = field(default_factory=list)
     provider: str = ""
     model: str = ""
+    # True when the provider returned an empty ``content`` but a non-empty
+    # ``reasoning_content``.  Thinking-mode providers (e.g. DS Flash) can
+    # spend the entire output budget on chain-of-thought and leave the
+    # final answer empty — this flag makes that condition observable so
+    # callers can retry with reasoning disabled instead of silently
+    # propagating an empty JSON parse failure.
+    reasoning_only: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -270,16 +277,26 @@ class StructuredPatchLLMClient:
             reasoning_tokens = getattr(details, "reasoning_tokens", None)
         # Lightweight reasoning fingerprint (no full text persisted).
         reasoning_meta: dict[str, Any] = {}
+        reasoning_chars: int | None = None
         try:
             msg = response.choices[0].message
             rc = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
             if rc and isinstance(rc, str) and rc:
-                reasoning_meta["reasoning_chars"] = len(rc)
+                reasoning_chars = len(rc)
+                reasoning_meta["reasoning_chars"] = reasoning_chars
                 import hashlib
                 reasoning_meta["reasoning_hash"] = hashlib.sha256(rc.encode()).hexdigest()[:16]
         except Exception:
             pass
         provider_name = type(self._client).__name__
+        # Detect the thinking-mode failure mode where the model spends the
+        # entire output budget on chain-of-thought and returns an empty
+        # ``content``.  This makes the failure observable to callers without
+        # requiring them to re-parse the response.
+        reasoning_only = bool(
+            not content
+            and (reasoning_chars is not None and reasoning_chars > 0)
+        )
         return PatchLLMResponse(
             content=content,
             finish_reason=str(finish_reason) if finish_reason else None,
@@ -289,6 +306,7 @@ class StructuredPatchLLMClient:
             total_tokens=total_tokens,
             provider=provider_name,
             model=self._model_name,
+            reasoning_only=reasoning_only,
             metadata=reasoning_meta,
         )
 

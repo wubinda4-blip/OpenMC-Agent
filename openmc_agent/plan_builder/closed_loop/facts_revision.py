@@ -74,8 +74,60 @@ def allowed_paths_for_findings(findings: list[PlanReviewFinding]) -> list[str]:
     return sorted(paths)
 
 
+def _extract_facts_revision_payload(raw: str | dict[str, Any]) -> dict[str, Any]:
+    """Extract a FactsRevisionProposal payload from an LLM response.
+
+    Handles three response shapes:
+
+    1. ``dict``: passed through (caller already parsed).
+    2. JSON-only string: parsed via ``json.loads``.
+    3. "Prose + JSON" string (the common failure mode for thinking-mode
+       providers): scanned for the last embedded JSON object declaring an
+       ``operations`` field.  Mirrors the recovery logic that the patch
+       generator and the structured review caller already use.
+
+    Raises ``json.JSONDecodeError`` if no usable payload is found, so the
+    caller can treat the failure uniformly.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        raise json.JSONDecodeError("facts revision raw response was not JSON", str(raw), 0)
+    text = raw.strip()
+    if not text:
+        raise json.JSONDecodeError("facts revision raw response was empty", "", 0)
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        pass
+    # Fallback: scan for embedded JSON objects (prose-wrapped or multiple
+    # candidates).  Prefer the last object declaring ``operations``.
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    for offset, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[offset:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            candidates.append(value)
+    for candidate in reversed(candidates):
+        if "operations" in candidate:
+            return candidate
+    if candidates:
+        return candidates[-1]
+    raise json.JSONDecodeError(
+        "facts revision raw response contained no parseable JSON object",
+        text, 0,
+    )
+
+
 def normalize_facts_revision(raw: str | dict[str, Any]) -> FactsRevisionProposal:
-    payload = json.loads(raw) if isinstance(raw, str) else raw
+    payload = _extract_facts_revision_payload(raw)
     proposal = FactsRevisionProposal.model_validate(payload)
     operations = [PatchRepairOperation.model_validate(item) for item in proposal.operations]
     if not operations:
