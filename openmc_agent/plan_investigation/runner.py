@@ -2,11 +2,25 @@
 
 Public surface:
 
+* :class:`PlanInvestigationMode` — ``off`` / ``advisory`` / ``controlled``.
 * :class:`PlanInvestigationConfig` — typed opt-in flag + budget override.
 * :func:`get_investigation_config` — read flag from ``PlanBuildState.metadata``
   (or a fresh default).
 * :func:`run_investigation_stage` — the only entry point executors should
-  call.  Returns ``None`` when the flag is off (zero-impact legacy path).
+  call.  Returns ``None`` when the mode is ``off`` (zero-impact legacy path).
+
+Mode semantics
+--------------
+* ``off`` (default): zero LLM calls, zero tool calls, zero artifacts,
+  legacy patch prompt byte-identical.
+* ``advisory``: investigation runs but failures are non-blocking; the
+  legacy Facts path continues.  The result is marked
+  ``completed=False`` so callers cannot misrepresent a failed
+  investigation as a successful one.
+* ``controlled``: investigation failures are blocking.  Client missing,
+  invalid LLM output, unknown tool, invalid arguments, budget exceeded,
+  and missing source-backed evidence ALL block the run with a stable
+  ``block_code``.
 
 When enabled, the function:
 
@@ -24,10 +38,11 @@ artifact).
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from openmc_agent.schemas import AgentBaseModel
 
@@ -37,6 +52,7 @@ from .agent import (
     InvestigationContext,
     InvestigationResult,
 )
+from .errors import PlanInvestigationIssue
 from .evidence_ledger import (
     PlanningEvidenceLedger,
     create_empty_ledger,
@@ -51,8 +67,12 @@ from .tool_registry import (
 )
 
 __all__ = [
+    "PlanInvestigationMode",
     "PlanInvestigationConfig",
     "CONFIG_METADATA_KEY",
+    "BLOCK_CODE_CLIENT_UNAVAILABLE",
+    "BLOCK_CODE_CONFIG_INVALID",
+    "BLOCK_CODE_SOURCE_BACKED_EVIDENCE_MISSING",
     "get_investigation_config",
     "set_investigation_config",
     "build_investigation_source_index",
@@ -63,6 +83,23 @@ __all__ = [
 
 CONFIG_METADATA_KEY: str = "plan_investigation_config"
 
+BLOCK_CODE_CLIENT_UNAVAILABLE = "planning.investigation_client_unavailable"
+BLOCK_CODE_CONFIG_INVALID = "planning.investigation_config_invalid"
+BLOCK_CODE_SOURCE_BACKED_EVIDENCE_MISSING = (
+    "planning.investigation_source_backed_evidence_missing"
+)
+
+
+class PlanInvestigationMode(str, Enum):
+    """Three explicit modes for the investigation stage.
+
+    The string values are stable across config serialization.
+    """
+
+    OFF = "off"
+    ADVISORY = "advisory"
+    CONTROLLED = "controlled"
+
 
 # ---------------------------------------------------------------------------
 # Config flag
@@ -70,18 +107,68 @@ CONFIG_METADATA_KEY: str = "plan_investigation_config"
 
 
 class PlanInvestigationConfig(AgentBaseModel):
-    """Opt-in flag + budget for the investigation stage.
+    """Opt-in flag + budget + scope for the investigation stage.
 
-    Default is OFF (``enabled=False``); the entire investigation surface
-    is inert unless a caller explicitly enables it via
-    :func:`set_investigation_config` or constructs a config with
-    ``enabled=True`` and passes it to :func:`run_investigation_stage`
-    directly.
+    Default is OFF (``mode=PlanInvestigationMode.OFF``); the entire
+    investigation surface is inert unless a caller explicitly switches
+    to ``advisory`` or ``controlled``.
+
+    Backwards compatibility: the original Step 3 ``enabled: bool`` field
+    is still honoured.  ``enabled=True`` with no explicit ``mode`` maps
+    to ``controlled`` (the safer default).  ``enabled=False`` (the
+    default) maps to ``off``.
     """
 
-    enabled: bool = False
+    mode: PlanInvestigationMode = PlanInvestigationMode.OFF
+    enabled: bool | None = None  # legacy compat; canonical source is `mode`
     budget: InvestigationBudget = Field(default_factory=InvestigationBudget)
     caller_stage: str = "investigation"
+
+    # Step 4 scope knobs.
+    patch_types: tuple[str, ...] = Field(default=("facts",))
+    max_sessions_per_patch_type: int = Field(default=1, ge=1, le=8)
+    reuse_cached_session: bool = True
+    require_source_backed_evidence: bool = True
+    # Free-form provider/audit metadata the campaign may stamp on the
+    # config for fingerprinting.  Never affects execution semantics.
+    investigator_model: str | None = None
+    investigator_reasoning_effort: str | None = None
+    investigator_output_mode: str | None = None
+
+    @field_validator("patch_types")
+    @classmethod
+    def _patch_types_nonempty(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise PlanInvestigationIssue(
+                BLOCK_CODE_CONFIG_INVALID,
+                "patch_types must list at least one patch type",
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _resolve_legacy_enabled(self) -> "PlanInvestigationConfig":
+        """Reconcile the legacy ``enabled`` field with the canonical ``mode``."""
+
+        if self.enabled is True and self.mode == PlanInvestigationMode.OFF:
+            # Legacy "enabled=True" with default mode → upgrade to controlled
+            # (the safer of the two non-off modes).
+            object.__setattr__(self, "mode", PlanInvestigationMode.CONTROLLED)
+        elif self.enabled is False and self.mode != PlanInvestigationMode.OFF:
+            # Legacy "enabled=False" overrides a non-off mode → force off.
+            object.__setattr__(self, "mode", PlanInvestigationMode.OFF)
+        return self
+
+    @property
+    def is_off(self) -> bool:
+        return self.mode == PlanInvestigationMode.OFF
+
+    @property
+    def is_controlled(self) -> bool:
+        return self.mode == PlanInvestigationMode.CONTROLLED
+
+    @property
+    def is_advisory(self) -> bool:
+        return self.mode == PlanInvestigationMode.ADVISORY
 
 
 def get_investigation_config(
@@ -89,9 +176,13 @@ def get_investigation_config(
 ) -> PlanInvestigationConfig:
     """Read the config from a :class:`PlanBuildState` or a metadata dict.
 
-    Returns the default (enabled=False) when nothing is set, when the
-    state has no ``metadata`` attribute, or when the metadata value is
-    malformed.
+    Returns the default (mode=off) when nothing is set, when the state
+    has no ``metadata`` attribute, or when the metadata value is empty.
+
+    A *present but malformed* config raises
+    :class:`PlanInvestigationIssue` (``planning.investigation_config_invalid``)
+    rather than silently degrading to ``off``.  Only totally absent
+    configs are interpreted as "user has not opted in → off".
     """
 
     metadata: Mapping[str, Any] | None = None
@@ -108,9 +199,12 @@ def get_investigation_config(
         return PlanInvestigationConfig()
     try:
         return PlanInvestigationConfig.model_validate(raw)
-    except Exception:
-        # Malformed config must NEVER break the legacy path.
-        return PlanInvestigationConfig()
+    except Exception as exc:
+        raise PlanInvestigationIssue(
+            BLOCK_CODE_CONFIG_INVALID,
+            "plan_investigation_config is present but malformed",
+            details={"error": f"{type(exc).__name__}: {exc}"},
+        ) from exc
 
 
 def set_investigation_config(
@@ -179,9 +273,17 @@ def run_investigation_stage(
 ) -> InvestigationResult | None:
     """Run the optional investigation stage.
 
-    Returns ``None`` when the feature is disabled (the default).  When
-    enabled, returns an :class:`InvestigationResult` whose
-    ``evidence_claim_ids`` can be passed to the patch generator.
+    Returns ``None`` when ``mode=off`` (the default).  In ``advisory`` and
+    ``controlled`` modes, returns an :class:`InvestigationResult`.
+
+    Safety rules enforced here (the top-level boundary):
+
+    * ``mode=controlled`` + ``llm_client is None`` → returns a blocked
+      :class:`InvestigationResult` with code
+      ``planning.investigation_client_unavailable`` instead of silently
+      returning ``None``.
+    * ``mode=advisory`` + ``llm_client is None`` → returns a non-blocking
+      :class:`InvestigationResult` with ``completed=False`` and a warning.
 
     The caller is responsible for:
 
@@ -194,11 +296,41 @@ def run_investigation_stage(
     """
 
     if config is None:
-        config = get_investigation_config(state)
-    if not config.enabled:
+        try:
+            config = get_investigation_config(state)
+        except PlanInvestigationIssue:
+            # Malformed config: re-raise so the caller can surface the
+            # error.  We must NOT silently degrade to off here.
+            raise
+    if config.is_off:
         return None
+
+    # Controlled mode requires a real client.  Advisory tolerates the
+    # absence but records a warning so the caller cannot misrepresent
+    # the outcome.
     if llm_client is None:
-        return None  # no LLM → no investigation; silently no-op.
+        if config.is_controlled:
+            return InvestigationResult(
+                session_id=_blocked_session_id(requirement, patch_type),
+                patch_type=patch_type,
+                blocked=True,
+                block_code=BLOCK_CODE_CLIENT_UNAVAILABLE,
+                block_message=(
+                    "controlled investigation mode requires a real llm_client"
+                ),
+                budget=config.budget,
+                warnings=("controlled investigation mode requires a real llm_client",),
+            )
+        # Advisory: return a non-blocking result that callers can identify
+        # as "did not run" via completed=False.
+        return InvestigationResult(
+            session_id=_blocked_session_id(requirement, patch_type),
+            patch_type=patch_type,
+            completed=False,
+            blocked=False,
+            warnings=("advisory investigation skipped: no llm_client supplied",),
+            budget=config.budget,
+        )
 
     # Build / reuse source indexes + ledger.
     if source_indexes is None:
@@ -231,4 +363,46 @@ def run_investigation_stage(
         caller_stage=config.caller_stage,
     )
     agent = InvestigationAgent(registry=registry, llm_client=llm_client)
-    return agent.run(context)
+    result = agent.run(context)
+
+    # Controlled post-check: require source-backed evidence.
+    if config.is_controlled and config.require_source_backed_evidence and result.completed:
+        if not _has_source_backed_evidence(ledger, result.evidence_claim_ids):
+            return result.model_copy(
+                update={
+                    "blocked": True,
+                    "completed": False,
+                    "block_code": BLOCK_CODE_SOURCE_BACKED_EVIDENCE_MISSING,
+                    "block_message": (
+                        "controlled investigation requires at least one "
+                        "source-backed EvidenceClaim; the LLM produced none"
+                    ),
+                }
+            )
+    return result
+
+
+def _blocked_session_id(requirement: str, patch_type: str) -> str:
+    from .hashing import short_id
+
+    return short_id(
+        "inv",
+        {
+            "patch_type": patch_type,
+            "requirement_hash": content_hash(requirement),
+            "blocked": True,
+        },
+    )
+
+
+def _has_source_backed_evidence(
+    ledger: PlanningEvidenceLedger,
+    claim_ids: tuple[str, ...] | list[str],
+) -> bool:
+    for claim_id in claim_ids:
+        claim = ledger.claims.get(claim_id)
+        if claim is None:
+            continue
+        if claim.source_refs:
+            return True
+    return False

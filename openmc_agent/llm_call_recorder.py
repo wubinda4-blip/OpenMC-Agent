@@ -244,6 +244,92 @@ class LLMCallRecorder:
 
         return _PlanningWrapper(client)
 
+    def wrap_prompt_only_client(
+        self,
+        client: Any,
+        client_instance_id: str,
+        *,
+        role: str,
+        task_name: str | None = None,
+    ) -> Any:
+        """Wrap a ``Callable[[str], str]`` prompt-only client.
+
+        Used by the Phase 8A plan investigation layer, which calls the
+        LLM as ``client(prompt) -> str`` (no json_schema, no structured
+        output mode beyond what the prompt itself requests).  The
+        recorder attributes each call to the supplied ``role`` so
+        evidence/budget summaries can distinguish investigator calls
+        from planning-patch calls.
+        """
+
+        recorder = self
+        effective_task = task_name or role
+
+        class _PromptOnlyWrapper:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+                self._client_id = client_instance_id
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
+                recorder.check_budget()
+                t0 = datetime.now(timezone.utc)
+                started = t0.isoformat()
+                import time as _time
+
+                ts = _time.perf_counter()
+                success = True
+                err = ""
+                result: Any = None
+                # Extract prompt text for hashing.  We accept either a
+                # positional ``client(prompt)`` call or a keyword
+                # ``client(prompt=...)`` call.
+                prompt_text = ""
+                if args:
+                    prompt_text = str(args[0])
+                elif "prompt" in kwargs:
+                    prompt_text = str(kwargs["prompt"])
+                try:
+                    result = self._inner(*args, **kwargs)
+                    return result
+                except LLMBudgetExhausted:
+                    raise
+                except Exception as exc:
+                    success = False
+                    err = type(exc).__name__
+                    raise
+                finally:
+                    te = _time.perf_counter()
+                    resp_chars = 0
+                    if isinstance(result, str):
+                        resp_chars = len(result)
+                    elif isinstance(result, dict):
+                        resp_chars = len(json.dumps(result, default=str))
+                    elif result is not None:
+                        resp_chars = len(str(result))
+                    recorder.record_call(
+                        role=role,
+                        task_name=effective_task,
+                        client_instance_id=self._client_id,
+                        started_at=started,
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                        duration_ms=round((te - ts) * 1000, 1),
+                        success=success,
+                        response_chars=resp_chars,
+                        error_type=err,
+                        prompt_hash=hashlib.sha256(prompt_text.encode()).hexdigest()[:16]
+                        if prompt_text
+                        else "",
+                        network_call_verified=success and not recorder._is_fake_provider(),
+                    )
+
+            def generate_patch(self, *args: Any, **kwargs: Any) -> Any:
+                return self.__call__(*args, **kwargs)
+
+        return _PromptOnlyWrapper(client)
+
     def wrap_callable(
         self,
         func: Callable[..., str],

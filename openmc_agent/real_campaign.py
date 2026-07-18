@@ -228,6 +228,12 @@ class RealCampaignClientBundle:
     plan_repair_client: Any = None
     reviewer_client_instance_id: str = ""
     repair_client_instance_id: str = ""
+    # Phase 8A Step 4: dedicated real investigator client.  Lives behind
+    # a separate client_instance_id and recorder role so budget and
+    # truthfulness summaries can attribute calls unambiguously.  None
+    # when plan investigation is off (the default).
+    plan_investigation_client: Any = None
+    investigation_client_instance_id: str = ""
 
 
 def _create_client_bundle(
@@ -240,6 +246,11 @@ def _create_client_bundle(
     plan_repair_model: str | None = None,
     plan_reviewer_max_tokens: int | None = None,
     plan_repair_max_tokens: int | None = None,
+    plan_investigation_enabled: bool = False,
+    plan_investigation_model: str | None = None,
+    plan_investigation_max_tokens: int | None = None,
+    plan_investigation_reasoning_effort: str | None = None,
+    plan_investigation_output_mode: str | None = None,
 ) -> RealCampaignClientBundle:
     """Create fresh LLM clients for one run.
 
@@ -372,6 +383,35 @@ def _create_client_bundle(
             )
         supervisor_client = sup_adapter
 
+    # Phase 8A Step 4: dedicated real investigator client.  Built only
+    # when plan investigation is enabled so legacy campaigns keep working.
+    # Distinct client_instance_id + recorder role so budget and
+    # truthfulness summaries can attribute calls unambiguously.
+    plan_investigation_client: Any = None
+    investigation_cid = ""
+    if plan_investigation_enabled:
+        from openmc_agent.plan_investigation.llm_adapter import (
+            PLAN_INVESTIGATOR_INSTANCE_PREFIX,
+            make_investigation_llm_client,
+        )
+
+        investigation_cid = (
+            recorder.register_client(PLAN_INVESTIGATOR_INSTANCE_PREFIX)
+            if recorder
+            else PLAN_INVESTIGATOR_INSTANCE_PREFIX
+        )
+        plan_investigation_client = make_investigation_llm_client(
+            base_llm=base_llm,
+            model_name=plan_investigation_model or config.model,
+            temperature=config.temperature,
+            max_tokens=plan_investigation_max_tokens,
+            output_mode=plan_investigation_output_mode or "auto",
+            reasoning_effort=plan_investigation_reasoning_effort,
+            strict_structured_output=True,
+            recorder=recorder,
+            client_instance_id=investigation_cid,
+        )
+
     return RealCampaignClientBundle(
         patch_llm_client=patch_client,
         runtime_diagnostician_client=diag_client,
@@ -387,6 +427,8 @@ def _create_client_bundle(
         plan_repair_client=plan_repair_client,
         reviewer_client_instance_id=reviewer_cid,
         repair_client_instance_id=repair_cid,
+        plan_investigation_client=plan_investigation_client,
+        investigation_client_instance_id=investigation_cid,
     )
 
 

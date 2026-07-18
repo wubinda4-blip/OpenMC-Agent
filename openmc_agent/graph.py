@@ -387,6 +387,11 @@ def build_plan_graph(
     runtime_supervisor_model: str | None = None,
     runtime_supervisor_allow_fallback: bool = False,
     runtime_loop_budget: Any | None = None,
+    plan_investigation_config: Any = None,
+    plan_investigation_client: Any = None,
+    plan_investigation_registry: Any = None,
+    plan_investigation_policy_registry: Any = None,
+    plan_investigation_output_dir: str | Path | None = None,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -432,6 +437,11 @@ def build_plan_graph(
             universe_fragment_max_tokens=universe_fragment_max_tokens,
             large_patch_safe_output_ratio=large_patch_safe_output_ratio,
             strict_structured_patch_output=strict_structured_patch_output,
+            plan_investigation_config=plan_investigation_config,
+            plan_investigation_client=plan_investigation_client,
+            plan_investigation_registry=plan_investigation_registry,
+            plan_investigation_policy_registry=plan_investigation_policy_registry,
+            plan_investigation_output_dir=plan_investigation_output_dir,
         ),
     )
     graph.add_node(
@@ -1541,6 +1551,11 @@ def _run_incremental_plan_generation(
     universe_fragment_max_tokens: int | None = None,
     large_patch_safe_output_ratio: float = 0.6,
     strict_structured_patch_output: bool = False,
+    plan_investigation_config: Any = None,
+    plan_investigation_client: Any = None,
+    plan_investigation_registry: Any = None,
+    plan_investigation_policy_registry: Any = None,
+    plan_investigation_output_dir: str | Path | None = None,
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -1633,6 +1648,11 @@ def _run_incremental_plan_generation(
         universe_fragment_max_tokens=universe_fragment_max_tokens,
         large_patch_safe_output_ratio=large_patch_safe_output_ratio,
         strict_structured_patch_output=strict_structured_patch_output,
+        plan_investigation_config=plan_investigation_config,
+        plan_investigation_client=plan_investigation_client,
+        plan_investigation_registry=plan_investigation_registry,
+        plan_investigation_policy_registry=plan_investigation_policy_registry,
+        plan_investigation_output_dir=plan_investigation_output_dir,
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -1832,6 +1852,11 @@ def _make_generate_plan_node(
     universe_fragment_max_tokens: int | None = None,
     large_patch_safe_output_ratio: float = 0.6,
     strict_structured_patch_output: bool = False,
+    plan_investigation_config: Any = None,
+    plan_investigation_client: Any = None,
+    plan_investigation_registry: Any = None,
+    plan_investigation_policy_registry: Any = None,
+    plan_investigation_output_dir: str | Path | None = None,
     enable_semantic_audit: bool = False,
     semantic_audit_mode: Literal["off", "warning_only", "strict_evaluation"] = "warning_only",
     semantic_audit_client: Any | None = None,
@@ -1883,6 +1908,11 @@ def _make_generate_plan_node(
                 universe_fragment_max_tokens=universe_fragment_max_tokens,
                 large_patch_safe_output_ratio=large_patch_safe_output_ratio,
                 strict_structured_patch_output=strict_structured_patch_output,
+                plan_investigation_config=plan_investigation_config,
+                plan_investigation_client=plan_investigation_client,
+                plan_investigation_registry=plan_investigation_registry,
+                plan_investigation_policy_registry=plan_investigation_policy_registry,
+                plan_investigation_output_dir=plan_investigation_output_dir,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -1919,6 +1949,11 @@ def _make_generate_plan_node(
                     universe_fragment_max_tokens=universe_fragment_max_tokens,
                     large_patch_safe_output_ratio=large_patch_safe_output_ratio,
                     strict_structured_patch_output=strict_structured_patch_output,
+                    plan_investigation_config=plan_investigation_config,
+                    plan_investigation_client=plan_investigation_client,
+                    plan_investigation_registry=plan_investigation_registry,
+                    plan_investigation_policy_registry=plan_investigation_policy_registry,
+                    plan_investigation_output_dir=plan_investigation_output_dir,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

@@ -927,6 +927,11 @@ def run_incremental_planning(
     universe_fragment_max_tokens: int | None = None,
     large_patch_safe_output_ratio: float = 0.6,
     strict_structured_patch_output: bool = False,
+    plan_investigation_config: Any = None,
+    plan_investigation_client: Any = None,
+    plan_investigation_registry: Any = None,
+    plan_investigation_policy_registry: Any = None,
+    plan_investigation_output_dir: str | Path | None = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -2438,6 +2443,42 @@ def run_incremental_planning(
         state.add_event("planning.placement_gate_blocked", "placement gate blocked", {"action": action.value})
         return IncrementalExecutionIssue(code="planning.placement_gate_blocked", severity="error", message=f"placement gate action={action.value}; revision is not available for this candidate", patch_type="placement")
 
+    # Phase 8A Step 4: optional Facts investigation stage.  Setup happens
+    # once, before the per-patch loop, so the shared SourceIndex + Ledger
+    # + session cache live across the whole incremental run.  The actual
+    # investigation runs only on the Facts patch_type (below).
+    _investigation_session_cache: Any = None
+    _investigation_shared_source_index: Any = None
+    _investigation_shared_ledger: Any = None
+    _investigation_config_resolved: Any = None
+    if plan_investigation_config is not None or plan_investigation_client is not None:
+        from openmc_agent.plan_investigation.executor_injection import (
+            InvestigationSessionCache,
+            run_facts_investigation_stage,
+        )
+        from openmc_agent.plan_investigation.runner import (
+            PlanInvestigationConfig as _ResolvedInvestigationConfig,
+            get_investigation_config as _get_investigation_config,
+            set_investigation_config as _set_investigation_config,
+        )
+        if isinstance(plan_investigation_config, dict):
+            _investigation_config_resolved = _ResolvedInvestigationConfig.model_validate(
+                plan_investigation_config
+            )
+        elif isinstance(plan_investigation_config, _ResolvedInvestigationConfig):
+            _investigation_config_resolved = plan_investigation_config
+        else:
+            try:
+                _investigation_config_resolved = _get_investigation_config(state)
+            except Exception:
+                _investigation_config_resolved = _ResolvedInvestigationConfig()
+        # Persist the resolved config on state so downstream code can see
+        # what mode the run is in (read-only; the executor never modifies
+        # state.investigation-related slots directly elsewhere).
+        if _investigation_config_resolved is not None and not _investigation_config_resolved.is_off:
+            _set_investigation_config(state, _investigation_config_resolved)
+            _investigation_session_cache = InvestigationSessionCache()
+
     for patch_type in order:
         facts_barrier_issue = _require_accepted_facts_gate(next_patch_type=patch_type)
         if facts_barrier_issue is not None:
@@ -2607,6 +2648,90 @@ def run_incremental_planning(
             if facts_stage is not None and facts_stage.status in {PlanStageStatus.PENDING, PlanStageStatus.REPAIRING}:
                 transition_stage(facts_stage, PlanStageStatus.PROPOSING)
                 facts_stage.attempt_count += 1
+
+        # Phase 8A Step 4: optional Facts investigation stage runs BEFORE
+        # the Facts patch LLM is invoked.  In controlled mode a blocked
+        # investigation short-circuits the whole run with a stable
+        # disposition.  In advisory mode failures are non-blocking but
+        # are still recorded so callers cannot misrepresent them.
+        if (
+            patch_type == "facts"
+            and _investigation_config_resolved is not None
+            and not _investigation_config_resolved.is_off
+        ):
+            from openmc_agent.plan_investigation.executor_injection import (
+                inject_investigation_evidence_into_context,
+                run_facts_investigation_stage,
+                BLOCK_CODE_FACTS_BLOCKED,
+            )
+            investigation_outcome = run_facts_investigation_stage(
+                requirement=requirement,
+                state=state,
+                config=_investigation_config_resolved,
+                llm_client=plan_investigation_client,
+                registry=plan_investigation_registry,
+                policy_registry=plan_investigation_policy_registry,
+                session_cache=_investigation_session_cache,
+                shared_source_index=_investigation_shared_source_index,
+                shared_ledger=_investigation_shared_ledger,
+                artifact_output_dir=(
+                    Path(plan_investigation_output_dir)
+                    if plan_investigation_output_dir is not None
+                    else (Path(plan_loop_output_dir) if plan_loop_output_dir else None)
+                ),
+                add_event=lambda evt, msg, data: state.add_event(evt, msg, data),
+            )
+            # Step 4 only runs the Facts investigation; the shared
+            # SourceIndex + Ledger caches are reserved for Step 5+ when
+            # Materials/Universes investigations reuse them.
+            if investigation_outcome.should_block_facts_patch:
+                issues.append(
+                    IncrementalExecutionIssue(
+                        code="planning.investigation_facts_blocked",
+                        severity="error",
+                        message=(
+                            f"controlled Facts investigation blocked: "
+                            f"{investigation_outcome.block_code or BLOCK_CODE_FACTS_BLOCKED}"
+                        ),
+                        patch_type="facts",
+                    )
+                )
+                return IncrementalExecutionResult(
+                    ok=False,
+                    state=state,
+                    issues=issues,
+                    summary={
+                        "issue_codes": ["planning.investigation_facts_blocked"],
+                        "investigation_block_code": investigation_outcome.block_code,
+                        "investigation_session_id": investigation_outcome.session_id,
+                        "investigation_evidence_claim_count": len(
+                            investigation_outcome.evidence_claim_ids
+                        ),
+                    },
+                    plan_loop_outcome={
+                        "status": "blocked",
+                        "active_gate_id": "facts",
+                        "active_stage_id": "plan_gate_facts",
+                        "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                        "detail": (
+                            f"BLOCKED_BY_INVESTIGATION:facts "
+                            f"({investigation_outcome.block_code})"
+                        ),
+                    },
+                )
+            if investigation_outcome.evidence_payloads:
+                generation_context = inject_investigation_evidence_into_context(
+                    generation_context, investigation_outcome
+                )
+                state.add_event(
+                    "planning.investigation_evidence_injected",
+                    "Facts patch prompt received investigation evidence",
+                    {
+                        "claim_count": len(investigation_outcome.evidence_claim_ids),
+                        "evidence_context_hash": investigation_outcome.evidence_context_hash[:12],
+                        "cache_reused": investigation_outcome.cache_reused,
+                    },
+                )
 
         # Generate patch with retry. By default we use the provider's output
         # token default (e.g. DeepSeek ~8192), which is larger than any safe

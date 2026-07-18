@@ -64,7 +64,7 @@ def test_off_mode_returns_none() -> None:
         {"state_id": "pbs_test", "requirement_text": "req", "planning_mode": "incremental"}
     )
     # Default config is OFF.
-    assert get_investigation_config(state).enabled is False
+    assert get_investigation_config(state).is_off is True
     result = run_investigation_stage(
         requirement="req text",
         patch_type="facts",
@@ -118,11 +118,6 @@ def test_off_mode_does_not_mutate_state_metadata() -> None:
         llm_client=lambda p: '{"actions": []}',
     )
     assert state.metadata == before
-
-
-# ---------------------------------------------------------------------------
-# Fake-LLM canary: Facts / Materials / Universes
-# ---------------------------------------------------------------------------
 
 
 CANARY_TEXT = """# Reactor Core
@@ -399,13 +394,25 @@ def test_set_then_get_investigation_config_round_trip() -> None:
     assert restored.enabled is True
 
 
-def test_malformed_config_metadata_does_not_break_legacy_path() -> None:
+def test_malformed_config_metadata_does_not_silently_degrade() -> None:
+    """Step 4 contract: a *present but malformed* config must NOT silently
+    degrade to off.  Only a totally absent config is interpreted as off.
+    """
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": "req", "planning_mode": "incremental"}
     )
     state.metadata[CONFIG_METADATA_KEY] = {"enabled": "not_a_bool"}  # malformed
+    with pytest.raises(Exception):
+        get_investigation_config(state)
+
+
+def test_absent_config_metadata_returns_off() -> None:
+    """When the config key is entirely absent, callers get the off default."""
+    state = PlanBuildState.model_validate(
+        {"state_id": "pbs_test", "requirement_text": "req", "planning_mode": "incremental"}
+    )
     cfg = get_investigation_config(state)
-    assert cfg.enabled is False  # falls back to default
+    assert cfg.is_off is True
 
 
 # ---------------------------------------------------------------------------

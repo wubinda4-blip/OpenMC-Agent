@@ -490,6 +490,9 @@ class CampaignLLMBudget:
     runtime_diagnosis: int
     runtime_proposal: int
     runtime_supervisor: int
+    # Phase 8A Step 4: dedicated budget for the plan investigation client.
+    # Default 0 so legacy campaigns keep their existing budget envelope.
+    plan_investigation: int = 0
 
     @property
     def total(self) -> int:
@@ -502,6 +505,7 @@ class CampaignLLMBudget:
             + self.runtime_diagnosis
             + self.runtime_proposal
             + self.runtime_supervisor
+            + self.plan_investigation
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -514,6 +518,7 @@ class CampaignLLMBudget:
             "runtime_diagnosis": self.runtime_diagnosis,
             "runtime_proposal": self.runtime_proposal,
             "runtime_supervisor": self.runtime_supervisor,
+            "plan_investigation": self.plan_investigation,
             "total": self.total,
         }
 
@@ -528,6 +533,8 @@ def estimate_real_campaign_llm_budget(
     max_runtime_iterations: int,
     universes_generation_mode: str = "auto",
     enable_runtime_supervisor: bool = False,
+    plan_investigation_patch_types: tuple[str, ...] = (),
+    plan_investigation_max_sessions_per_patch_type: int = 1,
     safety_factor: float = 1.25,
 ) -> CampaignLLMBudget:
     """Compute a per-role LLM call budget for a five-gate campaign run.
@@ -535,6 +542,13 @@ def estimate_real_campaign_llm_budget(
     The estimator deliberately over-reserves so the campaign safe-stops on
     ``SAFE_STOP_BUDGET`` before silently dropping a gate review or fragment
     call.  ``--max-llm-calls`` always wins when supplied by the user.
+
+    Phase 8A Step 4: ``plan_investigation_patch_types`` adds a dedicated
+    budget envelope for the investigator LLM.  Each patch type gets
+    ``plan_investigation_max_sessions_per_patch_type`` primary calls plus
+    a single structured-output retry reserve.  The investigator envelope
+    is kept separate so it cannot silently steal from ``patch_generation``
+    or ``gate_review``.
     """
     # Patch generation: one call per patch plus a retry reserve.
     patch_gen = int(expected_patch_count * 1.5 + 2)
@@ -555,6 +569,13 @@ def estimate_real_campaign_llm_budget(
     runtime_diagnosis = max_runtime_iterations
     runtime_proposal = max_runtime_iterations
     runtime_supervisor = max_runtime_iterations if enable_runtime_supervisor else 0
+    # Phase 8A Step 4: investigator budget = primary + retry reserve per
+    # patch type.  Only patch types in the supplied tuple consume budget.
+    investigation_patch_count = max(len(plan_investigation_patch_types), 0)
+    investigation_envelope = (
+        investigation_patch_count * max(plan_investigation_max_sessions_per_patch_type, 1)
+        + investigation_patch_count  # retry reserve
+    )
 
     budget = CampaignLLMBudget(
         patch_generation=_round_up(patch_gen * safety_factor),
@@ -565,6 +586,9 @@ def estimate_real_campaign_llm_budget(
         runtime_diagnosis=_round_up(runtime_diagnosis * safety_factor),
         runtime_proposal=_round_up(runtime_proposal * safety_factor),
         runtime_supervisor=_round_up(runtime_supervisor * safety_factor) if runtime_supervisor else 0,
+        plan_investigation=_round_up(investigation_envelope * safety_factor)
+        if investigation_envelope
+        else 0,
     )
     return budget
 
@@ -598,6 +622,19 @@ class CampaignResumeFingerprint:
     material_policy: str
     runtime_mode: str
     openmc_cross_sections_fingerprint: str
+    # Phase 8A Step 4: investigation fingerprint slots.  Default values
+    # keep legacy VERA3B/VERA4 fingerprints unchanged; any deviation in
+    # the investigation configuration blocks resume.
+    plan_investigation_mode: str = "off"
+    plan_investigation_patch_types: tuple[str, ...] = ()
+    plan_investigation_model: str | None = None
+    plan_investigation_reasoning_effort: str | None = None
+    plan_investigation_output_mode: str | None = None
+    plan_investigation_budget_hash: str = ""
+    plan_investigation_policy_hash: str = ""
+    plan_investigation_tool_registry_hash: str = ""
+    plan_investigation_schema_version: str = "0.1"
+    require_source_backed_evidence: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -623,6 +660,16 @@ class CampaignResumeFingerprint:
             "material_policy",
             "runtime_mode",
             "openmc_cross_sections_fingerprint",
+            "plan_investigation_mode",
+            "plan_investigation_patch_types",
+            "plan_investigation_model",
+            "plan_investigation_reasoning_effort",
+            "plan_investigation_output_mode",
+            "plan_investigation_budget_hash",
+            "plan_investigation_policy_hash",
+            "plan_investigation_tool_registry_hash",
+            "plan_investigation_schema_version",
+            "require_source_backed_evidence",
         ):
             if getattr(self, field_name) != getattr(other, field_name):
                 out.append(field_name)
