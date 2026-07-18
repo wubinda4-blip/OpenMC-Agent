@@ -165,6 +165,40 @@ class RealCampaignRunResult:
     # --- Budget / timeout evidence (S8) ---
     budget_exhausted: bool = False
     timed_out: bool = False
+    # --- Phase 7A five-gate controlled campaign evidence ---
+    plan_loop_contract_version: str = ""
+    five_gate_statuses: dict[str, str] = field(default_factory=dict)
+    five_gate_accepted: bool = False
+    gate_input_hashes: dict[str, str] = field(default_factory=dict)
+    gate_review_call_count: int = 0
+    gate_repair_call_count: int = 0
+    gate_retry_count: int = 0
+    awaiting_human_gate: str = ""
+    blocked_gate: str = ""
+    fragmented_universes_used: bool = False
+    universe_manifest_hash: str = ""
+    universe_manifest_status: str = ""
+    expected_universe_count: int = 0
+    accepted_fragment_count: int = 0
+    retried_fragment_ids: list[str] = field(default_factory=list)
+    fragment_resume_count: int = 0
+    merged_universes_hash: str = ""
+    truncation_count: int = 0
+    strategy_transitions: list[str] = field(default_factory=list)
+    plan_reviewer_network_call_count: int = 0
+    plan_repair_network_call_count: int = 0
+    final_gate_accepted_before_render: bool = False
+    render_started_at: str = ""
+    export_started_at: str = ""
+    planning_completed_at: str = ""
+    policy_hash: str = ""
+    human_answer_hash: str = ""
+    human_answer_consumed_questions: list[str] = field(default_factory=list)
+    human_answer_unused: list[str] = field(default_factory=list)
+    universes_generation_mode_selected: str = ""
+    universes_fragment_token_usage: dict[str, int] = field(default_factory=dict)
+    partial_fragment_exposed: bool = False
+    reasoning_content_persisted: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -187,11 +221,23 @@ class RealCampaignClientBundle:
     diag_client_instance_id: str = ""
     proposer_client_instance_id: str = ""
     supervisor_client_instance_id: str = ""
+    # Phase 7A real five-gate reviewer and Phase-3B typed retry clients.
+    # Both default to ``None`` so legacy VERA3B callers keep working; the
+    # Phase 7A harness always supplies real instances.
+    plan_reviewer_client: Any = None
+    plan_repair_client: Any = None
+    reviewer_client_instance_id: str = ""
+    repair_client_instance_id: str = ""
 
 
 def _create_client_bundle(
     config: RealCampaignRunConfig,
     recorder: LLMCallRecorder | None = None,
+    *,
+    plan_reviewer_enabled: bool = False,
+    plan_repair_enabled: bool = False,
+    plan_reviewer_model: str | None = None,
+    plan_repair_model: str | None = None,
 ) -> RealCampaignClientBundle:
     """Create fresh LLM clients for one run.
 
@@ -200,6 +246,12 @@ def _create_client_bundle(
 
     If ``recorder`` is provided, all LLM calls are routed through it
     for unified evidence collection and budget enforcement.
+
+    When ``plan_reviewer_enabled`` or ``plan_repair_enabled`` are true
+    (Phase 7A controlled five-gate campaign), the bundle also creates
+    dedicated real clients for the gate reviewer and the Phase-3B typed
+    retry producer.  Legacy VERA3B callers leave both flags at their
+    default ``False`` and the bundle fields stay ``None``.
     """
     from openmc_agent.llm import _client_for_model, _split_model
     from openmc_agent.plan_builder.llm_adapter import make_patch_llm_client
@@ -255,6 +307,34 @@ def _create_client_bundle(
         llm=prop_llm, model_name=config.model,
     )
 
+    # Phase 7A: dedicated real clients for the gate reviewer and the
+    # Phase-3B typed retry producer.  Built only when the campaign asks
+    # for them so legacy VERA3B callers keep working unchanged.
+    plan_reviewer_client: Any = None
+    plan_repair_client: Any = None
+    reviewer_cid = ""
+    repair_cid = ""
+    if plan_reviewer_enabled:
+        reviewer_cid = recorder.register_client("plan_reviewer") if recorder else ""
+        reviewer_client_obj = make_patch_llm_client(
+            base_llm,
+            model_name=plan_reviewer_model or config.model,
+            temperature=config.temperature,
+        )
+        if recorder:
+            reviewer_client_obj = recorder.wrap_planning_client(reviewer_client_obj, reviewer_cid)
+        plan_reviewer_client = reviewer_client_obj
+    if plan_repair_enabled:
+        repair_cid = recorder.register_client("plan_repair") if recorder else ""
+        repair_client_obj = make_patch_llm_client(
+            base_llm,
+            model_name=plan_repair_model or config.model,
+            temperature=config.temperature,
+        )
+        if recorder:
+            repair_client_obj = recorder.wrap_planning_client(repair_client_obj, repair_cid)
+        plan_repair_client = repair_client_obj
+
     # Runtime supervisor: deterministic by default.
     supervisor_client = None
     if config.runtime_supervisor_mode == "real":
@@ -292,6 +372,10 @@ def _create_client_bundle(
         diag_client_instance_id=diag_cid,
         proposer_client_instance_id=prop_cid,
         supervisor_client_instance_id=sup_cid,
+        plan_reviewer_client=plan_reviewer_client,
+        plan_repair_client=plan_repair_client,
+        reviewer_client_instance_id=reviewer_cid,
+        repair_client_instance_id=repair_cid,
     )
 
 
