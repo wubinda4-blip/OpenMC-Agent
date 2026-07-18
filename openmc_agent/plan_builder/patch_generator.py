@@ -143,6 +143,14 @@ class PatchGenerationAttempt(AgentBaseModel):
     retry_mode: str | None = None
     retry_allowed_paths: list[str] = Field(default_factory=list)
     retry_drift: list[dict[str, Any]] = Field(default_factory=list)
+    # P0-LARGE-STRUCTURED-PATCH telemetry fields.
+    finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    total_tokens: int | None = None
+    structured_fallback_used: bool = False
+    structured_fallback_reasons: list[str] = Field(default_factory=list)
 
 
 class PatchGenerationResult(AgentBaseModel):
@@ -610,7 +618,38 @@ def _call_llm_for_patch(
 
     Returns ``(raw_text, output_mode_used)``.
     """
-    # If client supports generate_patch_json, use it.
+    resp = _call_llm_for_patch_with_meta(llm_client, prompt=prompt, patch_type=patch_type, max_tokens=max_tokens)
+    return resp.content, resp.output_mode_used or "plain_prompt"
+
+
+def _call_llm_for_patch_with_meta(
+    llm_client: Any,
+    *,
+    prompt: str,
+    patch_type: str,
+    max_tokens: int | None = None,
+) -> PatchLLMResponse:
+    """Call the LLM client and return a ``PatchLLMResponse`` with telemetry.
+
+    Prefers ``generate_patch_json_with_meta`` (rich telemetry), falls back to
+    ``generate_patch_json`` (string only), then to plain callable.
+    """
+    from openmc_agent.plan_builder.llm_adapter import PatchLLMResponse, normalize_patch_llm_response
+
+    # Rich telemetry path.
+    if hasattr(llm_client, "generate_patch_json_with_meta"):
+        try:
+            json_schema = get_patch_json_schema(patch_type)
+            return llm_client.generate_patch_json_with_meta(
+                prompt=prompt,
+                patch_type=patch_type,
+                json_schema=json_schema,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            pass  # fall through to legacy path
+
+    # Legacy structured path (returns str).
     if hasattr(llm_client, "generate_patch_json"):
         try:
             json_schema = get_patch_json_schema(patch_type)
@@ -620,17 +659,14 @@ def _call_llm_for_patch(
                 json_schema=json_schema,
                 max_tokens=max_tokens,
             )
-            # Preserve the provider mode actually used (json_schema,
-            # json_object, or plain-prompt fallback) in diagnostics.  This is
-            # essential when a provider advertises structured output but emits
-            # prose after falling back.
-            return raw, str(getattr(llm_client, "last_output_mode_used", "structured"))
+            mode = str(getattr(llm_client, "last_output_mode_used", "structured"))
+            return PatchLLMResponse(content=raw, output_mode_used=mode)
         except Exception:
             pass  # fall through to plain callable
 
-    # Plain callable.
+    # Plain callable (FakePatchLLM or bare function).
     raw = llm_client(prompt)
-    return raw, "plain_prompt"
+    return normalize_patch_llm_response(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -1080,10 +1116,12 @@ def generate_patch(
 
         # Call LLM (Phase 7C: prefer structured output if available).
         try:
-            raw, output_mode = _call_llm_for_patch(
+            llm_resp = _call_llm_for_patch_with_meta(
                 llm_client, prompt=prompt, patch_type=patch_type,
                 max_tokens=max_tokens,
             )
+            raw = llm_resp.content
+            output_mode = llm_resp.output_mode_used or "plain_prompt"
         except Exception as exc:
             attempt.error = str(exc)
             attempt.issues.append({
@@ -1099,6 +1137,14 @@ def generate_patch(
         attempt.raw_chars = len(raw)
         attempt.prompt_text = prompt
         attempt.output_mode_used = output_mode
+        # Populate telemetry from PatchLLMResponse.
+        attempt.finish_reason = llm_resp.finish_reason
+        attempt.prompt_tokens = llm_resp.prompt_tokens
+        attempt.completion_tokens = llm_resp.completion_tokens
+        attempt.reasoning_tokens = llm_resp.reasoning_tokens
+        attempt.total_tokens = llm_resp.total_tokens
+        attempt.structured_fallback_used = llm_resp.structured_fallback_used
+        attempt.structured_fallback_reasons = list(llm_resp.structured_fallback_reasons)
 
         # Output diagnostics: detect forbidden patterns (Phase 7B: errors).
         attempt.contains_full_plan_markers = _detect_full_plan_markers(raw)
@@ -1137,23 +1183,36 @@ def generate_patch(
             content = parse_llm_patch_json(raw, patch_type)
         except PatchParseError as exc:
             attempt.error = str(exc)
-            if _looks_truncated(raw):
-                # Output started a JSON object but never closed it — almost
-                # always a max_tokens / reasoning-budget exhaustion on a
-                # thinking-mode model. Give a pointed message + distinct code
-                # so the operator knows to raise the token budget or lower
-                # reasoning_effort, rather than guessing at "bad JSON".
+            # Prioritize finish_reason for truncation detection.  Only fall
+            # back to the bracket heuristic when the provider does not report
+            # a finish_reason.
+            is_truncated = False
+            truncation_source = ""
+            if llm_resp.finish_reason:
+                fr = llm_resp.finish_reason.lower()
+                if fr in ("length", "max_tokens"):
+                    is_truncated = True
+                    truncation_source = "finish_reason"
+                elif "context" in fr:
+                    is_truncated = True
+                    truncation_source = "finish_reason"
+            if not is_truncated and _looks_truncated(raw):
+                is_truncated = True
+                truncation_source = "heuristic"
+            if is_truncated:
                 attempt.issues.append({
                     "code": "patch_generation.json_truncated",
                     "severity": "error",
                     "message": (
-                        "LLM output appears truncated (unbalanced braces) — "
+                        f"LLM output appears truncated (detected via {truncation_source}) — "
                         "the JSON object started but never completed. This "
                         "usually means the output token budget (including "
                         "reasoning tokens) was exhausted. Raise "
-                        "PATCH_MAX_TOKENS for this patch type or lower "
-                        "reasoning_effort (SENSENOVA_REASONING_EFFORT)."
+                        "PATCH_MAX_TOKENS for this patch type, lower "
+                        "reasoning_effort, or use fragmented generation."
                     ),
+                    "finish_reason": llm_resp.finish_reason,
+                    "truncation_source": truncation_source,
                 })
             else:
                 attempt.issues.append({
