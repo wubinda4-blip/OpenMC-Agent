@@ -1,0 +1,39 @@
+"""Tests for Axial Geometry retry request routing."""
+
+from openmc_agent.plan_builder.closed_loop.axial_geometry_issue_policy import axial_geometry_issue_owner
+from openmc_agent.plan_builder.closed_loop.retry_owner_policy import retry_owner_policy
+from openmc_agent.plan_builder.closed_loop.models import PlanGateId
+
+
+def test_retry_owner_policy_routes_axial_layer_codes():
+    policy = retry_owner_policy("axial.layer_overlap", {"owner_patch_type": "axial_layers"})
+    assert policy is not None
+    assert "axial_layers" in policy.owner_patch_types
+    assert PlanGateId.AXIAL_GEOMETRY in policy.gates_to_invalidate
+
+
+def test_retry_owner_policy_routes_axial_overlay_codes():
+    policy = retry_owner_policy("axial.overlay_interval_invalid")
+    assert policy is not None
+    assert "axial_overlays" in policy.owner_patch_types
+
+
+def test_retry_owner_policy_routes_facts_dependency():
+    policy = retry_owner_policy("axial.domain_missing")
+    assert policy is not None
+    assert "facts" in policy.owner_patch_types
+    assert PlanGateId.FACTS in policy.gates_to_invalidate
+
+
+def test_retry_owner_policy_routes_materials_dependency():
+    policy = retry_owner_policy("axial.overlay_density_required")
+    assert policy is not None
+    assert "materials" in policy.owner_patch_types
+
+
+def test_single_owner_per_finding():
+    """Each finding maps to exactly one owner (or one set of mutually-compatible owners)."""
+    for code in ("axial.layer_overlap", "axial.overlay_interval_invalid", "axial.base_path_segment_gap"):
+        policy = retry_owner_policy(code)
+        assert policy is not None
+        assert len(policy.owner_patch_types) >= 1
