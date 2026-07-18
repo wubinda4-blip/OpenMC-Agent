@@ -1013,7 +1013,8 @@ def run_incremental_planning(
     # advisory orders must remain byte-for-byte behaviourally identical.
     placement_controlled = policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.PLACEMENT, False)
     material_universe_controlled = policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.MATERIAL_UNIVERSE, False)
-    if (placement_controlled or material_universe_controlled) and task_order is None:
+    axial_geometry_controlled = policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.AXIAL_GEOMETRY, False) and policy.axial_geometry_review_mode == "controlled"
+    if (placement_controlled or material_universe_controlled or axial_geometry_controlled) and task_order is None:
         # Patches that depend on Materials/Universes must wait until the
         # Material-Universe Gate is accepted.
         mu_types = {"localized_insert_profiles", "base_path_axial_profiles", "pin_map", "assembly_catalog", "axial_layers", "axial_overlays", "core_layout"} if material_universe_controlled else set()
@@ -1587,6 +1588,131 @@ def run_incremental_planning(
 
     def _material_universe_stage():
         return state.plan_loop_stages.get("plan_gate_material_universe")
+
+    def _axial_geometry_stage():
+        return state.plan_loop_stages.get("plan_gate_axial_geometry")
+
+    def _run_axial_geometry_gate(
+        *, finalize_non_applicable: bool = False,
+    ) -> IncrementalExecutionIssue | None:
+        """Run the Axial-Geometry Gate once axial patches are valid."""
+        if policy.mode is PlanLoopMode.OFF or not policy.gate_enabled.get(PlanGateId.AXIAL_GEOMETRY, False):
+            return None
+        if policy.axial_geometry_review_mode == "off":
+            return None
+        from .closed_loop.axial_geometry_evidence import (
+            build_axial_geometry_evidence_pack,
+            axial_geometry_gate_applicable,
+            axial_geometry_gate_ready,
+            axial_geometry_gate_input_hash,
+        )
+        from .closed_loop.axial_geometry_preflight import run_axial_geometry_preflight
+        from .closed_loop.axial_geometry_reviewer import run_axial_geometry_review
+
+        stage = _axial_geometry_stage()
+        if stage is None:
+            return None
+        # Controlled barrier: Facts, Material-Universe, and Placement must be accepted first.
+        if policy.mode is PlanLoopMode.CONTROLLED:
+            facts_stage = _facts_stage()
+            if facts_stage is None or facts_stage.status is not PlanStageStatus.ACCEPTED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.axial_geometry_requires_accepted_facts", severity="error", message="controlled axial-geometry gate requires accepted Facts Gate", patch_type="axial_layers")
+            mu_stage = _material_universe_stage()
+            if mu_stage is not None and mu_stage.status is not PlanStageStatus.ACCEPTED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.axial_geometry_requires_accepted_material_universe", severity="error", message="controlled axial-geometry gate requires accepted Material-Universe Gate", patch_type="axial_layers")
+            placement_stage = _placement_stage()
+            if placement_stage is not None and placement_stage.status is not PlanStageStatus.ACCEPTED:
+                transition_stage(stage, PlanStageStatus.BLOCKED)
+                return IncrementalExecutionIssue(code="planning.axial_geometry_requires_accepted_placement", severity="error", message="controlled axial-geometry gate requires accepted Placement Gate", patch_type="axial_layers")
+        applicable = axial_geometry_gate_applicable(state)
+        state.add_event("planning.axial_geometry_gate_applicability_checked", "axial-geometry gate applicability checked", {"applicable": applicable})
+        if not applicable:
+            if finalize_non_applicable and stage.status is PlanStageStatus.PENDING:
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+                stage.metadata["reason"] = "not_applicable"
+                state.add_event("planning.axial_geometry_gate_not_applicable", "axial-geometry gate not applicable for this task plan", {})
+            return None
+        if stage.status is PlanStageStatus.SKIPPED and stage.metadata.get("reason") == "not_applicable":
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            stage.metadata.pop("reason", None)
+            state.add_event("planning.axial_geometry_gate_reopened", "stale not_applicable axial-geometry stage reopened", {})
+        if not axial_geometry_gate_ready(state):
+            return None
+        input_hash = axial_geometry_gate_input_hash(state, policy=policy)
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") == input_hash:
+            return None
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") != input_hash:
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event("planning.axial_geometry_input_hash_changed", "axial-geometry accepted input hash changed; gate reopened", {"old": stage.metadata.get("accepted_input_hash"), "new": input_hash})
+        state.add_event("planning.axial_geometry_preflight_started", "axial-geometry deterministic preflight started", {})
+        preflight = run_axial_geometry_preflight(state=state, policy=policy)
+        artifact_writer._write("axial_geometry_preflight.json", preflight)
+        artifact_writer._write("axial_geometry_binding_view.json", preflight.binding_view)
+        state.add_event("planning.axial_geometry_preflight_completed", "axial-geometry deterministic preflight completed", {"issue_count": len(preflight.issues), "blocking": sum(1 for i in preflight.issues if i.get("severity") == "error")})
+        pack = build_axial_geometry_evidence_pack(state=state, policy=policy, deterministic_issues=preflight.issues)
+        artifact_writer._write("axial_geometry_evidence_pack.json", pack)
+        artifact_writer._write("axial_geometry_contract_matrix.json", pack.contract_matrix)
+        if policy.mode is PlanLoopMode.ADVISORY:
+            if plan_reviewer_client is not None:
+                transition_stage(stage, PlanStageStatus.REVIEWING)
+                review = run_axial_geometry_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+                state.facts_review_history.append({"axial_geometry_review": review.model_dump(mode="json")})
+                if review.coverage_complete and not review.failure_code:
+                    transition_stage(stage, PlanStageStatus.REVIEWED)
+                    state.add_event("planning.axial_geometry_gate_reviewed", "axial-geometry gate reviewed without mutation", {})
+                else:
+                    transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                    state.add_event("planning.axial_geometry_review_failed", "axial-geometry advisory review failed", {"failure_code": review.failure_code})
+            else:
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+                stage.metadata["review_not_implemented"] = True
+            return None
+        # Controlled mode.
+        transition_stage(stage, PlanStageStatus.REVIEWING)
+        stage.review_count += 1
+        all_findings: list[Any] = []
+        if plan_reviewer_client is not None:
+            review = run_axial_geometry_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+            all_findings = list(review.findings)
+            state.facts_review_history.append({"axial_geometry_review": review.model_dump(mode="json")})
+            if review.failure_code and not review.coverage_complete:
+                transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                state.add_event("planning.axial_geometry_review_failed", "axial-geometry review failed coverage", {"failure_code": review.failure_code})
+                return IncrementalExecutionIssue(code="planning.axial_geometry_review_failed", severity="error", message=f"axial-geometry review failed: {review.failure_code}", patch_type="axial_layers")
+        from .closed_loop.models import PlanFindingSeverity as _Sev, PlanReviewFinding as _Finding
+        det_findings = [_Finding(gate_id=PlanGateId.AXIAL_GEOMETRY, code=str(item["code"]), severity=_Sev(item.get("severity", "error")), category="cross_patch_mismatch", message=str(item.get("message", "")), confidence=1.0, affected_patch_types=[item.get("owner_patch_type", "axial_layers")] if item.get("owner_patch_type") else ["axial_layers", "axial_overlays"]) for item in preflight.issues]
+        all_findings = list({f.finding_id: f for f in (det_findings + all_findings)}.values())
+        for finding in all_findings:
+            state.plan_review_findings[finding.finding_id] = finding
+            if finding.finding_id not in stage.finding_ids:
+                stage.finding_ids.append(finding.finding_id)
+        error_findings = [f for f in all_findings if f.severity is _Sev.ERROR]
+        if not error_findings:
+            transition_stage(stage, PlanStageStatus.ACCEPTED)
+            stage.metadata["accepted_input_hash"] = input_hash
+            state.add_event("planning.axial_geometry_gate_accepted", "axial-geometry gate accepted", {"input_hash": input_hash})
+            return None
+        human_required = any(f.requires_human for f in error_findings)
+        if human_required and policy.enable_human_gate:
+            transition_stage(stage, PlanStageStatus.AWAITING_HUMAN)
+            state.add_event("planning.axial_geometry_human_question_created", "axial-geometry ambiguity requires typed confirmation", {})
+            return IncrementalExecutionIssue(code="planning.axial_geometry_awaiting_human", severity="error", message="axial-geometry gate awaiting human confirmation", patch_type="axial_layers")
+        from .closed_loop.retry_controller import normalize_retry_request
+        from .closed_loop.retry_models import RetryTriggerOrigin
+        for finding in error_findings:
+            typed = normalize_retry_request(
+                {"code": finding.code, "issue_codes": [finding.code], "required_ids": finding.metadata.get("required_ids", []), "reason": finding.message, "layer_id": finding.metadata.get("layer_id"), "overlay_id": finding.metadata.get("overlay_id"), "loading_id": finding.metadata.get("loading_id"), "profile_id": finding.metadata.get("profile_id")},
+                state=state, origin=RetryTriggerOrigin.AXIAL_GEOMETRY_GATE,
+            )
+            if typed is not None:
+                artifact_writer._write(f"axial_geometry_retry_request_{typed.request_id[:12]}.json", typed)
+                state.add_event("planning.axial_geometry_retry_requested", "axial-geometry blocking finding routed to Phase-3B retry", {"request_id": typed.request_id, "owner_patch_types": typed.owner_patch_types})
+        transition_stage(stage, PlanStageStatus.BLOCKED)
+        return IncrementalExecutionIssue(code="planning.axial_geometry_gate_blocked", severity="error", message=f"axial-geometry gate blocked by {len(error_findings)} finding(s)", patch_type="axial_layers")
 
     def _run_material_universe_gate(
         *, finalize_non_applicable: bool = False,
@@ -2363,6 +2489,23 @@ def run_incremental_planning(
                         "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": placement_gate_issue.message,
                     },
                 )
+            # Phase-5: Axial-Geometry Gate runs after axial patches become valid.
+            axial_geometry_gate_issue = _run_axial_geometry_gate()
+            if axial_geometry_gate_issue is not None:
+                issues.append(axial_geometry_gate_issue)
+                state.add_event(
+                    event_type=EVENT_INCREMENTAL_EXECUTION_FAILED,
+                    message="axial-geometry gate blocked downstream patch generation",
+                    data={"issue_code": axial_geometry_gate_issue.code},
+                )
+                return IncrementalExecutionResult(
+                    ok=False, state=state, issues=issues,
+                    summary=_build_failure_summary("axial_layers", [axial_geometry_gate_issue.code], len(result.attempts)),
+                    plan_loop_outcome={
+                        "status": "blocked", "active_gate_id": "axial_geometry", "active_stage_id": "plan_gate_axial_geometry",
+                        "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": axial_geometry_gate_issue.message,
+                    },
+                )
             # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
             _sync_benchmark_from_facts()
 
@@ -2654,6 +2797,16 @@ def run_incremental_planning(
             ok=False, state=state, issues=issues,
             summary=_build_failure_summary("placement", [placement_gate_issue.code], 0),
             plan_loop_outcome={"status": "blocked", "active_gate_id": "placement", "active_stage_id": "plan_gate_placement", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": placement_gate_issue.message},
+        )
+
+    # Phase-5: Axial-Geometry Gate gets a final opportunity before assembly.
+    axial_geometry_gate_issue = _run_axial_geometry_gate(finalize_non_applicable=True)
+    if axial_geometry_gate_issue is not None:
+        issues.append(axial_geometry_gate_issue)
+        return IncrementalExecutionResult(
+            ok=False, state=state, issues=issues,
+            summary=_build_failure_summary("axial_layers", [axial_geometry_gate_issue.code], 0),
+            plan_loop_outcome={"status": "blocked", "active_gate_id": "axial_geometry", "active_stage_id": "plan_gate_axial_geometry", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": axial_geometry_gate_issue.message},
         )
 
     # Assembly readiness is deterministic and intentionally precedes the

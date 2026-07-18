@@ -194,6 +194,10 @@ def retry_owner_policy(code: str, issue: dict[str, Any] | None = None, *, canoni
                 gates_to_invalidate=[PlanGateId.AXIAL_GEOMETRY],
                 required_acceptance_checks=["patch_schema", "patch_validation"],
             )
+    # Phase-5 Axial Geometry Gate issue codes.
+    if code.startswith("axial."):
+        from .axial_geometry_issue_policy import axial_geometry_issue_owner
+        return axial_geometry_issue_owner(code, issue)
     return None
 
 
