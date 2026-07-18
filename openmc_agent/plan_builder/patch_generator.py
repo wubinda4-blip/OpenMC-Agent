@@ -967,6 +967,36 @@ def _detect_retry_drift(
 # ---------------------------------------------------------------------------
 
 
+def _finalize_failed_patch_generation(
+    *,
+    patch_type: str,
+    attempts: list[PatchGenerationAttempt],
+    max_attempts: int,
+) -> PatchGenerationResult:
+    """Build a consistent failed result for exhausted and early-stop attempts.
+
+    A duplicate candidate is a no-progress terminal condition, so callers
+    should not spend another LLM call.  It is still useful to say explicitly
+    when that terminal attempt also consumed the configured generation budget.
+    """
+    all_issues = [issue for attempt in attempts for issue in attempt.issues]
+    if len(attempts) >= max_attempts:
+        all_issues.append({
+            "code": "patch_generation.max_attempts_exceeded",
+            "severity": "error",
+            "message": (
+                f"{patch_type} generation failed after {len(attempts)} "
+                "attempt(s)"
+            ),
+        })
+    return PatchGenerationResult(
+        ok=False,
+        patch_type=patch_type,
+        attempts=attempts,
+        issues=all_issues,
+    )
+
+
 def generate_patch(
     *,
     patch_type: str,
@@ -1030,9 +1060,10 @@ def generate_patch(
     attempts: list[PatchGenerationAttempt] = []
     last_issues: list[dict[str, Any]] = []
     previous_parsed_content: dict[str, Any] | None = None
-    prior_candidate_hashes = set(
+    persisted_candidate_hashes = set(
         retry_context.prior_candidate_hashes if retry_context is not None else []
     )
+    current_generation_candidate_hashes: set[str] = set()
 
     for attempt_idx in range(max_attempts):
         attempt = PatchGenerationAttempt(attempt_index=attempt_idx, patch_type=patch_type)
@@ -1151,7 +1182,13 @@ def generate_patch(
             target_patch_type=patch_type,
             candidate_patch=content,
         )
-        if attempt.candidate_hash in prior_candidate_hashes:
+        duplicate_scope: str | None = None
+        if attempt.candidate_hash in persisted_candidate_hashes:
+            duplicate_scope = "persisted_context"
+        elif attempt.candidate_hash in current_generation_candidate_hashes:
+            duplicate_scope = "current_generation"
+
+        if duplicate_scope is not None:
             attempt.semantic_normalizations = schema_normalizations
             attempt.issues.append({
                 "code": "patch_generation.no_progress_duplicate_candidate",
@@ -1161,16 +1198,15 @@ def generate_patch(
                     "for the same upstream patch context"
                 ),
                 "candidate_hash": attempt.candidate_hash,
+                "duplicate_scope": duplicate_scope,
             })
             attempts.append(attempt)
-            all_issues = [issue for item in attempts for issue in item.issues]
-            return PatchGenerationResult(
-                ok=False,
+            return _finalize_failed_patch_generation(
                 patch_type=patch_type,
                 attempts=attempts,
-                issues=all_issues,
+                max_attempts=max_attempts,
             )
-        prior_candidate_hashes.add(attempt.candidate_hash)
+        current_generation_candidate_hashes.add(attempt.candidate_hash)
 
         # Phase 7C: validate patch contract (patch_type, allowed/forbidden keys).
         contract_issues = validate_patch_contract(
@@ -1275,18 +1311,10 @@ def generate_patch(
             last_issues = attempt.issues
         previous_parsed_content = content
 
-    # Max attempts exceeded.
-    all_issues: list[dict[str, Any]] = [i for a in attempts for i in a.issues]
-    all_issues.append({
-        "code": "patch_generation.max_attempts_exceeded",
-        "severity": "error",
-        "message": f"{patch_type} generation failed after {len(attempts)} attempt(s)",
-    })
-    return PatchGenerationResult(
-        ok=False,
+    return _finalize_failed_patch_generation(
         patch_type=patch_type,
         attempts=attempts,
-        issues=all_issues,
+        max_attempts=max_attempts,
     )
 
 

@@ -16,9 +16,11 @@ from openmc_agent.plan_builder.patches import (
 from openmc_agent.plan_builder.patch_generator import (
     FakePatchLLM,
     PatchGenerationContext,
+    RetryPatchGenerationContext,
     generate_patch,
     parse_llm_patch_json,
 )
+from openmc_agent.plan_builder.closed_loop.fingerprints import compute_candidate_hash
 from openmc_agent.plan_builder.patches import PatchParseError
 from openmc_agent.plan_builder.state import (
     PlanBuildState,
@@ -249,6 +251,7 @@ def test_max_attempts_exceeded() -> None:
     assert result.ok is False
     codes = [i["code"] for i in result.issues]
     assert "patch_generation.max_attempts_exceeded" in codes
+    assert "patch_generation.no_progress_duplicate_candidate" not in codes
     assert len(result.attempts) == 2
 
 
@@ -278,6 +281,55 @@ def test_duplicate_schema_invalid_candidate_stops_before_a_third_call() -> None:
     assert result.attempts[0].candidate_hash
     assert result.attempts[1].candidate_hash == result.attempts[0].candidate_hash
     assert "patch_generation.no_progress_duplicate_candidate" in {
+        issue["code"] for issue in result.issues
+    }
+    assert "patch_generation.max_attempts_exceeded" not in {
+        issue["code"] for issue in result.issues
+    }
+    duplicate = next(
+        issue for issue in result.issues
+        if issue["code"] == "patch_generation.no_progress_duplicate_candidate"
+    )
+    assert duplicate["duplicate_scope"] == "current_generation"
+
+
+def test_persisted_duplicate_candidate_stops_before_budget_exhaustion() -> None:
+    """A retry-context candidate stops after one call without a budget error."""
+    bad_content = {
+        "patch_type": "axial_layers",
+        "layers": [{
+            "layer_id": "active_fuel", "role": "active_fuel",
+            "z_min_cm": 100.0, "z_max_cm": 50.0,
+            "fill_type": "lattice", "fill_id": "assembly_lattice",
+        }],
+    }
+    bad_raw = json.dumps(bad_content)
+    candidate_hash = compute_candidate_hash(
+        target_patch_type="axial_layers", candidate_patch=bad_content,
+    )
+    fake = FakePatchLLM([bad_raw, bad_raw])
+
+    result = generate_patch(
+        patch_type="axial_layers",
+        requirement="3D assembly",
+        llm_client=fake,
+        context=RetryPatchGenerationContext(
+            base_context=PatchGenerationContext(),
+            prior_candidate_hashes=[candidate_hash],
+        ),
+        max_attempts=3,
+    )
+
+    assert result.ok is False
+    assert len(result.attempts) == 1
+    assert len(fake.prompts) == 1
+    assert len(fake.responses) == 1
+    duplicate = next(
+        issue for issue in result.issues
+        if issue["code"] == "patch_generation.no_progress_duplicate_candidate"
+    )
+    assert duplicate["duplicate_scope"] == "persisted_context"
+    assert "patch_generation.max_attempts_exceeded" not in {
         issue["code"] for issue in result.issues
     }
 

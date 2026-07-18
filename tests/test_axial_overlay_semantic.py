@@ -423,7 +423,10 @@ def test_P_max_retry_fail_closed() -> None:
     )
     assert result.ok is False
     codes = [i["code"] for i in result.issues]
+    assert "patch.axial_overlays.mode_semantic_contradiction" in codes
+    assert "patch_generation.no_progress_duplicate_candidate" in codes
     assert "patch_generation.max_attempts_exceeded" in codes
+    assert len(result.attempts) == 2
 
 
 # ---------------------------------------------------------------------------
