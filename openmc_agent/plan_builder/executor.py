@@ -977,12 +977,18 @@ def run_incremental_planning(
     if policy.mode is PlanLoopMode.CONTROLLED and policy.gate_enabled.get(PlanGateId.MATERIAL_UNIVERSE, False) and not policy.gate_enabled.get(PlanGateId.FACTS, False):
         issue = IncrementalExecutionIssue(code="planning.closed_loop.invalid_gate_configuration", severity="error", message="controlled material-universe requires the facts gate")
         return IncrementalExecutionResult(ok=False, state=state, issues=[issue], summary={"issue_codes": [issue.code]}, plan_loop_outcome={"status": "blocked", "detail": issue.message, "additional_llm_calls_used": 0})
-    supported_controlled = {PlanGateId.FACTS, PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT}
+    supported_controlled = {
+        PlanGateId.FACTS,
+        PlanGateId.MATERIAL_UNIVERSE,
+        PlanGateId.PLACEMENT,
+        PlanGateId.AXIAL_GEOMETRY,
+        PlanGateId.ASSEMBLED_PLAN,
+    }
     unsupported_controlled = [gate for gate, enabled in policy.gate_enabled.items() if enabled and gate not in supported_controlled]
     if policy.mode is PlanLoopMode.CONTROLLED and unsupported_controlled:
         issue = IncrementalExecutionIssue(
             code="planning.closed_loop.gate_not_implemented", severity="error",
-            message="controlled mode currently implements only facts, material_universe and placement gates",
+            message="controlled mode currently implements only facts, material_universe, placement, axial_geometry and assembled_plan gates",
         )
         state.add_event(
             event_type="planning.closed_loop.controlled_not_implemented",
