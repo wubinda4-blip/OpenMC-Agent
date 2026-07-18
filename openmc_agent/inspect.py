@@ -41,6 +41,13 @@ from openmc_agent.semantic_audit import make_semantic_audit_client
 from openmc_agent.tools import export_xml, run_geometry_plots, run_smoke_test
 
 
+# These are the gates that the controlled executor can actually replay today.
+# Keep unsupported registry entries opt-in until their executable barrier is
+# implemented; enabling an unimplemented gate by default would make every
+# ordinary ``inspect`` invocation fail before modeling.
+_DEFAULT_EXECUTABLE_PLAN_GATES = "facts,material_universe,placement"
+
+
 @dataclass(frozen=True)
 class InspectResult:
     ok: bool
@@ -94,7 +101,8 @@ def inspect_requirement(
     max_facts_review_chunks: int = 8,
     plan_human_mode: str = "off",
     plan_gates: str | None = None,
-    placement_review_mode: str = "off",
+    placement_review_mode: str | None = None,
+    material_universe_review_mode: str | None = None,
     patch_output_mode: str = "auto",
     patch_max_tokens: int | None = None,
     patch_reasoning_effort: str | None = None,
@@ -148,6 +156,7 @@ def inspect_requirement(
             plan_human_mode=plan_human_mode,
             plan_gates=plan_gates,
             placement_review_mode=placement_review_mode,
+            material_universe_review_mode=material_universe_review_mode,
             patch_output_mode=patch_output_mode,
             patch_max_tokens=patch_max_tokens,
             patch_reasoning_effort=patch_reasoning_effort,
@@ -363,7 +372,8 @@ def _inspect_plan_requirement(
     max_facts_review_chunks: int,
     plan_human_mode: str,
     plan_gates: str | None,
-    placement_review_mode: str,
+    placement_review_mode: str | None,
+    material_universe_review_mode: str | None,
     patch_output_mode: str,
     patch_max_tokens: int | None,
     patch_reasoning_effort: str | None,
@@ -411,12 +421,24 @@ def _inspect_plan_requirement(
     from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanGateId
 
     selected_gates = [PlanGateId(item.strip()) for item in (plan_gates or "").split(",") if item.strip()]
-    if placement_review_mode != "off" and plan_loop_mode == "off":
+    effective_placement_review_mode = placement_review_mode or (
+        plan_loop_mode if plan_loop_mode != "off" and PlanGateId.PLACEMENT in selected_gates else "off"
+    )
+    effective_material_universe_review_mode = material_universe_review_mode or (
+        plan_loop_mode if plan_loop_mode != "off" and PlanGateId.MATERIAL_UNIVERSE in selected_gates else "off"
+    )
+    if effective_placement_review_mode != "off" and plan_loop_mode == "off":
         raise ValueError("--placement-review-mode requires a non-off --plan-loop-mode")
-    if placement_review_mode != "off" and plan_loop_mode != "off" and placement_review_mode != plan_loop_mode:
+    if effective_placement_review_mode != "off" and plan_loop_mode != "off" and effective_placement_review_mode != plan_loop_mode:
         raise ValueError("--placement-review-mode must match --plan-loop-mode when both are enabled")
-    if placement_review_mode != "off" and PlanGateId.PLACEMENT not in selected_gates:
+    if effective_material_universe_review_mode != "off" and plan_loop_mode == "off":
+        raise ValueError("--material-universe-review-mode requires a non-off --plan-loop-mode")
+    if effective_material_universe_review_mode != "off" and plan_loop_mode != "off" and effective_material_universe_review_mode != plan_loop_mode:
+        raise ValueError("--material-universe-review-mode must match --plan-loop-mode when both are enabled")
+    if effective_placement_review_mode != "off" and PlanGateId.PLACEMENT not in selected_gates:
         selected_gates.append(PlanGateId.PLACEMENT)
+    if effective_material_universe_review_mode != "off" and PlanGateId.MATERIAL_UNIVERSE not in selected_gates:
+        selected_gates.append(PlanGateId.MATERIAL_UNIVERSE)
     if plan_loop_mode == "controlled" and not selected_gates:
         selected_gates = [PlanGateId.FACTS]
 
@@ -432,7 +454,8 @@ def _inspect_plan_requirement(
         plan_human_mode=plan_human_mode,
         enable_human_gate=plan_human_mode == "ambiguity_only",
         plan_gates=selected_gates,
-        placement_review_mode=placement_review_mode,
+        placement_review_mode=effective_placement_review_mode,
+        material_universe_review_mode=effective_material_universe_review_mode,
         gate_enabled={gate: gate in selected_gates for gate in PlanGateId},
     )
     patch_llm_client = make_patch_llm_client(
@@ -1182,8 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
         "(default: off).",
     )
     parser.add_argument(
-        "--plan-loop-mode", choices=["off", "advisory", "controlled"], default="off",
-        help="Phase-0 plan closed-loop mode (default: off). advisory writes only foundation artifacts.",
+        "--plan-loop-mode", choices=["off", "advisory", "controlled"], default="controlled",
+        help="Plan closed-loop mode (default: controlled; pass off for legacy planning).",
     )
     parser.add_argument("--max-plan-review-rounds", type=int, default=2)
     parser.add_argument("--max-plan-repair-rounds", type=int, default=2)
@@ -1195,8 +1218,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--facts-review-chunk-chars", type=int, default=12000)
     parser.add_argument("--max-facts-review-chunks", type=int, default=8)
     parser.add_argument("--plan-human-mode", choices=["off", "ambiguity_only"], default="off")
-    parser.add_argument("--plan-gates", default=None, help="Comma-separated enabled gates, for example facts,placement")
-    parser.add_argument("--placement-review-mode", choices=["off", "advisory", "controlled"], default="off")
+    parser.add_argument(
+        "--plan-gates",
+        default=_DEFAULT_EXECUTABLE_PLAN_GATES,
+        help=(
+            "Comma-separated enabled gates (default: all executable gates: "
+            f"{_DEFAULT_EXECUTABLE_PLAN_GATES})."
+        ),
+    )
+    parser.add_argument(
+        "--placement-review-mode", choices=["off", "advisory", "controlled"], default=None,
+        help="Placement Gate mode; defaults to --plan-loop-mode when placement is enabled.",
+    )
+    parser.add_argument(
+        "--material-universe-review-mode", choices=["off", "advisory", "controlled"], default=None,
+        help="Material–Universe Gate mode; defaults to --plan-loop-mode when that gate is enabled.",
+    )
     parser.add_argument(
         "--patch-output-mode",
         choices=["auto", "plain_prompt", "json_object", "json_schema"],
@@ -1288,6 +1325,7 @@ def main(argv: list[str] | None = None) -> int:
             plan_human_mode=args.plan_human_mode,
             plan_gates=args.plan_gates,
             placement_review_mode=args.placement_review_mode,
+            material_universe_review_mode=args.material_universe_review_mode,
             patch_output_mode=args.patch_output_mode,
             patch_max_tokens=args.patch_max_tokens,
             patch_reasoning_effort=args.patch_reasoning_effort,
@@ -1333,6 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
             plan_human_mode=args.plan_human_mode,
             plan_gates=args.plan_gates,
             placement_review_mode=args.placement_review_mode,
+            material_universe_review_mode=args.material_universe_review_mode,
             patch_output_mode=args.patch_output_mode,
             patch_max_tokens=args.patch_max_tokens,
             patch_reasoning_effort=args.patch_reasoning_effort,

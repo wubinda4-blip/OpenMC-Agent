@@ -510,3 +510,11 @@ runtime repair, or monolithic fallback path was introduced.
 - Controlled Graph execution stops after the failed patch's local budget is
   exhausted, retains its checkpoint/candidate hashes, and does not reopen a
   whole-plan retry. Validation: focused generator, executor, and Graph tests.
+
+## 2026-07-18 — Executable closed-loop CLI defaults
+
+- The CLI now defaults to controlled incremental planning with all currently
+  executable gates enabled: Facts, Material–Universe, and Placement. Per-gate
+  modes inherit the selected loop mode; patch output remains provider `auto`.
+- Axial and Assembled Plan gate IDs remain opt-in/unimplemented rather than
+  causing a default modeling command to fail. Validation: CLI default tests.

@@ -26,6 +26,30 @@ def test_cli_forwards_plan_loop_options(monkeypatch, tmp_path) -> None:
     assert captured["use_plan"] is True
 
 
+def test_cli_defaults_enable_all_currently_executable_gates(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    class Result:
+        ok = True
+        transcript = "ok"
+        transcript_data = {}
+
+    def fake_inspect(requirement, **kwargs):
+        captured["requirement"] = requirement
+        captured.update(kwargs)
+        return Result()
+
+    monkeypatch.setattr(inspect_module, "inspect_requirement", fake_inspect)
+    assert inspect_module.main(["--output-dir", str(tmp_path), "requirement"]) == 0
+
+    assert captured["use_plan"] is True
+    assert captured["plan_loop_mode"] == "controlled"
+    assert captured["plan_gates"] == "facts,material_universe,placement"
+    assert captured["placement_review_mode"] is None
+    assert captured["material_universe_review_mode"] is None
+    assert captured["patch_output_mode"] == "auto"
+
+
 def test_cli_forwards_patch_and_reviewer_output_controls(monkeypatch, tmp_path) -> None:
     captured = {}
 
