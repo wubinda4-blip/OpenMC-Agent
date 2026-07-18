@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.6"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.7"
 
 
 class _TextEnum(str, Enum):
@@ -789,6 +789,302 @@ class MaterialUniverseReviewModelOutput(AgentBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Phase-5 Axial Geometry Review Gate models
+# ---------------------------------------------------------------------------
+
+
+class SourceAxialContract(AgentBaseModel):
+    """Axial domain contract extracted from accepted Facts / source."""
+    requirement_id: str
+    axial_domain_cm: tuple[float, float] | None = None
+    active_fuel_region_cm: tuple[float, float] | None = None
+    required_axial_roles: list[str] = Field(default_factory=list)
+    nozzle_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    core_plate_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    spacer_grid_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    base_path_component_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    localized_insert_segment_roles: list[str] = Field(default_factory=list)
+    anchor_control_states: list[dict[str, Any]] = Field(default_factory=list)
+    finite_axial_model: bool | None = None
+    allows_homogenization: bool = False
+    allows_clipping: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BasePathSegmentRecord(AgentBaseModel):
+    segment_id: str
+    z_min_cm: float | None = None
+    z_max_cm: float | None = None
+    universe_id: str | None = None
+    role: str = ""
+    absolute_z_min_cm: float | None = None
+    absolute_z_max_cm: float | None = None
+    clipping: str = "reachable"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class BasePathProfileRecord(AgentBaseModel):
+    profile_id: str
+    source_requirement_id: str = ""
+    anchor_kind: str = ""
+    anchor_z_cm: float | None = None
+    intended_host_kind: str = ""
+    segment_ids: list[str] = Field(default_factory=list)
+    segments: list[BasePathSegmentRecord] = Field(default_factory=list)
+    total_extent_cm: float | None = None
+    absolute_interval_cm: tuple[float, float] | None = None
+    coverage_status: str = "unverified"
+    ordering_status: str = "unverified"
+    continuity_status: str = "unverified"
+    clipping_status: str = "unverified"
+    referenced_universe_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialLayerRecord(AgentBaseModel):
+    layer_id: str
+    role: str = ""
+    z_min_cm: float | None = None
+    z_max_cm: float | None = None
+    thickness_cm: float | None = None
+    fill_type: str = "unknown"
+    fill_id: str | None = None
+    loading_ids: list[str] = Field(default_factory=list)
+    resolved_material_id: str | None = None
+    resolved_universe_id: str | None = None
+    resolved_lattice_id: str | None = None
+    source_requirement_ids: list[str] = Field(default_factory=list)
+    overlap_ids: list[str] = Field(default_factory=list)
+    gap_before_cm: float | None = None
+    gap_after_cm: float | None = None
+    coverage_status: str = "unverified"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LatticeLoadingRecord(AgentBaseModel):
+    loading_id: str
+    base_lattice_id: str | None = None
+    attached_layer_ids: list[str] = Field(default_factory=list)
+    finite_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    transformation_ids: list[str] = Field(default_factory=list)
+    localized_insert_intent_ids: list[str] = Field(default_factory=list)
+    assembly_scope: str = ""
+    coordinate_convention: str = ""
+    referenced_universe_ids: list[str] = Field(default_factory=list)
+    attachment_status: str = "unattached"
+    interval_status: str = "unverified"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialOverlayRecord(AgentBaseModel):
+    overlay_id: str
+    overlay_kind: str = ""
+    z_min_cm: float | None = None
+    z_max_cm: float | None = None
+    thickness_cm: float | None = None
+    target_lattice_id: str | None = None
+    material_id: str | None = None
+    geometry_mode: str = ""
+    required_density: float | None = None
+    density_status: str = "unverified"
+    derived_universe_id: str | None = None
+    structural_renderability: str = "unverified"
+    affected_open_cell_ids: list[str] = Field(default_factory=list)
+    preserved_through_path_ids: list[str] = Field(default_factory=list)
+    overlap_ids: list[str] = Field(default_factory=list)
+    source_requirement_ids: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LocalizedInsertAxialRecord(AgentBaseModel):
+    requirement_id: str
+    profile_id: str = ""
+    control_state_id: str = ""
+    anchor_z_cm: float | None = None
+    profile_relative_extent: tuple[float, float] | None = None
+    translated_absolute_extent: tuple[float, float] | None = None
+    segment_roles: list[str] = Field(default_factory=list)
+    segment_universe_ids: list[str] = Field(default_factory=list)
+    host_loading_ids: list[str] = Field(default_factory=list)
+    host_layer_ids: list[str] = Field(default_factory=list)
+    overlapping_layer_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    clipping: str = "reachable"
+    coverage_status: str = "unverified"
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ThroughPathRecord(AgentBaseModel):
+    through_path_id: str
+    path_kind: str = ""
+    protected_cell_ids: list[str] = Field(default_factory=list)
+    overlay_band_ids: list[str] = Field(default_factory=list)
+    preserved: bool = True
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialDerivedSegment(AgentBaseModel):
+    segment_id: str
+    z_min_cm: float
+    z_max_cm: float
+    active_layer_ids: list[str] = Field(default_factory=list)
+    active_overlay_ids: list[str] = Field(default_factory=list)
+    active_profile_ids: list[str] = Field(default_factory=list)
+    base_fill_type: str = ""
+    base_fill_id: str | None = None
+    material_universe_bindings: list[dict[str, Any]] = Field(default_factory=list)
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialReferenceEdge(AgentBaseModel):
+    source_id: str
+    target_id: str
+    edge_kind: str = ""
+    status: str = "pass"
+    issue_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialGeometryBindingView(AgentBaseModel):
+    planning_scope: str = ""
+    axial_domain_cm: tuple[float, float] | None = None
+    active_fuel_region_cm: tuple[float, float] | None = None
+    facts_patch_hash: str = ""
+    materials_patch_hash: str = ""
+    universes_patch_hash: str = ""
+    placement_input_hash: str = ""
+    material_universe_accepted_hash: str = ""
+    placement_accepted_hash: str = ""
+    base_path_profiles_hash: str = ""
+    axial_layers_hash: str = ""
+    axial_overlays_hash: str = ""
+    feature_contract_hash: str = ""
+    canonical_task_plan_hash: str = ""
+    source_axial_contracts: list[SourceAxialContract] = Field(default_factory=list)
+    base_path_profile_records: list[BasePathProfileRecord] = Field(default_factory=list)
+    axial_layer_records: list[AxialLayerRecord] = Field(default_factory=list)
+    lattice_loading_records: list[LatticeLoadingRecord] = Field(default_factory=list)
+    axial_overlay_records: list[AxialOverlayRecord] = Field(default_factory=list)
+    localized_insert_axial_records: list[LocalizedInsertAxialRecord] = Field(default_factory=list)
+    through_path_records: list[ThroughPathRecord] = Field(default_factory=list)
+    axial_reference_edges: list[AxialReferenceEdge] = Field(default_factory=list)
+    derived_segments: list[AxialDerivedSegment] = Field(default_factory=list)
+    unresolved_references: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialGeometryContractRow(AgentBaseModel):
+    row_id: str
+    row_kind: Literal[
+        "source_domain_coverage",
+        "active_fuel_coverage",
+        "layer_fill_binding",
+        "loading_attachment",
+        "overlay_binding",
+        "base_path_profile_coverage",
+        "localized_insert_axial_occupancy",
+        "through_path_preservation",
+        "spacer_grid_structural_count",
+    ]
+    requirement_id: str = ""
+    layer_id: str = ""
+    loading_id: str = ""
+    overlay_id: str = ""
+    profile_id: str = ""
+    insert_requirement_id: str = ""
+    material_id: str = ""
+    universe_id: str = ""
+    lattice_id: str = ""
+    through_path_id: str = ""
+    expected_interval: tuple[float, float] | None = None
+    actual_intervals: list[tuple[float, float]] = Field(default_factory=list)
+    gaps: list[tuple[float, float]] = Field(default_factory=list)
+    overlaps: list[tuple[float, float]] = Field(default_factory=list)
+    boundary_status: str = "unverified"
+    coverage_status: Literal["pass", "fail", "ambiguous", "not_applicable"] = "not_applicable"
+    expected_count: int | None = None
+    actual_count: int | None = None
+    issue_codes: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialGeometryContractMatrix(AgentBaseModel):
+    rows: list[AxialGeometryContractRow] = Field(default_factory=list)
+    input_hash: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialGeometryEvidencePack(AgentBaseModel):
+    gate_id: PlanGateId = PlanGateId.AXIAL_GEOMETRY
+    input_hash: str = ""
+    evidence_pack_id: str = ""
+    binding_view: AxialGeometryBindingView | None = None
+    contract_matrix: AxialGeometryContractMatrix = Field(default_factory=AxialGeometryContractMatrix)
+    deterministic_issues: list[dict[str, Any]] = Field(default_factory=list)
+    relevant_patch_hashes: dict[str, str] = Field(default_factory=dict)
+    accepted_facts_hash: str = ""
+    accepted_material_universe_hash: str = ""
+    accepted_placement_hash: str = ""
+    evidence_items: list[PlanEvidenceItem] = Field(default_factory=list)
+    confirmed_records: list[dict[str, Any]] = Field(default_factory=list)
+    allowed_actions: list[PlanReviewAction] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialGeometryReviewFindingDraft(AgentBaseModel):
+    code: str
+    severity: PlanFindingSeverity = PlanFindingSeverity.WARNING
+    category: PlanFindingCategory = PlanFindingCategory.REPRESENTATION_ERROR
+    message: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    contract_row_ids: list[str] = Field(default_factory=list)
+    affected_json_paths: list[str] = Field(default_factory=list)
+    repairable_by_llm: bool = False
+    requires_human: bool = False
+    confidence: float = 0.5
+
+    @model_validator(mode="after")
+    def _human_not_repairable(self) -> "AxialGeometryReviewFindingDraft":
+        if self.requires_human and self.repairable_by_llm:
+            self.repairable_by_llm = False
+        return self
+
+    expected_semantics: str = ""
+    current_semantics: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AxialGeometryReviewCoverageSummary(AgentBaseModel):
+    reviewed_source_requirement_ids: list[str] = Field(default_factory=list)
+    reviewed_profile_ids: list[str] = Field(default_factory=list)
+    reviewed_layer_ids: list[str] = Field(default_factory=list)
+    reviewed_loading_ids: list[str] = Field(default_factory=list)
+    reviewed_overlay_ids: list[str] = Field(default_factory=list)
+    reviewed_insert_requirement_ids: list[str] = Field(default_factory=list)
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    omitted_profile_count: int = 0
+    omitted_layer_count: int = 0
+    omitted_loading_count: int = 0
+    omitted_overlay_count: int = 0
+    omitted_contract_row_count: int = 0
+    unresolved_evidence_count: int = 0
+
+
+class AxialGeometryReviewModelOutput(AgentBaseModel):
+    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    findings: list[AxialGeometryReviewFindingDraft] = Field(default_factory=list)
+    reviewed_contract_row_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_refs: list[str] = Field(default_factory=list)
+    coverage_summary: AxialGeometryReviewCoverageSummary = Field(default_factory=AxialGeometryReviewCoverageSummary)
+    concise_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PlanStageState(AgentBaseModel):
     stage_id: str
     gate_id: PlanGateId
@@ -823,7 +1119,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2
@@ -844,6 +1140,8 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     # Phase-4 Material-Universe Review Gate mode.  Independent of placement
     # so users can enable one without the other.
     material_universe_review_mode: Literal["off", "advisory", "controlled"] = "off"
+    # Phase-5 Axial Geometry Review Gate mode.
+    axial_geometry_review_mode: Literal["off", "advisory", "controlled"] = "off"
     # Phase-3 executable retry budget.  It remains independent from reviewer
     # calls so checkpoint restore cannot silently refresh retry authority.
     max_retry_rounds: int = 6

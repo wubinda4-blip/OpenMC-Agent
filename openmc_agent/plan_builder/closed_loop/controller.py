@@ -80,10 +80,27 @@ def initialize_plan_loop_state(state: Any, policy: PlanClosedLoopPolicy, require
                     "placeholder material-universe stage migrated to pending",
                     {"stage_id": mu_legacy.stage_id, "from_contract": previous_contract},
                 )
+    # 0.6 -> 0.7 migration: the Axial-Geometry stage was previously a
+    # placeholder (skipped + review_not_implemented).  Upgrade it to pending
+    # so the new gate can actually run, without resetting any other gate
+    # history and without auto-accepting the Axial-Geometry gate.
+    if previous_contract in {"0.1", "0.2", "0.3", "0.4", "0.5", "0.6"}:
+        ax_legacy = state.plan_loop_stages.get("plan_gate_axial_geometry")
+        if ax_legacy and ax_legacy.status is PlanStageStatus.SKIPPED and ax_legacy.metadata.get("review_not_implemented"):
+            ax_legacy.status = PlanStageStatus.PENDING
+            ax_legacy.completed_at = None
+            ax_legacy.metadata["review_not_implemented"] = False
+            ax_legacy.metadata["migrated_from_contract"] = previous_contract
+            if hasattr(state, "add_event"):
+                state.add_event(
+                    "planning.axial_geometry_gate_migrated_to_0_7",
+                    "placeholder axial-geometry stage migrated to pending",
+                    {"stage_id": ax_legacy.stage_id, "from_contract": previous_contract},
+                )
     # Foundation-only stages were never reviewed.  Upgrade them lazily so a
     # restored checkpoint is eligible for the first real gate run.  Never
     # reset a real reviewed/accepted/failed history.
-    for gate_id in (PlanGateId.FACTS, PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT):
+    for gate_id in (PlanGateId.FACTS, PlanGateId.MATERIAL_UNIVERSE, PlanGateId.PLACEMENT, PlanGateId.AXIAL_GEOMETRY):
         legacy = state.plan_loop_stages.get(f"plan_gate_{gate_id.value}")
         if legacy and legacy.status is PlanStageStatus.SKIPPED and legacy.metadata.get("review_not_implemented"):
             legacy.status = PlanStageStatus.PENDING
@@ -100,6 +117,12 @@ def initialize_plan_loop_state(state: Any, policy: PlanClosedLoopPolicy, require
                 state.add_event(
                     "planning.material_universe_gate_migrated_to_0_6",
                     "foundation-only material-universe stage migrated to pending",
+                    {"stage_id": legacy.stage_id},
+                )
+            if gate_id is PlanGateId.AXIAL_GEOMETRY and hasattr(state, "add_event"):
+                state.add_event(
+                    "planning.axial_geometry_gate_migrated_to_0_7",
+                    "foundation-only axial-geometry stage migrated to pending",
                     {"stage_id": legacy.stage_id},
                 )
     created: list[PlanStageState] = []
