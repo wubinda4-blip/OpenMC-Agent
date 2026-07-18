@@ -198,6 +198,10 @@ def retry_owner_policy(code: str, issue: dict[str, Any] | None = None, *, canoni
     if code.startswith("axial."):
         from .axial_geometry_issue_policy import axial_geometry_issue_owner
         return axial_geometry_issue_owner(code, issue)
+    # Phase-6 Assembled Plan Gate issue codes.
+    if code.startswith("assembled."):
+        from .assembled_plan_issue_policy import assembled_plan_issue_owner
+        return assembled_plan_issue_owner(code, issue)
     return None
 
 

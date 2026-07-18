@@ -104,7 +104,7 @@ def inspect_requirement(
     placement_review_mode: str | None = None,
     material_universe_review_mode: str | None = None,
     axial_geometry_review_mode: str | None = None,
-    patch_output_mode: str = "auto",
+    assembled_plan_review_mode: str | None = None,
     patch_max_tokens: int | None = None,
     patch_reasoning_effort: str | None = None,
     plan_reviewer_output_mode: str | None = None,
@@ -159,7 +159,7 @@ def inspect_requirement(
             placement_review_mode=placement_review_mode,
             material_universe_review_mode=material_universe_review_mode,
             axial_geometry_review_mode=axial_geometry_review_mode,
-            patch_output_mode=patch_output_mode,
+            assembled_plan_review_mode=assembled_plan_review_mode,
             patch_max_tokens=patch_max_tokens,
             patch_reasoning_effort=patch_reasoning_effort,
             plan_reviewer_output_mode=plan_reviewer_output_mode,
@@ -377,6 +377,7 @@ def _inspect_plan_requirement(
     placement_review_mode: str | None,
     material_universe_review_mode: str | None,
     axial_geometry_review_mode: str | None,
+    assembled_plan_review_mode: str | None,
     patch_output_mode: str,
     patch_max_tokens: int | None,
     patch_reasoning_effort: str | None,
@@ -433,6 +434,9 @@ def _inspect_plan_requirement(
     effective_axial_geometry_review_mode = axial_geometry_review_mode or (
         plan_loop_mode if plan_loop_mode != "off" and PlanGateId.AXIAL_GEOMETRY in selected_gates else "off"
     )
+    effective_assembled_plan_review_mode = assembled_plan_review_mode or (
+        plan_loop_mode if plan_loop_mode != "off" and PlanGateId.ASSEMBLED_PLAN in selected_gates else "off"
+    )
     if effective_placement_review_mode != "off" and plan_loop_mode == "off":
         raise ValueError("--placement-review-mode requires a non-off --plan-loop-mode")
     if effective_placement_review_mode != "off" and plan_loop_mode != "off" and effective_placement_review_mode != plan_loop_mode:
@@ -445,12 +449,18 @@ def _inspect_plan_requirement(
         raise ValueError("--axial-geometry-review-mode requires a non-off --plan-loop-mode")
     if effective_axial_geometry_review_mode != "off" and plan_loop_mode != "off" and effective_axial_geometry_review_mode != plan_loop_mode:
         raise ValueError("--axial-geometry-review-mode must match --plan-loop-mode when both are enabled")
+    if effective_assembled_plan_review_mode != "off" and plan_loop_mode == "off":
+        raise ValueError("--assembled-plan-review-mode requires a non-off --plan-loop-mode")
+    if effective_assembled_plan_review_mode != "off" and plan_loop_mode != "off" and effective_assembled_plan_review_mode != plan_loop_mode:
+        raise ValueError("--assembled-plan-review-mode must match --plan-loop-mode when both are enabled")
     if effective_placement_review_mode != "off" and PlanGateId.PLACEMENT not in selected_gates:
         selected_gates.append(PlanGateId.PLACEMENT)
     if effective_material_universe_review_mode != "off" and PlanGateId.MATERIAL_UNIVERSE not in selected_gates:
         selected_gates.append(PlanGateId.MATERIAL_UNIVERSE)
     if effective_axial_geometry_review_mode != "off" and PlanGateId.AXIAL_GEOMETRY not in selected_gates:
         selected_gates.append(PlanGateId.AXIAL_GEOMETRY)
+    if effective_assembled_plan_review_mode != "off" and PlanGateId.ASSEMBLED_PLAN not in selected_gates:
+        selected_gates.append(PlanGateId.ASSEMBLED_PLAN)
     if plan_loop_mode == "controlled" and not selected_gates:
         selected_gates = [PlanGateId.FACTS]
 
@@ -469,6 +479,7 @@ def _inspect_plan_requirement(
         placement_review_mode=effective_placement_review_mode,
         material_universe_review_mode=effective_material_universe_review_mode,
         axial_geometry_review_mode=effective_axial_geometry_review_mode,
+        assembled_plan_review_mode=effective_assembled_plan_review_mode,
         gate_enabled={gate: gate in selected_gates for gate in PlanGateId},
     )
     patch_llm_client = make_patch_llm_client(
@@ -1252,6 +1263,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Axial-Geometry Gate mode; defaults to --plan-loop-mode when that gate is enabled.",
     )
     parser.add_argument(
+        "--assembled-plan-review-mode", choices=["off", "advisory", "controlled"], default=None,
+        help="Assembled-Plan (Final) Gate mode; defaults to --plan-loop-mode when that gate is enabled.",
+    )
+    parser.add_argument(
         "--patch-output-mode",
         choices=["auto", "plain_prompt", "json_object", "json_schema"],
         default="auto",
@@ -1344,6 +1359,7 @@ def main(argv: list[str] | None = None) -> int:
             placement_review_mode=args.placement_review_mode,
             material_universe_review_mode=args.material_universe_review_mode,
             axial_geometry_review_mode=args.axial_geometry_review_mode,
+            assembled_plan_review_mode=args.assembled_plan_review_mode,
             patch_output_mode=args.patch_output_mode,
             patch_max_tokens=args.patch_max_tokens,
             patch_reasoning_effort=args.patch_reasoning_effort,
@@ -1391,6 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
             placement_review_mode=args.placement_review_mode,
             material_universe_review_mode=args.material_universe_review_mode,
             axial_geometry_review_mode=args.axial_geometry_review_mode,
+            assembled_plan_review_mode=args.assembled_plan_review_mode,
             patch_output_mode=args.patch_output_mode,
             patch_max_tokens=args.patch_max_tokens,
             patch_reasoning_effort=args.patch_reasoning_effort,

@@ -1593,6 +1593,140 @@ def run_incremental_planning(
     def _axial_geometry_stage():
         return state.plan_loop_stages.get("plan_gate_axial_geometry")
 
+    def _assembled_plan_stage():
+        return state.plan_loop_stages.get("plan_gate_assembled_plan")
+
+    def _run_assembled_plan_gate(
+        *, finalize_non_applicable: bool = False,
+    ) -> IncrementalExecutionIssue | None:
+        """Run the Final / Assembled Plan Gate after assembly succeeds."""
+        if policy.mode is PlanLoopMode.OFF or not policy.gate_enabled.get(PlanGateId.ASSEMBLED_PLAN, False):
+            return None
+        if policy.assembled_plan_review_mode == "off":
+            return None
+        from .closed_loop.assembled_plan_evidence import (
+            build_assembled_plan_evidence_pack,
+            assembled_plan_gate_applicable,
+            assembled_plan_gate_ready,
+            assembled_plan_gate_input_hash,
+        )
+        from .closed_loop.assembled_plan_preflight import run_assembled_plan_preflight
+        from .closed_loop.assembled_plan_reviewer import run_assembled_plan_review
+
+        stage = _assembled_plan_stage()
+        if stage is None:
+            return None
+        # Controlled barrier: all upstream gates must be accepted.
+        if policy.mode is PlanLoopMode.CONTROLLED:
+            for gate_key, stage_key, label in [
+                (PlanGateId.FACTS, "plan_gate_facts", "Facts"),
+                (PlanGateId.MATERIAL_UNIVERSE, "plan_gate_material_universe", "Material-Universe"),
+                (PlanGateId.PLACEMENT, "plan_gate_placement", "Placement"),
+                (PlanGateId.AXIAL_GEOMETRY, "plan_gate_axial_geometry", "Axial-Geometry"),
+            ]:
+                if not policy.gate_enabled.get(gate_key, False):
+                    continue
+                upstream = state.plan_loop_stages.get(stage_key)
+                if upstream is not None and upstream.status is not PlanStageStatus.ACCEPTED:
+                    transition_stage(stage, PlanStageStatus.BLOCKED)
+                    return IncrementalExecutionIssue(code=f"planning.assembled_plan_requires_accepted_{gate_key.value}", severity="error", message=f"controlled assembled-plan gate requires accepted {label} Gate", patch_type="facts")
+        # Build SimulationPlan from assembled_plan dict.
+        plan_obj = None
+        if state.assembled_plan is not None:
+            try:
+                from openmc_agent.schemas import SimulationPlan
+                plan_obj = SimulationPlan.model_validate(state.assembled_plan) if isinstance(state.assembled_plan, dict) else state.assembled_plan
+            except Exception:
+                plan_obj = None
+        if plan_obj is None:
+            if not assembled_plan_gate_applicable(state):
+                if finalize_non_applicable and stage.status is PlanStageStatus.PENDING:
+                    transition_stage(stage, PlanStageStatus.SKIPPED)
+                    stage.metadata["reason"] = "not_applicable"
+                    state.add_event("planning.assembled_plan_gate_not_applicable", "assembled-plan gate not applicable", {})
+                return None
+            return None
+        if not assembled_plan_gate_ready(state):
+            return None
+        if stage.status is PlanStageStatus.SKIPPED and stage.metadata.get("reason") == "not_applicable":
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            stage.metadata.pop("reason", None)
+            state.add_event("planning.assembled_plan_gate_reopened", "stale not_applicable assembled-plan stage reopened", {})
+        input_hash = assembled_plan_gate_input_hash(state, policy=policy)
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") == input_hash:
+            return None
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") != input_hash:
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event("planning.assembled_plan_input_hash_changed", "assembled-plan accepted input hash changed; gate reopened", {})
+        state.add_event("planning.assembled_plan_preflight_started", "assembled-plan deterministic preflight started", {})
+        preflight = run_assembled_plan_preflight(state=state, policy=policy, plan=plan_obj)
+        artifact_writer._write("assembled_plan_preflight.json", preflight)
+        if preflight.binding_view is not None:
+            artifact_writer._write("assembled_plan_binding_view.json", preflight.binding_view)
+        state.add_event("planning.assembled_plan_preflight_completed", "assembled-plan deterministic preflight completed", {"issue_count": len(preflight.issues), "blocking": sum(1 for i in preflight.issues if i.get("severity") == "error")})
+        pack = build_assembled_plan_evidence_pack(state=state, policy=policy, plan=plan_obj, deterministic_issues=preflight.issues)
+        artifact_writer._write("assembled_plan_evidence_pack.json", pack)
+        artifact_writer._write("assembled_plan_contract_matrix.json", pack.contract_matrix)
+        if policy.mode is PlanLoopMode.ADVISORY:
+            if plan_reviewer_client is not None:
+                transition_stage(stage, PlanStageStatus.REVIEWING)
+                review = run_assembled_plan_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+                state.facts_review_history.append({"assembled_plan_review": review.model_dump(mode="json")})
+                if review.coverage_complete and not review.failure_code:
+                    transition_stage(stage, PlanStageStatus.REVIEWED)
+                    state.add_event("planning.assembled_plan_gate_reviewed", "assembled-plan gate reviewed without mutation", {})
+                else:
+                    transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                    state.add_event("planning.assembled_plan_review_failed", "assembled-plan advisory review failed", {"failure_code": review.failure_code})
+            else:
+                transition_stage(stage, PlanStageStatus.SKIPPED)
+                stage.metadata["review_not_implemented"] = True
+            return None
+        # Controlled mode.
+        transition_stage(stage, PlanStageStatus.REVIEWING)
+        stage.review_count += 1
+        all_findings: list[Any] = []
+        if plan_reviewer_client is not None:
+            review = run_assembled_plan_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+            all_findings = list(review.findings)
+            state.facts_review_history.append({"assembled_plan_review": review.model_dump(mode="json")})
+            if review.failure_code and not review.coverage_complete:
+                transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+                state.add_event("planning.assembled_plan_review_failed", "assembled-plan review failed coverage", {"failure_code": review.failure_code})
+                return IncrementalExecutionIssue(code="planning.assembled_plan_review_failed", severity="error", message=f"assembled-plan review failed: {review.failure_code}", patch_type="facts")
+        from .closed_loop.models import PlanFindingSeverity as _Sev, PlanReviewFinding as _Finding
+        det_findings = [_Finding(gate_id=PlanGateId.ASSEMBLED_PLAN, code=str(item["code"]), severity=_Sev(item.get("severity", "error")), category="cross_patch_mismatch", message=str(item.get("message", "")), confidence=1.0, affected_patch_types=["facts", "materials", "universes", "axial_layers", "axial_overlays"]) for item in preflight.issues]
+        all_findings = list({f.finding_id: f for f in (det_findings + all_findings)}.values())
+        for finding in all_findings:
+            state.plan_review_findings[finding.finding_id] = finding
+            if finding.finding_id not in stage.finding_ids:
+                stage.finding_ids.append(finding.finding_id)
+        error_findings = [f for f in all_findings if f.severity is _Sev.ERROR]
+        if not error_findings:
+            transition_stage(stage, PlanStageStatus.ACCEPTED)
+            stage.metadata["accepted_input_hash"] = input_hash
+            state.add_event("planning.assembled_plan_gate_accepted", "assembled-plan gate accepted", {"input_hash": input_hash})
+            return None
+        human_required = any(f.requires_human for f in error_findings)
+        if human_required and policy.enable_human_gate:
+            transition_stage(stage, PlanStageStatus.AWAITING_HUMAN)
+            state.add_event("planning.assembled_plan_human_question_created", "assembled-plan ambiguity requires typed confirmation", {})
+            return IncrementalExecutionIssue(code="planning.assembled_plan_awaiting_human", severity="error", message="assembled-plan gate awaiting human confirmation", patch_type="facts")
+        from .closed_loop.retry_controller import normalize_retry_request
+        from .closed_loop.retry_models import RetryTriggerOrigin
+        for finding in error_findings:
+            typed = normalize_retry_request(
+                {"code": finding.code, "issue_codes": [finding.code], "required_ids": finding.metadata.get("required_ids", []), "reason": finding.message},
+                state=state, origin=RetryTriggerOrigin.ASSEMBLED_PLAN_GATE,
+            )
+            if typed is not None:
+                artifact_writer._write(f"assembled_plan_retry_request_{typed.request_id[:12]}.json", typed)
+                state.add_event("planning.assembled_plan_retry_requested", "assembled-plan blocking finding routed to Phase-3B retry", {"request_id": typed.request_id, "owner_patch_types": typed.owner_patch_types})
+        transition_stage(stage, PlanStageStatus.BLOCKED)
+        return IncrementalExecutionIssue(code="planning.assembled_plan_gate_blocked", severity="error", message=f"assembled-plan gate blocked by {len(error_findings)} finding(s)", patch_type="facts")
+
     def _run_axial_geometry_gate(
         *, finalize_non_applicable: bool = False,
     ) -> IncrementalExecutionIssue | None:
@@ -2869,6 +3003,15 @@ def run_incremental_planning(
     validation_issue_count_before_assembly = len(state.validation_issues)
     state = assemble_state_if_ready(state, **assemble_kwargs)
     if state.assembled_plan is not None:
+        # Phase-6: Final / Assembled Plan Gate.
+        assembled_plan_gate_issue = _run_assembled_plan_gate()
+        if assembled_plan_gate_issue is not None:
+            issues.append(assembled_plan_gate_issue)
+            return IncrementalExecutionResult(
+                ok=False, state=state, issues=issues,
+                summary=_build_failure_summary("assembled_plan", [assembled_plan_gate_issue.code], 0),
+                plan_loop_outcome={"status": "blocked", "active_gate_id": "assembled_plan", "active_stage_id": "plan_gate_assembled_plan", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": assembled_plan_gate_issue.message},
+            )
         state.add_event(
             event_type=EVENT_INCREMENTAL_EXECUTION_COMPLETED,
             message="incremental planning completed, plan assembled",
