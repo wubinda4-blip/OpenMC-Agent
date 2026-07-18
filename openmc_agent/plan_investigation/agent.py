@@ -22,6 +22,7 @@ Hard rules enforced here:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 from pydantic import ConfigDict, Field, PrivateAttr, model_validator
@@ -420,21 +421,35 @@ class InvestigationAgent:
 def _parse_investigation_plan(raw: str) -> InvestigationPlan | None:
     """Parse the LLM output into an :class:`InvestigationPlan`.
 
-    Strict: the entire output must be a single JSON object with an
-    ``actions`` array (possibly empty) and an optional ``summary``
+    Strict contract: the output must reduce to a single JSON object with
+    an ``actions`` array (possibly empty) and an optional ``summary``
     string.  Any deviation returns ``None`` (the caller decides how to
     surface the block).
+
+    Tolerated wrappers (the spec explicitly allows "complete JSON object
+    extraction" as long as no business semantics are invented):
+
+    * Markdown fences `````json ... `````.
+    * Leading / trailing prose as long as a single JSON object is
+      embedded (we extract the largest balanced ``{...}`` block).
+    * A bare JSON array ``[{tool, arguments}, ...]`` is interpreted as
+      ``{"actions": [...]}`` for resilience.
+
+    Anything else — prose-only responses, multi-document outputs, YAML,
+    etc. — is rejected.
     """
 
     text = raw.strip()
     if not text:
         return None
-    try:
-        payload = json.loads(text)
-    except (ValueError, TypeError):
+    payload = _extract_json_payload(text)
+    if payload is None:
         return None
     if not isinstance(payload, dict):
         return None
+    # Accept a bare list wrapper: {"actions": [...]} is the canonical
+    # form, but a top-level list is also valid (interpreted as the
+    # actions directly).
     if "actions" not in payload:
         return None
     actions_raw = payload["actions"]
@@ -465,6 +480,74 @@ def _parse_investigation_plan(raw: str) -> InvestigationPlan | None:
     if extra_keys:
         return None
     return InvestigationPlan(actions=tuple(actions), summary=summary)
+
+
+def _extract_json_payload(text: str) -> Any:
+    """Extract a single JSON value from ``text``.
+
+    Handles three forms:
+    1. Pure JSON (the happy path).
+    2. JSON wrapped in markdown fences.
+    3. JSON embedded in prose (largest balanced ``{...}`` block).
+
+    Returns the parsed JSON value (usually a dict) or ``None``.
+    """
+
+    # 1. Try strict json.loads first.
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        pass
+
+    # 2. Strip markdown fences if present.
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        try:
+            return json.loads(candidate)
+        except (ValueError, TypeError):
+            pass
+
+    # 3. Extract the largest balanced {...} block.
+    obj = _extract_largest_balanced(text, "{", "}")
+    if obj is not None:
+        try:
+            return json.loads(obj)
+        except (ValueError, TypeError):
+            pass
+    # 3b. Try a bare JSON array as a fallback (interpret as actions).
+    arr = _extract_largest_balanced(text, "[", "]")
+    if arr is not None:
+        try:
+            parsed = json.loads(arr)
+            if isinstance(parsed, list):
+                return {"actions": parsed}
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
+def _extract_largest_balanced(text: str, open_ch: str, close_ch: str) -> str | None:
+    """Return the largest balanced ``open_ch ... close_ch`` substring."""
+
+    best = ""
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == open_ch:
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == close_ch:
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidate = text[start : i + 1]
+                    if len(candidate) > len(best):
+                        best = candidate
+                    start = -1
+    return best if best else None
 
 
 # ---------------------------------------------------------------------------

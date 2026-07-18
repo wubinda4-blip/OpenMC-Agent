@@ -309,12 +309,16 @@ def make_five_gate_controlled_policy(
     max_total_additional_llm_calls: int = 24,
     enable_human_gate: bool = False,
     plan_human_mode: str = "off",
+    enabled_gate_ids: tuple[str, ...] | None = None,
 ) -> Any:
     """Construct the explicit five-gate controlled PlanClosedLoopPolicy.
 
     All five gates (Facts, Material-Universe, Placement, Axial Geometry,
-    Assembled Plan) are enabled with ``controlled`` review mode.  The
-    factory is reactor-neutral — no benchmark-specific logic lives here.
+    Assembled Plan) are enabled with ``controlled`` review mode by
+    default.  Pass ``enabled_gate_ids`` (e.g. ``("facts",)``) to enable
+    a subset; this is how Phase 8A Step 4 implements Facts-only canaries
+    without writing reactor-specific branches.  The factory remains
+    reactor-neutral.
     """
     from openmc_agent.plan_builder.closed_loop.models import (
         PlanClosedLoopPolicy,
@@ -328,6 +332,11 @@ def make_five_gate_controlled_policy(
         PlanGateId.AXIAL_GEOMETRY,
         PlanGateId.ASSEMBLED_PLAN,
     ]
+    if enabled_gate_ids is not None:
+        wanted = set(str(g).lower() for g in enabled_gate_ids)
+        active = [g for g in all_gates if g.value in wanted]
+    else:
+        active = list(all_gates)
     return PlanClosedLoopPolicy(
         mode="controlled",
         max_review_rounds_per_gate=max_review_rounds_per_gate,
@@ -337,12 +346,12 @@ def make_five_gate_controlled_policy(
         max_total_additional_llm_calls=max_total_additional_llm_calls,
         enable_human_gate=enable_human_gate,
         plan_human_mode=plan_human_mode,
-        plan_gates=list(all_gates),
+        plan_gates=list(active),
         placement_review_mode="controlled",
         material_universe_review_mode="controlled",
         axial_geometry_review_mode="controlled",
         assembled_plan_review_mode="controlled",
-        gate_enabled={gate: True for gate in all_gates},
+        gate_enabled={gate: (gate in active) for gate in all_gates},
     )
 
 
@@ -1517,6 +1526,12 @@ class CanaryCampaignConfig:
     plan_investigation_max_sessions_per_patch_type: int = 1
     plan_investigation_require_source_backed_evidence: bool = True
     plan_investigation_max_tokens: int | None = None
+    # Phase 8A Step 4: optional facts-only stop point.  When set to
+    # "facts", the campaign enables only the Facts gate so the run
+    # terminates after Facts accepts (or blocks) without consuming
+    # Materials/Universes/Axial/Assembled budget.  Reactor-neutral gate
+    # name; not a VERA-specific branch.
+    stop_after_gate: str | None = None
 
 
 def run_real_canary_campaign(
@@ -1550,7 +1565,11 @@ def run_real_canary_campaign(
         requirement_sha = ""
 
     env_status = detect_provider_environment(campaign.model)
-    policy = make_five_gate_controlled_policy()
+    policy = make_five_gate_controlled_policy(
+        enabled_gate_ids=tuple((campaign.stop_after_gate,))
+        if getattr(campaign, "stop_after_gate", None)
+        else None,
+    )
     fingerprint = compute_resume_fingerprint(
         case=campaign.case,
         env_status=env_status,

@@ -146,6 +146,12 @@ def main() -> int:
         action="store_false",
         default=True,
     )
+    parser.add_argument(
+        "--stop-after-gate",
+        choices=("facts", "material_universe", "placement", "axial_geometry", "assembled_plan"),
+        default=None,
+        help="Reactor-neutral gate name; the campaign enables only this gate.",
+    )
     args = parser.parse_args()
 
     # Step 4 scope gate: only facts is allowed for controlled real canary.
@@ -255,6 +261,7 @@ def main() -> int:
         plan_investigation_max_evidence_claims=args.plan_investigation_max_evidence_claims,
         plan_investigation_require_source_backed_evidence=args.plan_investigation_require_source_backed_evidence,
         plan_investigation_max_tokens=args.plan_investigation_max_tokens,
+        stop_after_gate=args.stop_after_gate,
     )
 
     manifest = run_real_canary_campaign(args.output_dir, campaign)
