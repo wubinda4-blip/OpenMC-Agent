@@ -1945,19 +1945,22 @@ def run_incremental_planning(
         # Phase-3B owner-patch retry invalidates this gate through metadata.
         # Reopen only that explicit invalidation path; a normally blocked
         # unchanged input remains terminal and cannot be bypassed.
-        if (
-            stage.status is PlanStageStatus.BLOCKED
-            and stage.metadata.get("invalidated_by_patch_types")
-        ):
-            invalidated_by = list(stage.metadata.pop("invalidated_by_patch_types"))
-            stage.status = PlanStageStatus.PENDING
-            stage.completed_at = None
-            stage.updated_at = None
-            state.add_event(
-                "planning.material_universe_gate_reopened",
-                "material-universe owner patch changed after Phase-3B retry",
-                {"patch_types": invalidated_by},
-            )
+        if stage.status is PlanStageStatus.BLOCKED:
+            if stage.metadata.get("invalidated_by_patch_types"):
+                invalidated_by = list(stage.metadata.pop("invalidated_by_patch_types"))
+                stage.status = PlanStageStatus.PENDING
+                stage.completed_at = None
+                stage.updated_at = None
+                state.add_event(
+                    "planning.material_universe_gate_reopened",
+                    "material-universe owner patch changed after Phase-3B retry",
+                    {"patch_types": invalidated_by},
+                )
+            else:
+                # Terminal blocked state without pending retry — do not
+                # attempt to re-review.  This prevents an invalid
+                # blocked→reviewing transition.
+                return None
         # Controlled barrier: Facts must be accepted first.
         if policy.mode is PlanLoopMode.CONTROLLED:
             facts_stage = _facts_stage()

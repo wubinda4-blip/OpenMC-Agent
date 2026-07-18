@@ -146,6 +146,29 @@ def extract_universe_requirements(
                 source_requirement_ids=["implicit:instrument_tube"],
                 resolved=True,
             ))
+    # Auxiliary universes needed for axial layer transitions.  When the
+    # facts patch declares axial geometry, the downstream axial_layers
+    # patch will reference these cross-sectional profiles for non-active-
+    # fuel regions (end plugs, plenum, shoulder gaps).  Declaring them
+    # as implicit requirements ensures the universes patch generates them
+    # rather than leaving axial_layers to reference non-existent IDs.
+    _has_axial = bool(getattr(facts, "has_axial_geometry", False)) if facts else False
+    if _has_axial:
+        _aux_specs = [
+            ("implicit:end_plug_lower", "custom", ["structural"], ["end_plug"]),
+            ("implicit:end_plug_upper", "custom", ["structural"], ["end_plug"]),
+            ("implicit:gas_gap", "custom", ["coolant", "structural"], ["gas_gap"]),
+            ("implicit:water_pin", "water_cell", ["coolant"], ["moderator"]),
+        ]
+        for req_id, kind, roles, cell_roles in _aux_specs:
+            requirements.append(UniverseGenerationRequirement(
+                requirement_id=req_id,
+                kind=kind,
+                required_cell_roles=cell_roles,
+                required_material_roles=roles,
+                source_requirement_ids=[req_id],
+                resolved=True,
+            ))
     import hashlib
     payload = json.dumps({
         "reqs": [r.model_dump(mode="json") for r in requirements],

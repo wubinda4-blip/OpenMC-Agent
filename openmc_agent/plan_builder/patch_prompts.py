@@ -223,9 +223,24 @@ Rules:
     → outer_coolant (water background)
    Use the exact radii from the input problem description for each layer boundary.
    If the input does not specify a gap, insert a thin water annulus (0.001–0.01 cm).
-- The pyrex cell must reference a material whose role is "poison" when the
-  corresponding Facts requirement is pyrex_rod; it must not reuse an absorber
-  material merely because both are neutron poisons.
+ - The pyrex cell must reference a material whose role is "poison" when the
+   corresponding Facts requirement is pyrex_rod; it must not reuse an absorber
+   material merely because both are neutron poisons.
+- In addition to fuel and localized-insert universes, define a universe for EVERY
+  distinct cross-sectional profile that appears in ANY axial region of the source
+  document.  At minimum this typically includes:
+  * fuel_pin — active fuel pellet + gap + clad + outer coolant
+  * guide_tube — inner water + Zircaloy-4 wall + outer coolant
+  * instrument_tube — inner water + Zircaloy-4 wall + outer coolant (if separate)
+  * end_plug — solid Zircaloy-4 cylinder + outer coolant
+  * gas_gap / plenum — helium inner + Zircaloy-4 clad + outer coolant
+  * water_pin / moderator_only — pure coolant pin cell (no fuel, no clad)
+  These auxiliary universes are required because downstream axial_layers use them
+  as replacement targets for non-active-fuel axial regions (end plugs, plenum,
+  shoulder gaps, nozzle transitions).  If any is absent, axial_layers generation
+  will fail with lattice_transform.replacement_universe_missing.
+- Every universe_id used in downstream patches MUST exactly match a universe_id
+  declared here.  Do NOT expect downstream patches to create their own universes.
 - fuel_pin should have a fuel material cell.
 - Mark through-path cells with protected_through_path=true.
 - If Context shows N distinct fuel_variant_requirements, generate at least N distinct
