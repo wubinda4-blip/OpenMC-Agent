@@ -316,6 +316,25 @@ def test_truth_no_violations_for_clean_controlled_run() -> None:
 
 
 def test_truth_violation_codes_are_stable_strings() -> None:
+    """Phase 8A Step 6: codes use stable subsystem prefixes."""
+
+    allowed_prefixes = (
+        "plan_investigation_",
+        "facts_",
+        "investigation_",
+        # Phase 8A Step 6 additions.
+        "controlled_inventory_",
+        "inventory_constraint_",
+        "inventory_preflight_",
+        "materials_",
+        "universes_",
+        "research_",
+        "placement_",
+        "axial_",
+        "review_coverage_",
+    )
     for code in INVESTIGATION_TRUTH_VIOLATIONS:
         assert isinstance(code, str)
-        assert code.startswith("plan_investigation_") or code.startswith("facts_") or code.startswith("investigation_")
+        assert any(code.startswith(p) for p in allowed_prefixes), (
+            f"code {code!r} does not start with any allowed prefix: {allowed_prefixes}"
+        )

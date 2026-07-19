@@ -1055,6 +1055,192 @@ def _maybe_compile_geometry_inventory(
         }
 
 
+def _maybe_execute_research_for_gate(
+    *,
+    gate_id: str,
+    stage: Any,
+    state: PlanBuildState,
+    error_findings: list[Any],
+    input_hash: str,
+    shared_source_index: Any,
+    shared_ledger: Any,
+    requirement: str,
+    artifact_writer: Any | None = None,
+    plan_investigation_output_dir: str | None = None,
+    plan_loop_output_dir: str | None = None,
+) -> bool:
+    """Execute a PlanResearchRequest for source-coverage findings.
+
+    Returns True when new evidence was committed and the gate should
+    reopen; False when no actionable evidence was found (caller falls
+    through to the existing retry/block path).
+
+    Phase 8A Step 6B (Section 14): the research executor reuses the
+    existing read-only investigation tools (query_evidence_ledger +
+    search_source_index).  No shell, no network search, no repository
+    grep.  Budget knobs enforce bounded execution.
+    """
+
+    if not error_findings:
+        return False
+    if shared_source_index is None or shared_ledger is None:
+        return False
+    try:
+        from openmc_agent.plan_investigation.research_router import (
+            route_findings_to_research,
+            aggregate_action,
+        )
+        from openmc_agent.plan_investigation.research_models import (
+            PlanResearchRequest,
+            PlanResearchStatus,
+        )
+        from openmc_agent.plan_investigation.research_executor import (
+            execute_plan_research_request,
+            ResearchExecutorConfig,
+        )
+        from openmc_agent.plan_builder.closed_loop.models import PlanReviewAction
+    except ImportError:
+        return False
+    decisions = route_findings_to_research(
+        gate_id=gate_id, findings=error_findings,
+    )
+    if not any(d.action is PlanReviewAction.RETRIEVE_EVIDENCE for d in decisions):
+        return False
+    # Build a single PlanResearchRequest covering all retrievable findings.
+    targets = tuple(
+        target for d in decisions if d.action is PlanReviewAction.RETRIEVE_EVIDENCE
+        for target in d.targets
+    )
+    if not targets:
+        return False
+    # No-progress guards: track seen fingerprints + delta hashes on state.
+    seen_fp = set(state.metadata.setdefault("plan_research_attempts_by_fingerprint", []))
+    seen_deltas = set(state.metadata.setdefault("plan_research_candidate_hashes", []))
+    round_num = int(state.metadata.get("plan_research_rounds", 0)) + 1
+    state.metadata["plan_research_rounds"] = round_num
+    request = PlanResearchRequest(
+        gate_id=gate_id,
+        finding_ids=tuple(f.finding_id for f in error_findings),
+        issue_codes=tuple(f.code for f in error_findings),
+        targets=targets,
+        ledger_hash_before=shared_ledger.ledger_hash,
+        gate_input_hash=input_hash,
+        research_round=round_num,
+    )
+    state.add_event(
+        "planning.research_requested",
+        f"research request {request.request_id} for gate {gate_id}",
+        {
+            "request_id": request.request_id,
+            "target_count": len(targets),
+            "finding_count": len(error_findings),
+            "round": round_num,
+        },
+    )
+    out_dir = (
+        Path(plan_investigation_output_dir)
+        if plan_investigation_output_dir is not None
+        else (Path(plan_loop_output_dir) if plan_loop_output_dir else None)
+    )
+    result = execute_plan_research_request(
+        request=request,
+        source_index=shared_source_index,
+        ledger=shared_ledger,
+        config=ResearchExecutorConfig(),
+        seen_request_fingerprints=seen_fp,
+        seen_delta_hashes=seen_deltas,
+        add_event=lambda evt, msg, data: state.add_event(evt, msg, data),
+        artifact_output_dir=out_dir,
+    )
+    # Record the result on state for auditor + resume fingerprint.
+    state.metadata.setdefault("plan_research_results", []).append(
+        result.model_dump(mode="json")
+    )
+    state.metadata.setdefault("plan_research_attempts_by_fingerprint", []).append(
+        request.request_fingerprint
+    )
+    if result.evidence_delta and not result.evidence_delta.is_empty:
+        state.metadata.setdefault("plan_research_candidate_hashes", []).append(
+            result.evidence_delta.delta_hash
+        )
+    if artifact_writer is not None:
+        try:
+            artifact_writer._write(
+                f"research_result_{request.request_id}.json",
+                result.model_dump(mode="json"),
+            )
+        except Exception:
+            pass
+    # Determine whether to reopen the gate.
+    if result.status == PlanResearchStatus.EVIDENCE_ADDED:
+        # New evidence committed → reopen the gate so the owner patch
+        # gets regenerated with the new context.
+        stage.status = PlanStageStatus.PENDING
+        stage.completed_at = None
+        state.add_event(
+            "planning.research_evidence_added",
+            f"research added evidence; gate {gate_id} reopened",
+            {
+                "request_id": request.request_id,
+                "added_claim_count": len(result.evidence_delta.added_claim_ids if result.evidence_delta else ()),
+                "added_span_count": len(result.evidence_delta.added_source_span_ids if result.evidence_delta else ()),
+            },
+        )
+        return True
+    if result.status == PlanResearchStatus.NO_PROGRESS:
+        state.add_event(
+            "planning.research_no_progress",
+            f"research request {request.request_id} made no progress",
+            {"request_id": request.request_id},
+        )
+    elif result.status == PlanResearchStatus.NO_EVIDENCE_FOUND:
+        state.add_event(
+            "planning.research_no_evidence",
+            f"research request {request.request_id} found no evidence",
+            {
+                "request_id": request.request_id,
+                "absence_count": len(result.absence_records),
+            },
+        )
+    return False
+
+
+def _load_inventory_context_objects(
+    state: PlanBuildState,
+) -> tuple[Any, Any]:
+    """Load typed Facts + GeometryComponentInventory from state.metadata.
+
+    Returns ``(accepted_facts, geometry_inventory)`` so the Materials /
+    Universes investigation baseline resolver can read fuel variants
+    and radial profiles.  Both may be ``None`` when the inventory has
+    not been compiled yet (off mode / pre-Facts acceptance).
+    """
+
+    inv_dump = state.metadata.get("planning_geometry_inventory")
+    if not inv_dump:
+        return None, None
+    try:
+        from openmc_agent.plan_investigation.geometry_inventory import (
+            GeometryComponentInventory,
+        )
+        inventory = GeometryComponentInventory.model_validate(inv_dump)
+    except Exception:
+        inventory = None
+    facts_env = next(
+        (item for item in state.patches.values()
+         if item.patch_type == "facts" and item.status == "valid"),
+        None,
+    )
+    accepted_facts = None
+    if facts_env is not None:
+        try:
+            from .patches import parse_patch_content
+            accepted_facts = parse_patch_content("facts", facts_env.content)
+        except Exception:
+            accepted_facts = None
+    return accepted_facts, inventory
+
+
 def _load_inventory_context_objects(
     state: PlanBuildState,
 ) -> tuple[Any, Any]:
@@ -2579,6 +2765,37 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.AWAITING_HUMAN)
             state.add_event("planning.material_universe_human_question_created", "material-universe ambiguity requires typed confirmation", {})
             return IncrementalExecutionIssue(code="planning.material_universe_awaiting_human", severity="error", message="material-universe gate awaiting human confirmation", patch_type="materials")
+        # Phase 8A Step 6B: RETRIEVE_EVIDENCE research path.  When the
+        # deterministic router sees source-coverage findings (e.g.
+        # inventory.material_role_uncovered) and research is enabled,
+        # execute a bounded PlanResearchRequest against the existing
+        # SourceIndex.  New evidence is committed to the shared Ledger
+        # so the next patch-generation pass picks it up via the
+        # planning_constraints / investigation_evidence fields.
+        if (
+            _investigation_config_resolved is not None
+            and not _investigation_config_resolved.is_off
+            and _maybe_execute_research_for_gate(
+                gate_id="material_universe",
+                stage=stage,
+                state=state,
+                error_findings=error_findings,
+                input_hash=input_hash,
+                shared_source_index=_investigation_shared_source_index,
+                shared_ledger=_investigation_shared_ledger,
+                requirement=requirement,
+                artifact_writer=artifact_writer,
+                plan_investigation_output_dir=plan_investigation_output_dir,
+                plan_loop_output_dir=plan_loop_output_dir,
+            )
+        ):
+            # Research produced new evidence → reopen the gate so the
+            # next pass regenerates the owner patch with the new
+            # evidence context.  We return None so the outer for-loop
+            # continues to the next patch_type; when Materials /
+            # Universes are regenerated they will pick up the new
+            # claims via PatchGenerationContext.investigation_evidence.
+            return None
         # Build typed retry requests for blocking findings (upstream priority).
         from .closed_loop.retry_controller import normalize_retry_request
         from .closed_loop.retry_models import RetryTriggerOrigin
