@@ -535,7 +535,7 @@ def test_generate_structured_output_routes_zhipu_models_through_zhipu_client(
     assert result.value is not None
     assert result.value.name == "UO2 fuel"
     call = http_client.calls[0]
-    assert call["url"] == "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    assert call["url"] == "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
     assert call["headers"]["Authorization"] == "Bearer test-key"
     assert call["json"]["model"] == "glm-5.2"
     assert call["json"]["temperature"] == 0

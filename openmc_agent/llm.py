@@ -18,7 +18,7 @@ from openmc_agent.prompts import system_prompt_for_schema
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_MODEL = "zhipu:glm-5.2"
 
-ZHIPU_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+ZHIPU_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 ZHIPU_DEFAULT_TIMEOUT_SECONDS = 180.0
 ZHIPU_DEFAULT_MAX_RETRIES = 2
 
@@ -653,6 +653,7 @@ def _consume_sse_stream(
     terminates on a ``data: [DONE]`` sentinel.
     """
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
     chunk_count = 0
     last_progress = started_at
     with http_client.stream(
@@ -674,9 +675,18 @@ def _consume_sse_stream(
             if not delta:
                 continue
             chunk_count += 1
-            text = delta.get("content") or delta.get("reasoning_content")
-            if text:
-                content_parts.append(text)
+            # Phase 8A: collect content and reasoning_content SEPARATELY.
+            # Reasoning models (GLM-5.x) stream thinking via
+            # delta.reasoning_content first, then the actual answer via
+            # delta.content.  We must return ONLY content as the response;
+            # reasoning_content is internal and must NOT leak into the
+            # patch JSON or investigation output.
+            content_delta = delta.get("content")
+            reasoning_delta = delta.get("reasoning_content")
+            if content_delta:
+                content_parts.append(content_delta)
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
             now = time.monotonic()
             if _logger.isEnabledFor(logging.INFO) and now - last_progress >= 5.0:
                 _stderr_status.update(
@@ -685,7 +695,13 @@ def _consume_sse_stream(
                     f"({time.monotonic() - started_at:.0f}s elapsed)"
                 )
                 last_progress = now
-    return "".join(content_parts)
+    # Prefer actual content; fall back to reasoning_content ONLY when the
+    # model produced no content at all (rare edge case for pure-thinking
+    # models that were cut off mid-reasoning).
+    final_content = "".join(content_parts)
+    if final_content.strip():
+        return final_content
+    return "".join(reasoning_parts)
 
 
 def _first_choice_delta(chunk: dict[str, Any]) -> dict[str, Any] | None:
