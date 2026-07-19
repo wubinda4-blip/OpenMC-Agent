@@ -1965,6 +1965,30 @@ def run_incremental_planning(
                         record_findings(state, stage, rereview.findings)
                         transition_stage(stage, PlanStageStatus.ACCEPTED)
                         state.add_event("planning.facts_revision_accepted", "facts revision atomically committed after clone re-review", {"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash})
+                        # Phase 8A Step 6: compile the GeometryComponentInventory
+                        # on the repair-acceptance path too (the first-try
+                        # acceptance path is in the APPROVE branch above).
+                        # In controlled mode a compile failure blocks the
+                        # run with planning.inventory.compilation_failed.
+                        if _investigation_config_resolved is not None and not _investigation_config_resolved.is_off:
+                            inventory_status = _maybe_compile_geometry_inventory(
+                                state=state,
+                                facts_env=repaired,
+                                requirement=requirement,
+                                artifact_writer=artifact_writer,
+                            )
+                            if not inventory_status.get("compiled"):
+                                if _investigation_config_resolved.is_controlled:
+                                    transition_stage(stage, PlanStageStatus.BLOCKED)
+                                    return IncrementalExecutionIssue(
+                                        code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
+                                        severity="error",
+                                        message=(
+                                            f"controlled mode: geometry inventory compilation failed "
+                                            f"after facts revision: {inventory_status.get('error', 'unknown')}"
+                                        ),
+                                        patch_type="facts",
+                                    )
                         return None
                     state.facts_revision_history.append({"proposal_id": proposal.proposal_id, "re_review": rereview.model_dump(mode="json"), "committed": False})
             except Exception as exc:

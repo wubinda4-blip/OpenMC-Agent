@@ -154,18 +154,22 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Step 4 scope gate: only facts is allowed for controlled real canary.
+    # Phase 8A Step 6: controlled/advisory investigation now supports
+    # facts, materials, and universes patch types (Materials and
+    # Universes investigations are wired in Step 6A).  Validate the
+    # patch-type list against the allowed set; reject unknown names
+    # so a typo doesn't silently fall back to the legacy path.
     requested_patch_types = tuple(
         p.strip() for p in args.plan_investigation_patch_types.split(",") if p.strip()
     )
     if args.plan_investigation_mode in {"advisory", "controlled"}:
-        disallowed = [p for p in requested_patch_types if p != "facts"]
+        allowed = {"facts", "materials", "universes"}
+        disallowed = [p for p in requested_patch_types if p not in allowed]
         if disallowed:
             print(
-                f"ERROR: Phase 8A Step 4 controlled/advisory investigation only "
-                f"supports the 'facts' patch type.  Requested: {requested_patch_types}.  "
-                f"Disallowed: {disallowed}.  Materials/Universes controlled "
-                f"qualification is reserved for Step 5.",
+                f"ERROR: Phase 8A Step 6 controlled/advisory investigation "
+                f"supports {sorted(allowed)}.  Requested: {requested_patch_types}.  "
+                f"Disallowed: {disallowed}.",
                 file=sys.stderr,
             )
             return 2
