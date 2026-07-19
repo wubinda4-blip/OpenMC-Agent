@@ -32,7 +32,8 @@ from .retry_models import (
     RetryTriggerOrigin,
     TERMINAL_RETRY_LIFECYCLE_STATES,
 )
-from .retry_owner_policy import retry_owner_policy
+from .retry_models import SpecialRetryAction, SpecialRetryRoute
+from .retry_owner_policy import retry_owner_policy, RetryOwnerPolicy
 
 
 def _valid_envelope(state: PlanBuildState, patch_type: str) -> PlanPatchEnvelope | None:
@@ -78,7 +79,8 @@ def normalize_retry_request(
     def _policy_for(candidate_code: str):
         enriched = dict(data)
         enriched.setdefault("code", candidate_code)
-        return retry_owner_policy(candidate_code, enriched, canonical_scope=resolved_scope)
+        result = retry_owner_policy(candidate_code, enriched, canonical_scope=resolved_scope)
+        return result
 
     code = next((item for item in codes if _policy_for(item) is not None), None)
     if code is None:
@@ -86,6 +88,22 @@ def normalize_retry_request(
         return None
     policy = _policy_for(code)
     assert policy is not None
+
+    # Phase 8B Step 1: SpecialRetryRoute handling.
+    if isinstance(policy, SpecialRetryRoute):
+        route = policy
+        request = ExecutablePlanRetryRequest(
+            request_id=f"retry_{uuid4().hex[:16]}", protocol_version=PLAN_CLOSED_LOOP_CONTRACT_VERSION,
+            origin=origin, action=PlanRetryAction.FAIL_CLOSED, owner_patch_types=[],
+            source_finding_ids=[str(value) for value in data.get("finding_ids", data.get("source_finding_ids", []))],
+            source_issue_codes=codes, reason_code=code,
+            priority=90, requires_human=route.requires_human, repairable=False,
+            created_round=len(state.plan_retry_rounds),
+            metadata={"special_route": route.action.value, "message": route.message, **route.metadata},
+        )
+        return _idempotent_register(request, state)
+
+    assert isinstance(policy, RetryOwnerPolicy)
     owner_hashes = {owner: _patch_hash(state, owner) for owner in policy.owner_patch_types if owner != "planning_task_plan"}
     targets = [
         RetryTargetSpec(
@@ -165,7 +183,7 @@ def compile_retry_execution_plan(
     dependency_graph: PlanPatchDependencyGraph = DEFAULT_PLAN_PATCH_DEPENDENCY_GRAPH,
 ) -> RetryExecutionPlan:
     owner_policy = retry_owner_policy(request.reason_code)
-    if owner_policy is None:
+    if owner_policy is None or isinstance(owner_policy, SpecialRetryRoute):
         raise ValueError("planning.retry_request_unsupported")
     if request.canonical_task_plan_hash and state.canonical_task_plan and request.canonical_task_plan_hash != state.canonical_task_plan.plan_hash:
         raise ValueError("planning.retry_request_stale")

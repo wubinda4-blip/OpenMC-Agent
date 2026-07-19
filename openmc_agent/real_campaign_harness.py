@@ -857,6 +857,23 @@ TRUTHFULNESS_VIOLATION_CODES = (
     "real_llm_not_verified",
     "smoke_passed_without_real_openmc",
     "fragmented_universes_expected_but_monolithic_used",
+    # Phase 8B Step 1: registry and binding truthfulness.
+    "retry_inventory_code_unregistered",
+    "retry_material_universe_code_unregistered",
+    "retry_registry_owner_conflict",
+    "retry_special_route_misrepresented_as_patch",
+    "inventory_binding_finding_misrouted_to_research",
+    "binding_skeleton_missing",
+    "binding_immutable_field_modified",
+    "binding_slot_silently_dropped",
+    "ambiguous_binding_auto_selected",
+    "binding_retry_bypassed_phase3b",
+    "binding_repair_committed_without_clone_validation",
+    "binding_repair_committed_with_blocking_findings",
+    "binding_gate_reopened_without_patch_hash_change",
+    "binding_reviewer_result_reused",
+    "binding_no_progress_loop_continued",
+    "investigation_budget_consumed_mandatory_reserve",
 )
 
 

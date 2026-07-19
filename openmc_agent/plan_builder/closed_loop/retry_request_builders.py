@@ -22,8 +22,9 @@ from .retry_models import (
     PlanRetryAction,
     RetryTargetSpec,
     RetryTriggerOrigin,
+    SpecialRetryRoute,
 )
-from .retry_owner_policy import retry_owner_policy
+from .retry_owner_policy import RetryOwnerPolicy, retry_owner_policy
 
 
 def _owner_hashes(state: PlanBuildState, owner_patch_types: list[str]) -> dict[str, str]:
@@ -106,6 +107,8 @@ def build_retry_request_from_placement_dependency(
         return None
     policy = retry_owner_policy(code, {"code": code})
     assert policy is not None
+    if _reject_special_route(policy, issue_codes, state):
+        return None
     owner_patch_types = [item for item in policy.owner_patch_types if item != "planning_task_plan"]
     owner_hashes = _owner_hashes(state, owner_patch_types)
     targets = [
@@ -164,7 +167,7 @@ def build_retry_request_from_facts_issue(
 ) -> ExecutablePlanRetryRequest | None:
     """Facts owner request from a Facts Gate critic finding."""
     policy = retry_owner_policy(issue_code)
-    if policy is None:
+    if policy is None or _reject_special_route(policy, [issue_code], state):
         return None
     owner_patch_types = [item for item in policy.owner_patch_types if item != "planning_task_plan"]
     owner_hashes = _owner_hashes(state, owner_patch_types)
@@ -222,7 +225,7 @@ def build_retry_request_from_material_readiness(
     controller never schedules eight independent overlay retries.
     """
     policy = retry_owner_policy(issue_code)
-    if policy is None:
+    if policy is None or _reject_special_route(policy, [issue_code], state):
         return None
     owner_patch_types = [item for item in policy.owner_patch_types if item != "planning_task_plan"]
     owner_hashes = _owner_hashes(state, owner_patch_types)
@@ -269,7 +272,7 @@ def build_retry_request_from_root_cause(
 ) -> ExecutablePlanRetryRequest | None:
     """Convert a :class:`PlanningRootCause` into a typed retry request."""
     policy = retry_owner_policy(root_cause.code)
-    if policy is None:
+    if policy is None or _reject_special_route(policy, [root_cause.code], state):
         return None
     owner_patch_types = [item for item in policy.owner_patch_types if item != "planning_task_plan"]
     owner_hashes = {owner: root_cause.canonical_owner_patch_hashes.get(owner, "") for owner in owner_patch_types}
@@ -318,7 +321,7 @@ def build_retry_request_from_patch_validation(
 ) -> ExecutablePlanRetryRequest | None:
     """Patch-validation issue that the per-patch validator could not resolve."""
     policy = retry_owner_policy(issue_code, {"patch_type": patch_type})
-    if policy is None:
+    if policy is None or _reject_special_route(policy, [issue_code], state):
         return None
     owner_patch_types = [item for item in policy.owner_patch_types if item != "planning_task_plan"]
     owner_hashes = _owner_hashes(state, owner_patch_types)
@@ -356,6 +359,23 @@ def build_retry_request_from_patch_validation(
 
 
 from .retry_models import TERMINAL_RETRY_LIFECYCLE_STATES  # noqa: E402  (after defs to avoid import cycle at module load)
+
+
+def _reject_special_route(policy: Any, issue_codes: list[str], state: PlanBuildState) -> bool:
+    """Return True if the policy is a ``SpecialRetryRoute`` (rejected).
+
+    Special routes are not patch retries and cannot be handled by these
+    builders.  The caller must route them through the controller's
+    ``normalize_retry_request`` instead.
+    """
+    if isinstance(policy, SpecialRetryRoute):
+        state.add_event(
+            "planning.retry_request_rejected",
+            f"special route {policy.action.value} not supported by patch retry builder",
+            {"issue_codes": issue_codes, "route": policy.action.value},
+        )
+        return True
+    return False
 
 
 __all__ = [

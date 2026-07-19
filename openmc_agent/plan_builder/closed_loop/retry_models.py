@@ -48,6 +48,44 @@ class PlanRetryAction(_TextEnum):
     FAIL_CLOSED = "fail_closed"
 
 
+class SpecialRetryAction(_TextEnum):
+    """Non-patch-retry routes for findings that cannot be resolved by
+    regenerating a Materials or Universes patch.
+
+    These actions MUST NOT be represented as ``owner_patch_types``.
+    The caller (:func:`normalize_retry_request` in the controller) is
+    responsible for translating the action into the right workflow
+    branch (investigation, rebuild, human confirmation, or fail-closed).
+    """
+
+    RETRIEVE_EVIDENCE = "retrieve_evidence"
+    INVENTORY_REBUILD = "inventory_rebuild"
+    ASK_HUMAN = "ask_human"
+    FAIL_CLOSED = "fail_closed"
+
+
+class SpecialRetryRoute(AgentBaseModel):
+    """A non-patch-retry route with an explicit action and metadata.
+
+    When :func:`retry_owner_policy` returns ``SpecialRetryRoute``
+    instead of ``RetryOwnerPolicy``, the caller MUST NOT create a
+    normal patch-retry request.  The special action determines what
+    happens instead:
+
+    * ``RETRIEVE_EVIDENCE`` — route to evidence retrieval (source
+      index search + ledger query).
+    * ``INVENTORY_REBUILD`` — trigger a deterministic inventory
+      rebuild from the same accepted Facts.
+    * ``ASK_HUMAN`` — block the gate and ask for human input.
+    * ``FAIL_CLOSED`` — block the gate without further action.
+    """
+
+    action: SpecialRetryAction
+    message: str = ""
+    requires_human: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class RetryExecutionStatus(_TextEnum):
     RESOLVED = "resolved"
     PARTIALLY_RESOLVED = "partially_resolved"
