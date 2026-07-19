@@ -1172,6 +1172,7 @@ def run_real_canary_once(
             inv_mode = _PIMode(mode_value)
         except ValueError:
             inv_mode = _PIMode.OFF
+        from openmc_agent.plan_investigation.agent import InvestigationBudget
         plan_inv_cfg = _PlanInvCfg(
             mode=inv_mode,
             patch_types=tuple(config.plan_investigation_patch_types) or ("facts",),
@@ -1179,6 +1180,11 @@ def run_real_canary_once(
             investigator_model=config.plan_investigation_model,
             investigator_reasoning_effort=config.plan_investigation_reasoning_effort,
             investigator_output_mode=config.plan_investigation_output_mode,
+            budget=InvestigationBudget(
+                max_tool_calls=config.plan_investigation_max_tool_calls,
+                max_results_per_tool=config.plan_investigation_max_results_per_tool,
+                max_evidence_claims=config.plan_investigation_max_evidence_claims,
+            ),
         )
         graph_kwargs["plan_investigation_config"] = plan_inv_cfg
         graph_kwargs["plan_investigation_client"] = bundle.plan_investigation_client
