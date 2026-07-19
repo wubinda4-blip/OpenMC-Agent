@@ -233,6 +233,17 @@ class FactsSkeletonMergeReport(AgentBaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+def _li_entry(slot: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "requirement_id": slot.requirement_id,
+        "insert_kind": slot.insert_kind,
+        "assembly_type_ids": list(slot.assembly_type_ids),
+    }
+    if slot.expected_coordinate_count_per_assembly is not None:
+        entry["expected_coordinate_count_per_assembly"] = slot.expected_coordinate_count_per_assembly
+    return entry
+
+
 def merge_facts_content_into_skeleton(
     skeleton: Any,
     proposal: FactsContentProposal,
@@ -242,6 +253,11 @@ def merge_facts_content_into_skeleton(
 
     Only updates fields declared in proposal.resolved_fields.
     Leaves skeleton-immutable fields unchanged when proposal omits them.
+
+    Phase 8C Step 2: ``deterministically_derived`` slots now also lock
+    (the value was Python-derived from source evidence — the LLM cannot
+    override it).  ``conflict`` slots do NOT lock; the LLM's proposal is
+    used and the slot surfaces as a preflight warning.
     """
     warnings: list[str] = []
     errors: list[str] = []
@@ -249,62 +265,131 @@ def merge_facts_content_into_skeleton(
     if skeleton is None:
         return FactsSkeletonMergeReport(ok=False, errors=["skeleton is None"])
 
+    # Statuses that lock the slot — the LLM cannot override.
+    LOCK_STATUSES = {"human_confirmed", "source_backed", "deterministically_derived"}
+
     candidate: dict[str, Any] = {}
 
-    if skeleton.model_scope is not None and skeleton.model_scope.status in ("human_confirmed", "source_backed"):
+    # Scope.
+    if skeleton.model_scope is not None and skeleton.model_scope.status in LOCK_STATUSES:
         candidate["model_scope"] = skeleton.model_scope.value
+    elif skeleton.model_scope is not None and skeleton.model_scope.status == "conflict":
+        warnings.append("model_scope has conflicting source claims; using LLM proposal")
+        if "model_scope" in proposal.resolved_fields:
+            candidate["model_scope"] = proposal.resolved_fields["model_scope"]
     elif "model_scope" in proposal.resolved_fields:
         candidate["model_scope"] = proposal.resolved_fields["model_scope"]
 
+    # Features.
     if skeleton.features is not None:
         for flag in ("has_axial_geometry", "has_spacer_grids", "has_special_pin_map"):
             val = getattr(skeleton.features, flag, None)
-            if val is not None:
+            if val is not None and skeleton.features.status in LOCK_STATUSES:
+                candidate[flag] = val
+            elif val is not None and skeleton.features.status != "conflict":
+                # Unresolved but present — prefer skeleton over proposal to
+                # avoid the LLM silently downgrading a feature flag.
                 candidate[flag] = val
 
+    # Assembly layout.
     if skeleton.assembly_layout is not None:
-        if skeleton.assembly_layout.assembly_count is not None:
+        if skeleton.assembly_layout.assembly_count is not None and (
+            skeleton.assembly_layout.status in LOCK_STATUSES
+            or skeleton.assembly_layout.assembly_count is not None
+        ):
             candidate["assembly_count"] = skeleton.assembly_layout.assembly_count
         if skeleton.assembly_layout.core_lattice_size is not None:
             candidate["core_lattice_size"] = list(skeleton.assembly_layout.core_lattice_size)
         if skeleton.assembly_layout.assembly_type_counts:
-            candidate["assembly_type_counts"] = skeleton.assembly_layout.assembly_type_counts
+            candidate["assembly_type_counts"] = dict(skeleton.assembly_layout.assembly_type_counts)
 
+    # Fuel variants.
     fv_list: list[dict[str, Any]] = []
     for slot in skeleton.fuel_variant_slots:
         fv_list.append({
             "variant_id": slot.variant_id,
             "enrichment_wt_percent": slot.enrichment_wt_percent,
             "density_g_cm3": slot.density_g_cm3,
-            "assembly_type_ids": slot.assembly_type_ids,
+            "assembly_type_ids": list(slot.assembly_type_ids),
         })
     if fv_list:
         candidate["fuel_variant_requirements"] = fv_list
 
+    # Localized inserts.
     li_list: list[dict[str, Any]] = []
     for slot in skeleton.localized_insert_slots:
-        li_list.append({
-            "requirement_id": slot.requirement_id,
-            "insert_kind": slot.insert_kind,
-            "assembly_type_ids": slot.assembly_type_ids,
-        })
+        li_list.append(_li_entry(slot))
     if li_list:
         candidate["localized_insert_requirements"] = li_list
 
-    # Apply proposal overrides
+    # Apply proposal overrides for fields NOT locked by the skeleton.
+    # For list-of-dict slots (fuel_variant_requirements,
+    # localized_insert_requirements), the locked elements from the skeleton
+    # must be preserved even if the proposal supplies a shorter list.
     for field_path, value in proposal.resolved_fields.items():
-        if field_path not in candidate or field_path in (
-            "model_scope", "has_axial_geometry", "has_spacer_grids",
-            "has_special_pin_map", "assembly_count", "core_lattice_size",
-            "assembly_type_counts",
-        ):
-            field_allowed = (
-                field_path not in ("model_scope",)
-                or skeleton.model_scope is None
-                or skeleton.model_scope.status not in ("human_confirmed", "source_backed")
-            )
-            if field_allowed:
-                candidate[field_path] = value
+        if field_path in candidate:
+            # Check if the slot is locked.
+            is_locked = False
+            if field_path == "model_scope" and skeleton.model_scope is not None:
+                is_locked = skeleton.model_scope.status in LOCK_STATUSES
+            elif field_path in ("has_axial_geometry", "has_spacer_grids", "has_special_pin_map"):
+                if skeleton.features is not None and skeleton.features.status in LOCK_STATUSES:
+                    is_locked = getattr(skeleton.features, field_path, None) is not None
+            elif field_path == "assembly_count" and skeleton.assembly_layout is not None:
+                is_locked = (
+                    skeleton.assembly_layout.status in LOCK_STATUSES
+                    and skeleton.assembly_layout.assembly_count is not None
+                )
+            elif field_path == "fuel_variant_requirements":
+                # Locked fuel variants must be preserved even when the
+                # proposal supplies a different list.  Merge by variant_id.
+                locked_by_id = {
+                    slot.variant_id: {
+                        "variant_id": slot.variant_id,
+                        "enrichment_wt_percent": slot.enrichment_wt_percent,
+                        "density_g_cm3": slot.density_g_cm3,
+                        "assembly_type_ids": list(slot.assembly_type_ids),
+                    }
+                    for slot in skeleton.fuel_variant_slots
+                    if slot.status in LOCK_STATUSES and slot.immutable
+                }
+                if locked_by_id:
+                    proposal_items = value if isinstance(value, list) else []
+                    proposal_ids = {
+                        v.get("variant_id") for v in proposal_items
+                        if isinstance(v, dict) and v.get("variant_id")
+                    }
+                    # Drop locked ids from proposal_items (they will be
+                    # re-injected from the skeleton) so we don't double-add.
+                    cleaned_proposal = [
+                        v for v in proposal_items
+                        if isinstance(v, dict)
+                        and v.get("variant_id") not in locked_by_id
+                    ]
+                    merged_list = list(locked_by_id.values()) + cleaned_proposal
+                    candidate[field_path] = merged_list
+                    continue
+            elif field_path == "localized_insert_requirements":
+                # Same protection for localized inserts.
+                locked_by_id = {
+                    slot.requirement_id: _li_entry(slot)
+                    for slot in skeleton.localized_insert_slots
+                    if slot.status in LOCK_STATUSES and slot.immutable
+                }
+                if locked_by_id:
+                    proposal_items = value if isinstance(value, list) else []
+                    cleaned_proposal = [
+                        v for v in proposal_items
+                        if isinstance(v, dict)
+                        and v.get("requirement_id") not in locked_by_id
+                    ]
+                    merged_list = list(locked_by_id.values()) + cleaned_proposal
+                    candidate[field_path] = merged_list
+                    continue
+            if is_locked:
+                # Locked scalar — proposal cannot override.
+                continue
+        candidate[field_path] = value
 
     from openmc_agent.plan_builder.closed_loop.fingerprints import _digest
     patch_hash = _digest(candidate)
