@@ -56,6 +56,8 @@ class ContextFactValue(AgentBaseModel):
         "deterministically_derived",
         "accepted_upstream",
         "unresolved",
+        "unknown",
+        "compatibility_default",
     ] = "unresolved"
     source_claim_ids: list[str] = Field(default_factory=list)
     source_span_ids: list[str] = Field(default_factory=list)

@@ -18,8 +18,13 @@ from openmc_agent.plan_builder.scoped_counts import normalize_scoped_counts
 
 
 def test_single_assembly_facts_default_scope():
+    """Phase 8C Step 0: schema default must be ``unknown`` to avoid silently
+    locking the single-assembly patch family when the LLM omits the field.
+    Single-assembly scope must come from source evidence or the planning
+    feature contract, not from a Python default.
+    """
     facts = FactsPatch()
-    assert facts.model_scope == "single_assembly"
+    assert facts.model_scope == "unknown"
 
 
 def test_single_assembly_legacy_counts_normalized():

@@ -1,9 +1,18 @@
-"""Tests for Phase 8B Step 2: context-neutral defaults and provenance tracking."""
+"""Tests for Phase 8B Step 2 + Phase 8C Step 0: context-neutral defaults.
+
+Phase 8C Step 0 extends the contract from the PatchGenerationContext level
+to the Pydantic schema level: ``FactsPatch.model_scope`` must default to
+``"unknown"`` so that an LLM that omits the field cannot silently lock the
+entire single-assembly patch family.  The previous schema default
+``"single_assembly"`` was the authoritative BYPASS_PATH that contaminated
+every multi-assembly benchmark.
+"""
 
 from openmc_agent.plan_builder.patch_generator import (
     ContextFactValue,
     PatchGenerationContext,
 )
+from openmc_agent.plan_builder.patches import FactsPatch
 from openmc_agent.plan_builder.validators import PatchValidationContext
 
 
@@ -12,6 +21,29 @@ def test_model_scope_defaults_to_none():
     assert ctx.model_scope is None, (
         f"model_scope should default to None, got {ctx.model_scope!r}"
     )
+
+
+def test_facts_patch_model_scope_defaults_to_unknown():
+    """Phase 8C Step 0: schema-level default must NOT choose a patch family."""
+    facts = FactsPatch()
+    assert facts.model_scope == "unknown", (
+        f"FactsPatch.model_scope default must be 'unknown' so that an "
+        f"LLM that omits the field does not silently select the "
+        f"single-assembly patch family. Got {facts.model_scope!r}."
+    )
+
+
+def test_facts_patch_boolean_feature_flags_are_none_by_default():
+    """Tri-state booleans default to None so omission is observable.
+
+    A ``False`` default would silently disable spacer grids / axial geometry
+    / special pin maps when the LLM omits the field, which can mask a
+    missing-coverage defect as a deliberate negative answer.
+    """
+    facts = FactsPatch()
+    assert facts.has_axial_geometry is None
+    assert facts.has_spacer_grids is None
+    assert facts.has_special_pin_map is None
 
 
 def test_context_fact_value_defaults():
@@ -69,3 +101,22 @@ def test_facts_consistency_still_passes_with_none_scope():
 def test_validation_context_model_scope_default_none():
     vctx = PatchValidationContext()
     assert vctx.model_scope is None
+
+
+def test_neutral_defaults_do_not_force_single_assembly_family():
+    """End-to-end regression: a FactsPatch with no explicit scope must not
+    carry any value that downstream code can interpret as 'single-assembly
+    decided'.  This protects assembler.py:1479-1481 where the scope selects
+    the patch family.
+    """
+    facts = FactsPatch()
+    dumped = facts.model_dump()
+    assert dumped["model_scope"] == "unknown"
+    assert dumped["has_axial_geometry"] is None
+    assert dumped["has_spacer_grids"] is None
+    assert dumped["has_special_pin_map"] is None
+    # None of the optional scope-bearing fields should pick a concrete value
+    # when the LLM omits them.
+    assert dumped["assembly_count"] is None
+    assert dumped["core_lattice_size"] is None
+    assert dumped["selected_variant"] is None

@@ -185,9 +185,13 @@ class FactsPatch(_PatchBase):
     pin_pitch_cm: float | None = None
     assembly_pitch_cm: float | None = None
 
-    has_axial_geometry: bool = False
-    has_spacer_grids: bool = False
-    has_special_pin_map: bool = False
+    # Tri-state feature flags.  ``None`` is the LLM-omitted state and must
+    # never be coerced to ``False`` by the schema — that would silently
+    # downgrade multi-assembly contracts.  Source evidence or the planning
+    # feature contract must promote the value to ``True``/``False``.
+    has_axial_geometry: bool | None = None
+    has_spacer_grids: bool | None = None
+    has_special_pin_map: bool | None = None
 
     active_fuel_region_cm: tuple[float, float] | None = None
     axial_domain_cm: tuple[float, float] | None = None
@@ -200,7 +204,12 @@ class FactsPatch(_PatchBase):
     expected_thimble_plug_count: int | None = None
 
     # --- P2-FULLCORE-1: Scope-aware fields ---
-    model_scope: ModelScope = "single_assembly"
+    # ``unknown`` is the safe default.  The previous default
+    # ``"single_assembly"`` silently forced the entire single-assembly patch
+    # family whenever the LLM omitted the field, which contaminated every
+    # multi-assembly benchmark.  Only source evidence or the planning feature
+    # contract may promote the scope to a concrete value.
+    model_scope: ModelScope = "unknown"
     assembly_count: int | None = None
     core_lattice_size: tuple[int, int] | None = None
     assembly_type_counts: dict[str, int] = Field(default_factory=dict)

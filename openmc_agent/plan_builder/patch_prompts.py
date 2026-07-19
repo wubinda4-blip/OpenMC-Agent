@@ -72,7 +72,11 @@ Rules:
 - If variant is 3A/3B, set selected_variant.
 - If requirement mentions spacer grids, set has_spacer_grids=true.
 - If requirement mentions Pyrex/thimble plug/guide tube/instrument tube, set has_special_pin_map=true.
-- Determine model_scope: single_assembly for one assembly, multi_assembly_core for N×N cores.
+- Determine model_scope from source evidence or planning feature contract ONLY.
+  Safe default is "unknown" — do NOT default to "single_assembly".
+  Use "single_assembly" only when the source actually describes one assembly.
+  Use "multi_assembly_core" when the source describes an N×N core.
+  Use "full_core" only when the source describes a full radial core.
 - For multi-assembly cores: set assembly_count, core_lattice_size, assembly_type_counts.
 - For multi-assembly cores: use scoped_expected_counts with explicit scope, NOT legacy fields.
 - Do NOT divide core totals by assembly count to guess per-assembly counts.
@@ -102,7 +106,7 @@ Rules:
 - A requirement entry must NOT be omitted just because the insert has materials or
   universes defined. The requirement is the source contract for placement.
 
-Minimal example (single assembly):
+Minimal example (single assembly, source-backed):
 {{"patch_type": "facts", "benchmark_id": "EXAMPLE", "selected_variant": "3B",
   "model_scope": "single_assembly", "lattice_size": [17, 17], "has_axial_geometry": true,
   "has_spacer_grids": true, "has_special_pin_map": true, "missing_facts": []}}
@@ -114,7 +118,12 @@ Reactor-neutral multi-assembly example:
   "scoped_expected_counts": [
     {{"role": "fuel_pin", "value": 1000, "scope": "core_total"}},
     {{"role": "fuel_pin", "value": 250, "scope": "assembly_type", "assembly_type_id": "type_a"}}
-  ]}}""",
+  ]}}
+
+When the source does NOT clearly describe the scope, emit
+{{"model_scope": "unknown"}} and list the ambiguity in missing_facts.  Do NOT
+fall back to "single_assembly" as a default — that selects the entire
+single-assembly patch family and corrupts downstream generation.""",
 
     "materials": """\
 Requested patch type: materials

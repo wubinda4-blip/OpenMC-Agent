@@ -57,8 +57,11 @@ def test_scoped_expected_count_core_total_scope():
 
 
 def test_facts_patch_default_model_scope():
+    """Phase 8C Step 0: schema default must be ``unknown`` so the LLM cannot
+    accidentally lock the entire single-assembly patch family by omission.
+    """
     facts = FactsPatch()
-    assert facts.model_scope == "single_assembly"
+    assert facts.model_scope == "unknown"
 
 
 def test_facts_patch_multi_assembly_fields():
