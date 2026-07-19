@@ -270,6 +270,10 @@ def run_investigation_stage(
     llm_client: Callable[[str], str] | None = None,
     source_indexes: dict | None = None,
     ledger: PlanningEvidenceLedger | None = None,
+    accepted_facts: Any = None,
+    geometry_inventory: Any = None,
+    material_requirement_set: Any = None,
+    universe_requirement_set: Any = None,
 ) -> InvestigationResult | None:
     """Run the optional investigation stage.
 
@@ -293,6 +297,11 @@ def run_investigation_stage(
       :class:`PatchGenerationContext.investigation_evidence`.
 
     This function never mutates ``state``; the config read is read-only.
+
+    Phase 8A Step 6 (P0-5 fix): ``accepted_facts``, ``geometry_inventory``,
+    ``material_requirement_set`` and ``universe_requirement_set`` are now
+    forwarded into :class:`InvestigationContext` so the Materials /
+    Universes baseline resolver can actually use them.
     """
 
     if config is None:
@@ -361,6 +370,10 @@ def run_investigation_stage(
         ledger=ledger,
         policy_suggestions=policy_suggestions,
         caller_stage=config.caller_stage,
+        accepted_facts=accepted_facts,
+        geometry_inventory=geometry_inventory,
+        material_requirement_set=material_requirement_set,
+        universe_requirement_set=universe_requirement_set,
     )
     agent = InvestigationAgent(registry=registry, llm_client=llm_client)
     result = agent.run(context)

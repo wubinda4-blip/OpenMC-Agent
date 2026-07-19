@@ -750,9 +750,17 @@ def build_generation_context_from_state(
     # the patch generation context.  Returns an empty list when no
     # inventory is compiled (off mode) so legacy prompts stay
     # byte-identical.
-    inventory_payloads = _inventory_evidence_payloads_for_patch_type(state, patch_type)
-    if inventory_payloads:
-        ctx.investigation_evidence = inventory_payloads
+    inventory_constraints = _inventory_planning_constraints_for_patch_type(state, patch_type)
+    if inventory_constraints:
+        # Phase 8A Step 6: derived planning constraints are stored in
+        # the dedicated ``planning_constraints`` field (NOT the
+        # ``investigation_evidence`` field).  This separates source-
+        # backed EvidenceClaims from inventory-derived constraints in
+        # the prompt so the LLM and reviewers can distinguish them.
+        ctx.planning_constraints = [
+            c.to_prompt_dict() if hasattr(c, "to_prompt_dict") else dict(c)
+            for c in inventory_constraints
+        ]
     return ctx
 
 
@@ -920,18 +928,28 @@ def _maybe_compile_geometry_inventory(
     facts_env: Any,
     requirement: str,
     artifact_writer: Any | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Compile the :class:`GeometryComponentInventory` from accepted Facts.
 
     Called right after the Facts Gate accepts.  Stores the serialized
     inventory on ``state.metadata['planning_geometry_inventory']`` so
     the Materials and Universes patch generators can consume it via
-    :func:`_inject_inventory_evidence_into_context`.
+    :func:`_inventory_planning_constraints_for_patch_type`.
 
-    Failures are surfaced as warnings (not blocking); the Materials /
-    Universes patch generators fall back to legacy behaviour when no
-    inventory is present.  This keeps the integration additive: off
-    mode never reaches this function.
+    Returns a typed status dict:
+
+    * ``compiled`` (bool): True iff the inventory + requirement sets
+      were produced without exception.
+    * ``inventory_hash`` (str): hash of the compiled inventory.
+    * ``error`` (str | None): exception message when compilation
+      crashed.
+    * ``failure_code`` (str): one of the stable codes below.
+
+    Phase 8A Step 6 (P0-2 fix): the previous implementation only
+    logged an event on exception and returned, allowing the run to
+    continue with Materials/Universes via the legacy prompt path in
+    controlled mode.  The caller now inspects ``compiled`` and blocks
+    the run when ``compiled=False`` in controlled mode.
     """
 
     try:
@@ -946,30 +964,27 @@ def _maybe_compile_geometry_inventory(
             build_investigation_source_index,
         )
     except ImportError:
-        return  # plan_investigation package not available; no-op.
+        return {
+            "compiled": False,
+            "inventory_hash": "",
+            "error": "plan_investigation package unavailable",
+            "failure_code": "planning.inventory.compile_module_unavailable",
+        }
     state.add_event(
         "planning.geometry_inventory_compilation_started",
         "geometry component inventory compilation starting",
         {},
     )
     try:
-        # Build / reuse the shared SourceIndex + Ledger so the inventory
-        # sees the same evidence the Facts investigation produced.
         source_index = build_investigation_source_index(requirement)
         ledger = build_investigation_ledger(
             requirement_text=requirement,
             source_indexes={source_index.document.source_id: source_index},
         )
-        # If the state already carries an evidence ledger (Step 4
-        # investigation ran), restore it so the inventory sees the
-        # accepted claims.  Otherwise the inventory compiles from
-        # Facts + an empty ledger, which is the safe fallback.
         existing_ledger_dump = state.metadata.get("planning_evidence_ledger")
         if existing_ledger_dump:
             ledger = PlanningEvidenceLedger.model_validate(existing_ledger_dump)
 
-        # Parse the accepted Facts into a FactsPatch model so the
-        # compiler can read fuel_variant_requirements, etc.
         from .patches import parse_patch_content
         facts_patch = parse_patch_content("facts", facts_env.content)
 
@@ -981,8 +996,6 @@ def _maybe_compile_geometry_inventory(
         )
         state.metadata["planning_geometry_inventory"] = inventory.model_dump(mode="json")
         state.metadata["planning_geometry_inventory_hash"] = inventory.inventory_hash
-        # Also compile the material requirement set so the Materials
-        # prompt can reference it.
         from openmc_agent.plan_builder.material_requirements import (
             extract_material_requirements_from_inventory,
         )
@@ -992,7 +1005,6 @@ def _maybe_compile_geometry_inventory(
         state.metadata["planning_material_requirement_set"] = mreq_set.model_dump(
             mode="json"
         )
-        # And the inventory-driven universe requirement set.
         from openmc_agent.plan_investigation.inventory_universe_requirements import (
             extract_universe_requirements_from_inventory,
         )
@@ -1023,65 +1035,151 @@ def _maybe_compile_geometry_inventory(
                 )
             except Exception:
                 pass
+        return {
+            "compiled": True,
+            "inventory_hash": inventory.inventory_hash,
+            "error": None,
+            "failure_code": "",
+        }
     except Exception as exc:
         state.add_event(
             "planning.geometry_inventory_blocked",
             f"geometry inventory compilation failed: {type(exc).__name__}: {exc}",
             {"error": str(exc)[:200]},
         )
+        return {
+            "compiled": False,
+            "inventory_hash": "",
+            "error": f"{type(exc).__name__}: {exc}",
+            "failure_code": "planning.inventory.compilation_failed",
+        }
+
+
+def _load_inventory_context_objects(
+    state: PlanBuildState,
+) -> tuple[Any, Any]:
+    """Load typed Facts + GeometryComponentInventory from state.metadata.
+
+    Returns ``(accepted_facts, geometry_inventory)`` so the Materials /
+    Universes investigation baseline resolver can read fuel variants
+    and radial profiles.  Both may be ``None`` when the inventory has
+    not been compiled yet (off mode / pre-Facts acceptance).
+    """
+
+    inv_dump = state.metadata.get("planning_geometry_inventory")
+    if not inv_dump:
+        return None, None
+    try:
+        from openmc_agent.plan_investigation.geometry_inventory import (
+            GeometryComponentInventory,
+        )
+        inventory = GeometryComponentInventory.model_validate(inv_dump)
+    except Exception:
+        inventory = None
+    facts_env = next(
+        (item for item in state.patches.values()
+         if item.patch_type == "facts" and item.status == "valid"),
+        None,
+    )
+    accepted_facts = None
+    if facts_env is not None:
+        try:
+            from .patches import parse_patch_content
+            accepted_facts = parse_patch_content("facts", facts_env.content)
+        except Exception:
+            accepted_facts = None
+    return accepted_facts, inventory
+
+
+def _load_material_requirement_set(state: PlanBuildState) -> Any:
+    """Load the MaterialGenerationRequirementSet from state.metadata."""
+
+    dump = state.metadata.get("planning_material_requirement_set")
+    if not dump:
+        return None
+    try:
+        from openmc_agent.plan_builder.material_requirements import (
+            MaterialGenerationRequirementSet,
+        )
+        return MaterialGenerationRequirementSet.model_validate(dump)
+    except Exception:
+        return None
+
+
+def _load_universe_requirement_set(state: PlanBuildState) -> Any:
+    """Load the InventoryUniverseRequirementSet from state.metadata."""
+
+    dump = state.metadata.get("planning_universe_requirement_set")
+    if not dump:
+        return None
+    try:
+        from openmc_agent.plan_investigation.inventory_universe_requirements import (
+            InventoryUniverseRequirementSet,
+        )
+        return InventoryUniverseRequirementSet.model_validate(dump)
+    except Exception:
+        return None
+
+
+def _inventory_planning_constraints_for_patch_type(
+    state: PlanBuildState,
+    patch_type: str,
+) -> list[Any]:
+    """Build typed planning constraints from the inventory requirement sets.
+
+    Returns an empty list when no inventory is present (off mode) so
+    the patch prompt stays byte-identical to legacy.
+
+    Phase 8A Step 6 (P0-4 fix): the previous implementation produced
+    fake "EvidenceClaim" payloads with ``status="explicit"`` and
+    ``source_spans=[]`` whose ``claim_id`` was actually a
+    ``requirement_id``.  Those payloads were indistinguishable from
+    real source-backed claims in the prompt renderer.  The new
+    payloads are :class:`EvidenceConstraintPayload` instances with
+    ``derivation_status=deterministically_derived``.
+    """
+
+    inv_dump = state.metadata.get("planning_geometry_inventory")
+    if not inv_dump:
+        return []
+    try:
+        from openmc_agent.plan_investigation.inventory_constraints import (
+            build_inventory_constraints_for_patch_type,
+        )
+    except ImportError:
+        return []
+    mreq_dump = state.metadata.get("planning_material_requirement_set") or {}
+    ureq_dump = state.metadata.get("planning_universe_requirement_set") or {}
+    ledger_hash = ""
+    try:
+        ledger_dump = state.metadata.get("planning_evidence_ledger") or {}
+        ledger_hash = ledger_dump.get("ledger_hash", "") if isinstance(ledger_dump, dict) else ""
+    except Exception:
+        ledger_hash = ""
+    return build_inventory_constraints_for_patch_type(
+        patch_type=patch_type,
+        inventory_dump=inv_dump,
+        material_requirement_set_dump=mreq_dump,
+        universe_requirement_set_dump=ureq_dump,
+        ledger_hash=ledger_hash,
+    )
 
 
 def _inventory_evidence_payloads_for_patch_type(
     state: PlanBuildState,
     patch_type: str,
 ) -> list[dict[str, Any]]:
-    """Render inventory requirements as evidence-claim-style payloads.
+    """Backward-compat shim.
 
-    Returns an empty list when no inventory is present (off mode) so
-    the patch prompt stays byte-identical to legacy.
+    Phase 8A Step 6 deprecated the legacy "fake EvidenceClaim" payload
+    path; callers should consume ``planning_constraints`` via
+    :func:`_inventory_planning_constraints_for_patch_type` instead.
+    This shim returns ``[]`` always so any stray caller falls back to
+    the legacy (no-payload) prompt without misrepresenting derived
+    requirements as source-backed claims.
     """
 
-    inv_dump = state.metadata.get("planning_geometry_inventory")
-    if not inv_dump:
-        return []
-    payloads: list[dict[str, Any]] = []
-    if patch_type == "materials":
-        mreq_dump = state.metadata.get("planning_material_requirement_set") or {}
-        for req in mreq_dump.get("requirements", []) or []:
-            payloads.append({
-                "claim_id": req.get("requirement_id", ""),
-                "subject": "material_role",
-                "predicate": "material.role_required",
-                "value": {
-                    "role": req.get("role"),
-                    "fuel_variant_id": req.get("source_variant_id"),
-                    "localized_insert_requirement_id": req.get("localized_insert_requirement_id"),
-                    "resolution_status": req.get("resolution_status"),
-                },
-                "status": "explicit",
-                "criticality": "source_critical" if req.get("role") == "fuel" else "supporting",
-                "source_spans": [],
-            })
-    elif patch_type == "universes":
-        ureq_dump = state.metadata.get("planning_universe_requirement_set") or {}
-        for req in ureq_dump.get("requirements", []) or []:
-            payloads.append({
-                "claim_id": req.get("requirement_id", ""),
-                "subject": "geometry_profile",
-                "predicate": "geometry.profile_required",
-                "value": {
-                    "profile_kind": req.get("profile_kind"),
-                    "component_kind": req.get("component_kind"),
-                    "fuel_variant_id": req.get("fuel_variant_id"),
-                    "required_cell_roles": req.get("required_cell_roles", []),
-                    "required_material_roles": req.get("required_material_roles", []),
-                    "geometry_profile_id": req.get("geometry_profile_id"),
-                },
-                "status": "explicit",
-                "criticality": "supporting",
-                "source_spans": [],
-            })
-    return payloads
+    return []
 
 
 def _maybe_run_inventory_preflight(
@@ -1090,17 +1188,91 @@ def _maybe_run_inventory_preflight(
     materials_env: Any,
     universes_env: Any,
     artifact_writer: Any | None = None,
+    controlled_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the inventory-driven Material-Universe preflight.
 
     Returns a list of issue dicts (same shape as the existing
     ``run_material_universe_preflight`` output).  Returns an empty list
     when no inventory is compiled (off mode).
+
+    Phase 8A Step 6 (P0-3 fix): the previous implementation caught
+    every exception and returned ``[]``, which the gate treated as
+    "no deterministic finding".  In ``controlled_mode`` we now emit a
+    blocking finding with code
+    ``material_universe.inventory_preflight_exception`` (or
+    ``material_universe.inventory_preflight_not_executed`` when the
+    preflight was skipped despite an inventory being present) so the
+    gate fails closed.  The finding owner is taken from the explicit
+    :data:`INVENTORY_FINDING_OWNER_MAP` (no more string-contains
+    matching with a default of ``materials``).
     """
 
+    result = _run_typed_inventory_preflight(
+        state=state,
+        materials_env=materials_env,
+        universes_env=universes_env,
+        artifact_writer=artifact_writer,
+    )
+    if not result.has_blocking_deterministic_finding:
+        # Convert report findings to dict shape with explicit owner.
+        return _inventory_preflight_findings_to_dicts(result.report)
+    if not result.executed:
+        # Preflight did not run (inventory present but report missing).
+        # In controlled mode this is blocking; in advisory it is a
+        # warning only.
+        if controlled_mode:
+            return [{
+                "code": result.failure_code or "material_universe.inventory_preflight_not_executed",
+                "severity": "error",
+                "message": "inventory preflight did not execute (controlled mode requires it)",
+                "owner_patch_type": "plan_investigation",
+            }]
+        state.add_event(
+            "planning.inventory_material_universe_preflight_skipped",
+            "inventory preflight did not execute (advisory mode)",
+            {"failure_code": result.failure_code},
+        )
+        return []
+    if result.execution_error is not None:
+        # Preflight crashed.
+        if controlled_mode:
+            return [{
+                "code": result.failure_code or "material_universe.inventory_preflight_exception",
+                "severity": "error",
+                "message": f"inventory preflight crashed: {result.execution_error[:160]}",
+                "owner_patch_type": "plan_investigation",
+            }]
+        return []
+    # Preflight ran and produced error-severity findings.
+    return _inventory_preflight_findings_to_dicts(result.report)
+
+
+def _run_typed_inventory_preflight(
+    *,
+    state: PlanBuildState,
+    materials_env: Any,
+    universes_env: Any,
+    artifact_writer: Any | None = None,
+) -> "InventoryPreflightExecutionResult":
+    """Typed wrapper that never raises and never silently returns []."""
+
+    from openmc_agent.plan_investigation.inventory_preflight import (
+        InventoryPreflightExecutionResult,
+        PREFLIGHT_EXCEPTION_CODE,
+        PREFLIGHT_NOT_EXECUTED_CODE,
+    )
     inv_dump = state.metadata.get("planning_geometry_inventory")
     if not inv_dump:
-        return []
+        # No inventory present (off mode): preflight did not run and
+        # has nothing to report.  ``inventory_present=False`` ensures
+        # ``has_blocking_deterministic_finding`` is False so the gate
+        # does not spuriously block in off mode.
+        return InventoryPreflightExecutionResult(
+            executed=False,
+            inventory_present=False,
+            failure_code="",  # silent in off mode
+        )
     try:
         from openmc_agent.plan_investigation.geometry_inventory import (
             GeometryComponentInventory,
@@ -1121,14 +1293,12 @@ def _maybe_run_inventory_preflight(
         ureq_set = InventoryUniverseRequirementSet.model_validate(
             state.metadata.get("planning_universe_requirement_set") or {}
         )
-        # Extract the actual materials/universes patch content.
         materials_patch_obj = materials_env.content if materials_env is not None else None
         universes_patch_obj = universes_env.content if universes_env is not None else None
         known_material_ids = [
             m.get("material_id") for m in (materials_patch_obj or {}).get("materials", [])
         ] if isinstance(materials_patch_obj, dict) else []
         known_material_ids = [mid for mid in known_material_ids if mid]
-
         report = run_geometry_inventory_material_universe_preflight(
             inventory=inventory,
             material_requirement_set=mreq_set,
@@ -1154,27 +1324,46 @@ def _maybe_run_inventory_preflight(
                 "warning_count": report.warning_count,
             },
         )
-        # Convert findings to the dict shape the existing gate expects.
-        issues: list[dict[str, Any]] = []
-        for finding in report.findings:
-            issues.append({
-                "code": finding.code,
-                "severity": finding.severity,
-                "message": finding.message,
-                "owner_patch_type": (
-                    "universes" if "radial_profile" in finding.code or "universe" in finding.code
-                    else "materials" if "material" in finding.code
-                    else "materials"
-                ),
-            })
-        return issues
+        return InventoryPreflightExecutionResult(
+            executed=True,
+            report=report,
+        )
     except Exception as exc:
         state.add_event(
             "planning.inventory_material_universe_preflight_failed",
             f"inventory preflight failed: {type(exc).__name__}: {exc}",
             {"error": str(exc)[:200]},
         )
+        return InventoryPreflightExecutionResult(
+            executed=False,
+            execution_error=f"{type(exc).__name__}: {exc}",
+            failure_code=PREFLIGHT_EXCEPTION_CODE,
+        )
+
+
+def _inventory_preflight_findings_to_dicts(report: Any) -> list[dict[str, Any]]:
+    """Convert preflight findings to dict shape with EXPLICIT owner."""
+
+    from openmc_agent.plan_investigation.inventory_preflight import (
+        owner_for_inventory_finding_code,
+    )
+    if report is None:
         return []
+    out: list[dict[str, Any]] = []
+    for finding in report.findings:
+        code = finding.code
+        owner = owner_for_inventory_finding_code(code)
+        if owner is None:
+            # Unknown code: fail closed by routing to plan_investigation
+            # rather than the legacy default of "materials".
+            owner = "plan_investigation"
+        out.append({
+            "code": code,
+            "severity": finding.severity,
+            "message": finding.message,
+            "owner_patch_type": owner,
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1640,12 +1829,33 @@ def run_incremental_planning(
             # Only fires when plan investigation is enabled; legacy
             # off-mode behaviour is unchanged.
             if _investigation_config_resolved is not None and not _investigation_config_resolved.is_off:
-                _maybe_compile_geometry_inventory(
+                inventory_status = _maybe_compile_geometry_inventory(
                     state=state,
                     facts_env=facts_env,
                     requirement=requirement,
                     artifact_writer=artifact_writer,
                 )
+                # Phase 8A Step 6 (P0-2): in controlled mode, an
+                # inventory compilation failure must block the run.
+                # Advisory mode logs the failure but keeps going so
+                # the legacy prompt path is exercised.
+                if not inventory_status.get("compiled"):
+                    if _investigation_config_resolved.is_controlled:
+                        transition_stage(stage, PlanStageStatus.BLOCKED)
+                        return IncrementalExecutionIssue(
+                            code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
+                            severity="error",
+                            message=(
+                                f"controlled mode: geometry inventory compilation failed: "
+                                f"{inventory_status.get('error', 'unknown')}"
+                            ),
+                            patch_type="facts",
+                        )
+                    state.add_event(
+                        "planning.inventory_compilation_failed_advisory",
+                        "advisory mode: inventory compilation failed, continuing with legacy path",
+                        {"error": inventory_status.get("error", "")[:160]},
+                    )
             return None
         if action is PlanReviewAction.ASK_HUMAN:
             from .closed_loop.facts_human import build_facts_human_question
@@ -2290,6 +2500,7 @@ def run_incremental_planning(
             materials_env=materials_env,
             universes_env=next((item for item in state.patches.values() if item.patch_type == "universes" and item.status == "valid"), None),
             artifact_writer=artifact_writer,
+            controlled_mode=(policy.mode is PlanLoopMode.CONTROLLED),
         )
         # Build evidence pack (needed for review even in advisory).
         pack = build_material_universe_evidence_pack(state=state, policy=policy, species_report=species_report, deterministic_issues=preflight.issues)
@@ -2644,6 +2855,11 @@ def run_incremental_planning(
                     transition_stage(stage, PlanStageStatus.BLOCKED)
                     return IncrementalExecutionIssue(code="planning.retry_budget_exhausted", severity="error", message="retry resume budget exhausted", patch_type="placement")
                 state.metadata["phase3_retry_resume_depth"] = depth + 1
+                # Phase 8A Step 6 (P0-7): recursive resume MUST forward every
+                # configuration knob the outer call received, otherwise the
+                # controlled contract (investigation mode, fragmented
+                # universes, strict structured output, budget) is silently
+                # lost on the downstream rebuild.
                 resumed = run_incremental_planning(
                     requirement=requirement, state=state, llm_client=llm_client,
                     max_patch_attempts=max_patch_attempts, strict=strict,
@@ -2653,6 +2869,15 @@ def run_incremental_planning(
                     plan_loop_output_dir=plan_loop_output_dir,
                     plan_reviewer_client=plan_reviewer_client,
                     plan_repair_client=plan_repair_client,
+                    universes_generation_mode=universes_generation_mode,
+                    universe_fragment_max_tokens=universe_fragment_max_tokens,
+                    large_patch_safe_output_ratio=large_patch_safe_output_ratio,
+                    strict_structured_patch_output=strict_structured_patch_output,
+                    plan_investigation_config=plan_investigation_config,
+                    plan_investigation_client=plan_investigation_client,
+                    plan_investigation_registry=plan_investigation_registry,
+                    plan_investigation_policy_registry=plan_investigation_policy_registry,
+                    plan_investigation_output_dir=plan_investigation_output_dir,
                 )
                 state.metadata["phase3_retry_resume_depth"] = depth
                 if resumed.ok:
@@ -3028,6 +3253,104 @@ def run_incremental_planning(
                 state.add_event(
                     "planning.investigation_evidence_injected",
                     "Facts patch prompt received investigation evidence",
+                    {
+                        "claim_count": len(investigation_outcome.evidence_claim_ids),
+                        "evidence_context_hash": investigation_outcome.evidence_context_hash[:12],
+                        "cache_reused": investigation_outcome.cache_reused,
+                    },
+                )
+
+        # Phase 8A Step 6 (P0-1): Materials and Universes investigations.
+        # Mirror the Facts investigation path: run BEFORE the patch LLM,
+        # block in controlled mode on failure, inject evidence into the
+        # generation context.  The Materials/Universes investigations
+        # reuse the SAME shared SourceIndex + Ledger that the Facts
+        # investigation populated so claims accumulate across patch
+        # types (single canonical ledger per incremental run).
+        if (
+            patch_type in {"materials", "universes"}
+            and _investigation_config_resolved is not None
+            and not _investigation_config_resolved.is_off
+        ):
+            from openmc_agent.plan_investigation.executor_injection import (
+                BLOCK_CODE_MATERIALS_BLOCKED,
+                BLOCK_CODE_UNIVERSES_BLOCKED,
+                inject_investigation_evidence_into_context,
+                run_patch_investigation_stage,
+            )
+            # Build the typed inventory context from accepted Facts +
+            # compiled inventory + requirement sets so the baseline
+            # resolver can read fuel variants / radial profiles.
+            accepted_facts_obj, geometry_inventory_obj = _load_inventory_context_objects(state)
+            material_req_obj = _load_material_requirement_set(state)
+            universe_req_obj = _load_universe_requirement_set(state)
+            investigation_outcome = run_patch_investigation_stage(
+                patch_type=patch_type,
+                requirement=requirement,
+                state=state,
+                config=_investigation_config_resolved,
+                llm_client=plan_investigation_client,
+                registry=plan_investigation_registry,
+                policy_registry=plan_investigation_policy_registry,
+                session_cache=_investigation_session_cache,
+                shared_source_index=_investigation_shared_source_index,
+                shared_ledger=_investigation_shared_ledger,
+                accepted_facts=accepted_facts_obj,
+                geometry_inventory=geometry_inventory_obj,
+                material_requirement_set=material_req_obj,
+                universe_requirement_set=universe_req_obj,
+                artifact_output_dir=(
+                    Path(plan_investigation_output_dir)
+                    if plan_investigation_output_dir is not None
+                    else (Path(plan_loop_output_dir) if plan_loop_output_dir else None)
+                ),
+                add_event=lambda evt, msg, data: state.add_event(evt, msg, data),
+            )
+            if investigation_outcome.blocked:
+                block_code = investigation_outcome.block_code or (
+                    BLOCK_CODE_MATERIALS_BLOCKED if patch_type == "materials" else BLOCK_CODE_UNIVERSES_BLOCKED
+                )
+                issues.append(
+                    IncrementalExecutionIssue(
+                        code=f"planning.investigation_{patch_type}_blocked",
+                        severity="error",
+                        message=(
+                            f"controlled {patch_type} investigation blocked: {block_code}"
+                        ),
+                        patch_type=patch_type,
+                    )
+                )
+                return IncrementalExecutionResult(
+                    ok=False,
+                    state=state,
+                    issues=issues,
+                    summary={
+                        "issue_codes": [f"planning.investigation_{patch_type}_blocked"],
+                        "investigation_block_code": block_code,
+                        "investigation_session_id": investigation_outcome.session_id,
+                        "investigation_evidence_claim_count": len(
+                            investigation_outcome.evidence_claim_ids
+                        ),
+                    },
+                    plan_loop_outcome={
+                        "status": "blocked",
+                        "active_gate_id": (
+                            "material_universe" if patch_type in {"materials", "universes"} else "facts"
+                        ),
+                        "active_stage_id": f"plan_gate_material_universe",
+                        "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                        "detail": (
+                            f"BLOCKED_BY_INVESTIGATION:{patch_type} ({block_code})"
+                        ),
+                    },
+                )
+            if investigation_outcome.evidence_payloads:
+                generation_context = inject_investigation_evidence_into_context(
+                    generation_context, investigation_outcome
+                )
+                state.add_event(
+                    f"planning.investigation_{patch_type}_evidence_injected",
+                    f"{patch_type} patch prompt received investigation evidence",
                     {
                         "claim_count": len(investigation_outcome.evidence_claim_ids),
                         "evidence_context_hash": investigation_outcome.evidence_context_hash[:12],

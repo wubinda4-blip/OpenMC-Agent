@@ -696,6 +696,11 @@ def build_patch_prompt(
     # Phase 8A Step 3: structured investigation evidence.  Empty list (the
     # default) produces an empty section, so legacy prompts are unchanged.
     evidence_block = _investigation_evidence_block(context)
+    # Phase 8A Step 6: derived planning constraints (inventory-derived).
+    # Rendered in a separate section from source-backed evidence so the
+    # LLM and reviewers can distinguish "what the source said" from
+    # "what the inventory inferred".
+    constraints_block = _planning_constraints_block(context)
 
     return (
         f"{contract}\n\n"
@@ -704,9 +709,54 @@ def build_patch_prompt(
         f"{few_shot_block}"
         f"{context_block}"
         f"{evidence_block}"
+        f"{constraints_block}"
         f"Requirement:\n{requirement}\n\n"
         f'Return ONLY the JSON object with patch_type="{patch_type}". No other text.'
     )
+
+
+def _planning_constraints_block(context: Any | None) -> str:
+    """Render the Phase 8A Step 6 derived-constraints section.
+
+    Returns "" when ``context.planning_constraints`` is empty or absent.
+    """
+
+    if context is None:
+        return ""
+    constraints = getattr(context, "planning_constraints", None)
+    if not constraints:
+        return ""
+    lines = [
+        "Derived Planning Constraints (from inventory; do NOT contradict)",
+        "",
+    ]
+    for c in constraints:
+        cid = c.get("constraint_id", "")
+        kind = c.get("constraint_kind", "")
+        subject = c.get("subject", "")
+        predicate = c.get("predicate", "")
+        value_repr = json.dumps(c.get("value"), ensure_ascii=False, sort_keys=True)
+        if len(value_repr) > 120:
+            value_repr = value_repr[:117] + "..."
+        status = c.get("derivation_status", "deterministically_derived")
+        crit = c.get("criticality", "supporting")
+        req_ids = ", ".join(c.get("inventory_requirement_ids", []) or [])
+        lines.append(
+            f"- [{cid}] ({kind}) {subject}.{predicate} = {value_repr}"
+            f"  ({status}/{crit})"
+        )
+        if req_ids:
+            lines.append(f"    requirement_ids: {req_ids}")
+        unresolved = c.get("unresolved_fields", []) or []
+        if unresolved:
+            lines.append(f"    unresolved_fields: {', '.join(unresolved)}")
+    lines.append("")
+    lines.append(
+        "These constraints are deterministically derived from the geometry "
+        "component inventory.  Treat them as hard requirements; do NOT invent "
+        "values that contradict them, and do NOT silently drop unresolved ones."
+    )
+    return "\n".join(lines) + "\n\n"
 
 
 def _investigation_evidence_block(context: Any | None) -> str:

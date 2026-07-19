@@ -104,6 +104,54 @@ PREFLIGHT_ISSUE_CODES: tuple[str, ...] = (
 )
 
 
+# Phase 8A Step 6 (P0-3 fix): explicit owner map.  The previous
+# implementation used ``"radial_profile" in finding.code`` / ``"universe"
+# in finding.code`` string-contains checks and defaulted to
+# ``materials`` when no match was found.  The explicit map below
+# assigns a deterministic owner to every stable preflight code, and a
+# separate ``_owner_for_unknown_finding_code`` helper fails closed for
+# unknown codes (returns ``None`` so the caller can route to
+# ``plan_investigation`` instead of silently defaulting to materials).
+INVENTORY_FINDING_OWNER_MAP: dict[str, str] = {
+    INVENTORY_MATERIAL_ROLE_UNCOVERED: "materials",
+    INVENTORY_FUEL_VARIANT_MATERIAL_UNCOVERED: "materials",
+    INVENTORY_UNIVERSE_MATERIAL_UNRESOLVED: "universes",
+    INVENTORY_RADIAL_PROFILE_UNCOVERED: "universes",
+    INVENTORY_PROFILE_LAYER_UNCOVERED: "universes",
+    INVENTORY_LOCALIZED_INSERT_PROFILE_UNCOVERED: "universes",
+    MANIFEST_INVENTORY_REQUIREMENT_MISSING: "universes",
+    INVENTORY_UNSUPPORTED_IMPLICIT_COMPONENT: "universes",
+    INVENTORY_FABRICATED_GEOMETRY_VALUE: "universes",
+    INVENTORY_SOURCE_CLAIM_MISSING: "plan_investigation",
+    INVENTORY_SOURCE_SPAN_INVALID: "plan_investigation",
+    INVENTORY_CONFLICT_UNRESOLVED: "plan_investigation",
+    INVENTORY_COMPONENT_UNRESOLVED: "plan_investigation_or_human",
+    INVENTORY_HASH_MISMATCH: "inventory_rebuild",
+}
+
+# Codes gated by the gate itself (not a patch owner).
+INVENTORY_GATE_RESERVED_CODES = (
+    MATERIAL_UNIVERSE_INVENTORY_PREFLIGHT_FAILED,
+)
+
+
+def owner_for_inventory_finding_code(code: str) -> str | None:
+    """Return the owning patch type for ``code``.
+
+    Returns ``None`` for unknown codes (fail-closed).  Callers that
+    receive ``None`` should route the finding to ``plan_investigation``
+    or ``ASK_HUMAN`` rather than defaulting to ``materials``.
+    """
+
+    if code in INVENTORY_GATE_RESERVED_CODES:
+        return None
+    return INVENTORY_FINDING_OWNER_MAP.get(code)
+
+
+PREFLIGHT_NOT_EXECUTED_CODE = "material_universe.inventory_preflight_not_executed"
+PREFLIGHT_EXCEPTION_CODE = "material_universe.inventory_preflight_exception"
+
+
 # ---------------------------------------------------------------------------
 # Finding + report
 # ---------------------------------------------------------------------------
@@ -143,6 +191,70 @@ class InventoryPreflightReport(AgentBaseModel):
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# Phase 8A Step 6: typed execution result (replaces the ``except: return []``
+# pattern in the executor).  The previous pattern swallowed every exception
+# and returned an empty list, which the Material-Universe Gate then treated
+# as "no deterministic finding" — causing the gate to accept even when the
+# preflight crashed.  The typed result distinguishes "executed, found no
+# issues" from "did not execute" / "crashed".
+# ---------------------------------------------------------------------------
+
+
+class InventoryPreflightExecutionResult(AgentBaseModel):
+    """Wrap the preflight execution status + report.
+
+    Fields:
+
+    * ``executed`` — True iff the preflight ran to completion.
+    * ``report`` — the :class:`InventoryPreflightReport` (None when
+      the preflight crashed or did not run).
+    * ``execution_error`` — exception message when the preflight
+      crashed; None otherwise.
+    * ``failure_code`` — one of ``PREFLIGHT_NOT_EXECUTED_CODE``,
+      ``PREFLIGHT_EXCEPTION_CODE``; empty when ``executed=True`` OR
+      when the preflight was not run because no inventory is present
+      (off mode).
+    * ``inventory_present`` — True iff a geometry inventory was
+      present on the state.  When False, the preflight is a no-op
+      (off mode) and ``has_blocking_deterministic_finding`` is False.
+    * ``input_hash`` / ``output_hash`` — content hashes of the input
+      bundle (inventory + requirement sets + patches) and the report.
+      Used by resume fingerprints.
+    """
+
+    executed: bool = False
+    report: InventoryPreflightReport | None = None
+    execution_error: str | None = None
+    failure_code: str = ""
+    inventory_present: bool = True
+    input_hash: str = ""
+    output_hash: str = ""
+
+    @property
+    def has_blocking_deterministic_finding(self) -> bool:
+        """True when the gate must block based on this result alone.
+
+        The gate blocks when:
+
+        * an inventory IS present AND
+        * (the preflight did not run, crashed, or produced at least
+          one error-severity finding).
+
+        When no inventory is present (off mode), the preflight is a
+        no-op and this property is False — the legacy prompt path is
+        exercised without any deterministic gate.
+        """
+
+        if not self.inventory_present:
+            return False
+        if not self.executed:
+            return True
+        if self.report is None:
+            return True
+        return self.report.error_count > 0
 
 
 # ---------------------------------------------------------------------------

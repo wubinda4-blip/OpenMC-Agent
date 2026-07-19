@@ -306,7 +306,13 @@ def run_facts_investigation_stage(
     artifact_output_dir: Path | None = None,
     add_event: Callable[[str, str, dict[str, Any]], None] | None = None,
 ) -> InvestigationStageOutcome:
-    """Run the Facts investigation stage.
+    """Run the Facts investigation stage (Phase 8A Step 4 wrapper).
+
+    Phase 8A Step 6: this is now a thin wrapper around the generic
+    :func:`run_patch_investigation_stage` that fixes ``patch_type=
+    "facts"``.  Materials and Universes investigations go through the
+    generic function directly so they can pass inventory / requirement
+    context.
 
     Returns an :class:`InvestigationStageOutcome` describing what
     happened.  The caller is responsible for:
@@ -320,7 +326,80 @@ def run_facts_investigation_stage(
       patch types.
     """
 
-    # Resolve config.
+    return run_patch_investigation_stage(
+        patch_type="facts",
+        requirement=requirement,
+        state=state,
+        config=config,
+        llm_client=llm_client,
+        registry=registry,
+        policy_registry=policy_registry,
+        session_cache=session_cache,
+        shared_source_index=shared_source_index,
+        shared_ledger=shared_ledger,
+        artifact_output_dir=artifact_output_dir,
+        add_event=add_event,
+    )
+
+
+# Stable block codes for the Materials / Universes investigation stages.
+BLOCK_CODE_MATERIALS_BLOCKED = "planning.investigation_materials_blocked"
+BLOCK_CODE_UNIVERSES_BLOCKED = "planning.investigation_universes_blocked"
+
+
+def _block_code_for_patch_type(patch_type: str) -> str:
+    if patch_type == "materials":
+        return BLOCK_CODE_MATERIALS_BLOCKED
+    if patch_type == "universes":
+        return BLOCK_CODE_UNIVERSES_BLOCKED
+    return BLOCK_CODE_FACTS_BLOCKED
+
+
+def run_patch_investigation_stage(
+    *,
+    patch_type: str,
+    requirement: str,
+    state: Any | None = None,
+    config: PlanInvestigationConfig | None = None,
+    llm_client: Callable[[str], str] | None = None,
+    registry: InvestigationToolRegistry | None = None,
+    policy_registry: InvestigationPolicyRegistry | None = None,
+    session_cache: InvestigationSessionCache | None = None,
+    shared_source_index: SourceIndex | None = None,
+    shared_ledger: PlanningEvidenceLedger | None = None,
+    accepted_facts: Any = None,
+    geometry_inventory: Any = None,
+    material_requirement_set: Any = None,
+    universe_requirement_set: Any = None,
+    artifact_output_dir: Path | None = None,
+    add_event: Callable[[str, str, dict[str, Any]], None] | None = None,
+) -> InvestigationStageOutcome:
+    """Run the investigation stage for any patch type (facts/materials/universes).
+
+    Phase 8A Step 6 (P0-1 fix): the previous implementation only ran
+    for the Facts patch.  Materials and Universes patches received at
+    most a static inventory-payload injection — no mandatory baseline,
+    no LLM supplemental plan, no typed synthesis, no shared Ledger
+    update.  This generic function closes that gap.
+
+    For ``patch_type="facts"`` the behaviour is byte-identical to the
+    legacy Facts path (the wrapper above delegates here).  For
+    ``patch_type in {"materials", "universes"}`` the function:
+
+    * Reuses the SAME shared SourceIndex + Ledger that the Facts
+      investigation produced (callers must pass ``shared_source_index``
+      and ``shared_ledger`` so claims accumulate across patch types).
+    * Forwards ``accepted_facts`` / ``geometry_inventory`` /
+      ``material_requirement_set`` / ``universe_requirement_set`` into
+      :class:`InvestigationContext` so the Materials/Universes baseline
+      resolver can read fuel variants and inventory roles.
+    * Applies a per-patch-type coverage check.  For ``facts`` the
+      legacy FactsInvestigationCoverage is used.  For materials /
+      universes a :class:`PatchInvestigationCoverage` check applies
+      (at minimum: schema inspection + at least one source search +
+      at least one source-backed claim).
+    """
+
     if config is None:
         try:
             config = _read_config(state)
@@ -328,33 +407,30 @@ def run_facts_investigation_stage(
             return _outcome_from_config_error(issue)
     if config.is_off:
         return InvestigationStageOutcome(
-            mode=config.mode, patch_type="facts"
+            mode=config.mode, patch_type=patch_type
         )
 
-    # Build / reuse shared SourceIndex.
     if shared_source_index is None:
         shared_source_index = build_investigation_source_index(requirement)
     source_indexes = {shared_source_index.document.source_id: shared_source_index}
 
-    # Build / reuse shared Ledger.
     if shared_ledger is None:
         shared_ledger = build_investigation_ledger(
             requirement_text=requirement, source_indexes=source_indexes
         )
 
-    # Resolve registry + policy.
     if registry is None:
         registry = build_default_step2_registry()
     if policy_registry is None:
         policy_registry = default_policy_registry()
 
-    # Session cache check.
     cache_key = _build_cache_key(
         requirement=requirement,
         source_index=shared_source_index,
         config=config,
         registry=registry,
         policy_registry=policy_registry,
+        patch_type=patch_type,
     )
     cache_entry: SessionCacheEntry | None = None
     if session_cache is not None and config.reuse_cached_session:
@@ -363,12 +439,12 @@ def run_facts_investigation_stage(
         if add_event is not None:
             add_event(
                 EVENT_INVESTIGATION_CACHE_REUSED,
-                f"facts investigation cache reused (key={cache_key.to_hash()[:12]})",
-                {"patch_type": "facts", "session_id": cache_entry.session_id},
+                f"{patch_type} investigation cache reused (key={cache_key.to_hash()[:12]})",
+                {"patch_type": patch_type, "session_id": cache_entry.session_id},
             )
         return InvestigationStageOutcome(
             mode=config.mode,
-            patch_type="facts",
+            patch_type=patch_type,
             completed=cache_entry.completed,
             session_id=cache_entry.session_id,
             evidence_claim_ids=cache_entry.evidence_claim_ids,
@@ -384,34 +460,47 @@ def run_facts_investigation_stage(
     if add_event is not None:
         add_event(
             EVENT_INVESTIGATION_STARTED,
-            "facts investigation starting",
+            f"{patch_type} investigation starting",
             {
-                "patch_type": "facts",
+                "patch_type": patch_type,
                 "mode": config.mode.value,
                 "requirement_hash": content_hash(requirement)[:12],
                 "source_index_hash": shared_source_index.index_hash[:12],
+                "has_accepted_facts": accepted_facts is not None,
+                "has_geometry_inventory": geometry_inventory is not None,
             },
         )
 
-    # Run the investigation.
     result = run_investigation_stage(
         requirement=requirement,
-        patch_type="facts",
+        patch_type=patch_type,
         config=config,
         registry=registry,
         policy_registry=policy_registry,
         llm_client=llm_client,
         source_indexes=source_indexes,
         ledger=shared_ledger,
+        accepted_facts=accepted_facts,
+        geometry_inventory=geometry_inventory,
+        material_requirement_set=material_requirement_set,
+        universe_requirement_set=universe_requirement_set,
     )
     if result is None:
-        # mode=off path: should have been caught above; defensive.
         return InvestigationStageOutcome(
-            mode=config.mode, patch_type="facts"
+            mode=config.mode, patch_type=patch_type
         )
 
-    # Build coverage + evidence payloads.
-    coverage = FactsInvestigationCoverage().from_result(result, shared_ledger)
+    # Coverage: Facts uses the legacy FactsInvestigationCoverage;
+    # materials/universes use the generic PatchInvestigationCoverage.
+    coverage_dict: dict[str, Any]
+    if patch_type == "facts":
+        coverage = FactsInvestigationCoverage().from_result(result, shared_ledger)
+        coverage_dict = coverage.to_dict()
+    else:
+        patch_coverage = PatchInvestigationCoverage().from_result(
+            result, shared_ledger, patch_type=patch_type
+        )
+        coverage_dict = patch_coverage.to_dict()
     payloads: list[dict[str, Any]] = []
     if result.evidence_claim_ids:
         payloads = collect_evidence_for_patch_prompt(
@@ -419,13 +508,12 @@ def run_facts_investigation_stage(
         )
     evidence_context_hash = content_hash(
         {
-            "patch_type": "facts",
+            "patch_type": patch_type,
             "evidence_claim_ids": list(result.evidence_claim_ids),
             "ledger_hash": shared_ledger.ledger_hash,
         }
     )
 
-    # Write session artifact (only when caller wants artifacts).
     if artifact_output_dir is not None:
         try:
             write_investigation_session_artifact(
@@ -441,7 +529,7 @@ def run_facts_investigation_stage(
 
     outcome = InvestigationStageOutcome(
         mode=config.mode,
-        patch_type="facts",
+        patch_type=patch_type,
         completed=result.completed and not result.blocked,
         blocked=result.blocked,
         block_code=result.block_code,
@@ -452,31 +540,32 @@ def run_facts_investigation_stage(
         evidence_context_hash=evidence_context_hash,
         ledger_hash=shared_ledger.ledger_hash,
         source_index_hash=shared_source_index.index_hash,
-        coverage=coverage.to_dict(),
+        coverage=coverage_dict,
         warnings=result.warnings,
         result_hash=result.result_hash,
     )
 
-    # Controlled-mode post-conditions.  A "completed" Facts investigation
-    # in controlled mode must satisfy the minimum coverage contract.
+    # Controlled post-condition: per-patch-type coverage check.
     if config.is_controlled and outcome.completed:
-        if not _passes_controlled_facts_coverage(coverage):
+        passed = (
+            _passes_controlled_facts_coverage(coverage)
+            if patch_type == "facts"
+            else _passes_controlled_patch_coverage(coverage_dict, patch_type)
+        )
+        if not passed:
+            block_code = _block_code_for_patch_type(patch_type)
             outcome = outcome.model_copy(
                 update={
                     "completed": False,
                     "blocked": True,
-                    "block_code": BLOCK_CODE_FACTS_BLOCKED,
+                    "block_code": block_code,
                     "block_message": (
-                        "controlled Facts investigation did not satisfy the "
-                        "minimum coverage contract (structure + schema + "
-                        "search + source-backed evidence)"
+                        f"controlled {patch_type} investigation did not satisfy "
+                        f"the minimum coverage contract"
                     ),
                 }
             )
 
-    # Populate the cache regardless of outcome so subsequent retries do
-    # not re-invoke the LLM.  The caller can still distinguish blocked
-    # from completed via ``outcome.completed``.
     if session_cache is not None:
         session_cache.put(
             cache_key,
@@ -497,9 +586,9 @@ def run_facts_investigation_stage(
         if add_event is not None:
             add_event(
                 EVENT_INVESTIGATION_BLOCKED,
-                f"facts investigation blocked: code={outcome.block_code}",
+                f"{patch_type} investigation blocked: code={outcome.block_code}",
                 {
-                    "patch_type": "facts",
+                    "patch_type": patch_type,
                     "block_code": outcome.block_code,
                     "session_id": outcome.session_id,
                     "tool_call_count": len(result.tool_calls),
@@ -510,9 +599,9 @@ def run_facts_investigation_stage(
         if add_event is not None:
             add_event(
                 EVENT_INVESTIGATION_COMPLETED,
-                "facts investigation completed",
+                f"{patch_type} investigation completed",
                 {
-                    "patch_type": "facts",
+                    "patch_type": patch_type,
                     "session_id": outcome.session_id,
                     "evidence_claim_count": len(outcome.evidence_claim_ids),
                     "evidence_context_hash": outcome.evidence_context_hash[:12],
@@ -520,6 +609,78 @@ def run_facts_investigation_stage(
             )
 
     return outcome
+
+
+class PatchInvestigationCoverage(AgentBaseModel):
+    """Generic coverage metric for Materials/Universes investigations.
+
+    Phase 8A Step 6 (Section 8): tracks the minimum controlled-mode
+    coverage contract.  A "completed" Materials or Universes
+    investigation must:
+
+    * inspect the owner patch schema at least once,
+    * run at least one source search,
+    * produce at least one source-backed EvidenceClaim,
+    * query the ledger at least once (to confirm it saw existing
+      evidence).
+    """
+
+    patch_type: str = ""
+    schema_inspection_count: int = 0
+    source_search_count: int = 0
+    ledger_query_count: int = 0
+    tool_call_count: int = 0
+    source_backed_claim_count: int = 0
+    typed_semantic_claim_count: int = 0
+    coverage_complete: bool = False
+
+    def from_result(
+        self,
+        result: InvestigationResult,
+        ledger: PlanningEvidenceLedger,
+        *,
+        patch_type: str,
+    ) -> "PatchInvestigationCoverage":
+        self.patch_type = patch_type
+        self.tool_call_count = len(result.tool_calls)
+        for call in result.tool_calls:
+            # ToolCallRecord has ``tool_name`` (not ``tool``).
+            tool = getattr(call, "tool_name", None) or getattr(call, "tool", "")
+            if tool == "inspect_patch_schema":
+                self.schema_inspection_count += 1
+            elif tool == "search_source_index":
+                self.source_search_count += 1
+            elif tool == "query_evidence_ledger":
+                self.ledger_query_count += 1
+        for claim_id in result.evidence_claim_ids:
+            claim = ledger.claims.get(claim_id)
+            if claim is None:
+                continue
+            if claim.source_refs:
+                self.source_backed_claim_count += 1
+            else:
+                self.typed_semantic_claim_count += 1
+        self.coverage_complete = (
+            self.schema_inspection_count >= 1
+            and self.source_search_count >= 1
+            and self.source_backed_claim_count >= 1
+        )
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+def _passes_controlled_patch_coverage(coverage: dict[str, Any], patch_type: str) -> bool:
+    """Minimum coverage contract for Materials / Universes investigations."""
+
+    if not coverage:
+        return False
+    return (
+        coverage.get("schema_inspection_count", 0) >= 1
+        and coverage.get("source_search_count", 0) >= 1
+        and coverage.get("source_backed_claim_count", 0) >= 1
+    )
 
 
 def inject_investigation_evidence_into_context(
@@ -573,22 +734,28 @@ def _build_cache_key(
     config: PlanInvestigationConfig,
     registry: InvestigationToolRegistry,
     policy_registry: InvestigationPolicyRegistry,
+    patch_type: str = "facts",
 ) -> SessionCacheKey:
-    """Build a deterministic cache key for the Facts investigation."""
+    """Build a deterministic cache key for an investigation session.
+
+    Phase 8A Step 6: ``patch_type`` parameter so the Materials /
+    Universes investigations get distinct cache entries (the previous
+    implementation hardcoded ``"facts"``).
+    """
 
     tool_specs = [spec.model_dump(mode="json") for spec in registry.list_tools()]
     policy_dump = {
-        patch_type: policy.model_dump(mode="json")
-        for patch_type, policy in policy_registry.policies.items()
+        p_type: policy.model_dump(mode="json")
+        for p_type, policy in policy_registry.policies.items()
     }
     return SessionCacheKey(
         requirement_hash=content_hash(requirement),
         source_index_hash=source_index.index_hash,
-        patch_type="facts",
+        patch_type=patch_type,
         investigation_mode=config.mode.value,
         require_source_backed_evidence=config.require_source_backed_evidence,
         budget_hash=content_hash(config.budget.model_dump(mode="json")),
-        policy_hash=content_hash({"facts": policy_dump.get("facts", {})}),
+        policy_hash=content_hash({patch_type: policy_dump.get(patch_type, {})}),
         tool_registry_hash=content_hash({"tools": tool_specs}),
         investigator_model=config.investigator_model,
         investigator_reasoning_effort=config.investigator_reasoning_effort,

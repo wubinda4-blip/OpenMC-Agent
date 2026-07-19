@@ -124,6 +124,15 @@ class InvestigationContext(AgentBaseModel):
     adds new evidence claims to the ledger but does NOT mutate any
     :class:`SourceIndex` (tools may register spans inside an index, but
     that is idempotent).
+
+    Phase 8A Step 6 (P0-5 fix): typed optional fields ``accepted_facts``,
+    ``geometry_inventory``, ``material_requirement_set``,
+    ``universe_requirement_set`` give the Materials/Universes baseline
+    resolver access to the inventory context that the previous
+    implementation hardcoded to ``None``.  These fields are populated
+    only by :func:`run_patch_investigation_stage`; legacy callers that
+    build an ``InvestigationContext`` directly (tests, the Facts-only
+    path) are unaffected.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -137,6 +146,13 @@ class InvestigationContext(AgentBaseModel):
     ledger: PlanningEvidenceLedger
     policy_suggestions: tuple[str, ...] = Field(default_factory=tuple)
     caller_stage: str = "investigation"
+    # Phase 8A Step 6 (P0-5): typed inventory context.  ``Any`` typing
+    # avoids a circular import with the inventory / requirement-set
+    # modules; the baseline resolver duck-types these objects.
+    accepted_facts: Any = None
+    geometry_inventory: Any = None
+    material_requirement_set: Any = None
+    universe_requirement_set: Any = None
 
     @property
     def requirement_excerpt(self) -> str:
@@ -536,6 +552,12 @@ def _resolve_baseline_policy(
 
     Returns ``None`` when the baseline module is unavailable or when no
     policy exists for the patch type (e.g. axial_layers, settings).
+
+    Phase 8A Step 6 (P0-5 fix): the previous implementation hardcoded
+    ``accepted_facts=None, inventory=None``.  Now we forward the typed
+    optional fields from the context so the Materials/Universes
+    baseline resolver can actually read fuel variants and inventory
+    roles (its dedicated code path was previously dead).
     """
 
     try:
@@ -545,8 +567,8 @@ def _resolve_baseline_policy(
     try:
         return baseline_policy_for_patch_type(
             context.patch_type,
-            accepted_facts=None,
-            inventory=None,
+            accepted_facts=context.accepted_facts,
+            inventory=context.geometry_inventory,
         )
     except Exception:
         return None

@@ -1571,11 +1571,19 @@ def run_real_canary_campaign(
         requirement_sha = ""
 
     env_status = detect_provider_environment(campaign.model)
-    policy = make_five_gate_controlled_policy(
-        enabled_gate_ids=tuple((campaign.stop_after_gate,))
-        if getattr(campaign, "stop_after_gate", None)
-        else None,
-    )
+    # Phase 8A Step 6: --stop-after-gate is a cumulative prefix.  Stopping
+    # at material_universe must still enable facts as a barrier; stopping
+    # at placement enables facts + material_universe + placement; etc.
+    # This prevents a downstream gate from running without its upstream
+    # barriers.
+    if getattr(campaign, "stop_after_gate", None):
+        from openmc_agent.plan_builder.closed_loop.policy import enabled_gates_through
+        cumulative_gates = enabled_gates_through(campaign.stop_after_gate)
+        policy = make_five_gate_controlled_policy(
+            enabled_gate_ids=tuple(g.value for g in cumulative_gates),
+        )
+    else:
+        policy = make_five_gate_controlled_policy()
     fingerprint = compute_resume_fingerprint(
         case=campaign.case,
         env_status=env_status,

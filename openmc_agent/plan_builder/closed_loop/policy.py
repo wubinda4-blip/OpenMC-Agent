@@ -34,6 +34,32 @@ def enabled_gates(policy: PlanClosedLoopPolicy) -> list[PlanGateId]:
     return [gate for gate in _ORDER if policy.gate_enabled.get(gate, False)]
 
 
+def enabled_gates_through(target_gate: PlanGateId | str) -> list[PlanGateId]:
+    """Return the cumulative gate prefix ending at ``target_gate``.
+
+    Phase 8A Step 6 contract: ``--stop-after-gate`` is a cumulative
+    prefix, not an exact set.  Stopping at ``material_universe`` enables
+    both ``facts`` and ``material_universe`` so the Facts Gate still
+    runs as a barrier.  Stopping at ``placement`` enables facts +
+    material_universe + placement.  Stopping at ``assembled_plan``
+    enables all five gates.
+
+    Reactor-neutral: the order is the canonical
+    :data:`_ORDER` (facts → material_universe → placement →
+    axial_geometry → assembled_plan), independent of any reactor type.
+    """
+
+    target_value = target_gate.value if isinstance(target_gate, PlanGateId) else str(target_gate).lower()
+    prefix: list[PlanGateId] = []
+    for gate in _ORDER:
+        prefix.append(gate)
+        if gate.value == target_value:
+            return prefix
+    # Unknown target → enable everything (defensive; tests cover the
+    # known-target path).
+    return list(_ORDER)
+
+
 def patch_types_for_gate(gate_id: PlanGateId, required_patch_types: list[str] | None = None) -> list[str]:
     candidates = list(_GATES[gate_id])
     if required_patch_types is None:

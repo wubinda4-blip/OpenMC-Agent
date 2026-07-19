@@ -101,6 +101,14 @@ class PatchGenerationContext(AgentBaseModel):
     # (the default) means no investigation was run; existing patch prompts
     # are unchanged in that case.
     investigation_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase-8A Step 6: derived planning constraints (distinct from
+    # source-backed EvidenceClaims).  Populated from the
+    # GeometryComponentInventory + Material/Universe/Placement/Axial
+    # requirement sets.  ``derivation_status=deterministically_derived``
+    # entries must NOT be confused with source quotations (the P0-4 bug).
+    # When non-empty, the prompt renderer emits a separate "Derived
+    # Planning Constraints" section.
+    planning_constraints: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RetryPatchGenerationContext(AgentBaseModel):
