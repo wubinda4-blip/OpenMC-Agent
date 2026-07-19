@@ -250,18 +250,23 @@ def test_truth_matrix_clone_validation_not_in_production_call_chain():
     )
 
 
-def test_truth_matrix_skeleton_does_not_mine_evidence_ledger():
+def test_truth_matrix_skeleton_now_mines_evidence_ledger():
     """Row: 'Skeleton compiler mines evidence_ledger.claims for values' —
-    NEGATIVE in Step 0, positive in Step 2.
+    POSITIVE in Step 2.
+
+    Phase 8C Step 2: the skeleton compiler now iterates
+    ``evidence_ledger.claims`` to populate slot values via subject and
+    ``required_by_json_paths`` matching.  This flipped from negative to
+    positive when ``compile_facts_requirement_skeleton`` was upgraded.
     """
     from openmc_agent.plan_builder import facts_requirement_skeleton as fs
 
     src = inspect.getsource(fs.compile_facts_requirement_skeleton)
-    # Currently the function only hashes the ledger; it does not iterate
-    # claims to populate slot values.
-    assert ".claims" not in src or "for claim in" not in src, (
-        "Skeleton compiler now mines evidence ledger — flip this "
-        "assertion to positive in Step 2."
+    assert "_select_best_claim" in src, (
+        "Skeleton compiler must call _select_best_claim to mine evidence ledger"
+    )
+    assert "claims" in src, (
+        "Skeleton compiler must iterate evidence_ledger.claims"
     )
 
 
