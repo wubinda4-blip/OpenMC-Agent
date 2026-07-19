@@ -21,6 +21,7 @@ from openmc_agent.plan_investigation.runner import (
     build_investigation_ledger,
     build_investigation_source_index,
 )
+from openmc_agent.plan_investigation.agent import InvestigationBudget
 
 
 def _investigator_returning_valid_actions():
@@ -58,7 +59,7 @@ def test_session_cache_skips_repeat_llm_call() -> None:
             ]
         })
 
-    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED)
+    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10))
 
     # First run.
     outcome1 = run_facts_investigation_stage(
@@ -71,7 +72,7 @@ def test_session_cache_skips_repeat_llm_call() -> None:
     )
     assert outcome1.completed
     first_call_count = len(llm_calls)
-    assert first_call_count >= 1
+    assert first_call_count >= 1  # mandatory baseline + LLM
 
     # Second run with the SAME cache: must NOT call the LLM.
     outcome2 = run_facts_investigation_stage(
@@ -103,7 +104,7 @@ def test_session_cache_invalidates_on_requirement_change() -> None:
             ]
         })
 
-    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED)
+    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10))
     req1 = "First requirement with full core."
     req2 = "Completely different second requirement."
 
@@ -134,14 +135,14 @@ def test_session_cache_invalidates_on_mode_change() -> None:
     req = "Same requirement."
     run_facts_investigation_stage(
         requirement=req,
-        config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY),
+        config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY, budget=InvestigationBudget(max_tool_calls=10)),
         llm_client=counting_client,
         session_cache=cache,
     )
     count_after_first = len(llm_calls)
     run_facts_investigation_stage(
         requirement=req,
-        config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         llm_client=counting_client,
         session_cache=cache,
     )
@@ -152,7 +153,7 @@ def test_session_cache_key_is_deterministic() -> None:
     """Same inputs → same cache key hash."""
     requirement = "demo"
     source_index = build_investigation_source_index(requirement)
-    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED)
+    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10))
     from openmc_agent.plan_investigation.tool_registry import build_default_step2_registry
     from openmc_agent.plan_investigation.policy import default_policy_registry
 
@@ -196,7 +197,7 @@ def test_cache_reuse_event_recorded() -> None:
             ]
         })
 
-    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED)
+    config = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10))
     run_facts_investigation_stage(
         requirement=requirement, config=config, llm_client=client,
         session_cache=cache, shared_source_index=source_index,

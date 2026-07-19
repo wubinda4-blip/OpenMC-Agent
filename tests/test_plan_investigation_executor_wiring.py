@@ -27,6 +27,7 @@ from openmc_agent.plan_investigation.runner import (
     PlanInvestigationConfig,
     PlanInvestigationMode,
 )
+from openmc_agent.plan_investigation.agent import InvestigationBudget
 
 
 CANARY_TEXT = """# Reactor Problem
@@ -150,7 +151,7 @@ def test_controlled_runs_investigation_before_facts_patch() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=investigator,
     )
     # Investigator ran at least once.
@@ -187,7 +188,7 @@ def test_controlled_injects_evidence_into_patch_prompt() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=investigator,
     )
     assert len(patch_calls) >= 1
@@ -210,7 +211,7 @@ def test_controlled_blocks_when_investigator_missing() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=None,
     )
     assert not result.ok
@@ -232,7 +233,7 @@ def test_controlled_blocks_on_invalid_llm_output() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=lambda p: "not json",
     )
     assert not result.ok
@@ -249,7 +250,7 @@ def test_controlled_blocks_on_unknown_tool() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=lambda p: json.dumps(
             {"actions": [{"tool": "shell_exec", "arguments": {"cmd": "rm -rf /"}}]}
         ),
@@ -259,9 +260,12 @@ def test_controlled_blocks_on_unknown_tool() -> None:
 
 
 def test_controlled_blocks_on_insufficient_coverage() -> None:
-    """Even with valid JSON, the controlled contract requires
-    inspect_requirement_structure + inspect_patch_schema + at least one
-    search_source_index call.  An empty action list blocks.
+    """With the Step 5 mandatory baseline, Python always runs the three
+    required tools (inspect_patch_schema, inspect_requirement_structure,
+    search_source_index) even when the LLM returns an empty action list.
+    So an empty LLM action list no longer blocks — the mandatory
+    baseline satisfies the coverage contract.  The Facts patch LLM
+    proceeds.
     """
     state = _state()
     patch_client, patch_calls = _patch_llm_recorder()
@@ -271,13 +275,14 @@ def test_controlled_blocks_on_insufficient_coverage() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=lambda p: '{"actions": [], "summary": "noop"}',
     )
-    assert not result.ok
-    assert patch_calls == []
-    detail = result.plan_loop_outcome.get("detail", "")
-    assert "BLOCKED_BY_INVESTIGATION:facts" in detail
+    # Mandatory baseline ran the required tools → Facts patch LLM called.
+    assert len(patch_calls) >= 1
+    # No investigation block.
+    detail = (result.plan_loop_outcome or {}).get("detail", "")
+    assert "BLOCKED_BY_INVESTIGATION" not in detail
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +299,7 @@ def test_advisory_continues_when_investigator_missing() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=None,
     )
     # Advisory mode tolerates the missing investigator and proceeds to
@@ -314,7 +319,7 @@ def test_advisory_failure_does_not_mark_investigation_completed() -> None:
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=lambda p: "not json",
     )
     # The build log records a warning (advisory investigation skipped /
@@ -324,9 +329,13 @@ def test_advisory_failure_does_not_mark_investigation_completed() -> None:
 
 
 def test_advisory_empty_evidence_does_not_change_prompt() -> None:
-    """When the advisory investigator returns no evidence, the patch
-    prompt must NOT contain an Evidence Claims section (preserves the
-    legacy prompt structure).
+    """When the advisory investigator returns no evidence AND the
+    requirement has no source-backed claims from the mandatory
+    baseline, the patch prompt must NOT contain an Evidence Claims
+    section.  Note: with the Step 5 mandatory baseline, the baseline's
+    search_source_index tool usually produces at least one claim for
+    any non-trivial requirement, so this test uses a minimal
+    requirement that produces no search hits.
     """
     state = _state()
     patch_calls: list[str] = []
@@ -341,16 +350,19 @@ def test_advisory_empty_evidence_does_not_change_prompt() -> None:
             }
         )
 
+    # Use a requirement with no searchable keywords → mandatory baseline
+    # search returns 0 hits → no evidence → no prompt change.
+    minimal_req = "x"
     run_incremental_planning(
-        requirement=CANARY_TEXT,
+        requirement=minimal_req,
         state=state,
         llm_client=patch_client,
         task_order=["facts"],
         plan_loop_policy={"mode": "off"},
-        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY),
+        plan_investigation_config=PlanInvestigationConfig(mode=PlanInvestigationMode.ADVISORY, budget=InvestigationBudget(max_tool_calls=10)),
         plan_investigation_client=lambda p: '{"actions": [], "summary": "noop"}',
     )
     assert len(patch_calls) >= 1
     # The Facts prompt does not include the evidence section because no
-    # evidence claims were produced.
+    # evidence claims were produced (minimal requirement, no search hits).
     assert not any("Evidence Claims" in p for p in patch_calls)

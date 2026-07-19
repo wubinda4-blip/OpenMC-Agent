@@ -52,6 +52,10 @@ from .tool_registry import (
     ToolExecutionContext,
 )
 
+# Forward-declared type for the baseline policy.  Imported lazily inside
+# _resolve_baseline_policy to avoid a circular import.
+InvestigationBaselinePolicy = Any
+
 __all__ = [
     "InvestigationBudget",
     "InvestigationBudgetUsage",
@@ -251,7 +255,50 @@ class InvestigationAgent:
                 "ledger_hash": content_hash(context.ledger.ledger_hash),
             },
         )
-        # 1. Ask the LLM for an action plan.
+
+        tool_ledger = ToolCallLedger()
+        tool_results: list[InvestigationToolResult] = []
+        evidence_claim_ids: list[str] = []
+        warnings: list[str] = []
+        usage = InvestigationBudgetUsage()
+
+        # Phase 8A Step 5: execute the mandatory baseline BEFORE the LLM.
+        # This ensures the LLM cannot accidentally skip required tools
+        # (inspect_patch_schema, inspect_requirement_structure, search).
+        baseline_policy = _resolve_baseline_policy(context)
+        if baseline_policy is not None:
+            for action in baseline_policy.actions:
+                if usage.tool_calls >= context.budget.max_tool_calls:
+                    return self._block(
+                        session_id=session_id,
+                        context=context,
+                        code=BLOCK_CODE_BUDGET_EXCEEDED,
+                        message=f"max_tool_calls={context.budget.max_tool_calls} reached during mandatory baseline",
+                        tool_ledger=tool_ledger,
+                        tool_results=tool_results,
+                        evidence_claim_ids=evidence_claim_ids,
+                        usage=usage,
+                        warnings=warnings,
+                    )
+                mandatory_result = self._execute_action(
+                    action.tool_name,
+                    action.arguments,
+                    context,
+                    tool_ledger,
+                    tool_results,
+                    evidence_claim_ids,
+                    warnings,
+                    usage,
+                    session_id,
+                )
+                if mandatory_result is not None and not mandatory_result.ok:
+                    # Mandatory action failed in a way the executor can
+                    # detect.  In controlled mode this blocks.
+                    warnings.append(
+                        f"mandatory action {action.tool_name} returned ok=False"
+                    )
+
+        # 2. Ask the LLM for supplemental actions.
         try:
             plan = self.plan(context)
         except PlanInvestigationIssue as issue:
@@ -260,14 +307,14 @@ class InvestigationAgent:
                 context=context,
                 code=issue.code,
                 message=issue.message,
+                tool_ledger=tool_ledger,
+                tool_results=tool_results,
+                evidence_claim_ids=evidence_claim_ids,
+                usage=usage,
+                warnings=warnings,
             )
 
-        # 2. Execute each action against the registry, respecting budget.
-        tool_ledger = ToolCallLedger()
-        tool_results: list[InvestigationToolResult] = []
-        evidence_claim_ids: list[str] = []
-        warnings: list[str] = []
-        usage = InvestigationBudgetUsage()
+        # 3. Execute each LLM-requested action, respecting remaining budget.
         blocked_code: str | None = None
         blocked_message: str | None = None
 
@@ -311,8 +358,6 @@ class InvestigationAgent:
                     action.tool, request, context=exec_context
                 )
             except PlanInvestigationIssue as issue:
-                # Tool raised a protocol-level exception: record a warning
-                # and continue.  Tool failures are non-blocking.
                 warnings.append(
                     f"tool {action.tool} raised {issue.code}: {issue.message}"
                 )
@@ -401,16 +446,110 @@ class InvestigationAgent:
         context: InvestigationContext,
         code: str,
         message: str,
+        tool_ledger: ToolCallLedger | None = None,
+        tool_results: list[InvestigationToolResult] | None = None,
+        evidence_claim_ids: list[str] | None = None,
+        usage: InvestigationBudgetUsage | None = None,
+        warnings: list[str] | None = None,
     ) -> InvestigationResult:
         return InvestigationResult(
             session_id=session_id,
             patch_type=context.patch_type,
+            tool_calls=tuple(tool_ledger.records) if tool_ledger else (),
+            tool_results=tuple(tool_results) if tool_results else (),
+            evidence_claim_ids=tuple(evidence_claim_ids) if evidence_claim_ids else (),
             blocked=True,
             block_code=code,
             block_message=message,
             budget=context.budget,
-            warnings=(message,),
+            budget_used=usage or InvestigationBudgetUsage(),
+            warnings=tuple(warnings or [message]),
         )
+
+    def _execute_action(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        context: InvestigationContext,
+        tool_ledger: ToolCallLedger,
+        tool_results: list[InvestigationToolResult],
+        evidence_claim_ids: list[str],
+        warnings: list[str],
+        usage: InvestigationBudgetUsage,
+        session_id: str,
+    ) -> InvestigationToolResult | None:
+        """Execute one tool action (mandatory or supplemental) and record it."""
+
+        try:
+            self.registry.get(tool_name)
+        except PlanInvestigationIssue as issue:
+            warnings.append(f"mandatory tool {tool_name} unknown: {issue.message}")
+            return None
+        validation = self.registry.validate_arguments(tool_name, arguments)
+        if validation:
+            warnings.append(
+                f"mandatory tool {tool_name} invalid args: "
+                + "; ".join(i.message for i in validation)
+            )
+            return None
+        usage.tool_calls += 1
+        request = InvestigationToolRequest(
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            max_results=context.budget.max_results_per_tool,
+            caller_stage=context.caller_stage,
+        )
+        exec_context = ToolExecutionContext(
+            source_indexes=context.source_indexes,
+            ledger=context.ledger,
+        )
+        try:
+            result = self.registry.execute(tool_name, request, context=exec_context)
+        except PlanInvestigationIssue as issue:
+            warnings.append(f"mandatory tool {tool_name} raised {issue.code}: {issue.message}")
+            result = InvestigationToolResult(
+                ok=False,
+                tool_name=tool_name,
+                result={"error_code": issue.code},
+                error_codes=(issue.code,),
+                warnings=(issue.message,),
+            )
+        tool_results.append(result)
+        record_tool_call(
+            tool_ledger,
+            tool_name=tool_name,
+            arguments=arguments,
+            result=result,
+            caller_stage=context.caller_stage,
+        )
+        for claim_id in result.evidence_claim_ids:
+            if claim_id not in evidence_claim_ids:
+                evidence_claim_ids.append(claim_id)
+        usage.evidence_claims = len(evidence_claim_ids)
+        return result
+
+
+def _resolve_baseline_policy(
+    context: InvestigationContext,
+) -> InvestigationBaselinePolicy | None:
+    """Return the mandatory baseline policy for ``context.patch_type``.
+
+    Returns ``None`` when the baseline module is unavailable or when no
+    policy exists for the patch type (e.g. axial_layers, settings).
+    """
+
+    try:
+        from .baseline import baseline_policy_for_patch_type
+    except ImportError:
+        return None
+    try:
+        return baseline_policy_for_patch_type(
+            context.patch_type,
+            accepted_facts=None,
+            inventory=None,
+        )
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

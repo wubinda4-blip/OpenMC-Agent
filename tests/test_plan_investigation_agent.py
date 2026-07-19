@@ -49,17 +49,21 @@ def _llm_returning(actions: list[dict[str, Any]], summary: str = "ok"):
 
 
 def test_agent_executes_valid_actions_and_produces_evidence() -> None:
+    """The mandatory baseline runs 3 tools; the LLM adds 1 more
+    (search_source_index for 'alpha').  Total: 4 tool calls, 2 claims.
+    """
     idx, ld, reg, ctx = _ctx("alpha\nbeta\ndensity gamma\n")
     fake = _llm_returning([{"tool": TOOL_NAME_SEARCH_SOURCE_INDEX, "arguments": {"query": "alpha"}}])
     agent = InvestigationAgent(registry=reg, llm_client=fake)
     res = agent.run(ctx)
     assert res.completed
     assert not res.blocked
-    assert len(res.tool_calls) == 1
+    # 3 mandatory + 1 LLM supplemental = 4.
+    assert len(res.tool_calls) == 4
     assert len(res.evidence_claim_ids) >= 1
     # The claim is queryable in the ledger.
     matches = find_claims(ld, predicate="search_hit")
-    assert len(matches) == 1
+    assert len(matches) >= 1
 
 
 def test_agent_blocks_on_invalid_json() -> None:
@@ -151,14 +155,23 @@ def test_agent_does_not_modify_plan_build_state() -> None:
     assert len(after["claims"]) > len(before["claims"])
 
 
-def test_agent_empty_action_list_completes_with_zero_calls() -> None:
+def test_agent_empty_action_list_completes_with_mandatory_baseline() -> None:
+    """With Step 5's mandatory baseline, an empty LLM action list still
+    completes because Python runs the required tools first.  The
+    session records the mandatory tool calls (inspect_patch_schema +
+    inspect_requirement_structure + search_source_index).
+    """
     idx, ld, reg, ctx = _ctx()
     fake = _llm_returning([], summary="nothing to investigate")
     agent = InvestigationAgent(registry=reg, llm_client=fake)
     res = agent.run(ctx)
     assert res.completed
-    assert len(res.tool_calls) == 0
-    assert res.evidence_claim_ids == ()
+    # Mandatory baseline ran 3 tools.
+    assert len(res.tool_calls) == 3
+    tool_names = {tc.tool_name for tc in res.tool_calls}
+    assert "inspect_patch_schema" in tool_names
+    assert "inspect_requirement_structure" in tool_names
+    assert "search_source_index" in tool_names
 
 
 def test_agent_rejects_extra_top_level_keys_in_llm_output() -> None:

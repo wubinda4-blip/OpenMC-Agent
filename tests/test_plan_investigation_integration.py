@@ -28,6 +28,7 @@ from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.plan_investigation.agent import (
     BLOCK_CODE_UNKNOWN_TOOL,
     InvestigationAgent,
+    InvestigationBudget,
     InvestigationContext,
     collect_evidence_for_patch_prompt,
 )
@@ -35,6 +36,7 @@ from openmc_agent.plan_investigation.evidence_ledger import find_claims
 from openmc_agent.plan_investigation.models import SourceKind
 from openmc_agent.plan_investigation.runner import (
     CONFIG_METADATA_KEY,
+    PlanInvestigationMode,
     PlanInvestigationConfig,
     build_investigation_ledger,
     build_investigation_source_index,
@@ -161,7 +163,7 @@ def test_canary_facts_finds_full_core_assembly_and_grid() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
         patch_type="facts",
@@ -197,7 +199,7 @@ def test_canary_materials_finds_density() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
         patch_type="materials",
@@ -214,7 +216,7 @@ def test_canary_universes_finds_rcca() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
         patch_type="universes",
@@ -264,7 +266,7 @@ def test_investigation_does_not_modify_state() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     snapshot = state.model_dump(mode="json")
     run_investigation_stage(
         requirement=CANARY_TEXT,
@@ -282,7 +284,7 @@ def test_investigation_result_does_not_contain_patch() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
         patch_type="facts",
@@ -305,7 +307,7 @@ def test_llm_request_for_repository_tool_is_blocked() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     fake = lambda p: json.dumps({"actions": [{"tool": "repo_grep", "arguments": {"query": "x"}}]})
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
@@ -322,7 +324,7 @@ def test_llm_request_for_shell_exec_is_blocked() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     fake = lambda p: json.dumps({"actions": [{"tool": "shell_exec", "arguments": {"cmd": "rm -rf /"}}]})
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
@@ -343,7 +345,7 @@ def test_session_artifact_written_and_secret_free(tmp_path: Path) -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
         patch_type="facts",
@@ -387,11 +389,11 @@ def test_set_then_get_investigation_config_round_trip() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": "req", "planning_mode": "incremental"}
     )
-    cfg = PlanInvestigationConfig(enabled=True)
+    cfg = PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10))
     set_investigation_config(state, cfg)
-    assert state.metadata[CONFIG_METADATA_KEY]["enabled"] is True
+    assert state.metadata[CONFIG_METADATA_KEY]["mode"] == "controlled"
     restored = get_investigation_config(state)
-    assert restored.enabled is True
+    assert restored.is_controlled
 
 
 def test_malformed_config_metadata_does_not_silently_degrade() -> None:
@@ -424,7 +426,7 @@ def test_evidence_flows_from_investigation_to_patch_prompt() -> None:
     state = PlanBuildState.model_validate(
         {"state_id": "pbs_test", "requirement_text": CANARY_TEXT, "planning_mode": "incremental"}
     )
-    set_investigation_config(state, PlanInvestigationConfig(enabled=True))
+    set_investigation_config(state, PlanInvestigationConfig(mode=PlanInvestigationMode.CONTROLLED, budget=InvestigationBudget(max_tool_calls=10)))
     result = run_investigation_stage(
         requirement=CANARY_TEXT,
         patch_type="facts",
