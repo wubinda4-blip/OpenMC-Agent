@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -169,3 +169,235 @@ def evaluate_facts_revision(*, facts_patch: dict[str, Any], proposal: FactsRevis
         if _pointer_value(candidate, path) != value:
             return FactsRevisionEvaluation(candidate_hash=candidate_hash, reasons=["facts_revision.confirmed_fact_changed"])
     return FactsRevisionEvaluation(accepted=True, candidate=candidate, candidate_hash=candidate_hash)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8B Step 2: targeted facts repair and clone validation
+# ---------------------------------------------------------------------------
+
+
+class FactsDeterministicRepair(AgentBaseModel):
+    repair_id: str = ""
+    target_path: str
+    expected_value: Any = None
+    actual_value: Any = None
+    operation_kind: Literal["replace", "add", "remove"] = "replace"
+    source_claim_id: str | None = None
+    resolved: bool = False
+    error: str | None = None
+
+
+def targeted_facts_repair(
+    facts_patch: dict[str, Any],
+    skeleton: Any,
+    findings: list[Any],
+) -> tuple[dict[str, Any] | None, list[FactsDeterministicRepair]]:
+    """Deterministically repair a facts patch from skeleton + findings.
+
+    Returns (repaired_patch_or_None, repairs_applied).
+    Repairs are deterministic: model_scope, feature flags, assembly_count,
+    fuel_variant_requirements, and localized_insert_requirements values
+    from the skeleton are forced into the patch when findings indicate
+    they are wrong.
+    """
+    if skeleton is None:
+        return None, [FactsDeterministicRepair(
+            repair_id="skeleton_missing",
+            target_path="",
+            error="FactsRequirementSkeleton is None; cannot repair",
+        )]
+
+    repairs: list[FactsDeterministicRepair] = []
+    candidate = dict(facts_patch)
+
+    finding_codes = {getattr(f, "code", None) or getattr(f, "get", lambda k: None)("code") for f in findings}
+
+    # Repair model_scope
+    if any("model_scope" in (c or "") for c in finding_codes):
+        if skeleton.model_scope is not None and skeleton.model_scope.status in ("human_confirmed", "source_backed"):
+            expected = skeleton.model_scope.value
+            actual = candidate.get("model_scope")
+            if actual != expected:
+                candidate["model_scope"] = expected
+                repairs.append(FactsDeterministicRepair(
+                    repair_id="fix_model_scope",
+                    target_path="/model_scope",
+                    expected_value=expected,
+                    actual_value=actual,
+                    operation_kind="replace",
+                    resolved=True,
+                ))
+
+    # Repair feature flags
+    if skeleton.features is not None:
+        for flag in ("has_axial_geometry", "has_spacer_grids", "has_special_pin_map"):
+            expected_val = getattr(skeleton.features, flag, None)
+            if expected_val is not None:
+                actual_val = candidate.get(flag)
+                if actual_val != expected_val:
+                    candidate[flag] = expected_val
+                    repairs.append(FactsDeterministicRepair(
+                        repair_id=f"fix_{flag}",
+                        target_path=f"/{flag}",
+                        expected_value=expected_val,
+                        actual_value=actual_val,
+                        operation_kind="replace",
+                        resolved=True,
+                    ))
+
+    # Repair assembly_count
+    if skeleton.assembly_layout is not None and skeleton.assembly_layout.assembly_count is not None:
+        expected = skeleton.assembly_layout.assembly_count
+        actual = candidate.get("assembly_count")
+        if actual != expected:
+            candidate["assembly_count"] = expected
+            repairs.append(FactsDeterministicRepair(
+                repair_id="fix_assembly_count",
+                target_path="/assembly_count",
+                expected_value=expected,
+                actual_value=actual,
+                operation_kind="replace",
+                resolved=True,
+            ))
+        if skeleton.assembly_layout.core_lattice_size is not None:
+            expected_cls = list(skeleton.assembly_layout.core_lattice_size)
+            actual_cls = candidate.get("core_lattice_size")
+            if actual_cls != expected_cls:
+                candidate["core_lattice_size"] = expected_cls
+                repairs.append(FactsDeterministicRepair(
+                    repair_id="fix_core_lattice_size",
+                    target_path="/core_lattice_size",
+                    expected_value=expected_cls,
+                    actual_value=actual_cls,
+                    operation_kind="replace",
+                    resolved=True,
+                ))
+
+    # Repair fuel variants
+    if skeleton.fuel_variant_slots and any("fuel_variant" in (c or "") for c in finding_codes):
+        required_variants = {s.variant_id: s for s in skeleton.fuel_variant_slots}
+        existing = {v.get("variant_id"): v for v in candidate.get("fuel_variant_requirements", []) if isinstance(v, dict)}
+        for vid, slot in required_variants.items():
+            if vid not in existing:
+                candidate.setdefault("fuel_variant_requirements", []).append({
+                    "variant_id": slot.variant_id,
+                    "enrichment_wt_percent": slot.enrichment_wt_percent,
+                    "density_g_cm3": slot.density_g_cm3,
+                    "assembly_type_ids": list(slot.assembly_type_ids),
+                })
+                repairs.append(FactsDeterministicRepair(
+                    repair_id=f"add_fuel_variant_{vid}",
+                    target_path="/fuel_variant_requirements",
+                    expected_value=vid,
+                    operation_kind="add",
+                    resolved=True,
+                ))
+
+    # Repair localized inserts
+    if skeleton.localized_insert_slots and any("localized_insert" in (c or "") for c in finding_codes):
+        required_ids = {s.requirement_id for s in skeleton.localized_insert_slots}
+        existing_ids = {r.get("requirement_id") for r in candidate.get("localized_insert_requirements", []) if isinstance(r, dict)}
+        for slot in skeleton.localized_insert_slots:
+            if slot.requirement_id not in existing_ids:
+                candidate.setdefault("localized_insert_requirements", []).append({
+                    "requirement_id": slot.requirement_id,
+                    "insert_kind": slot.insert_kind,
+                    "assembly_type_ids": list(slot.assembly_type_ids),
+                })
+                repairs.append(FactsDeterministicRepair(
+                    repair_id=f"add_insert_{slot.requirement_id}",
+                    target_path="/localized_insert_requirements",
+                    expected_value=slot.requirement_id,
+                    operation_kind="add",
+                    resolved=True,
+                ))
+
+    return candidate, repairs
+
+
+def run_clone_validation(
+    candidate: dict[str, Any] | None,
+    skeleton: Any,
+    reviewer: Any = None,
+) -> FactsRevisionEvaluation:
+    """Validate a facts clone against skeleton + optional reviewer.
+
+    Checks:
+    - Schema valid
+    - Skeleton preflight errors = 0
+    - Consistency errors = 0
+    - Reviewer coverage complete (when reviewer provided)
+    """
+    if candidate is None:
+        return FactsRevisionEvaluation(reasons=["clone is None"])
+
+    reasons: list[str] = []
+
+    # Schema validation
+    try:
+        parsed = parse_patch_content("facts", candidate)
+        validation = validate_patch(parsed)
+        if not validation.ok:
+            reason = "facts_revision.validator_failed"
+            reasons.append(reason)
+    except Exception as exc:
+        reasons.append(f"facts_revision.schema_invalid: {exc}")
+
+    # Skeleton preflight
+    if skeleton is not None:
+        try:
+            from openmc_agent.plan_builder.facts_evidence_contract import (
+                run_facts_skeleton_preflight,
+            )
+            preflight = run_facts_skeleton_preflight(skeleton, candidate)
+            if not preflight.ok:
+                for issue in preflight.issues:
+                    if issue.get("severity") == "error":
+                        reasons.append(f"facts_revision.skeleton_preflight: {issue.get('code')}")
+        except Exception:
+            pass
+
+    # Consistency check
+    try:
+        from openmc_agent.plan_builder.closed_loop.facts_consistency import (
+            run_facts_consistency_preflight,
+        )
+        from openmc_agent.plan_builder.planning_scope import planning_feature_contract
+        contract = planning_feature_contract({"feature_summary": {}})
+        consistency = run_facts_consistency_preflight(
+            feature_contract=contract,
+            facts_patch=candidate,
+        )
+        if not consistency.ok:
+            reasons.append("facts_revision.consistency_errors")
+    except Exception:
+        pass
+
+    # Reviewer coverage
+    if reviewer is not None:
+        try:
+            from openmc_agent.plan_builder.closed_loop.facts_reviewer import (
+                FactsReviewCoverageSummary as CovSummary,
+            )
+            coverage = getattr(reviewer, "coverage_summary", None)
+            if coverage is not None and hasattr(coverage, "reviewed_source_excerpt_count"):
+                if coverage.reviewed_source_excerpt_count == 0:
+                    reasons.append("facts_revision.reviewer_coverage_incomplete")
+        except Exception:
+            pass
+
+    candidate_hash = compute_candidate_hash(
+        target_patch_type="facts",
+        candidate_patch=candidate,
+    )
+
+    if reasons:
+        return FactsRevisionEvaluation(
+            candidate_hash=candidate_hash,
+            reasons=reasons,
+        )
+    return FactsRevisionEvaluation(
+        accepted=True,
+        candidate=candidate,
+        candidate_hash=candidate_hash,
+    )

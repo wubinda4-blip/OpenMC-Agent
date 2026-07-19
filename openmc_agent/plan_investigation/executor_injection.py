@@ -61,6 +61,10 @@ __all__ = [
     "InvestigationStageOutcome",
     "InvestigationStageBlocked",
     "FactsInvestigationCoverage",
+    "FactsInvestigationTarget",
+    "FactsInvestigationCoverageMatrix",
+    "SemanticCoverageConfig",
+    "check_facts_semantic_coverage",
     "SessionCacheKey",
     "SessionCacheEntry",
     "InvestigationSessionCache",
@@ -74,6 +78,159 @@ __all__ = [
     "EVENT_INVESTIGATION_EVIDENCE_INJECTED",
     "EVENT_INVESTIGATION_WARNING",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 8B Step 2: Facts investigation semantic coverage models
+# ---------------------------------------------------------------------------
+
+
+class FactsInvestigationTarget(AgentBaseModel):
+    target_id: str
+    semantic_kind: str
+    facts_json_path: str
+    required: bool = False
+    covered: bool = False
+    source_backed: bool = False
+    human_confirmed: bool = False
+    evidence_claim_ids: list[str] = Field(default_factory=list)
+    unresolved_reason: str | None = None
+
+
+class FactsInvestigationCoverageMatrix(AgentBaseModel):
+    targets: list[FactsInvestigationTarget] = Field(default_factory=list)
+    total_targets: int = 0
+    covered_targets: int = 0
+    source_backed_targets: int = 0
+    unresolved_targets: int = 0
+    fraction: float = 0.0
+    matrix_hash: str = ""
+
+
+class SemanticCoverageConfig(AgentBaseModel):
+    require_source_backed: bool = True
+    min_fraction: float = 0.5
+    required_targets: list[str] = Field(default_factory=lambda: [
+        "model_scope", "assembly_count", "fuel_variants",
+    ])
+    exclude_from_required: list[str] = Field(default_factory=list)
+
+
+def _semantic_targets_for_feature_contract(feature_contract: Any) -> list[FactsInvestigationTarget]:
+    """Build the default set of investigation targets from a feature contract."""
+    targets: list[FactsInvestigationTarget] = [
+        FactsInvestigationTarget(
+            target_id="model_scope",
+            semantic_kind="model_scope",
+            facts_json_path="/model_scope",
+            required=True,
+        ),
+        FactsInvestigationTarget(
+            target_id="assembly_count",
+            semantic_kind="assembly_count",
+            facts_json_path="/assembly_count",
+            required=False,
+        ),
+        FactsInvestigationTarget(
+            target_id="fuel_variants",
+            semantic_kind="fuel_variant",
+            facts_json_path="/fuel_variant_requirements",
+            required=False,
+        ),
+        FactsInvestigationTarget(
+            target_id="spacer_grids",
+            semantic_kind="has_spacer_grids",
+            facts_json_path="/has_spacer_grids",
+            required=False,
+        ),
+        FactsInvestigationTarget(
+            target_id="localized_inserts",
+            semantic_kind="localized_insert",
+            facts_json_path="/localized_insert_requirements",
+            required=False,
+        ),
+    ]
+    if feature_contract is not None:
+        if getattr(feature_contract, "multi_assembly_core", False):
+            targets.append(FactsInvestigationTarget(
+                target_id="core_lattice_size",
+                semantic_kind="core_lattice_size",
+                facts_json_path="/core_lattice_size",
+                required=True,
+            ))
+            targets.append(FactsInvestigationTarget(
+                target_id="assembly_type_counts",
+                semantic_kind="assembly_type_counts",
+                facts_json_path="/assembly_type_counts",
+                required=True,
+            ))
+        if getattr(feature_contract, "has_multiple_fuel_variants", False):
+            for t in targets:
+                if t.target_id == "fuel_variants":
+                    t.required = True
+                    break
+        if getattr(feature_contract, "has_spacer_grid", False):
+            for t in targets:
+                if t.target_id == "spacer_grids":
+                    t.required = True
+                    break
+        if getattr(feature_contract, "has_localized_insert", False):
+            for t in targets:
+                if t.target_id == "localized_inserts":
+                    t.required = True
+                    break
+    return targets
+
+
+def check_facts_semantic_coverage(
+    ledger: Any,
+    feature_contract: Any,
+    *,
+    targets: list[FactsInvestigationTarget] | None = None,
+) -> FactsInvestigationCoverageMatrix:
+    """Check semantic coverage of Facts investigation targets.
+
+    Inspects the EvidenceLedger for claims matching each target's
+    semantic_kind and determines whether each target is covered,
+    source-backed, or unresolved.
+    """
+    if targets is None:
+        targets = _semantic_targets_for_feature_contract(feature_contract)
+
+    ledger_claims = getattr(ledger, "claims", {}) if ledger is not None else {}
+
+    covered = 0
+    source_backed = 0
+    unresolved = 0
+
+    for target in targets:
+        for claim_id, claim in ledger_claims.items():
+            if hasattr(claim, "predicate") and claim.predicate == target.semantic_kind:
+                target.covered = True
+                target.evidence_claim_ids.append(claim_id)
+                if hasattr(claim, "source_refs") and claim.source_refs:
+                    target.source_backed = True
+                break
+
+        if target.covered:
+            covered += 1
+            if target.source_backed:
+                source_backed += 1
+            if not target.source_backed and target.required:
+                target.unresolved_reason = "covered but not source-backed"
+        elif target.required:
+            unresolved += 1
+            target.unresolved_reason = "required target not covered"
+
+    total = len(targets)
+    return FactsInvestigationCoverageMatrix(
+        targets=targets,
+        total_targets=total,
+        covered_targets=covered,
+        source_backed_targets=source_backed,
+        unresolved_targets=unresolved,
+        fraction=covered / total if total > 0 else 0.0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -779,3 +936,21 @@ def _passes_controlled_facts_coverage(coverage: FactsInvestigationCoverage) -> b
         and coverage.source_search_executed
         and coverage.source_backed_claim_count >= 1
     )
+
+
+def _passes_semantic_facts_coverage(
+    coverage: FactsInvestigationCoverage,
+    semantic_matrix: Any,
+) -> bool:
+    """Combined controlled-mode check: legacy + semantic coverage."""
+    if not _passes_controlled_facts_coverage(coverage):
+        return False
+    if semantic_matrix is not None:
+        required_targets = [
+            t for t in semantic_matrix.targets
+            if t.required
+        ]
+        for target in required_targets:
+            if not target.covered:
+                return False
+    return True

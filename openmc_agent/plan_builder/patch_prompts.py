@@ -1060,6 +1060,8 @@ def _context_block(context: Any | None) -> str:
         val = getattr(context, attr, None)
         if val is None:
             continue
+        if isinstance(val, str) and val == "unknown":
+            continue
         if isinstance(val, dict) and not val:
             continue
         if isinstance(val, list) and not val:
@@ -1067,6 +1069,20 @@ def _context_block(context: Any | None) -> str:
         if isinstance(val, tuple):
             val = list(val)
         parts.append(f"  {attr}: {val}")
+
+    # Render context_facts with provenance labels.
+    context_facts = getattr(context, "context_facts", None)
+    if context_facts:
+        cf_parts = ["  context_facts (with provenance):"]
+        for cf_key, cf_val in context_facts.items():
+            if isinstance(cf_val, dict):
+                prov = cf_val.get("provenance_kind", "unresolved")
+                authoritative = cf_val.get("authoritative", False)
+                tag = "AUTHORITATIVE" if authoritative else prov
+                cf_parts.append(f"    {cf_key}: {cf_val.get('value')} [{tag}]")
+            else:
+                cf_parts.append(f"    {cf_key}: {cf_val}")
+        parts.append("\n".join(cf_parts))
 
     if len(parts) == 1:
         return ""

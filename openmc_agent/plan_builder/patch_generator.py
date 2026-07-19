@@ -47,6 +47,24 @@ from .validators import (
 # ---------------------------------------------------------------------------
 
 
+class ContextFactValue(AgentBaseModel):
+    field_path: str
+    value: Any = None
+    provenance_kind: Literal[
+        "source_backed",
+        "human_confirmed",
+        "deterministically_derived",
+        "accepted_upstream",
+        "unresolved",
+    ] = "unresolved"
+    source_claim_ids: list[str] = Field(default_factory=list)
+    source_span_ids: list[str] = Field(default_factory=list)
+    derivation_code: str | None = None
+    confidence: float = 0.0
+    authoritative: bool = False
+    value_hash: str = ""
+
+
 class PatchGenerationContext(AgentBaseModel):
     """Context passed to the patch generator and prompt builder."""
 
@@ -74,7 +92,7 @@ class PatchGenerationContext(AgentBaseModel):
     has_spacer_grids: bool = False
     expected_spacer_grid_count: int | None = None
     # P2-FULLCORE-1: multi-assembly context fields
-    model_scope: str = "single_assembly"
+    model_scope: str | None = None
     assembly_count: int | None = None
     core_lattice_size: tuple[int, int] | None = None
     assembly_type_counts: dict[str, int] = Field(default_factory=dict)
@@ -109,6 +127,8 @@ class PatchGenerationContext(AgentBaseModel):
     # When non-empty, the prompt renderer emits a separate "Derived
     # Planning Constraints" section.
     planning_constraints: list[dict[str, Any]] = Field(default_factory=list)
+    # Phase-8B Step 2: context facts with provenance tracking.
+    context_facts: dict[str, ContextFactValue] = Field(default_factory=dict)
 
 
 class RetryPatchGenerationContext(AgentBaseModel):
