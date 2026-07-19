@@ -2098,14 +2098,44 @@ def run_incremental_planning(
                 },
             ) for item in consistency.issues
         ]
-        all_findings = consistency_findings + list(review.findings)
+        # Phase 8C Step 2: lift the contract preflight issues (produced
+        # after the skeleton merge) into PlanReviewFinding so the gate's
+        # action-decision policy can route them to REVISE_CURRENT_PATCH.
+        contract_preflight_issues = list(state.metadata.get("facts_contract_preflight_issues", []) or [])
+        contract_preflight_findings = [
+            PlanReviewFinding(
+                gate_id=PlanGateId.FACTS, code=str(item.get("code", "facts_contract.unknown")),
+                severity=PlanFindingSeverity.ERROR if item.get("severity") == "error" else PlanFindingSeverity.WARNING,
+                category=PlanFindingCategory.CROSS_PATCH_MISMATCH,
+                message=str(item.get("message", item.get("code", "facts_contract violation"))),
+                affected_patch_types=["facts"],
+                affected_json_paths=[str(item.get("path", "/"))],
+                repairable_by_llm=True,
+                requires_human=bool(item.get("requires_human", False)),
+                confidence=1.0,
+                metadata={
+                    "deterministic": True,
+                    "contract_preflight": True,
+                    "evidence_hashes": [contract.contract_hash],
+                    "expected_value": item.get("expected"),
+                    "actual_value": item.get("actual"),
+                    "slot_ids": list(item.get("slot_ids", []) or []),
+                    "source_claim_ids": list(item.get("source_claim_ids", []) or []),
+                    "derivation_codes": list(item.get("derivation_codes", []) or []),
+                    "repair_kind": str(item.get("repair_kind", "contract_backed_repair") or "contract_backed_repair"),
+                },
+            )
+            for item in contract_preflight_issues
+            if item.get("severity") == "error"
+        ]
+        all_findings = consistency_findings + contract_preflight_findings + list(review.findings)
         record_findings(state, stage, all_findings)
         if not review.ok or not review.coverage_complete:
             state.add_event("planning.facts_review_failed", review.error or "facts_review.coverage_incomplete", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
                 return IncrementalExecutionIssue(code=review.failure_code or "facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
-        review_deterministic_issues = list(consistency.issues) + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
+        review_deterministic_issues = list(consistency.issues) + list(contract_preflight_issues) + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
                                        if not review.ok or not review.coverage_complete else [])
         actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=all_findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
         action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED
@@ -3878,13 +3908,21 @@ def run_incremental_planning(
                 preflight = run_facts_skeleton_preflight(
                     skeleton_model, result.envelope.content
                 )
+                # Phase 8C Step 2: stash the contract preflight issues on
+                # state metadata so _run_facts_gate can promote them to
+                # PlanReviewFinding and route to REVISE_CURRENT_PATCH.
+                # Without this lift the preflight findings were logged as
+                # events only and the gate never saw them.
+                state.metadata["facts_contract_preflight_issues"] = list(preflight.issues)
+                state.metadata["facts_contract_preflight_ok"] = bool(preflight.ok)
                 if not preflight.ok:
                     state.add_event(
                         "planning.facts_skeleton_preflight_issues",
-                        "Facts skeleton preflight flagged issues",
+                        "Facts skeleton preflight flagged blocking issues",
                         {
                             "issue_count": len(preflight.issues),
                             "issue_codes": [i.get("code") for i in preflight.issues],
+                            "blocking_count": sum(1 for i in preflight.issues if i.get("severity") == "error"),
                         },
                     )
             state.add_patch(result.envelope)

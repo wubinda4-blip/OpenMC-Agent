@@ -113,6 +113,22 @@ FACTS_SKELETON_ISSUE_CODES: list[str] = [
     "facts_skeleton.fuel_variant_modified",
     "facts_skeleton.localized_insert_modified",
     "facts_skeleton.unresolved_must_be_resolved",
+    # Phase 8C Step 2 — contract preflight codes.
+    "facts_contract.missing",
+    "facts_contract.hash_mismatch",
+    "facts_contract.required_slot_missing",
+    "facts_contract.unexpected_slot_added",
+    "facts_contract.locked_field_modified",
+    "facts_contract.scope_contradiction",
+    "facts_contract.core_layout_missing",
+    "facts_contract.assembly_count_inconsistent",
+    "facts_contract.feature_flag_contradiction",
+    "facts_contract.fuel_variant_missing",
+    "facts_contract.localized_insert_missing",
+    "facts_contract.source_critical_unresolved",
+    "facts_contract.conflict_unresolved",
+    "facts_contract.unsupported_value",
+    "facts_contract.evidence_reference_invalid",
 ]
 
 
@@ -120,7 +136,15 @@ def run_facts_skeleton_preflight(
     skeleton: Any,
     candidate: dict[str, Any] | None,
 ) -> FactsSkeletonPreflightResult:
-    """Check a candidate Facts patch against the compiled skeleton."""
+    """Check a candidate Facts patch against the compiled skeleton.
+
+    Phase 8C Step 2: the preflight now emits both the legacy
+    ``facts_skeleton.*`` codes and the new ``facts_contract.*`` codes
+    that the retry-owner policy maps onto targeted repair.  The two
+    code families alias each other for backward compatibility —
+    existing tests and owner-policy entries that match ``facts_skeleton.*``
+    keep working.
+    """
     issues: list[dict[str, Any]] = []
 
     if skeleton is None:
@@ -139,47 +163,78 @@ def run_facts_skeleton_preflight(
         })
         return FactsSkeletonPreflightResult(ok=False, issues=issues)
 
-    # Check scope
+    LOCK_STATUSES = {"human_confirmed", "source_backed", "deterministically_derived"}
+
+    # ---- Scope -------------------------------------------------------
     if skeleton.model_scope is not None:
         candidate_scope = candidate.get("model_scope", "unknown")
-        if skeleton.model_scope.status in ("human_confirmed", "source_backed"):
-            if skeleton.model_scope.immutable and candidate_scope != skeleton.model_scope.value:
+        skel_scope = skeleton.model_scope
+        if skel_scope.status in LOCK_STATUSES and skel_scope.immutable:
+            if candidate_scope != skel_scope.value:
                 issues.append({
                     "code": "facts_skeleton.immutable_field_modified",
                     "severity": "error",
                     "path": "/model_scope",
-                    "expected": skeleton.model_scope.value,
+                    "expected": skel_scope.value,
                     "actual": candidate_scope,
-                    "message": f"model_scope changed from '{skeleton.model_scope.value}' to '{candidate_scope}'",
+                    "slot_ids": ["scope"],
+                    "source_claim_ids": list(skel_scope.source_claim_ids),
+                    "repair_kind": "locked_value_restore",
+                    "message": f"model_scope changed from '{skel_scope.value}' to '{candidate_scope}'",
                 })
-            elif candidate_scope != skeleton.model_scope.value:
+                # Phase 8C alias
                 issues.append({
-                    "code": "facts_skeleton.scope_contradiction",
-                    "severity": "warning",
+                    "code": "facts_contract.locked_field_modified",
+                    "severity": "error",
                     "path": "/model_scope",
-                    "expected": skeleton.model_scope.value,
+                    "expected": skel_scope.value,
                     "actual": candidate_scope,
-                    "message": f"model_scope '{candidate_scope}' differs from skeleton '{skeleton.model_scope.value}'",
+                    "slot_ids": ["scope"],
+                    "source_claim_ids": list(skel_scope.source_claim_ids),
+                    "repair_kind": "locked_value_restore",
                 })
+        elif skel_scope.status == "conflict":
+            issues.append({
+                "code": "facts_contract.conflict_unresolved",
+                "severity": "warning",
+                "path": "/model_scope",
+                "slot_ids": ["scope"],
+                "message": "model_scope has conflicting source claims; candidate may be wrong",
+            })
+        elif skel_scope.status in {"unresolved", "source_absent"} and candidate_scope not in {"unknown", None}:
+            # Skeleton has no source backing but the LLM emitted a concrete
+            # value.  Not necessarily wrong, but worth flagging.
+            pass
 
-    # Check feature flags
+    # ---- Feature flags ----------------------------------------------
     if skeleton.features is not None:
         for flag in ("has_axial_geometry", "has_spacer_grids", "has_special_pin_map"):
             expected_val = getattr(skeleton.features, flag, None)
-            if expected_val is not None and skeleton.features.status in ("human_confirmed", "source_backed"):
+            if expected_val is not None and skeleton.features.status in LOCK_STATUSES:
                 candidate_val = candidate.get(flag)
-                if candidate_val != expected_val:
+                if candidate_val is not None and candidate_val != expected_val:
                     issues.append({
                         "code": "facts_skeleton.immutable_field_modified",
                         "severity": "error",
                         "path": f"/{flag}",
                         "expected": expected_val,
                         "actual": candidate_val,
+                        "slot_ids": ["features"],
+                        "repair_kind": "locked_value_restore",
                         "message": f"{flag} changed from {expected_val} to {candidate_val}",
                     })
+                    issues.append({
+                        "code": "facts_contract.feature_flag_contradiction",
+                        "severity": "error",
+                        "path": f"/{flag}",
+                        "expected": expected_val,
+                        "actual": candidate_val,
+                        "slot_ids": ["features"],
+                        "repair_kind": "locked_value_restore",
+                    })
 
-    # Check assembly layout
-    if skeleton.assembly_layout is not None and skeleton.assembly_layout.status in ("human_confirmed", "source_backed"):
+    # ---- Assembly layout --------------------------------------------
+    if skeleton.assembly_layout is not None and skeleton.assembly_layout.status in LOCK_STATUSES:
         expected_count = skeleton.assembly_layout.assembly_count
         candidate_count = candidate.get("assembly_count")
         if expected_count is not None and expected_count != candidate_count:
@@ -189,27 +244,95 @@ def run_facts_skeleton_preflight(
                 "path": "/assembly_count",
                 "expected": expected_count,
                 "actual": candidate_count,
+                "slot_ids": ["assembly_layout"],
+                "source_claim_ids": list(skeleton.assembly_layout.source_claim_ids),
+                "derivation_codes": list(skeleton.assembly_layout.derivation_codes),
+                "repair_kind": "locked_value_restore",
+            })
+            issues.append({
+                "code": "facts_contract.assembly_count_inconsistent",
+                "severity": "error",
+                "path": "/assembly_count",
+                "expected": expected_count,
+                "actual": candidate_count,
+                "slot_ids": ["assembly_layout"],
+                "source_claim_ids": list(skeleton.assembly_layout.source_claim_ids),
+                "derivation_codes": list(skeleton.assembly_layout.derivation_codes),
+                "repair_kind": "locked_value_restore",
             })
 
-    # Check fuel variants
+    # ---- Fuel variants ----------------------------------------------
     if skeleton.fuel_variant_slots:
+        candidate_variants = candidate.get("fuel_variant_requirements", []) or []
+        candidate_vids = {
+            v.get("variant_id") for v in candidate_variants
+            if isinstance(v, dict) and v.get("variant_id")
+        }
         for slot in skeleton.fuel_variant_slots:
-            if slot.status in ("human_confirmed", "source_backed") and slot.immutable:
-                candidate_variants = candidate.get("fuel_variant_requirements", [])
-                found = any(
-                    v.get("variant_id") == slot.variant_id
-                    for v in candidate_variants if isinstance(v, dict)
-                )
-                if not found:
-                    issues.append({
-                        "code": "facts_skeleton.fuel_variant_modified",
-                        "severity": "error",
-                        "path": "/fuel_variant_requirements",
-                        "expected": slot.variant_id,
-                        "message": f"required fuel variant '{slot.variant_id}' missing from candidate",
-                    })
+            if slot.status in LOCK_STATUSES and slot.immutable and slot.variant_id not in candidate_vids:
+                issues.append({
+                    "code": "facts_skeleton.fuel_variant_modified",
+                    "severity": "error",
+                    "path": "/fuel_variant_requirements",
+                    "expected": slot.variant_id,
+                    "slot_ids": [slot.slot_id],
+                    "source_claim_ids": list(slot.source_claim_ids),
+                    "repair_kind": "locked_value_restore",
+                    "message": f"required fuel variant '{slot.variant_id}' missing from candidate",
+                })
+                issues.append({
+                    "code": "facts_contract.fuel_variant_missing",
+                    "severity": "error",
+                    "path": "/fuel_variant_requirements",
+                    "expected": slot.variant_id,
+                    "slot_ids": [slot.slot_id],
+                    "source_claim_ids": list(slot.source_claim_ids),
+                    "repair_kind": "locked_value_restore",
+                })
 
-    return FactsSkeletonPreflightResult(ok=not any(i.get("severity") == "error" for i in issues), issues=issues)
+    # ---- Localized inserts ------------------------------------------
+    if skeleton.localized_insert_slots:
+        candidate_inserts = candidate.get("localized_insert_requirements", []) or []
+        candidate_rids = {
+            i.get("requirement_id") for i in candidate_inserts
+            if isinstance(i, dict) and i.get("requirement_id")
+        }
+        for slot in skeleton.localized_insert_slots:
+            if slot.status in LOCK_STATUSES and slot.immutable and slot.requirement_id not in candidate_rids:
+                issues.append({
+                    "code": "facts_contract.localized_insert_missing",
+                    "severity": "error",
+                    "path": "/localized_insert_requirements",
+                    "expected": slot.requirement_id,
+                    "slot_ids": [slot.slot_id],
+                    "source_claim_ids": list(slot.source_claim_ids),
+                    "repair_kind": "locked_value_restore",
+                    "message": f"required localized insert '{slot.requirement_id}' missing from candidate",
+                })
+
+    # ---- Unresolved / conflict summary ------------------------------
+    if skeleton.unresolved_slots:
+        # Only flag the source-critical ones as errors.
+        for slot_id in skeleton.unresolved_slots:
+            issues.append({
+                "code": "facts_contract.source_critical_unresolved",
+                "severity": "warning",
+                "slot_ids": [slot_id],
+                "message": f"slot '{slot_id}' is unresolved",
+            })
+    for slot_id in skeleton.conflicting_slots:
+        if not any(i.get("code") == "facts_contract.conflict_unresolved" for i in issues):
+            issues.append({
+                "code": "facts_contract.conflict_unresolved",
+                "severity": "warning",
+                "slot_ids": [slot_id],
+                "message": f"slot '{slot_id}' has conflicting evidence",
+            })
+
+    return FactsSkeletonPreflightResult(
+        ok=not any(i.get("severity") == "error" for i in issues),
+        issues=issues,
+    )
 
 
 class FactsContentProposal(AgentBaseModel):
