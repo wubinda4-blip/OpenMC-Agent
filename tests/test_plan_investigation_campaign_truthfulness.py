@@ -332,6 +332,11 @@ def test_truth_violation_codes_are_stable_strings() -> None:
         "placement_",
         "axial_",
         "review_coverage_",
+        # Phase 8A Step 7 additions.
+        "candidate_spans_",
+        "evidence_added_",
+        "evidence_delta_",
+        "fragment_cache_",
     )
     for code in INVESTIGATION_TRUTH_VIOLATIONS:
         assert isinstance(code, str)

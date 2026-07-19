@@ -47,8 +47,25 @@ RESEARCH_SCHEMA_VERSION = "1.0"
 
 
 class PlanResearchStatus:
-    """Allowed status values for :class:`PlanResearchResult`."""
+    """Allowed status values for :class:`PlanResearchResult`.
 
+    Phase 8A Step 7 (Section 4) splits the previous ``evidence_added``
+    into two distinct statuses:
+
+    * ``candidate_spans_found`` — search located SourceSpans that MAY
+      be relevant, but no typed semantic EvidenceClaim has been
+      accepted into the Ledger yet.  The gate MUST NOT reopen on this
+      status; no evidence has been committed.
+    * ``evidence_added`` — at least one new typed semantic EvidenceClaim
+      was accepted into the Ledger AND ``ledger_hash_after !=
+      ledger_hash_before``.  Only this status authorises gate reopen.
+
+    The previous minimal executor conflated "found spans" with
+    "evidence committed", which could cause the gate to reopen
+    without any actual Ledger change (Section 4 P0).
+    """
+
+    CANDIDATE_SPANS_FOUND = "candidate_spans_found"
     EVIDENCE_ADDED = "evidence_added"
     NO_EVIDENCE_FOUND = "no_evidence_found"
     CONFLICT_FOUND = "conflict_found"
@@ -60,6 +77,7 @@ class PlanResearchStatus:
 
 
 _ALLOWED_RESEARCH_STATUSES = {
+    PlanResearchStatus.CANDIDATE_SPANS_FOUND,
     PlanResearchStatus.EVIDENCE_ADDED,
     PlanResearchStatus.NO_EVIDENCE_FOUND,
     PlanResearchStatus.CONFLICT_FOUND,

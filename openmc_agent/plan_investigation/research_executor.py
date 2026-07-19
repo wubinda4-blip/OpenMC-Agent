@@ -180,7 +180,20 @@ def execute_plan_research_request(
     if delta.delta_hash in seen_delta_hashes and delta.is_empty:
         status = PlanResearchStatus.NO_PROGRESS
     elif new_claim_ids or new_span_ids:
-        status = PlanResearchStatus.EVIDENCE_ADDED
+        # Phase 8A Step 7 (Section 4): distinguish "found spans" from
+        # "committed evidence".  The minimal executor does NOT accept
+        # new EvidenceClaims (that requires the LLM synthesis path);
+        # it only locates candidate spans.  So we report
+        # ``candidate_spans_found`` rather than ``evidence_added``.
+        # The gate MUST NOT reopen on this status.
+        if new_claim_ids:
+            # Claims existed in the ledger before but were not yet
+            # surfaced via this target's predicate query.  This is
+            # still not "new evidence committed" — the ledger hash
+            # did not change.
+            status = PlanResearchStatus.CANDIDATE_SPANS_FOUND
+        else:
+            status = PlanResearchStatus.CANDIDATE_SPANS_FOUND
     elif absence_records:
         status = PlanResearchStatus.NO_EVIDENCE_FOUND
     else:

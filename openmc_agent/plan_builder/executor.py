@@ -1068,6 +1068,7 @@ def _maybe_execute_research_for_gate(
     artifact_writer: Any | None = None,
     plan_investigation_output_dir: str | None = None,
     plan_loop_output_dir: str | None = None,
+    plan_investigation_client: Any = None,
 ) -> bool:
     """Execute a PlanResearchRequest for source-coverage findings.
 
@@ -1187,6 +1188,63 @@ def _maybe_execute_research_for_gate(
             },
         )
         return True
+    # Phase 8A Step 7: when candidate spans were found but no evidence
+    # committed yet, run the LLM synthesis path.  If the synthesis
+    # produces accepted claims that change the Ledger hash, reopen the
+    # gate.  Otherwise fall through to the existing retry/block path.
+    if (
+        result.status == PlanResearchStatus.CANDIDATE_SPANS_FOUND
+        and plan_investigation_client is not None
+    ):
+        from openmc_agent.plan_investigation.research_synthesis import (
+            run_research_evidence_synthesis,
+        )
+        accepted_facts_obj, geometry_inventory_obj = _load_inventory_context_objects(state)
+        material_req_obj = _load_material_requirement_set(state)
+        universe_req_obj = _load_universe_requirement_set(state)
+        # Locate accepted Materials + Universes patches.
+        materials_env = next(
+            (item for item in state.patches.values()
+             if item.patch_type == "materials" and item.status == "valid"),
+            None,
+        )
+        universes_env = next(
+            (item for item in state.patches.values()
+             if item.patch_type == "universes" and item.status == "valid"),
+            None,
+        )
+        delta = run_research_evidence_synthesis(
+            request=request,
+            research_result=result,
+            ledger=shared_ledger,
+            source_index=shared_source_index,
+            gate_findings=error_findings,
+            geometry_inventory=geometry_inventory_obj,
+            material_requirement_set=material_req_obj,
+            universe_requirement_set=universe_req_obj,
+            materials_patch=(materials_env.content if materials_env else None),
+            universes_patch=(universes_env.content if universes_env else None),
+            llm_client=plan_investigation_client,
+            add_event=lambda evt, msg, data: state.add_event(evt, msg, data),
+        )
+        if delta is not None and delta.ledger_hash_after != delta.ledger_hash_before:
+            # Real evidence committed → reopen the gate.
+            state.metadata.setdefault("planning_evidence_deltas", []).append(
+                delta.model_dump(mode="json")
+            )
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event(
+                "planning.research_evidence_committed",
+                f"LLM synthesis committed {len(delta.added_claim_ids)} claims; gate {gate_id} reopened",
+                {
+                    "request_id": request.request_id,
+                    "added_claim_count": len(delta.added_claim_ids),
+                    "ledger_hash_before": delta.ledger_hash_before[:12],
+                    "ledger_hash_after": delta.ledger_hash_after[:12],
+                },
+            )
+            return True
     if result.status == PlanResearchStatus.NO_PROGRESS:
         state.add_event(
             "planning.research_no_progress",
@@ -2787,6 +2845,7 @@ def run_incremental_planning(
                 artifact_writer=artifact_writer,
                 plan_investigation_output_dir=plan_investigation_output_dir,
                 plan_loop_output_dir=plan_loop_output_dir,
+                plan_investigation_client=plan_investigation_client,
             )
         ):
             # Research produced new evidence → reopen the gate so the
