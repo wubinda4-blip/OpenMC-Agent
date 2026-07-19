@@ -1,8 +1,14 @@
 # OpenMC-Agent 技术报告与进度总览
 
-维护日期：2026-07-12
+维护日期：2026-07-19
 
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
+
+### 2026-07-19
+
+- **P2-PLAN-INVESTIGATION Phase 8A Step 6A**：修复 7 个 P0 controlled-fail-closed 缺口（P0-1 Materials/Universes investigation 缺失 → 通用 `run_patch_investigation_stage(patch_type=...)`；P0-2 inventory compile 异常非阻塞 → 受控阻断；P0-3 preflight except→[] → typed `InventoryPreflightExecutionResult` + 显式 owner map；P0-4 EvidenceConstraintPayload 替代伪 EvidenceClaim；P0-5 `InvestigationContext` 加 typed inventory 字段；P0-6 `enabled_gates_through` 累计前缀；P0-7 recursive resume 传递全部 kwargs）。新增 5 测试文件 / 39 tests。VERA4 MU canary 验证：Materials + Universes investigation 实际运行 + evidence 注入 + inventory 编译（6 mreq / 5 ureq）+ MU preflight 正确 surface 4 blocking findings。
+- **P2-PLAN-INVESTIGATION Phase 8A Step 6B foundation**：合约 0.8→0.9 + `RETRIEVE_EVIDENCE` 枚举；新增 5 个 typed research models（Target/Request/Result/Delta/AbsenceRecord）；确定性 router（LLM 不参与路由）+ 最小化 executor（复用 investigation tools，no shell/network/grep）；MU Gate wiring 通过 `_maybe_execute_research_for_gate` 在 blocking 前执行 RETRIEVE_EVIDENCE。新增 4 测试文件 / 47 tests。
+- **P2-PLAN-INVESTIGATION Phase 8A Step 6C**：PlacementRequirementSet + AxialGeometryRequirementSet + 2 evidence-qualified preflights（13+20 stable codes）+ GateReviewAssignment（assignment-based coverage，reviewer self-report 不再是唯一依据）+ 30 个新 truthfulness codes（Section 32）。新增 3 测试文件 / 38 tests。Shared SourceIndex + Ledger 每个 incremental run 只构建一次（Section 7）。3163 passed / 2 skipped；fake benchmark 21/21。
 
 ### 2026-07-17
 
