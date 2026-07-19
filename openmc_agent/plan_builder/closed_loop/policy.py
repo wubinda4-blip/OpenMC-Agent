@@ -80,7 +80,20 @@ def compute_allowed_actions(
     *, policy: PlanClosedLoopPolicy, stage_state: PlanStageState,
     findings: list[Any], deterministic_issues: list[dict[str, Any]],
     additional_llm_calls_used: int = 0,
+    enable_research: bool = False,
 ) -> list[PlanReviewAction]:
+    """Compute the allowed review actions for one gate.
+
+    Phase 8A Step 6B: when ``enable_research=True`` and at least one
+    error finding's category/code is in the deterministic
+    :data:`RETRIEVE_EVIDENCE` routing table, RETRIEVE_EVIDENCE is
+    added to the allowed-actions list (before FAIL_CLOSED).
+
+    The closed-loop controller then picks the highest-priority action
+    and dispatches a :class:`PlanResearchRequest` before re-running
+    the owner patch.
+    """
+
     if policy.mode is PlanLoopMode.OFF:
         return []
     exhausted = (
@@ -98,6 +111,25 @@ def compute_allowed_actions(
         return [PlanReviewAction.ASK_HUMAN, PlanReviewAction.FAIL_CLOSED] if policy.enable_human_gate else [PlanReviewAction.FAIL_CLOSED]
     if not error_findings and not any(_is_blocking_issue(issue) for issue in deterministic_issues):
         return [PlanReviewAction.APPROVE]
+    # Phase 8A Step 6B: route source-coverage / unsupported-inference
+    # findings to RETRIEVE_EVIDENCE when research is enabled.
+    if enable_research:
+        from openmc_agent.plan_investigation.research_router import (
+            RETRIEVE_EVIDENCE_CATEGORIES,
+            RETRIEVE_EVIDENCE_CODES,
+            route_findings_to_research,
+        )
+        decisions = route_findings_to_research(
+            gate_id=stage_state.gate_id.value if hasattr(stage_state.gate_id, "value") else str(stage_state.gate_id),
+            findings=error_findings,
+        )
+        if any(d.action is PlanReviewAction.RETRIEVE_EVIDENCE for d in decisions):
+            return [
+                PlanReviewAction.RETRIEVE_EVIDENCE,
+                PlanReviewAction.REVISE_CURRENT_PATCH,
+                PlanReviewAction.RETRY_DEPENDENCY,
+                PlanReviewAction.FAIL_CLOSED,
+            ]
     repairable = any(bool(getattr(item, "repairable_by_llm", False) if not isinstance(item, dict) else item.get("repairable_by_llm")) for item in error_findings)
     if repairable:
         return [PlanReviewAction.REVISE_CURRENT_PATCH, PlanReviewAction.RETRY_DEPENDENCY]

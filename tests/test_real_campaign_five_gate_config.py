@@ -57,6 +57,9 @@ def test_policy_hash_changes_when_max_review_rounds_change():
     assert policy_hash(p1) != policy_hash(p2)
 
 
-def test_contract_version_is_unchanged_by_phase7a():
+def test_contract_version_is_0_9_after_step6b():
+    """Phase 8A Step 6B bumped the contract version 0.8 → 0.9 to
+    distinguish states that know about RETRIEVE_EVIDENCE."""
+
     policy = make_five_gate_controlled_policy()
-    assert policy.contract_version == "0.8"
+    assert policy.contract_version == "0.9"

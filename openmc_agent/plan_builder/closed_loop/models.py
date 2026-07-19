@@ -16,7 +16,7 @@ from .fingerprints import (
     compute_source_excerpt_hash,
 )
 
-PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.8"
+PLAN_CLOSED_LOOP_CONTRACT_VERSION = "0.9"
 
 
 class _TextEnum(str, Enum):
@@ -59,6 +59,16 @@ class PlanReviewAction(_TextEnum):
     RETRY_DEPENDENCY = "retry_dependency"
     ASK_HUMAN = "ask_human"
     FAIL_CLOSED = "fail_closed"
+    # Phase 8A Step 6B: deterministic evidence-retrieval action.  When
+    # the deterministic router sees a SOURCE_COVERAGE /
+    # UNSUPPORTED_INFERENCE finding (or one of the stable
+    # source-claim/source-span/component-unresolved codes), the gate
+    # action becomes RETRIEVE_EVIDENCE instead of FAIL_CLOSED.  The
+    # closed-loop retry path then executes a bounded research request
+    # against the existing SourceIndex before re-running the owner
+    # patch.  Contract version bumped to 0.9 to distinguish from the
+    # 0.8 state that did not know this action.
+    RETRIEVE_EVIDENCE = "retrieve_evidence"
 
 
 class PlanFindingSeverity(_TextEnum):
@@ -1314,7 +1324,7 @@ def _default_gate_enabled() -> dict[PlanGateId, bool]:
 
 
 class PlanClosedLoopPolicy(AgentBaseModel):
-    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
+    contract_version: Literal["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9"] = PLAN_CLOSED_LOOP_CONTRACT_VERSION
     mode: PlanLoopMode = PlanLoopMode.OFF
     max_review_rounds_per_gate: int = 2
     max_repair_rounds_per_gate: int = 2

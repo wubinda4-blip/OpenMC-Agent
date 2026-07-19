@@ -45,8 +45,10 @@ def test_controlled_mode_requires_accepted_facts() -> None:
     assert mu_stage.status is PlanStageStatus.PENDING
 
 
-def test_contract_version_is_0_8() -> None:
+def test_contract_version_is_0_9() -> None:
+    """Phase 8A Step 6B: contract bumped 0.8 → 0.9 for RETRIEVE_EVIDENCE."""
+
     state = _state_with_patches()
     policy = PlanClosedLoopPolicy(mode="advisory")
     initialize_plan_loop_state(state, policy, [])
-    assert state.plan_loop_contract_version == "0.8"
+    assert state.plan_loop_contract_version == "0.9"

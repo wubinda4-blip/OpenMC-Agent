@@ -11,8 +11,10 @@ from openmc_agent.plan_builder.closed_loop.controller import initialize_plan_loo
 from openmc_agent.plan_builder.state import PlanBuildState
 
 
-def test_contract_version_is_0_8():
-    assert PLAN_CLOSED_LOOP_CONTRACT_VERSION == "0.8"
+def test_contract_version_is_0_9():
+    """Phase 8A Step 6B: contract bumped 0.8 → 0.9 for RETRIEVE_EVIDENCE."""
+
+    assert PLAN_CLOSED_LOOP_CONTRACT_VERSION == "0.9"
 
 
 def test_axial_geometry_gate_id_exists():
@@ -33,7 +35,7 @@ def test_legacy_0_6_checkpoint_axial_migrates_to_pending():
     )
     policy = PlanClosedLoopPolicy(mode="advisory", gate_enabled={PlanGateId.AXIAL_GEOMETRY: True})
     initialize_plan_loop_state(state, policy, ["axial_layers"])
-    assert state.plan_loop_contract_version == "0.8"
+    assert state.plan_loop_contract_version == "0.9"
     assert state.plan_loop_stages["plan_gate_axial_geometry"].status is PlanStageStatus.PENDING
     assert any(e.event_type == "planning.axial_geometry_gate_migrated_to_0_7" for e in state.build_log)
 
