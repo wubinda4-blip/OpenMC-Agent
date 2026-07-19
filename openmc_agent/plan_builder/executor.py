@@ -2300,7 +2300,35 @@ def run_incremental_planning(
                     transition_stage(stage, PlanStageStatus.REVIEWING)
                     stage.review_count += 1
                     rereview = run_facts_review(evidence_packs=build_facts_evidence_packs(requirement_text=requirement, facts_patch=evaluation.candidate, confirmed_facts=state.confirmed_facts, planning_metadata=state.metadata, policy=policy), reviewer_client=plan_reviewer_client, state=state, policy=policy)
-                    if rereview.ok and rereview.coverage_complete and not any(item.severity.value == "error" for item in rereview.findings):
+                    # Phase 8C Step 2: deterministic-first acceptance.
+                    # Run the deterministic consistency preflight on the
+                    # candidate.  When the rereview LLM is flaky
+                    # (schema_invalid / output_not_json) but the
+                    # deterministic preflight says the candidate has no
+                    # blocking issues, accept the candidate.  The
+                    # deterministic check is authoritative; the LLM
+                    # rereview is a defence-in-depth check, not a single
+                    # point of failure.
+                    candidate_consistency = run_facts_consistency_preflight(
+                        feature_contract=contract, facts_patch=evaluation.candidate,
+                        confirmed_facts=state.confirmed_facts,
+                        existing_valid_patch_types=[item.patch_type for item in state.get_valid_patches()],
+                    )
+                    candidate_consistency_ok = not any(
+                        item.get("severity") == "error" for item in candidate_consistency.issues
+                    )
+                    rereview_passing = (
+                        rereview.ok and rereview.coverage_complete
+                        and not any(item.severity.value == "error" for item in rereview.findings)
+                    )
+                    rereview_schema_failed = (
+                        not rereview.ok
+                        and "schema_invalid" in (rereview.failure_code or "")
+                    )
+                    accept_candidate = rereview_passing or (
+                        rereview_schema_failed and candidate_consistency_ok
+                    )
+                    if accept_candidate:
                         before_path = artifact_writer._write("facts_patch_before.json", facts_env.content)
                         after_path = artifact_writer._write("facts_patch_after.json", evaluation.candidate)
                         for path in (before_path, after_path):
@@ -2312,7 +2340,7 @@ def run_incremental_planning(
                         record_findings(state, stage, rereview.findings)
                         transition_stage(stage, PlanStageStatus.ACCEPTED)
                         stage.metadata["accepted_input_hash"] = facts_gate_input_hash(state, policy=policy)
-                        state.add_event("planning.facts_revision_accepted", "facts revision atomically committed after clone re-review", {"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash})
+                        state.add_event("planning.facts_revision_accepted", "facts revision atomically committed after clone re-review", {"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash, "rereview_schema_failed": rereview_schema_failed, "candidate_consistency_ok": candidate_consistency_ok})
                         # Phase 8A Step 6: compile the GeometryComponentInventory
                         # on the repair-acceptance path too (the first-try
                         # acceptance path is in the APPROVE branch above).
