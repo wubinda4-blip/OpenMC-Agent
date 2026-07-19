@@ -3246,6 +3246,20 @@ def run_incremental_planning(
         if _investigation_config_resolved is not None and not _investigation_config_resolved.is_off:
             _set_investigation_config(state, _investigation_config_resolved)
             _investigation_session_cache = InvestigationSessionCache()
+            # Phase 8A Step 6 (P0-1): build the shared SourceIndex + Ledger
+            # ONCE here so Facts / Materials / Universes investigations +
+            # the research executor all see the same canonical ledger.
+            # Previously these stayed None and each investigation built
+            # its own (silently dropping the shared-ledger contract).
+            from openmc_agent.plan_investigation.runner import (
+                build_investigation_ledger as _build_ledger,
+                build_investigation_source_index as _build_idx,
+            )
+            _investigation_shared_source_index = _build_idx(requirement)
+            _investigation_shared_ledger = _build_ledger(
+                requirement_text=requirement,
+                source_indexes={_investigation_shared_source_index.document.source_id: _investigation_shared_source_index},
+            )
 
     for patch_type in order:
         facts_barrier_issue = _require_accepted_facts_gate(next_patch_type=patch_type)
