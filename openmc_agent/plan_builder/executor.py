@@ -1967,6 +1967,22 @@ def run_incremental_planning(
         stage = _facts_stage()
         if stage is None:
             return None
+        # Phase 8C Step 1: accepted_input_hash replay protection.
+        # The Facts gate was the only gate that did not save
+        # accepted_input_hash (audit defect).  When the input is unchanged
+        # we short-circuit; when it changes we reopen the gate.
+        from .closed_loop.facts_evidence import facts_gate_input_hash
+        facts_input_hash = facts_gate_input_hash(state, policy=policy)
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") == facts_input_hash:
+            return None
+        if stage.status is PlanStageStatus.ACCEPTED and stage.metadata.get("accepted_input_hash") != facts_input_hash:
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event(
+                "planning.facts_input_hash_changed",
+                "facts accepted input hash changed; gate reopened",
+                {"old": stage.metadata.get("accepted_input_hash"), "new": facts_input_hash},
+            )
         if stage.status is PlanStageStatus.PENDING:
             transition_stage(stage, PlanStageStatus.PROPOSING)
         if stage.status is PlanStageStatus.PROPOSING:
@@ -2063,7 +2079,23 @@ def run_incremental_planning(
                 affected_patch_types=["facts"], affected_json_paths=[str(item.get("path", "/"))],
                 repairable_by_llm=bool(item.get("repairable_by_llm", True)),
                 requires_human=bool(item.get("requires_human", False)), confidence=1.0,
-                metadata={"deterministic": True, "evidence_hashes": [contract.contract_hash]},
+                metadata={
+                    "deterministic": True,
+                    "evidence_hashes": [contract.contract_hash],
+                    # Phase 8C Step 1: lossless metadata.
+                    # The inline lift used to drop everything except code +
+                    # message.  Carry the deterministic metadata through to
+                    # the retry request builder so targeted repair can use
+                    # json_path, expected_value, actual_value, slot_ids,
+                    # source_claim_ids, source_span_ids, derivation_codes.
+                    "expected_value": item.get("expected_value"),
+                    "actual_value": item.get("actual_value"),
+                    "slot_ids": list(item.get("slot_ids", []) or []),
+                    "source_claim_ids": list(item.get("source_claim_ids", []) or []),
+                    "source_span_ids": list(item.get("source_span_ids", []) or []),
+                    "derivation_codes": list(item.get("derivation_codes", []) or []),
+                    "repair_kind": str(item.get("repair_kind", "") or ""),
+                },
             ) for item in consistency.issues
         ]
         all_findings = consistency_findings + list(review.findings)
@@ -2105,6 +2137,7 @@ def run_incremental_planning(
             if path: state.plan_loop_artifacts.append(path)
             state.add_event("planning.canonical_task_plan_built", "canonical patch task plan built after Facts acceptance", {"plan_hash": state.canonical_task_plan.plan_hash, "scope": consistency.scope.value})
             transition_stage(stage, PlanStageStatus.ACCEPTED)
+            stage.metadata["accepted_input_hash"] = facts_input_hash
             state.add_event("planning.facts_gate_accepted", "facts gate accepted", {})
             # Phase 8A Step 5: compile the GeometryComponentInventory
             # immediately after Facts accepts, so the Materials and
@@ -2248,6 +2281,7 @@ def run_incremental_planning(
                         state.add_patch(repaired)
                         record_findings(state, stage, rereview.findings)
                         transition_stage(stage, PlanStageStatus.ACCEPTED)
+                        stage.metadata["accepted_input_hash"] = facts_gate_input_hash(state, policy=policy)
                         state.add_event("planning.facts_revision_accepted", "facts revision atomically committed after clone re-review", {"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash})
                         # Phase 8A Step 6: compile the GeometryComponentInventory
                         # on the repair-acceptance path too (the first-try

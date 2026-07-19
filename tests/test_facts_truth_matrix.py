@@ -186,30 +186,31 @@ def test_production_code_has_no_vera4_special_case():
 # ---------------------------------------------------------------------------
 
 
-def test_truth_matrix_facts_gate_does_not_save_accepted_input_hash():
-    """Row: 'accepted_input_hash replay protection' — NEGATIVE in Step 0,
-    positive in Step 1.
+def test_truth_matrix_facts_gate_now_saves_accepted_input_hash():
+    """Row: 'accepted_input_hash replay protection' — POSITIVE in Step 1.
 
-    Asserts the *current* defect: Facts Gate does not save
-    ``accepted_input_hash``, so re-running with the same input re-executes
-    the full reviewer + revision cycle.
+    Phase 8C Step 1: the Facts gate now saves ``accepted_input_hash`` on
+    ACCEPTED and short-circuits when the input hash is unchanged.  This
+    flipped from negative to positive when the gate transaction kernel
+    was wired into ``_run_facts_gate``.
     """
     from openmc_agent.plan_builder import executor as executor_mod
+    from openmc_agent.plan_builder.closed_loop.facts_evidence import (
+        facts_gate_input_hash,
+    )
 
+    # The hash helper exists.
+    assert callable(facts_gate_input_hash)
+    # The gate body now saves the hash.
     src = inspect.getsource(executor_mod)
-    facts_gate_fn = "_run_facts_gate"
-    assert facts_gate_fn in src, "Facts gate function name changed; update test"
-    # Extract the function body.  The function is a nested closure inside
-    # run_incremental_planning, so we bound it by the next 4-space-indented
-    # ``def `` rather than top-level ``def ``.
-    start = src.index(f"    def {facts_gate_fn}(")
+    start = src.index("    def _run_facts_gate(")
     end = src.find("\n    def ", start + 1)
     body = src[start:end]
-    # The Facts gate must NOT itself persist accepted_input_hash — other
-    # gates do (placement/MU/AX/AS), but Facts currently does not.
-    assert 'stage.metadata["accepted_input_hash"]' not in body, (
-        "Facts Gate now saves accepted_input_hash — flip this assertion to "
-        "positive in Step 1."
+    assert 'stage.metadata["accepted_input_hash"]' in body, (
+        "Facts Gate must save accepted_input_hash on accept."
+    )
+    assert "facts_gate_input_hash(state" in body, (
+        "Facts Gate must compute the input hash for replay."
     )
 
 

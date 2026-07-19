@@ -4,8 +4,58 @@ from __future__ import annotations
 
 from typing import Any
 
-from .fingerprints import compute_evidence_pack_hash
+from .fingerprints import compute_candidate_hash, compute_evidence_pack_hash
 from .models import PlanClosedLoopPolicy, PlanEvidencePack, PlanGateId, SourceExcerpt
+
+
+def _valid_facts_patch(state: Any) -> Any | None:
+    """Return the latest valid Facts envelope, or None."""
+    if not hasattr(state, "patches"):
+        return None
+    for env in getattr(state, "patches", {}).values():
+        if getattr(env, "patch_type", None) == "facts" and getattr(env, "status", None) == "valid":
+            return env
+    return None
+
+
+def facts_gate_input_hash(state: Any, *, policy: PlanClosedLoopPolicy | None = None) -> str:
+    """Bind the Facts gate input to every upstream input that should
+    invalidate the accepted hash.
+
+    This closes the Phase 8C Step 0 audit defect: the Facts gate was the
+    only gate that did not save ``accepted_input_hash``, so resuming a
+    run with unchanged input re-executed the full reviewer + revision
+    cycle.  With this hash, the gate can short-circuit when the input is
+    unchanged.
+    """
+    payload: dict[str, Any] = {
+        "requirement_hash": str(getattr(state, "resolved_requirement_hash", "") or ""),
+        "confirmed_fact_ids": sorted(
+            (getattr(state, "confirmed_facts", {}) or {}).keys()
+        ),
+        "confirmed_plan_fact_ids": sorted(
+            (getattr(state, "plan_confirmed_plan_fact_records", {}) or {}).keys()
+        ),
+        "facts_patch_hash": "",
+        "planning_feature_contract_hash": "",
+        "planning_mode_decision_hash": "",
+    }
+    env = _valid_facts_patch(state)
+    if env is not None:
+        payload["facts_patch_hash"] = compute_candidate_hash(
+            target_patch_type="facts", candidate_patch=env.content,
+        )
+    contract = getattr(state, "planning_feature_contract", None)
+    if contract is not None and hasattr(contract, "contract_hash"):
+        payload["planning_feature_contract_hash"] = str(contract.contract_hash)
+    decision = getattr(state, "metadata", {}).get("planning_mode_decision") if hasattr(state, "metadata") else None
+    if decision:
+        payload["planning_mode_decision_hash"] = compute_evidence_pack_hash(decision)
+    if policy is not None:
+        payload["facts_review_chunk_chars"] = policy.facts_review_chunk_chars
+        payload["max_facts_review_chunks"] = policy.max_facts_review_chunks
+        payload["max_attempts_per_issue_fingerprint"] = policy.max_attempts_per_issue_fingerprint
+    return compute_evidence_pack_hash(payload)
 
 
 def _paragraphs(text: str, limit: int) -> list[tuple[int, int, str]]:
