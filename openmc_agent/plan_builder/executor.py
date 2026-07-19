@@ -1260,6 +1260,46 @@ def _maybe_execute_research_for_gate(
                 "absence_count": len(result.absence_records),
             },
         )
+        # Phase 8A Step 7: when research finds no evidence, the
+        # blocking findings are Patch-content issues (not source-evidence
+        # gaps).  Invalidate the affected owner patches so they get
+        # regenerated with the planning_constraints context.  This is
+        # the REVISE_CURRENT_PATCH action — the Materials/Universes
+        # patches will be rebuilt with explicit role/profile bindings
+        # from the inventory requirement sets.
+        owners = set()
+        for finding in error_findings:
+            for ptype in (
+                getattr(finding, "affected_patch_types", None)
+                or (finding.get("affected_patch_types") if isinstance(finding, dict) else [])
+                or []
+            ):
+                if ptype in {"materials", "universes"}:
+                    owners.add(ptype)
+        if owners:
+            invalidated = []
+            for ptype in owners:
+                # Remove the existing valid patch so it gets regenerated.
+                to_remove = [
+                    pid for pid, p in state.patches.items()
+                    if p.patch_type == ptype and p.status == "valid"
+                ]
+                for pid in to_remove:
+                    state.patches[pid].status = "invalid"
+                    invalidated.append(pid)
+            # Reopen the MU gate.
+            stage.status = PlanStageStatus.PENDING
+            stage.completed_at = None
+            state.add_event(
+                "planning.research_patch_revision_scheduled",
+                f"research found no evidence; invalidating {len(invalidated)} patch(es) for revision: {sorted(owners)}",
+                {
+                    "invalidated_patch_ids": invalidated,
+                    "owner_patch_types": sorted(owners),
+                    "gate_id": gate_id,
+                },
+            )
+            return True
     return False
 
 
