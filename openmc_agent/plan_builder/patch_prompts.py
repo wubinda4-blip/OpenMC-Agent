@@ -701,6 +701,9 @@ def build_patch_prompt(
     # LLM and reviewers can distinguish "what the source said" from
     # "what the inventory inferred".
     constraints_block = _planning_constraints_block(context)
+    # Phase-8B Step 3: authoritative Facts requirement skeleton.  Only
+    # rendered for the facts patch type when the skeleton is available.
+    skeleton_block = _facts_skeleton_block(context)
 
     return (
         f"{contract}\n\n"
@@ -708,6 +711,7 @@ def build_patch_prompt(
         f"{patch_rules}\n\n"
         f"{few_shot_block}"
         f"{context_block}"
+        f"{skeleton_block}"
         f"{evidence_block}"
         f"{constraints_block}"
         f"Requirement:\n{requirement}\n\n"
@@ -756,6 +760,97 @@ def _planning_constraints_block(context: Any | None) -> str:
         "component inventory.  Treat them as hard requirements; do NOT invent "
         "values that contradict them, and do NOT silently drop unresolved ones."
     )
+    return "\n".join(lines) + "\n\n"
+
+
+def _facts_skeleton_block(context: Any | None) -> str:
+    """Render the Phase-8B Step 3 authoritative Facts requirement skeleton.
+
+    Returns "" when ``context.facts_evidence_contract`` is absent (off mode)
+    so legacy prompts are byte-identical.
+    """
+    if context is None:
+        return ""
+    contract = getattr(context, "facts_evidence_contract", None)
+    if not contract or not isinstance(contract, dict):
+        return ""
+
+    lines: list[str] = [
+        "=== AUTHORITATIVE FACTS REQUIREMENT SKELETON ===",
+        "",
+        "The fields below are LOCKED from evidence investigation. "
+        "Do NOT change their values.",
+        "",
+    ]
+
+    # Resolved scope
+    scope = contract.get("resolved_scope", "unknown")
+    if scope not in ("unknown",):
+        lines.append(f"LOCKED — model_scope: {scope}")
+        lines.append("")
+
+    # Feature flags
+    flags = contract.get("required_feature_flags", [])
+    if flags:
+        lines.append("LOCKED feature flags:")
+        for flag in flags:
+            lines.append(f"  - {flag}: true")
+        lines.append("")
+
+    # Assembly layout
+    if contract.get("required_assembly_layout"):
+        lines.append("LOCKED — multi-assembly layout is required.")
+        lines.append("")
+
+    # Fuel variants
+    variants = contract.get("required_fuel_variants", [])
+    if variants:
+        lines.append("REQUIRED fuel variants (each MUST have a matching fuel_variant_requirements entry):")
+        for v in variants:
+            vid = v.get("variant_id", "?")
+            enrich = v.get("enrichment_wt_percent")
+            density = v.get("density_g_cm3")
+            atypes = ", ".join(v.get("assembly_type_ids", []))
+            enrich_str = f", enrichment={enrich} wt%" if enrich is not None else ""
+            density_str = f", density={density} g/cm3" if density is not None else ""
+            atypes_str = f", assembly_types=[{atypes}]" if atypes else ""
+            lines.append(f"  - variant_id={vid}{enrich_str}{density_str}{atypes_str}")
+        lines.append("")
+
+    # Localized inserts
+    inserts = contract.get("required_localized_inserts", [])
+    if inserts:
+        lines.append("REQUIRED localized insert placements (each MUST have a matching localized_insert_requirements entry):")
+        for ins in inserts:
+            rid = ins.get("requirement_id", "?")
+            kind = ins.get("insert_kind", "?")
+            atypes = ", ".join(ins.get("assembly_type_ids", []))
+            coord_count = ins.get("expected_coordinate_count_per_assembly")
+            coord_str = f", coords_per_assembly={coord_count}" if coord_count is not None else ""
+            lines.append(f"  - requirement_id={rid}, insert_kind={kind}, assembly_types=[{atypes}]{coord_str}")
+        lines.append("")
+
+    # Unresolved fields
+    unresolved = contract.get("unresolved_source_critical_fields", [])
+    if unresolved:
+        lines.append("UNRESOLVED slots (must be filled by analysis — do NOT leave empty):")
+        for u in unresolved:
+            lines.append(f"  - {u}")
+        lines.append("")
+
+    # Conflicts
+    conflicts = contract.get("conflicts", [])
+    if conflicts:
+        lines.append("WARNING — conflicting slots detected:")
+        for c in conflicts:
+            lines.append(f"  - {c}")
+        lines.append("")
+
+    lines.append(
+        "These values are sourced from evidence investigation. "
+        "They are authoritative and must NOT be changed."
+    )
+
     return "\n".join(lines) + "\n\n"
 
 

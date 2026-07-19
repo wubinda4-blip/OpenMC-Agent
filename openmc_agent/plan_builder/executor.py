@@ -3614,6 +3614,60 @@ def run_incremental_planning(
                     },
                 )
 
+                # Phase-8B Step 3: compile the FactsRequirementSkeleton from
+                # investigation evidence + feature contract.  Both the
+                # prompt injection (via facts_evidence_contract) and the
+                # post-generation merge + preflight (via
+                # facts_requirement_skeleton) use this.
+                from .facts_requirement_skeleton import (
+                    compile_facts_requirement_skeleton,
+                )
+                from .facts_evidence_contract import (
+                    compile_facts_evidence_contract,
+                )
+                from .planning_scope import (
+                    planning_feature_contract as _build_feature_contract,
+                )
+
+                feature_contract_obj = _build_feature_contract(
+                    state.metadata.get("planning_mode_decision")
+                )
+                skel_result = compile_facts_requirement_skeleton(
+                    requirement_text=requirement,
+                    feature_contract=feature_contract_obj,
+                    evidence_ledger=_investigation_shared_ledger,
+                    source_index=_investigation_shared_source_index,
+                    confirmed_facts=state.confirmed_facts,
+                )
+                if skel_result.ok and skel_result.skeleton is not None:
+                    ev_contract = compile_facts_evidence_contract(
+                        skel_result.skeleton
+                    )
+                    # Set on the unwrapped context so the prompt builder
+                    # and post-generation merge can both access them.
+                    ctx.facts_requirement_skeleton = (
+                        skel_result.skeleton.model_dump(mode="json")
+                    )
+                    ctx.facts_evidence_contract = (
+                        ev_contract.model_dump(mode="json")
+                    )
+                    state.add_event(
+                        "planning.facts_skeleton_compiled",
+                        "FactsRequirementSkeleton compiled from investigation evidence",
+                        {
+                            "skeleton_hash": skel_result.skeleton.skeleton_hash[:12],
+                            "contract_hash": ev_contract.evidence_contract_hash[:12],
+                            "fuel_variant_count": len(skel_result.skeleton.fuel_variant_slots),
+                            "localized_insert_count": len(skel_result.skeleton.localized_insert_slots),
+                        },
+                    )
+                else:
+                    state.add_event(
+                        "planning.facts_skeleton_compilation_failed",
+                        "FactsRequirementSkeleton compilation did not produce a skeleton",
+                        {"warnings": skel_result.warnings, "errors": skel_result.errors},
+                    )
+
         # Phase 8A Step 6 (P0-1): Materials and Universes investigations.
         # Mirror the Facts investigation path: run BEFORE the patch LLM,
         # block in controlled mode on failure, inject evidence into the
@@ -3746,6 +3800,59 @@ def run_incremental_planning(
             )
 
         if result.ok and result.envelope is not None:
+            # Phase-8B Step 3: merge skeleton locked fields into the
+            # generated Facts patch, then run preflight.
+            if patch_type == "facts" and ctx.facts_requirement_skeleton is not None:
+                from .facts_requirement_skeleton import (
+                    FactsRequirementSkeleton,
+                )
+                from .facts_evidence_contract import (
+                    FactsContentProposal,
+                    merge_facts_content_into_skeleton,
+                    run_facts_skeleton_preflight,
+                )
+
+                skeleton_model = FactsRequirementSkeleton.model_validate(
+                    ctx.facts_requirement_skeleton
+                )
+                proposal = FactsContentProposal(
+                    proposal_id="facts_post_gen_merge",
+                    resolved_fields=dict(result.envelope.content),
+                )
+                merge_result = merge_facts_content_into_skeleton(
+                    skeleton=skeleton_model,
+                    proposal=proposal,
+                    evidence_ledger=_investigation_shared_ledger,
+                )
+                if merge_result.ok and merge_result.merged is not None:
+                    result.envelope.content = merge_result.merged.patch
+                    state.add_event(
+                        "planning.facts_skeleton_merge_applied",
+                        "Facts skeleton locked fields merged into generated patch",
+                        {
+                            "patch_hash": merge_result.merged.patch_hash[:12],
+                            "warning_count": len(merge_result.warnings),
+                        },
+                    )
+                else:
+                    state.add_event(
+                        "planning.facts_skeleton_merge_failed",
+                        "Facts skeleton merge did not produce merged patch",
+                        {"errors": merge_result.errors},
+                    )
+                # Run preflight on the (possibly merged) content.
+                preflight = run_facts_skeleton_preflight(
+                    skeleton_model, result.envelope.content
+                )
+                if not preflight.ok:
+                    state.add_event(
+                        "planning.facts_skeleton_preflight_issues",
+                        "Facts skeleton preflight flagged issues",
+                        {
+                            "issue_count": len(preflight.issues),
+                            "issue_codes": [i.get("code") for i in preflight.issues],
+                        },
+                    )
             state.add_patch(result.envelope)
             if patch_type == "facts":
                 facts_gate_issue = _run_facts_gate()

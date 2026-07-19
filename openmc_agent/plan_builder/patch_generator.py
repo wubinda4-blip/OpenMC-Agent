@@ -129,6 +129,10 @@ class PatchGenerationContext(AgentBaseModel):
     planning_constraints: list[dict[str, Any]] = Field(default_factory=list)
     # Phase-8B Step 2: context facts with provenance tracking.
     context_facts: dict[str, ContextFactValue] = Field(default_factory=dict)
+    # Phase-8B Step 3: FactsRequirementSkeleton — compiled from evidence
+    # ledger and feature contract to constrain the Facts patch LLM.
+    facts_requirement_skeleton: dict[str, Any] | None = None
+    facts_evidence_contract: dict[str, Any] | None = None
 
 
 class RetryPatchGenerationContext(AgentBaseModel):
