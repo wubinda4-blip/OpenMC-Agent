@@ -264,17 +264,19 @@ def test_truth_matrix_skeleton_does_not_mine_evidence_ledger():
     )
 
 
-def test_truth_matrix_gate_transaction_kernel_not_yet_introduced():
-    """Row: 'Gate transaction kernel' — NEGATIVE in Step 0, positive in
-    Step 1.
+def test_truth_matrix_gate_transaction_kernel_now_introduced():
+    """Row: 'Gate transaction kernel' — POSITIVE in Step 1.
 
-    Asserts the module does not yet exist.  Step 1 will create it.
+    The kernel module exists and exposes ``run_gate_transaction``.  This
+    assertion flipped from negative to positive when Phase 8C Step 1
+    introduced the kernel.
     """
-    try:
-        importlib.import_module("openmc_agent.plan_builder.closed_loop.gate_transaction")
-    except ImportError:
-        return  # expected — Step 0 does not yet ship the kernel
-    raise AssertionError(
-        "gate_transaction module now exists — flip this assertion to "
-        "positive in Step 1."
+    import importlib
+
+    mod = importlib.import_module(
+        "openmc_agent.plan_builder.closed_loop.gate_transaction"
     )
+    assert hasattr(mod, "run_gate_transaction")
+    assert hasattr(mod, "GateTransactionHooks")
+    assert hasattr(mod, "GateTransactionResult")
+    assert hasattr(mod, "GateFindingBundle")
