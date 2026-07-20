@@ -3410,6 +3410,12 @@ def run_incremental_planning(
     _investigation_shared_source_index: Any = None
     _investigation_shared_ledger: Any = None
     _investigation_config_resolved: Any = None
+    _investigation_feature_contract: Any = getattr(state, "planning_feature_contract", None)
+    if _investigation_feature_contract is None:
+        from .planning_scope import planning_feature_contract as _build_investigation_feature_contract
+        _investigation_feature_contract = _build_investigation_feature_contract(
+            state.metadata.get("planning_mode_decision")
+        )
     if plan_investigation_config is not None or plan_investigation_client is not None:
         from openmc_agent.plan_investigation.executor_injection import (
             InvestigationSessionCache,
@@ -3647,6 +3653,7 @@ def run_incremental_planning(
                 session_cache=_investigation_session_cache,
                 shared_source_index=_investigation_shared_source_index,
                 shared_ledger=_investigation_shared_ledger,
+                feature_contract=_investigation_feature_contract,
                 artifact_output_dir=(
                     Path(plan_investigation_output_dir)
                     if plan_investigation_output_dir is not None
@@ -3799,6 +3806,7 @@ def run_incremental_planning(
                 geometry_inventory=geometry_inventory_obj,
                 material_requirement_set=material_req_obj,
                 universe_requirement_set=universe_req_obj,
+                feature_contract=_investigation_feature_contract,
                 artifact_output_dir=(
                     Path(plan_investigation_output_dir)
                     if plan_investigation_output_dir is not None

@@ -274,6 +274,7 @@ def run_investigation_stage(
     geometry_inventory: Any = None,
     material_requirement_set: Any = None,
     universe_requirement_set: Any = None,
+    feature_contract: Any = None,
 ) -> InvestigationResult | None:
     """Run the optional investigation stage.
 
@@ -374,6 +375,7 @@ def run_investigation_stage(
         geometry_inventory=geometry_inventory,
         material_requirement_set=material_requirement_set,
         universe_requirement_set=universe_requirement_set,
+        feature_contract=feature_contract,
     )
     agent = InvestigationAgent(registry=registry, llm_client=llm_client)
     result = agent.run(context)

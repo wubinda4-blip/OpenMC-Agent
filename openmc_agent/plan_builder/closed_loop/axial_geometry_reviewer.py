@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openmc_agent.structured_output import canonical_payload_hash
+
 from typing import Any
 
 from pydantic import Field
@@ -111,6 +113,7 @@ def run_axial_geometry_review(*, evidence_pack: Any, reviewer_client: Any, state
             role_id="axial_geometry_review", gate_id=PlanGateId.AXIAL_GEOMETRY,
             schema_name="AxialGeometryReviewModelOutput", json_schema=AxialGeometryReviewModelOutput.model_json_schema(),
             artifact_prefix="axial_geometry_review",
+            input_payload_hash=canonical_payload_hash(evidence_pack)
         ),
         state=state,
         stage=state.plan_loop_stages.get("plan_gate_axial_geometry"),

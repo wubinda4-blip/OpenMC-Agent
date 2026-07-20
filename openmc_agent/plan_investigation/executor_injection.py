@@ -462,6 +462,7 @@ def run_facts_investigation_stage(
     shared_ledger: PlanningEvidenceLedger | None = None,
     artifact_output_dir: Path | None = None,
     add_event: Callable[[str, str, dict[str, Any]], None] | None = None,
+    feature_contract: Any = None,
 ) -> InvestigationStageOutcome:
     """Run the Facts investigation stage (Phase 8A Step 4 wrapper).
 
@@ -494,6 +495,7 @@ def run_facts_investigation_stage(
         session_cache=session_cache,
         shared_source_index=shared_source_index,
         shared_ledger=shared_ledger,
+        feature_contract=feature_contract,
         artifact_output_dir=artifact_output_dir,
         add_event=add_event,
     )
@@ -528,6 +530,7 @@ def run_patch_investigation_stage(
     geometry_inventory: Any = None,
     material_requirement_set: Any = None,
     universe_requirement_set: Any = None,
+    feature_contract: Any = None,
     artifact_output_dir: Path | None = None,
     add_event: Callable[[str, str, dict[str, Any]], None] | None = None,
 ) -> InvestigationStageOutcome:
@@ -641,6 +644,7 @@ def run_patch_investigation_stage(
         geometry_inventory=geometry_inventory,
         material_requirement_set=material_requirement_set,
         universe_requirement_set=universe_requirement_set,
+        feature_contract=feature_contract,
     )
     if result is None:
         return InvestigationStageOutcome(
@@ -658,6 +662,15 @@ def run_patch_investigation_stage(
             result, shared_ledger, patch_type=patch_type
         )
         coverage_dict = patch_coverage.to_dict()
+    coverage_dict["semantic_coverage"] = dict(result.semantic_coverage)
+    coverage_dict["planner_calls"] = result.planner_calls
+    coverage_dict["schema_retries"] = result.schema_retries
+    coverage_dict["planner_input_payload_hash"] = result.planner_input_payload_hash
+    coverage_dict["skipped_actions"] = list(result.skipped_actions)
+    coverage_dict["skipped_action_reason"] = result.skipped_action_reason
+    coverage_dict["structured_output_payload_hash_drift"] = result.structured_output_payload_hash_drift
+    coverage_dict["structured_output_unbudgeted_retry"] = result.structured_output_unbudgeted_retry
+    coverage_dict["structured_output_stale_output_reused"] = result.structured_output_stale_output_reused
     payloads: list[dict[str, Any]] = []
     if result.evidence_claim_ids:
         payloads = collect_evidence_for_patch_prompt(

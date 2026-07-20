@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openmc_agent.structured_output import canonical_payload_hash
+
 from typing import Any
 
 from pydantic import Field
@@ -78,7 +80,7 @@ def run_placement_review(*, evidence_pack: PlacementEvidencePack, reviewer_clien
         client=reviewer_client, initial_prompt=build_placement_review_prompt(evidence_pack),
         retry_prompt_builder=lambda raw, error: build_placement_review_schema_retry_prompt(evidence_pack, error, raw),
         output_model=PlacementReviewModelOutput,
-        call_spec=StructuredReviewCallSpec(role_id="placement_review", gate_id=PlanGateId.PLACEMENT, schema_name="PlacementReviewModelOutput", json_schema=PlacementReviewModelOutput.model_json_schema(), artifact_prefix="placement_review"),
+        call_spec=StructuredReviewCallSpec(role_id="placement_review", gate_id=PlanGateId.PLACEMENT, schema_name="PlacementReviewModelOutput", json_schema=PlacementReviewModelOutput.model_json_schema(), artifact_prefix="placement_review", input_payload_hash=canonical_payload_hash(evidence_pack)),
         state=state, stage=state.plan_loop_stages.get("plan_gate_placement"), policy=policy,
     )
     result = PlacementReviewResult(reviewer_calls=call.call_count, schema_retries=call.schema_retry_count, attempts=[item.model_dump(mode="json") for item in call.attempts], error_code=call.error_code, error_detail=call.error_detail)

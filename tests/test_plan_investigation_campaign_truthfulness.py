@@ -343,3 +343,91 @@ def test_truth_violation_codes_are_stable_strings() -> None:
         assert any(code.startswith(p) for p in allowed_prefixes), (
             f"code {code!r} does not start with any allowed prefix: {allowed_prefixes}"
         )
+
+def test_truth_structured_output_invariants() -> None:
+    from openmc_agent.plan_investigation.campaign_truthfulness import (
+        TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT,
+        TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED,
+        TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY,
+    )
+
+    violations = investigation_truth_violations_for_run(
+        run_summary={
+            "plan_investigation_mode": "controlled",
+            "plan_investigation_network_call_count": 1,
+        },
+        investigation_outcome={
+            "completed": False,
+            "payload_hash_drift": True,
+            "unbudgeted_retry": True,
+            "stale_output_reused": True,
+        },
+    )
+    assert TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT in violations
+    assert TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY in violations
+    assert TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED in violations
+
+
+def test_truth_semantic_coverage_false_completion() -> None:
+    from openmc_agent.plan_investigation.campaign_truthfulness import (
+        TV_SEMANTIC_COVERAGE_FALSE_COMPLETION,
+    )
+
+    violations = investigation_truth_violations_for_run(
+        run_summary={
+            "plan_investigation_mode": "controlled",
+            "plan_investigation_network_call_count": 1,
+        },
+        investigation_outcome={
+            "completed": True,
+            "tool_call_count": 1,
+            "evidence_claim_count": 1,
+            "source_backed_claim_count": 1,
+            "semantic_coverage": {"coverage_complete": False},
+        },
+    )
+    assert TV_SEMANTIC_COVERAGE_FALSE_COMPLETION in violations
+
+
+def test_truth_budget_block_after_coverage_complete() -> None:
+    from openmc_agent.plan_investigation.campaign_truthfulness import (
+        TV_BUDGET_BLOCK_AFTER_SEMANTIC_COMPLETION,
+    )
+
+    violations = investigation_truth_violations_for_run(
+        run_summary={
+            "plan_investigation_mode": "controlled",
+            "plan_investigation_network_call_count": 1,
+        },
+        investigation_outcome={
+            "completed": False,
+            "blocked": True,
+            "block_code": "planning.investigation_budget_exceeded",
+            "semantic_coverage": {"coverage_complete": True},
+        },
+    )
+    assert TV_BUDGET_BLOCK_AFTER_SEMANTIC_COMPLETION in violations
+def test_truth_structured_output_invariants_in_nested_coverage_payload() -> None:
+    from openmc_agent.plan_investigation.campaign_truthfulness import (
+        TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT,
+        TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED,
+        TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY,
+    )
+
+    violations = investigation_truth_violations_for_run(
+        run_summary={
+            "plan_investigation_mode": "controlled",
+            "plan_investigation_network_call_count": 1,
+        },
+        investigation_outcome={
+            "completed": False,
+            "coverage": {
+                "structured_output_payload_hash_drift": True,
+                "structured_output_unbudgeted_retry": True,
+                "structured_output_stale_output_reused": True,
+            },
+        },
+    )
+    assert TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT in violations
+    assert TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY in violations
+    assert TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED in violations

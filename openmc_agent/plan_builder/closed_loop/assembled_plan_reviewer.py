@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openmc_agent.structured_output import canonical_payload_hash
+
 from typing import Any
 
 from pydantic import Field
@@ -97,6 +99,7 @@ def run_assembled_plan_review(*, evidence_pack: Any, reviewer_client: Any, state
             role_id="assembled_plan_review", gate_id=PlanGateId.ASSEMBLED_PLAN,
             schema_name="AssembledPlanReviewModelOutput", json_schema=AssembledPlanReviewModelOutput.model_json_schema(),
             artifact_prefix="assembled_plan_review",
+            input_payload_hash=canonical_payload_hash(evidence_pack)
         ),
         state=state,
         stage=state.plan_loop_stages.get("plan_gate_assembled_plan"),

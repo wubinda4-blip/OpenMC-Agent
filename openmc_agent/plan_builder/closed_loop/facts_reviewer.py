@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openmc_agent.structured_output import canonical_payload_hash
+
 from typing import Any
 
 from pydantic import Field
@@ -88,6 +90,7 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
                 role_id="facts_review", gate_id=PlanGateId.FACTS,
                 schema_name="FactsReviewModelOutput", json_schema=FactsReviewModelOutput.model_json_schema(),
                 artifact_prefix="facts_review",
+            input_payload_hash=canonical_payload_hash(pack)
             ), state=state, stage=state.plan_loop_stages.get("plan_gate_facts"), policy=policy,
         )
         result.reviewer_calls += call.call_count

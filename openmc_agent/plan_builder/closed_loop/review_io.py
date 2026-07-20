@@ -15,6 +15,12 @@ from typing import Any, Callable
 from pydantic import Field
 
 from openmc_agent.schemas import AgentBaseModel
+from openmc_agent.structured_output import (
+    StructuredOutputRepairPrompt,
+    StructuredOutputResult,
+    canonical_payload_hash,
+    run_structured_output_transaction,
+)
 
 from .models import PlanClosedLoopPolicy, PlanGateId
 
@@ -33,6 +39,7 @@ class StructuredReviewCallSpec(AgentBaseModel):
     max_tokens: int | None = None
     allow_embedded_json: bool = True
     artifact_prefix: str
+    input_payload_hash: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -52,6 +59,9 @@ class StructuredReviewAttempt(AgentBaseModel):
     truncated_suspected: bool = False
     accepted: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    input_payload_hash: str = ""
+    raw_hash: str = ""
+    budget_charged: bool = False
 
 
 class StructuredReviewResult(AgentBaseModel):
@@ -64,6 +74,7 @@ class StructuredReviewResult(AgentBaseModel):
     schema_complete: bool = False
     error_code: str = ""
     error_detail: str = ""
+    input_payload_hash: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -263,50 +274,54 @@ def run_structured_review_call(
     call_spec: StructuredReviewCallSpec, state: Any, stage: Any,
     policy: PlanClosedLoopPolicy,
 ) -> StructuredReviewResult:
-    from .fingerprints import _digest
+    def _budget_available() -> bool:
+        return state.plan_loop_additional_llm_calls < policy.max_total_additional_llm_calls
 
-    result = StructuredReviewResult()
-    prompt = initial_prompt
-    last_error = ""
-    for attempt_index in range(min(2, call_spec.max_attempts)):
-        if state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
-            result.error_code = "planning.closed_loop.budget_exhausted"
-            result.error_detail = "additional LLM call budget exhausted"
-            return result
-        record = StructuredReviewAttempt(attempt_index=attempt_index, prompt_hash=_digest({"prompt": prompt}))
-        try:
-            raw = _call(client, prompt, call_spec)
-            raw_text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, sort_keys=True)
-            record.raw_text = raw_text
-            record.raw_chars = len(raw_text)
-            record.truncated_suspected = bool(raw_text) and raw_text.rstrip()[-1:] not in {"}", "]"}
-            record.__dict__.update(_metadata(client))
-            state.plan_loop_additional_llm_calls += 1
-            result.call_count += 1
-            candidates, strategy = _extract(raw, allow_embedded_json=call_spec.allow_embedded_json)
-            record.extraction_strategy = strategy
-            record.extracted_candidate_count = len(candidates)
-            for candidate in reversed(candidates):
-                try:
-                    normalized = normalize_llm_review_candidate(candidate, output_model)
-                    parsed = output_model.model_validate(normalized)
-                    record.accepted = True
-                    result.parsed_output = parsed.model_dump(mode="json")
-                    result.ok = result.parse_complete = result.schema_complete = True
-                    result.attempts.append(record)
-                    return result
-                except Exception as exc:
-                    record.schema_errors.append(str(exc))
-            if not candidates:
-                record.parse_errors.append("output_not_json")
-            last_error = "; ".join(record.schema_errors or record.parse_errors) or "schema_invalid"
-        except Exception as exc:
-            last_error = str(exc)
-            record.parse_errors.append(last_error)
-        result.attempts.append(record)
-        if attempt_index == 0:
-            result.schema_retry_count += 1
-            prompt = retry_prompt_builder(record.raw_text, last_error)
-    result.error_code = "structured_review.schema_invalid"
-    result.error_detail = last_error
-    return result
+    def _charge_budget() -> None:
+        state.plan_loop_additional_llm_calls += 1
+
+    input_hash = call_spec.input_payload_hash or canonical_payload_hash(initial_prompt)
+
+    def _retry_prompt(raw: str, error: str) -> StructuredOutputRepairPrompt:
+        repaired = retry_prompt_builder(raw, error)
+        if isinstance(repaired, StructuredOutputRepairPrompt):
+            return repaired
+        return StructuredOutputRepairPrompt(
+            prompt=repaired,
+            input_payload_hash=input_hash,
+        )
+
+    raw_result: StructuredOutputResult = run_structured_output_transaction(
+        client=client,
+        initial_prompt=initial_prompt,
+        retry_prompt_builder=_retry_prompt,
+        output_model=output_model,
+        call=lambda current_client, prompt: _call(current_client, prompt, call_spec),
+        input_payload_hash=call_spec.input_payload_hash or None,
+        normalize_candidate=lambda candidate: normalize_llm_review_candidate(candidate, output_model),
+        max_attempts=call_spec.max_attempts,
+        allow_embedded_json=call_spec.allow_embedded_json,
+        budget_available=_budget_available,
+        charge_budget=_charge_budget,
+    )
+    attempts = [
+        StructuredReviewAttempt(**attempt.model_dump(mode="python"))
+        for attempt in raw_result.attempts
+    ]
+    error_code = raw_result.error_code
+    if error_code == "structured_output.budget_exhausted":
+        error_code = "planning.closed_loop.budget_exhausted"
+    elif error_code == "structured_output.schema_invalid":
+        error_code = "structured_review.schema_invalid"
+    return StructuredReviewResult(
+        ok=raw_result.ok,
+        parsed_output=raw_result.parsed_output,
+        attempts=attempts,
+        call_count=raw_result.call_count,
+        schema_retry_count=raw_result.schema_retry_count,
+        parse_complete=raw_result.parse_complete,
+        schema_complete=raw_result.schema_complete,
+        input_payload_hash=raw_result.input_payload_hash,
+        error_code=error_code,
+        error_detail=raw_result.error_detail,
+    )

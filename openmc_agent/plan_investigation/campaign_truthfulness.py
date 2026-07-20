@@ -32,6 +32,11 @@ __all__ = [
     "TV_SESSION_REUSED_WITH_FINGERPRINT_MISMATCH",
     "TV_ARTIFACT_CONTAINS_HOST_PATH",
     "TV_ARTIFACT_CONTAINS_SECRET",
+    "TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT",
+    "TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY",
+    "TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED",
+    "TV_SEMANTIC_COVERAGE_FALSE_COMPLETION",
+    "TV_BUDGET_BLOCK_AFTER_SEMANTIC_COMPLETION",
     # Phase 8A Step 6 additions.
     "TV_CONTROLLED_INVENTORY_FAILURE_BYPASSED",
     "TV_CONTROLLED_INVENTORY_LEGACY_FALLBACK_USED",
@@ -126,6 +131,21 @@ TV_ARTIFACT_CONTAINS_HOST_PATH = (
     "investigation_artifact_contains_host_path"
 )
 TV_ARTIFACT_CONTAINS_SECRET = "investigation_artifact_contains_secret"
+TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT = (
+    "plan_investigation_structured_output_payload_hash_drift"
+)
+TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY = (
+    "plan_investigation_structured_output_unbudgeted_retry"
+)
+TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED = (
+    "plan_investigation_structured_output_stale_output_reused"
+)
+TV_SEMANTIC_COVERAGE_FALSE_COMPLETION = (
+    "plan_investigation_semantic_coverage_false_completion"
+)
+TV_BUDGET_BLOCK_AFTER_SEMANTIC_COMPLETION = (
+    "plan_investigation_budget_block_after_semantic_completion"
+)
 
 # Phase 8A Step 6 (Section 32) — additional truthfulness codes for
 # inventory fail-closed, Materials/Universes investigation, and
@@ -335,6 +355,11 @@ INVESTIGATION_TRUTH_VIOLATIONS: tuple[str, ...] = (
     TV_SESSION_REUSED_WITH_FINGERPRINT_MISMATCH,
     TV_ARTIFACT_CONTAINS_HOST_PATH,
     TV_ARTIFACT_CONTAINS_SECRET,
+    TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT,
+    TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY,
+    TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED,
+    TV_SEMANTIC_COVERAGE_FALSE_COMPLETION,
+    TV_BUDGET_BLOCK_AFTER_SEMANTIC_COMPLETION,
     # Phase 8A Step 6 additions.
     TV_CONTROLLED_INVENTORY_FAILURE_BYPASSED,
     TV_CONTROLLED_INVENTORY_LEGACY_FALLBACK_USED,
@@ -523,7 +548,51 @@ def investigation_truth_violations_for_run(
     ):
         violations.append(TV_FACTS_PATCH_WITHOUT_REQUIRED_EVIDENCE)
 
-    # 11. Artifact contains host path / secret.
+    # 11. Structured-output transaction invariants.  Investigation outcomes
+    # may expose this telemetry at the top level or under the executor's
+    # coverage payload; audit both surfaces so nested persistence cannot hide
+    # a fail-closed transaction violation.
+    coverage_payload = outcome.get("coverage")
+    structured_sources: tuple[Mapping[str, Any], ...] = (outcome,)
+    if isinstance(coverage_payload, Mapping):
+        structured_sources = (outcome, coverage_payload)
+    if any(
+        source.get("block_code") == "structured_output.payload_hash_mismatch"
+        or source.get("payload_hash_drift")
+        or source.get("structured_output_payload_hash_drift")
+        or source.get("plan_investigation_structured_output_payload_hash_drift")
+        for source in structured_sources
+    ):
+        violations.append(TV_STRUCTURED_OUTPUT_PAYLOAD_HASH_DRIFT)
+    if any(
+        source.get("unbudgeted_retry")
+        or source.get("structured_output_unbudgeted_retry")
+        or source.get("plan_investigation_structured_output_unbudgeted_retry")
+        for source in structured_sources
+    ):
+        violations.append(TV_STRUCTURED_OUTPUT_UNBUDGETED_RETRY)
+    if any(
+        source.get("stale_output_reused")
+        or source.get("structured_output_stale_output_reused")
+        or source.get("plan_investigation_structured_output_stale_output_reused")
+        for source in structured_sources
+    ):
+        violations.append(TV_STRUCTURED_OUTPUT_STALE_OUTPUT_REUSED)
+
+    coverage = outcome.get("semantic_coverage")
+    if not isinstance(coverage, Mapping) and isinstance(coverage_payload, Mapping):
+        coverage = coverage_payload.get("semantic_coverage")
+    if isinstance(coverage, Mapping) and coverage:
+        if completed and coverage.get("coverage_complete") is False:
+            violations.append(TV_SEMANTIC_COVERAGE_FALSE_COMPLETION)
+        if (
+            outcome.get("blocked") is True
+            and outcome.get("block_code") == "planning.investigation_budget_exceeded"
+            and coverage.get("coverage_complete") is True
+        ):
+            violations.append(TV_BUDGET_BLOCK_AFTER_SEMANTIC_COMPLETION)
+
+    # 12. Artifact contains host path / secret.
     if artifact_text_snapshot:
         if "/home/" in artifact_text_snapshot:
             violations.append(TV_ARTIFACT_CONTAINS_HOST_PATH)

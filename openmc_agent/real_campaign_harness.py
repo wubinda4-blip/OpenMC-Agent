@@ -85,6 +85,7 @@ from openmc_agent.llm_call_recorder import (
 
 
 _DEFAULT_INPUT_ROOT = "Input"
+STRUCTURED_OUTPUT_POLICY_HASH = "phase8c_step2d_v1"
 
 
 @dataclass
@@ -644,6 +645,9 @@ class CampaignResumeFingerprint:
     plan_investigation_tool_registry_hash: str = ""
     plan_investigation_schema_version: str = "0.1"
     require_source_backed_evidence: bool = True
+    # Missing field in legacy artifacts defaults to "legacy" so resume fails
+    # closed when compared with a current structured-output policy.
+    structured_output_policy_hash: str = "legacy"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -679,6 +683,7 @@ class CampaignResumeFingerprint:
             "plan_investigation_tool_registry_hash",
             "plan_investigation_schema_version",
             "require_source_backed_evidence",
+            "structured_output_policy_hash",
         ):
             if getattr(self, field_name) != getattr(other, field_name):
                 out.append(field_name)
@@ -712,6 +717,7 @@ def compute_resume_fingerprint(
     plan_investigation_tool_registry_hash: str = "",
     plan_investigation_schema_version: str = "0.1",
     require_source_backed_evidence: bool = True,
+    structured_output_policy_hash: str = STRUCTURED_OUTPUT_POLICY_HASH,
 ) -> CampaignResumeFingerprint:
     return CampaignResumeFingerprint(
         git_sha=git_sha,
@@ -747,6 +753,7 @@ def compute_resume_fingerprint(
         plan_investigation_tool_registry_hash=plan_investigation_tool_registry_hash,
         plan_investigation_schema_version=plan_investigation_schema_version,
         require_source_backed_evidence=require_source_backed_evidence,
+        structured_output_policy_hash=structured_output_policy_hash,
     )
 
 

@@ -28,6 +28,14 @@ from typing import Any, Callable
 from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 
 from openmc_agent.schemas import AgentBaseModel
+from openmc_agent.structured_output import (
+    StructuredOutputRepairPrompt,
+    canonical_payload_hash,
+    StructuredOutputResult,
+    run_structured_output_transaction,
+)
+
+from .semantic_coverage import compile_semantic_coverage
 
 from .errors import PlanInvestigationIssue
 from .evidence_ledger import (
@@ -80,6 +88,7 @@ BLOCK_CODE_BUDGET_EXCEEDED = "planning.investigation_budget_exceeded"
 BLOCK_CODE_INVALID_LLM_OUTPUT = "planning.investigation_invalid_llm_output"
 BLOCK_CODE_UNKNOWN_TOOL = "planning.investigation_unknown_tool"
 BLOCK_CODE_ARGUMENT_INVALID = "planning.investigation_argument_invalid"
+MAX_PLANNER_CALLS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +162,7 @@ class InvestigationContext(AgentBaseModel):
     geometry_inventory: Any = None
     material_requirement_set: Any = None
     universe_requirement_set: Any = None
+    feature_contract: Any = None
 
     @property
     def requirement_excerpt(self) -> str:
@@ -185,6 +195,15 @@ class InvestigationPlan(AgentBaseModel):
     actions: tuple[InvestigationAction, ...] = Field(default_factory=tuple)
     summary: str = ""
 
+    @model_validator(mode="after")
+    def _validate_action_contract(self) -> "InvestigationPlan":
+        for action in self.actions:
+            if not action.tool.strip():
+                raise ValueError("investigation action tool must be non-empty")
+            if not isinstance(action.arguments, dict):
+                raise ValueError("investigation action arguments must be an object")
+        return self
+
 
 class InvestigationResult(AgentBaseModel):
     """Outcome of one :meth:`InvestigationAgent.run` call."""
@@ -202,22 +221,44 @@ class InvestigationResult(AgentBaseModel):
     budget: InvestigationBudget = Field(default_factory=InvestigationBudget)
     budget_used: InvestigationBudgetUsage = Field(default_factory=InvestigationBudgetUsage)
     warnings: tuple[str, ...] = Field(default_factory=tuple)
+    planner_calls: int = 0
+    schema_retries: int = 0
+    planner_input_payload_hash: str = ""
+    semantic_coverage: dict[str, Any] = Field(default_factory=dict)
+    skipped_actions: tuple[str, ...] = Field(default_factory=tuple)
+    skipped_action_reason: str | None = None
+    structured_output_payload_hash_drift: bool = False
+    structured_output_unbudgeted_retry: bool = False
+    structured_output_stale_output_reused: bool = False
     result_hash: str = ""
 
     @model_validator(mode="after")
     def _compute_result_hash(self) -> "InvestigationResult":
-        expected = content_hash(
-            {
-                "session_id": self.session_id,
-                "patch_type": self.patch_type,
-                "tool_calls": [tc.model_dump(mode="json") for tc in self.tool_calls],
-                "evidence_claim_ids": list(self.evidence_claim_ids),
-                "blocked": self.blocked,
-                "block_code": self.block_code,
-                "completed": self.completed,
-                "budget_used": self.budget_used.model_dump(mode="json"),
-            }
-        )
+        payload = {
+            "session_id": self.session_id,
+            "patch_type": self.patch_type,
+            "tool_calls": [tc.model_dump(mode="json") for tc in self.tool_calls],
+            "evidence_claim_ids": list(self.evidence_claim_ids),
+            "blocked": self.blocked,
+            "block_code": self.block_code,
+            "completed": self.completed,
+            "budget_used": self.budget_used.model_dump(mode="json"),
+        }
+        if self.planner_calls or self.schema_retries or self.planner_input_payload_hash or self.semantic_coverage or self.skipped_actions or self.skipped_action_reason or self.structured_output_payload_hash_drift or self.structured_output_unbudgeted_retry or self.structured_output_stale_output_reused:
+            payload.update(
+                {
+                    "planner_calls": self.planner_calls,
+                    "schema_retries": self.schema_retries,
+                    "planner_input_payload_hash": self.planner_input_payload_hash,
+                    "semantic_coverage": self.semantic_coverage,
+                    "skipped_actions": list(self.skipped_actions),
+                    "skipped_action_reason": self.skipped_action_reason,
+                    "structured_output_payload_hash_drift": self.structured_output_payload_hash_drift,
+                    "structured_output_unbudgeted_retry": self.structured_output_unbudgeted_retry,
+                    "structured_output_stale_output_reused": self.structured_output_stale_output_reused,
+                }
+            )
+        expected = content_hash(payload)
         if not self.result_hash:
             object.__setattr__(self, "result_hash", expected)
         elif self.result_hash != expected:
@@ -257,6 +298,7 @@ class InvestigationAgent:
     ) -> None:
         self.registry = registry
         self.llm_client = llm_client
+        self.last_plan_transaction: StructuredOutputResult | None = None
 
     # ------------------------------------------------------------------
     # Public surface
@@ -276,11 +318,11 @@ class InvestigationAgent:
         tool_results: list[InvestigationToolResult] = []
         evidence_claim_ids: list[str] = []
         warnings: list[str] = []
+        skipped_actions: list[str] = []
+        skipped_action_reason: str | None = None
         usage = InvestigationBudgetUsage()
 
         # Phase 8A Step 5: execute the mandatory baseline BEFORE the LLM.
-        # This ensures the LLM cannot accidentally skip required tools
-        # (inspect_patch_schema, inspect_requirement_structure, search).
         baseline_policy = _resolve_baseline_policy(context)
         if baseline_policy is not None:
             for action in baseline_policy.actions:
@@ -308,13 +350,11 @@ class InvestigationAgent:
                     session_id,
                 )
                 if mandatory_result is not None and not mandatory_result.ok:
-                    # Mandatory action failed in a way the executor can
-                    # detect.  In controlled mode this blocks.
-                    warnings.append(
-                        f"mandatory action {action.tool_name} returned ok=False"
-                    )
+                    warnings.append(f"mandatory action {action.tool_name} returned ok=False")
 
-        # 2. Ask the LLM for supplemental actions.
+        coverage = compile_semantic_coverage(
+            context=context, ledger=context.ledger, evidence_claim_ids=evidence_claim_ids
+        )
         try:
             plan = self.plan(context)
         except PlanInvestigationIssue as issue:
@@ -328,18 +368,23 @@ class InvestigationAgent:
                 evidence_claim_ids=evidence_claim_ids,
                 usage=usage,
                 warnings=warnings,
+                semantic_coverage=coverage.to_dict(),
             )
 
-        # 3. Execute each LLM-requested action, respecting remaining budget.
         blocked_code: str | None = None
         blocked_message: str | None = None
 
-        for action in plan.actions:
+        for index, action in enumerate(plan.actions):
+            coverage = compile_semantic_coverage(
+                context=context, ledger=context.ledger, evidence_claim_ids=evidence_claim_ids
+            )
+            if coverage.coverage_complete:
+                skipped_action_reason = "skipped_after_coverage_complete"
+                skipped_actions.extend(item.tool for item in plan.actions[index:])
+                break
             if usage.tool_calls >= context.budget.max_tool_calls:
                 blocked_code = BLOCK_CODE_BUDGET_EXCEEDED
-                blocked_message = (
-                    f"max_tool_calls={context.budget.max_tool_calls} reached"
-                )
+                blocked_message = f"max_tool_calls={context.budget.max_tool_calls} reached"
                 break
 
             request = InvestigationToolRequest(
@@ -348,10 +393,6 @@ class InvestigationAgent:
                 max_results=context.budget.max_results_per_tool,
                 caller_stage=context.caller_stage,
             )
-
-            # Validate the tool exists and arguments are well-formed BEFORE
-            # we count it against the budget.  An unknown tool blocks the
-            # whole session (it indicates the LLM is off-policy).
             try:
                 self.registry.get(action.tool)
             except PlanInvestigationIssue as issue:
@@ -370,14 +411,12 @@ class InvestigationAgent:
                 ledger=context.ledger,
             )
             try:
-                result = self.registry.execute(
+                tool_result = self.registry.execute(
                     action.tool, request, context=exec_context
                 )
             except PlanInvestigationIssue as issue:
-                warnings.append(
-                    f"tool {action.tool} raised {issue.code}: {issue.message}"
-                )
-                result = InvestigationToolResult(
+                warnings.append(f"tool {action.tool} raised {issue.code}: {issue.message}")
+                tool_result = InvestigationToolResult(
                     ok=False,
                     tool_name=action.tool,
                     result={"error_code": issue.code},
@@ -385,18 +424,25 @@ class InvestigationAgent:
                     warnings=(issue.message,),
                 )
 
-            tool_results.append(result)
+            tool_results.append(tool_result)
             record_tool_call(
                 tool_ledger,
                 tool_name=action.tool,
                 arguments=action.arguments,
-                result=result,
+                result=tool_result,
                 caller_stage=context.caller_stage,
             )
-            for claim_id in result.evidence_claim_ids:
+            for claim_id in tool_result.evidence_claim_ids:
                 if claim_id not in evidence_claim_ids:
                     evidence_claim_ids.append(claim_id)
             usage.evidence_claims = len(evidence_claim_ids)
+            coverage = compile_semantic_coverage(
+                context=context, ledger=context.ledger, evidence_claim_ids=evidence_claim_ids
+            )
+            if coverage.coverage_complete:
+                skipped_action_reason = "skipped_after_coverage_complete"
+                skipped_actions.extend(item.tool for item in plan.actions[index + 1 :])
+                break
             if usage.exceeds(context.budget):
                 blocked_code = BLOCK_CODE_BUDGET_EXCEEDED
                 blocked_message = (
@@ -404,8 +450,23 @@ class InvestigationAgent:
                 )
                 break
 
+        transaction = self.last_plan_transaction
+        structured_payload_hash_drift = bool(
+            transaction and transaction.error_code == "structured_output.payload_hash_mismatch"
+        )
+        structured_unbudgeted_retry = bool(
+            transaction
+            and any(not attempt.budget_charged for attempt in transaction.attempts)
+        )
+        structured_stale_output_reused = bool(
+            transaction
+            and any(
+                "stale_output_reused" in attempt.parse_errors
+                for attempt in transaction.attempts
+            )
+        )
         completed = blocked_code is None
-        result = InvestigationResult(
+        return InvestigationResult(
             session_id=session_id,
             patch_type=context.patch_type,
             tool_calls=tuple(tool_ledger.records),
@@ -419,37 +480,103 @@ class InvestigationAgent:
             budget=context.budget,
             budget_used=usage,
             warnings=tuple(warnings),
+            planner_calls=transaction.call_count if transaction else 0,
+            schema_retries=transaction.schema_retry_count if transaction else 0,
+            planner_input_payload_hash=transaction.input_payload_hash if transaction else "",
+            semantic_coverage=coverage.to_dict(),
+            skipped_actions=tuple(skipped_actions),
+            skipped_action_reason=skipped_action_reason,
+            structured_output_payload_hash_drift=structured_payload_hash_drift,
+            structured_output_unbudgeted_retry=structured_unbudgeted_retry,
+            structured_output_stale_output_reused=structured_stale_output_reused,
         )
-        return result
 
     # ------------------------------------------------------------------
     # LLM interaction
     # ------------------------------------------------------------------
 
     def plan(self, context: InvestigationContext) -> InvestigationPlan:
-        """Build the LLM prompt, call the LLM, and parse strict JSON."""
+        """Build and validate the plan through the shared output transaction."""
 
-        # Imported lazily so importing the agent module does not pull in
-        # prompt-rendering helpers (and therefore the patch schema) until
-        # the agent is actually used.
         from .prompt import build_investigation_prompt
 
         prompt = build_investigation_prompt(context)
-        raw = self.llm_client(prompt)
-        if not isinstance(raw, str):
+        payload = {
+            "requirement_hash": content_hash(context.requirement_text),
+            "patch_type": context.patch_type,
+            "tool_names": [tool.name for tool in context.available_tools],
+            "existing_claim_ids": [claim.claim_id for claim in context.existing_evidence],
+            "policy_suggestions": list(context.policy_suggestions),
+            "budget": context.budget.model_dump(mode="json"),
+        }
+
+        def _repair(raw: str, error: str) -> StructuredOutputRepairPrompt:
+            repair_prompt = (
+                f"{prompt}\n\n"
+                "The previous response failed the investigation action schema. "
+                "Return one JSON object with an actions array and optional summary. "
+                "Do not add prose or unknown top-level fields.\n"
+                f"Validation error: {error}\n"
+                f"Previous output: {raw[:4000]}"
+            )
+            return StructuredOutputRepairPrompt(
+                prompt=repair_prompt,
+                input_payload_hash=canonical_payload_hash(payload),
+            )
+
+        def _normalize(candidate: dict[str, Any]) -> dict[str, Any]:
+            if isinstance(candidate, list):
+                return {"actions": candidate}
+            return candidate
+
+        planner_budget_used = [0]
+
+        def _planner_budget_available() -> bool:
+            return planner_budget_used[0] < MAX_PLANNER_CALLS
+
+        def _charge_planner_budget() -> None:
+            planner_budget_used[0] += 1
+
+        def _planner_call(client: Any, current_prompt: str) -> Any:
+            if hasattr(client, "generate_patch_json"):
+                return client.generate_patch_json(
+                    prompt=current_prompt,
+                    patch_type="investigation_plan",
+                    json_schema=InvestigationPlan.model_json_schema(),
+                )
+            return client(current_prompt)
+
+        transaction = run_structured_output_transaction(
+            client=self.llm_client,
+            initial_prompt=prompt,
+            retry_prompt_builder=_repair,
+            output_model=InvestigationPlan,
+            call=_planner_call,
+            payload=payload,
+            normalize_candidate=_normalize,
+            max_attempts=2,
+            allow_embedded_json=True,
+            allow_top_level_array=True,
+            budget_available=_planner_budget_available,
+            charge_budget=_charge_planner_budget,
+        )
+        self.last_plan_transaction = transaction
+        if not transaction.ok or transaction.parsed_output is None:
+            details = {
+                "error_code": transaction.error_code,
+                "input_payload_hash": transaction.input_payload_hash,
+            }
+            if transaction.attempts:
+                latest_attempt = transaction.attempts[-1]
+                details["raw_hash"] = latest_attempt.raw_hash
+                details["parse_errors"] = list(latest_attempt.parse_errors)
+                details["schema_errors"] = list(latest_attempt.schema_errors)
             raise PlanInvestigationIssue(
                 BLOCK_CODE_INVALID_LLM_OUTPUT,
-                "investigation LLM must return a string",
-                details={"return_type": type(raw).__name__},
+                "investigation LLM output was not valid JSON matching the action schema",
+                details=details,
             )
-        plan = _parse_investigation_plan(raw)
-        if plan is None:
-            raise PlanInvestigationIssue(
-                BLOCK_CODE_INVALID_LLM_OUTPUT,
-                "investigation LLM output was not valid strict JSON matching the action schema",
-                details={"raw_excerpt": raw[:200]},
-            )
-        return plan
+        return InvestigationPlan.model_validate(transaction.parsed_output)
 
     # ------------------------------------------------------------------
     # Internal
@@ -467,7 +594,23 @@ class InvestigationAgent:
         evidence_claim_ids: list[str] | None = None,
         usage: InvestigationBudgetUsage | None = None,
         warnings: list[str] | None = None,
+        semantic_coverage: dict[str, Any] | None = None,
     ) -> InvestigationResult:
+        transaction = self.last_plan_transaction
+        structured_payload_hash_drift = bool(
+            transaction and transaction.error_code == "structured_output.payload_hash_mismatch"
+        )
+        structured_unbudgeted_retry = bool(
+            transaction
+            and any(not attempt.budget_charged for attempt in transaction.attempts)
+        )
+        structured_stale_output_reused = bool(
+            transaction
+            and any(
+                "stale_output_reused" in attempt.parse_errors
+                for attempt in transaction.attempts
+            )
+        )
         return InvestigationResult(
             session_id=session_id,
             patch_type=context.patch_type,
@@ -480,6 +623,13 @@ class InvestigationAgent:
             budget=context.budget,
             budget_used=usage or InvestigationBudgetUsage(),
             warnings=tuple(warnings or [message]),
+            planner_calls=transaction.call_count if transaction else 0,
+            schema_retries=transaction.schema_retry_count if transaction else 0,
+            planner_input_payload_hash=transaction.input_payload_hash if transaction else "",
+            semantic_coverage=semantic_coverage or {},
+            structured_output_payload_hash_drift=structured_payload_hash_drift,
+            structured_output_unbudgeted_retry=structured_unbudgeted_retry,
+            structured_output_stale_output_reused=structured_stale_output_reused,
         )
 
     def _execute_action(

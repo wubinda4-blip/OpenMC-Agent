@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from openmc_agent.structured_output import canonical_payload_hash
+
 from typing import Any
 
 from pydantic import Field
@@ -111,6 +113,7 @@ def run_material_universe_review(*, evidence_pack: Any, reviewer_client: Any, st
             role_id="material_universe_review", gate_id=PlanGateId.MATERIAL_UNIVERSE,
             schema_name="MaterialUniverseReviewModelOutput", json_schema=MaterialUniverseReviewModelOutput.model_json_schema(),
             artifact_prefix="material_universe_review",
+            input_payload_hash=canonical_payload_hash(evidence_pack)
         ),
         state=state,
         stage=state.plan_loop_stages.get("plan_gate_material_universe"),

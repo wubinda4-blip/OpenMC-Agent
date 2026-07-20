@@ -59,6 +59,15 @@ class InvestigationSessionRecord(AgentBaseModel):
     blocked: bool = False
     block_code: str | None = None
     warnings: tuple[str, ...] = ()
+    planner_calls: int = 0
+    schema_retries: int = 0
+    planner_input_payload_hash: str = ""
+    semantic_coverage: dict[str, Any] = {}
+    skipped_actions: tuple[str, ...] = ()
+    skipped_action_reason: str | None = None
+    structured_output_payload_hash_drift: bool = False
+    structured_output_unbudgeted_retry: bool = False
+    structured_output_stale_output_reused: bool = False
     result_hash: str
 
 
@@ -74,6 +83,15 @@ def _to_record(result: InvestigationResult) -> InvestigationSessionRecord:
         blocked=result.blocked,
         block_code=result.block_code,
         warnings=tuple(sorted(result.warnings)),
+        planner_calls=result.planner_calls,
+        schema_retries=result.schema_retries,
+        planner_input_payload_hash=result.planner_input_payload_hash,
+        semantic_coverage=result.semantic_coverage,
+        skipped_actions=result.skipped_actions,
+        skipped_action_reason=result.skipped_action_reason,
+        structured_output_payload_hash_drift=result.structured_output_payload_hash_drift,
+        structured_output_unbudgeted_retry=result.structured_output_unbudgeted_retry,
+        structured_output_stale_output_reused=result.structured_output_stale_output_reused,
         result_hash=result.result_hash,
     )
 
