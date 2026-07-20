@@ -172,7 +172,14 @@ def _collect_fuel_variant_issues(view: MaterialUniverseBindingView) -> list[dict
 
 
 def _collect_required_universe_issues(state: Any, universes_patch: Any, view: MaterialUniverseBindingView) -> list[dict[str, Any]]:
-    """Check source-declared insert universes and variant identity locally."""
+    """Check source-declared insert universes and variant identity locally.
+
+    A localized insert may declare ``expected_insert_universe_ids`` with
+    specific IDs.  When the generated universes use *different* IDs but
+    cover the same ``required_segment_roles`` through their cells, we
+    accept that as coverage instead of reporting a false-positive
+    missing-universe error.
+    """
     issues: list[dict[str, Any]] = []
     universe_by_id = {item.universe_id: item for item in universes_patch.universes}
     facts_env = _valid(state, "facts")
@@ -183,23 +190,64 @@ def _collect_required_universe_issues(state: Any, universes_patch: Any, view: Ma
         for profile in inventory.get("radial_profiles", [])
         if profile.get("protected_through_path_roles")
     }
+    # Pre-compute cell-role coverage for each universe.
+    universe_cell_roles: dict[str, set[str]] = {}
+    for univ in universes_patch.universes:
+        roles = set()
+        for cell in univ.cells:
+            r = getattr(cell, "role", "") or ""
+            if r:
+                roles.add(r)
+        universe_cell_roles[univ.universe_id] = roles
+
+    # Map insert_kind to acceptable universe kind.
+    _insert_kind_to_universe_kind = {
+        "control_rod": "control_rod",
+        "absorber_insert": "control_rod",
+        "pyrex_rod": "pyrex_rod",
+        "thimble_plug": "thimble_plug",
+        "instrumentation_insert": "instrument_tube",
+    }
+
     for req in facts.get("localized_insert_requirements", []) or []:
         req_id = str(req.get("requirement_id", ""))
         expected = [str(item) for item in req.get("expected_insert_universe_ids", []) or []]
         required_profile = str(req.get("required_profile_id", ""))
+        insert_kind = str(req.get("insert_kind", ""))
+        required_segment_roles = set(req.get("required_segment_roles", []) or [])
+
+        # Build set of candidate universes of the matching insert kind.
+        matching_kind = _insert_kind_to_universe_kind.get(insert_kind, insert_kind)
+        kind_matched_universes = [
+            u for u in universes_patch.universes
+            if u.kind == matching_kind or (insert_kind and insert_kind in u.kind)
+        ]
+        # Aggregate all cell roles across all kind-matched universes.
+        aggregate_cell_roles: set[str] = set()
+        for u in kind_matched_universes:
+            aggregate_cell_roles |= universe_cell_roles.get(u.universe_id, set())
+
         for uid in expected:
             universe = universe_by_id.get(uid)
-            if universe is None:
-                issues.append(_issue(
-                    "material_universe.localized_insert_universe_missing",
-                    f"localized insert {req_id} requires missing universe {uid}",
-                    row_kind="required_universe_material_structure", row_key=uid,
-                    universe_id=uid, requirement_id=req_id, required_ids=[uid],
-                    affected_json_paths=[f"/universes/{uid}"],
-                ))
+            if universe is not None:
+                # Exact ID match — check protected path if applicable.
+                if required_profile in protected_profiles and not any(bool(cell.protected_through_path) for cell in universe.cells):
+                    issues.append(_issue("material_universe.protected_path_missing", f"localized insert universe {uid} has no protected through-path cell", row_kind="required_universe_material_structure", row_key=uid, universe_id=uid, requirement_id=req_id))
                 continue
-            if required_profile in protected_profiles and not any(bool(cell.protected_through_path) for cell in universe.cells):
-                issues.append(_issue("material_universe.protected_path_missing", f"localized insert universe {uid} has no protected through-path cell", row_kind="required_universe_material_structure", row_key=uid, universe_id=uid, requirement_id=req_id))
+            # Exact ID not found — check segment-role coverage as fallback.
+            if required_segment_roles and required_segment_roles.issubset(aggregate_cell_roles):
+                # The required segment roles are covered by some universe
+                # of the matching kind, even though the ID differs.  This
+                # is a naming mismatch, not a missing universe.
+                continue
+            # Neither exact ID nor role coverage — report missing.
+            issues.append(_issue(
+                "material_universe.localized_insert_universe_missing",
+                f"localized insert {req_id} requires missing universe {uid}",
+                row_kind="required_universe_material_structure", row_key=uid,
+                universe_id=uid, requirement_id=req_id, required_ids=[uid],
+                affected_json_paths=[f"/universes/{uid}"],
+            ))
     # A fuel Universe may carry one and only one variant.  Do this per
     # universe, rather than comparing all active variants globally.
     for universe in universes_patch.universes:

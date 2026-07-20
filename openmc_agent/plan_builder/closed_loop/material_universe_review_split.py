@@ -22,7 +22,7 @@ from .review_io import StructuredReviewCallSpec, run_structured_review_call
 
 class _SplitReviewOutput(AgentBaseModel):
     review_status: Literal["complete", "insufficient_evidence", "malformed_input"]
-    findings: list[MaterialUniverseReviewFindingDraft] = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(default_factory=list)
     reviewed_ids: list[str] = Field(default_factory=list)
     reviewed_evidence_refs: list[str] = Field(default_factory=list)
     concise_summary: str = ""
@@ -85,7 +85,30 @@ def _retry_prompt(pack: Any, scope: str, error: str, raw: str) -> str:
     return f"Schema error for {scope}: {error}. Return one JSON object only. Previous output: {raw[:500]}\n" + _prompt(pack, scope)
 
 
-def _as_combined_output(parsed: _SplitReviewOutput, scope: str) -> MaterialUniverseReviewModelOutput:
+_REQUIRED_FINDING_KEYS = {"code", "severity", "category", "message", "confidence"}
+
+
+def _filter_raw_findings(raw_findings: list[dict[str, Any]]) -> tuple[list[MaterialUniverseReviewFindingDraft], list[dict[str, Any]]]:
+    """Filter incomplete finding dicts; return (valid drafts, rejected)."""
+    valid: list[MaterialUniverseReviewFindingDraft] = []
+    rejected: list[dict[str, Any]] = []
+    for raw in raw_findings:
+        if not isinstance(raw, dict):
+            continue
+        missing = _REQUIRED_FINDING_KEYS - set(raw.keys())
+        if missing:
+            rejected.append({"code": "material_universe_review.invalid_finding_contract", "reason": f"missing fields: {sorted(missing)}", "raw_code": raw.get("code", "")})
+            continue
+        try:
+            valid.append(MaterialUniverseReviewFindingDraft.model_validate(raw))
+        except Exception as exc:
+            rejected.append({"code": "material_universe_review.invalid_finding_contract", "reason": str(exc)[:200], "raw_code": raw.get("code", "")})
+    return valid, rejected
+
+
+def _as_combined_output(parsed: _SplitReviewOutput, scope: str) -> tuple[MaterialUniverseReviewModelOutput, list[dict[str, Any]]]:
+    """Convert split output + filter incomplete findings."""
+    valid_findings, rejected = _filter_raw_findings(parsed.findings)
     coverage = MaterialUniverseReviewCoverageSummary(reviewed_evidence_refs=list(parsed.reviewed_evidence_refs))
     if scope == "materials":
         coverage.reviewed_material_ids = list(parsed.reviewed_ids)
@@ -93,12 +116,13 @@ def _as_combined_output(parsed: _SplitReviewOutput, scope: str) -> MaterialUnive
         coverage.reviewed_universe_ids = list(parsed.reviewed_ids)
     else:
         coverage.reviewed_contract_row_ids = list(parsed.reviewed_ids)
-    return MaterialUniverseReviewModelOutput(
-        review_status=parsed.review_status, findings=parsed.findings,
+    combined = MaterialUniverseReviewModelOutput(
+        review_status=parsed.review_status, findings=valid_findings,
         reviewed_contract_row_ids=list(parsed.reviewed_ids) if scope == "binding" else [],
         reviewed_evidence_refs=list(parsed.reviewed_evidence_refs), coverage_summary=coverage,
         concise_summary=parsed.concise_summary,
     )
+    return combined, rejected
 
 
 def run_material_universe_review_split(*, evidence_pack: Any, reviewer_client: Any, state: Any, policy: Any) -> MaterialUniverseReviewResult:
@@ -132,9 +156,10 @@ def run_material_universe_review_split(*, evidence_pack: Any, reviewer_client: A
             failures.append(call.error_code or "material_universe_review.schema_invalid")
             continue
         parsed = output_model.model_validate(call.parsed_output)
-        combined = _as_combined_output(parsed, scope)
+        combined, scope_rejected = _as_combined_output(parsed, scope)
         findings, rejected = _normalize(combined, evidence_pack)
         all_findings.extend(findings)
+        all_rejected.extend(scope_rejected)
         all_rejected.extend(rejected)
         all_outputs.append({"scope": scope, "output": parsed.model_dump(mode="json")})
         coverage = coverage and parsed.review_status == "complete"

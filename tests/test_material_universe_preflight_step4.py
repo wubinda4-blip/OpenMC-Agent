@@ -55,3 +55,15 @@ def test_mu_failure_does_not_change_accepted_facts():
     result = run_material_universe_preflight(state=state, policy=_policy())
     assert not result.ok
     assert state.patches["facts"].content == before
+
+
+def test_segment_role_coverage_accepts_alternative_universe_id():
+    """When Facts declares expected_insert_universe_ids=['u_a','u_b'] but a
+    single generated universe of the matching kind covers all required_segment_roles,
+    the preflight should NOT report missing universes."""
+    facts = {"patch_type": "facts", "model_scope": "single_assembly", "localized_insert_requirements": [{"requirement_id": "rcca", "insert_kind": "control_rod", "host_kind": "guide_tube", "expected_insert_universe_ids": ["rcca_aic_univ", "rcca_b4c_univ"], "required_segment_roles": ["aic_absorber", "b4c_absorber"]}]}
+    materials = {"patch_type": "materials", "materials": [{"material_id": "absorber", "name": "a", "role": "absorber", "density_g_cm3": 1.0}]}
+    universes = {"patch_type": "universes", "universes": [{"universe_id": "localized_insert_rcca", "kind": "control_rod", "cells": [{"id": "aic", "role": "aic_absorber", "material_id": "absorber", "region_kind": "cylinder"}, {"id": "b4c", "role": "b4c_absorber", "material_id": "absorber", "region_kind": "cylinder"}]}]}
+    result = run_material_universe_preflight(state=_state(materials, universes, facts), policy=_policy())
+    codes = {item["code"] for item in result.issues if item.get("severity") == "error"}
+    assert "material_universe.localized_insert_universe_missing" not in codes
