@@ -323,6 +323,7 @@ class TestReviewerFailureClassification:
 
         @dataclass
         class _Call:
+            ok: bool = False
             error_code: str = "structured_review.schema_invalid"
             attempts: list = None
 
@@ -334,6 +335,27 @@ class TestReviewerFailureClassification:
         code = _classify_review_failure(call)
         assert code == "facts.reviewer_empty_response"
 
+    def test_empty_response_false_when_call_ok(self):
+        """call.ok=True → never classifies as empty even if raw_text empty."""
+
+        @dataclass
+        class _Attempt:
+            raw_text: str = ""
+
+        @dataclass
+        class _Call:
+            ok: bool = True
+            error_code: str = "structured_review.schema_invalid"
+            attempts: list = None
+
+            def __post_init__(self):
+                if self.attempts is None:
+                    self.attempts = [_Attempt(), _Attempt()]
+
+        call = _Call()
+        code = _classify_review_failure(call)
+        assert code == "structured_review.schema_invalid"
+
     def test_free_text_approve_classified(self):
         """Short prose 'approve' without JSON → free_text_approve."""
 
@@ -343,6 +365,7 @@ class TestReviewerFailureClassification:
 
         @dataclass
         class _Call:
+            ok: bool = False
             error_code: str = "structured_review.schema_invalid"
             attempts: list = None
 
@@ -362,6 +385,7 @@ class TestReviewerFailureClassification:
 
         @dataclass
         class _Call:
+            ok: bool = False
             error_code: str = "planning.closed_loop.budget_exhausted"
             attempts: list = None
 
@@ -381,6 +405,7 @@ class TestReviewerFailureClassification:
 
         @dataclass
         class _Call:
+            ok: bool = False
             error_code: str = "structured_review.schema_invalid"
             attempts: list = None
 

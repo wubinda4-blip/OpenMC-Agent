@@ -353,6 +353,7 @@ def make_five_gate_controlled_policy(
         axial_geometry_review_mode="controlled",
         assembled_plan_review_mode="controlled",
         gate_enabled={gate: (gate in active) for gate in all_gates},
+        facts_review_stage_split=True,
     )
 
 

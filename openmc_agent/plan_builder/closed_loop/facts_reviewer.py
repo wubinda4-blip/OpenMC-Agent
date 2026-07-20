@@ -271,6 +271,11 @@ def _classify_review_failure(call: Any) -> str:
 
     if call.error_code == "planning.closed_loop.budget_exhausted":
         return "facts_review.budget_exhausted"
+
+    # If the call was successful, empty raw_text is a data propagation bug.
+    if call.ok is True:
+        return call.error_code or "facts_review.schema_invalid"
+
     # Inspect raw_text of all attempts.
     raw_texts = [
         getattr(a, "raw_text", "") or "" for a in (call.attempts or [])
