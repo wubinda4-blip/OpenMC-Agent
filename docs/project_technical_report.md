@@ -537,3 +537,21 @@ runtime repair, or monolithic fallback path was introduced.
   modes inherit the selected loop mode; patch output remains provider `auto`.
 - Axial and Assembled Plan gate IDs remain opt-in/unimplemented rather than
   causing a default modeling command to fail. Validation: CLI default tests.
+
+## 2026-07-20 — Phase 8C Step 2D structured-output robustness closure
+
+- Added a shared two-attempt structured-output transaction with immutable payload
+  hashes, attempt telemetry, stale-output detection, and budget accounting;
+  all five gate reviewers and investigation planning use the same seam.
+- Investigation results now retain planner retry/hash telemetry and input-driven
+  Facts/Materials/Universes semantic coverage; redundant actions stop after
+  coverage completion while uncovered targets remain fail-closed.
+- Added resume-policy hashing, truthfulness checks, README/design documentation,
+  and regression tests. OpenMC 0.15.3 is now available under conda run through
+  the persisted ENDF/B-VII.1 cross-section configuration.
+- Validation: full non-OpenMC/non-LLM suite 3365 passed, 2 skipped, 392
+  deselected; compileall passed; fake workflow 21/21; offline VERA4 mutations
+  6/6. No baseline report is present.
+- Canary boundary: both authorized 40-minute VERA4 attempts were rejected before
+  execution by the tenant external-data transfer policy. Step 2D is not declared
+  complete and no real-model acceptance claim is made.

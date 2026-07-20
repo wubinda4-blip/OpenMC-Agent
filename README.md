@@ -19,6 +19,7 @@
 - **多模型适配**：内置智谱 GLM、DeepSeek 的 OpenAI 兼容 HTTP 客户端（含 SSE 流式、超时重试），其余走 aisuite。
 - **检索增强**：本地 OpenMC Python API 内省 + few-shot 示例注入到生成 prompt。
 - **可观测**：每次运行产出 `transcript.json`、`capability_report.json`、`TODO.md` 与 JSONL 运行记录。
+- **Controlled investigation and structured repair**: Facts / Materials / Universes investigation and all five gate reviewers share a bounded two-attempt JSON/schema transaction; the business payload hash is fixed, and redundant tools stop once semantic evidence coverage is complete while uncovered targets remain fail-closed.
 
 ---
 
