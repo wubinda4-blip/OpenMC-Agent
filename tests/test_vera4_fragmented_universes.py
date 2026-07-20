@@ -71,9 +71,10 @@ def test_vera4_11_universe_fragmented_generation():
     from openmc_agent.plan_builder.universe_patch_pipeline import _call_llm_fragment
     fragments = []
     for item_id in manifest.generation_order:
-        resp = _call_llm_fragment(fake, prompt=f"generate {item_id}", max_tokens=4000)
+        outcome = _call_llm_fragment(fake, prompt=f"generate {item_id}", max_tokens=4000)
+        assert not outcome.failed, f"unexpected LLM failure for {item_id}: {outcome.note}"
         from openmc_agent.plan_builder.patch_generator import parse_llm_patch_json
-        parsed = parse_llm_patch_json(resp.content, "universes")
+        parsed = parse_llm_patch_json(outcome.response.content, "universes")
         universe_data = parsed["universes"][0]
         fragments.append(UniverseDefinitionFragment(universe_id=item_id, universe=universe_data))
     assert len(fragments) == 11

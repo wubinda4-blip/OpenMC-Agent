@@ -223,3 +223,74 @@ Step 4 的 **代码层面工作已完成**：skeleton、preflight、split review
 这三个因素叠加后，单次运行到达 MU Gate 并完成的概率约为 35-40%。要达成连续 3 次 MU Gate accepted，预计需要 6-10 次尝试。
 
 建议下一步聚焦于 **patch generation 截断和 merge 稳定性**，而非继续调整 MU Gate 代码。
+
+---
+
+## 七、Phase 8B Step 4B-1 后续结果（Universe transaction stabilization）
+
+**追加日期**：Step 4B-1 完成
+**Scope**：仅 Universe fragmented generation / merge pipeline；不修改 MU Gate 业务逻辑、Placement/Axial/Assembled Gate、Facts Gate、OpenMC renderer。
+
+### 7.1 run_004 根因确定
+
+通过回放 `data/runs/phase8b_step4_mu_canary_run4/.../plan_build_state.json` 中持久化的 session，**确定性复现**了原 run_004 失败：
+
+```
+Built 9 fragments, 13 materials
+Merge result: patch=no, errors=1
+  merge.unknown_material:REPLACE
+```
+
+**根因**：`implicit_gas_gap` fragment 中包含字面占位符
+`"material_id": "REPLACE"` —— LLM 将 prompt 模板中的示例直接复制到了
+输出里。Pre-4B-1 pipeline 只检查 JSON 可解析性 + `universe_id` 匹配，
+没有运行 schema / material reference / placeholder 检查，所以该 fragment
+被错误标记为 `accepted`，最终在 merge 阶段才暴露为模糊的
+`merge.unknown_material:REPLACE` 字符串。
+
+### 7.2 4B-1 修复摘要
+
+完整设计、实现与测试记录见
+`docs/phase8b_step4b1_universe_fragment_transaction.md`。
+
+- 新增 `universe_fragment_qualification.py`：fragment 进入 accepted 前必须
+  通过确定性 qualification（schema、identity、kind、cell roles、material
+  reference、material roles、placeholder detection、duplicate cell IDs、
+  canonical hash 重算）。
+- `UniverseManifestItem` 现在保留全部合同字段并计算 per-item
+  `contract_hash`；`build_manifest_from_requirements` 不再丢失
+  localized insert / profile / protected-through-path 等绑定。
+- 新增 `AcceptedFragmentRecord`：accepted checkpoint 同时保存
+  data + hash + manifest_contract_hash + qualification_status；resume
+  逐项重新验证，损坏 fragment 单独降级。
+- `merge_universe_fragments_structured` 返回 `UniverseMergeResult`，
+  每个 issue 归因到 fragment / manifest / global scope；保留对外
+  `patch_generation.merge_failed` 顶层错误码，retry owner policy 路由不变。
+- `generate_universes_patch` 在 transaction 内实现 targeted replay：
+  只重放 merge 标记为 fragment-scoped 的 invalid fragments；manifest /
+  global failure fail closed。
+- Provider 异常、schema 异常、内容校验失败分开记录，不再静默吞掉
+  LLM 调用错误。
+- 新增 57 个测试（qualification、manifest contract、structured merge、
+  end-to-end pipeline scenarios A–F）。run_004 类失败（REPLACE
+  placeholder）有专门的确定性回归测试。
+
+### 7.3 离线验证结果
+
+```
+test_universe_fragment_qualification.py        22 passed
+test_universe_manifest_contract.py             15 passed
+test_universe_merge_structured.py              13 passed
+test_universe_patch_pipeline_integration.py     7 passed
+全量 tests/                                     3464 passed, 2 skipped
+compileall openmc_agent scripts                clean
+fake workflow benchmark                         21/21 pass
+```
+
+### 7.4 Step 4 原始 Canary 事实未变更
+
+本文档前六节（Step 4 的 10 次真实 Canary 失败模式）保持不变；4B-1 是
+针对其中 run_004 这一类失败模式的后续修复，并未声称已达到连续 3 次真实
+MU Canary accepted。`VERA4_REAL_MATERIAL_UNIVERSE_CANARY_PASSED` 仍未
+声明，Materials JSON 截断 stabilization 与连续真实 MU Canary 仍是后续
+独立步骤。

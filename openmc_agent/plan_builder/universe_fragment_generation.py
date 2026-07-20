@@ -4,34 +4,43 @@ This module implements the fragmented universe generation pipeline:
 
     accepted Facts/Materials
     → requirement inventory
-    → universe manifest (LLM)
+    → universe manifest (deterministic, with per-item contract hash)
     → one-universe fragments (LLM, one call each)
-    → deterministic merge
+    → fragment qualification (deterministic, structured)
+    → checkpoint with hash/contract/qualification integrity
+    → deterministic structured merge (pure Python, no LLM)
+    → targeted fragment replay when merge reports fragment-scoped issues
     → standard UniversesPatch validation
+    → one authoritative UniversesPatch envelope
 
 The pipeline is designed to avoid truncation on large universe patches
-(e.g. VERA4 with 11+ universes).  Each LLM call produces only one
-universe, keeping the structured output small enough to complete within
-provider token limits.
+(e.g. multi-assembly cores with many distinct universes).  Each LLM call
+produces only one universe, keeping the structured output small enough
+to complete within provider token limits.
 
 Key design principles:
 - Thinking/reasoning mode is NOT disabled.  Reliability comes from
   shrinking each structured output, not from larger token budgets.
-- Checkpoint/resume: completed fragments are never re-generated.
+- Checkpoint/resume: completed fragments are never re-generated, but
+  their integrity (data + hash + contract hash + qualification) is
+  re-verified on resume.
 - Partial fragments are never exposed to downstream gates.
-- The final output is a standard UniversesPatch that passes existing
-  validators unchanged.
+- Fragment acceptance requires deterministic qualification against the
+  manifest contract — not just JSON parseability.
+- The final output is a single standard UniversesPatch that passes
+  existing validators unchanged.
 """
 
 from __future__ import annotations
 
-import json
+import hashlib
 from typing import Any, Literal
 
 from pydantic import Field
 
 from openmc_agent.schemas import AgentBaseModel
 
+from .closed_loop.fingerprints import canonical_json_dumps
 from .llm_adapter import PatchLLMResponse, normalize_patch_llm_response
 from .patches import parse_patch_content
 from .validators import PatchValidationContext, validate_patch
@@ -169,11 +178,10 @@ def extract_universe_requirements(
                 source_requirement_ids=[req_id],
                 resolved=True,
             ))
-    import hashlib
-    payload = json.dumps({
+    payload = canonical_json_dumps({
         "reqs": [r.model_dump(mode="json") for r in requirements],
         "material_ids": sorted(material_ids),
-    }, sort_keys=True, default=str)
+    })
     input_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return UniverseGenerationRequirementSet(
         requirements=requirements,
@@ -188,8 +196,48 @@ def extract_universe_requirements(
 # ---------------------------------------------------------------------------
 
 
+# Fields that define a manifest item's contract.  These are canonicalized
+# (sorted) and hashed to produce a stable per-item ``contract_hash``.  The
+# hash is independent of item ordering in the manifest.
+_MANIFEST_CONTRACT_FIELDS: tuple[str, ...] = (
+    "universe_id",
+    "kind",
+    "required_cell_roles",
+    "required_material_ids",
+    "required_material_roles",
+    "fuel_variant_id",
+    "localized_insert_requirement_id",
+    "base_path_component_profile_id",
+    "protected_through_path_roles",
+    "source_requirement_ids",
+    "dependency_ids",
+)
+
+
+def compute_manifest_item_contract_hash(item_data: dict[str, Any]) -> str:
+    """Deterministically hash a manifest item's contract fields.
+
+    Only the fields listed in :data:`_MANIFEST_CONTRACT_FIELDS` are hashed,
+    so changes to metadata, ``expected_cell_count``, ``assumptions_allowed``,
+    or item ordering in the manifest do NOT change the per-item contract.
+    """
+    payload = {
+        field: item_data.get(field)
+        for field in _MANIFEST_CONTRACT_FIELDS
+    }
+    return hashlib.sha256(
+        canonical_json_dumps(payload).encode("utf-8")
+    ).hexdigest()[:16]
+
+
 class UniverseManifestItem(AgentBaseModel):
-    """One entry in the universe manifest: describes a single universe to generate."""
+    """One entry in the universe manifest: describes a single universe to generate.
+
+    Contract fields are hashed into :attr:`contract_hash` via
+    :func:`compute_manifest_item_contract_hash`.  Mutation of any contract
+    field invalidates the hash; downstream code must recompute it.
+    """
+
     universe_id: str
     kind: str = "custom"
     required_cell_roles: list[str] = Field(default_factory=list)
@@ -197,11 +245,22 @@ class UniverseManifestItem(AgentBaseModel):
     required_material_roles: list[str] = Field(default_factory=list)
     fuel_variant_id: str | None = None
     expected_cell_count: int | None = None
+    # --- Contract binding fields (participate in contract_hash) ---
     protected_through_path_roles: list[str] = Field(default_factory=list)
     source_requirement_ids: list[str] = Field(default_factory=list)
     dependency_ids: list[str] = Field(default_factory=list)
+    localized_insert_requirement_id: str | None = None
+    base_path_component_profile_id: str | None = None
+    # --- Non-contract fields ---
+    contract_hash: str = ""
     assumptions_allowed: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def recompute_contract_hash(self) -> str:
+        """Recompute and store :attr:`contract_hash` from contract fields."""
+        data = self.model_dump(mode="json")
+        self.contract_hash = compute_manifest_item_contract_hash(data)
+        return self.contract_hash
 
 
 class UniverseManifest(AgentBaseModel):
@@ -255,24 +314,36 @@ def build_manifest_from_requirements(
     *,
     known_material_ids: set[str] | None = None,
 ) -> UniverseManifest:
-    """Build a manifest from the requirement set (deterministic, no LLM)."""
+    """Build a manifest from the requirement set (deterministic, no LLM).
+
+    Each requirement's contract fields (kind, cell/material roles, source
+    IDs, profile bindings, protected-through-path roles, dependency IDs)
+    are preserved verbatim on the resulting manifest item, and a stable
+    per-item :attr:`UniverseManifestItem.contract_hash` is computed.
+    """
     items: list[UniverseManifestItem] = []
     for req in requirement_set.requirements:
         if not req.resolved:
             continue
         uid = req.universe_id or req.requirement_id.replace(":", "_")
-        items.append(UniverseManifestItem(
+        item = UniverseManifestItem(
             universe_id=uid,
             kind=req.kind,
             required_cell_roles=list(req.required_cell_roles),
             required_material_ids=list(req.required_material_ids),
             required_material_roles=list(req.required_material_roles),
             fuel_variant_id=req.fuel_variant_id,
-            source_requirement_ids=[req.requirement_id],
+            localized_insert_requirement_id=req.localized_insert_requirement_id,
+            base_path_component_profile_id=req.base_path_component_profile_id,
+            protected_through_path_roles=list(req.protected_through_path_roles),
+            source_requirement_ids=list(req.source_requirement_ids or [req.requirement_id]),
             dependency_ids=list(req.dependency_ids),
-        ))
-    import hashlib
-    manifest_hash = hashlib.sha256(json.dumps([i.model_dump(mode="json") for i in items], sort_keys=True, default=str).encode()).hexdigest()[:16]
+        )
+        item.recompute_contract_hash()
+        items.append(item)
+    manifest_hash = hashlib.sha256(
+        canonical_json_dumps([i.model_dump(mode="json") for i in items]).encode("utf-8")
+    ).hexdigest()[:16]
     return UniverseManifest(
         manifest_id=f"manifest:{manifest_hash}",
         input_hash=requirement_set.input_hash,
@@ -288,11 +359,17 @@ def build_manifest_from_requirements(
 
 
 class UniverseDefinitionFragment(AgentBaseModel):
-    """A single universe definition fragment from one LLM call."""
+    """A single universe definition fragment from one LLM call.
+
+    ``fragment_hash`` is the canonical hash recomputed from
+    :attr:`universe` (not the LLM-claimed hash).  ``manifest_contract_hash``
+    binds the fragment to the manifest item whose contract it must satisfy.
+    """
     fragment_type: Literal["universe_definition"] = "universe_definition"
     universe_id: str
     universe: dict[str, Any] = Field(default_factory=dict)
     fragment_hash: str = ""
+    manifest_contract_hash: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -301,17 +378,66 @@ class UniverseDefinitionFragment(AgentBaseModel):
 # ---------------------------------------------------------------------------
 
 
-class FragmentStatus(AgentBaseModel):
+# Qualification status of a fragment against its manifest item.
+FragmentQualificationStatus = Literal["pending", "passed", "failed"]
+
+
+class AcceptedFragmentRecord(AgentBaseModel):
+    """Typed checkpoint record of an accepted fragment.
+
+    Stored on :attr:`LargePatchGenerationSession.accepted_fragments` so
+    resume can deterministically verify that (i) the data exists, (ii) the
+    hash matches, (iii) the manifest contract hash is unchanged, and
+    (iv) the qualification record is still passing.
+
+    A stale/corrupt record causes only that fragment to be regenerated —
+    other accepted fragments remain usable.
+    """
+
     universe_id: str
-    status: Literal["pending", "accepted", "failed"] = "pending"
+    universe: dict[str, Any] = Field(default_factory=dict)
     fragment_hash: str = ""
+    manifest_contract_hash: str = ""
+    qualification_status: FragmentQualificationStatus = "passed"
+    qualification_issues: list[dict[str, Any]] = Field(default_factory=list)
+    accepted_at_attempt: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FragmentStatus(AgentBaseModel):
+    """Per-universe status inside a checkpoint session.
+
+    On resume, ``status == accepted`` alone is NOT sufficient: the resume
+    path must verify ``fragment_hash``, ``manifest_contract_hash``,
+    ``qualification_status`` and the presence of an
+    :class:`AcceptedFragmentRecord`.  Any mismatch downgrades this entry to
+    ``pending`` (so it gets regenerated) without touching other fragments.
+    """
+
+    universe_id: str
+    status: Literal["pending", "accepted", "failed", "stale"] = "pending"
+    fragment_hash: str = ""
+    manifest_contract_hash: str = ""
+    qualification_status: FragmentQualificationStatus = "pending"
+    qualification_issues: list[dict[str, Any]] = Field(default_factory=list)
+    accepted_at_attempt: int | None = None
     issues: list[dict[str, Any]] = Field(default_factory=list)
     llm_calls: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class LargePatchGenerationSession(AgentBaseModel):
-    """Checkpoint session for large patch generation (universes)."""
+    """Checkpoint session for large patch generation (universes).
+
+    All integrity-bearing fields are typed and revalidated on resume so a
+    single corrupted fragment does not silently re-enter the merge.
+
+    ``accepted_fragments`` is the authoritative checkpoint store.  The
+    legacy ``accepted_fragment_hashes`` is kept for backward compatibility
+    with older sessions and as a quick lookup map.  The two MUST stay in
+    sync after every successful accept/replay.
+    """
+
     session_id: str = ""
     patch_type: str = "universes"
     input_hash: str = ""
@@ -321,12 +447,16 @@ class LargePatchGenerationSession(AgentBaseModel):
     manifest_status: Literal["pending", "accepted", "failed"] = "pending"
     fragment_statuses: list[FragmentStatus] = Field(default_factory=list)
     accepted_fragment_hashes: dict[str, str] = Field(default_factory=dict)
+    accepted_fragments: dict[str, AcceptedFragmentRecord] = Field(default_factory=dict)
     failed_fragment_issues: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     strategy_transitions: list[dict[str, Any]] = Field(default_factory=list)
     llm_call_count: int = 0
     completed: bool = False
     merged_patch_hash: str = ""
     provider_telemetry: list[dict[str, Any]] = Field(default_factory=list)
+    # Structured merge history: each entry is a structured ``UniverseMergeResult``
+    # dump plus the reason this merge was attempted.
+    merge_history: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -399,57 +529,364 @@ def should_fragment_universes(
 # ---------------------------------------------------------------------------
 
 
+class UniverseMergeIssue(AgentBaseModel):
+    """A single structured issue discovered during fragment merge.
+
+    ``retry_scope`` controls how the caller reacts:
+
+    * ``fragment`` — only the universes in ``universe_id`` (and
+      ``metadata.invalid_fragment_ids`` when present) need to be replayed;
+      other accepted fragments remain usable.
+    * ``manifest`` — the manifest itself is inconsistent (duplicate IDs,
+      generation-order mismatch, item count mismatch).  Fail closed; do
+      not attempt fragment replay.
+    * ``global`` — the merged patch fails patch-level validation for
+      reasons that cannot be attributed to a single fragment.  Fail
+      closed with the full diagnostic.
+    """
+
+    code: str
+    severity: Literal["error", "warning"] = "error"
+    universe_id: str | None = None
+    fragment_hash: str | None = None
+    json_path: str | None = None
+    message: str
+    retry_scope: Literal["fragment", "manifest", "global"] = "global"
+    retryable: bool = False
+    expected: Any | None = None
+    actual: Any | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UniverseMergeResult(AgentBaseModel):
+    """Structured result of merging fragments into a UniversesPatch."""
+
+    ok: bool
+    merged_patch: dict[str, Any] | None = None
+    issues: list[UniverseMergeIssue] = Field(default_factory=list)
+    invalid_fragment_ids: list[str] = Field(default_factory=list)
+    merged_patch_hash: str | None = None
+    manifest_id: str = ""
+    manifest_input_hash: str = ""
+
+    @property
+    def top_level_error_code(self) -> str:
+        """Backward-compatible top-level error code consumed by the
+        existing retry owner policy.  Always ``patch_generation.merge_failed``
+        when ``ok is False`` so routing continues to work unchanged."""
+        return "patch_generation.merge_failed" if not self.ok else ""
+
+    def to_legacy_tuple(self) -> tuple[dict[str, Any] | None, list[str]]:
+        """Convert to the legacy ``(patch, list[str])`` return shape.
+
+        Existing callers and tests that don't yet use the structured result
+        can use this for backward compatibility.
+        """
+        return self.merged_patch, [issue.code for issue in self.issues if issue.severity == "error"]
+
+
+def _compute_merged_patch_hash(merged_patch: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        canonical_json_dumps(merged_patch).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def merge_universe_fragments_structured(
+    *,
+    manifest: UniverseManifest,
+    fragments: list[UniverseDefinitionFragment],
+    known_material_ids: set[str] | None = None,
+    known_material_roles_by_id: dict[str, str] | None = None,
+    qualification_records: dict[str, "AcceptedFragmentRecord"] | None = None,
+) -> UniverseMergeResult:
+    """Deterministically merge fragments into a structured result.
+
+    Pure Python; no LLM.  Attribute every failure to a specific universe
+    ID, fragment hash, and JSON path where possible so the caller can do
+    targeted replay instead of a wholesale regeneration.
+
+    Parameters
+    ----------
+    manifest
+        The accepted manifest (its ``generation_order`` is canonical).
+    fragments
+        Fragments to merge.  May include duplicate/extra/missing IDs; all
+        such conditions are reported as structured issues.
+    known_material_ids
+        Set of accepted material IDs from the upstream MaterialsPatch.
+        Used to catch unknown material references before merged-patch
+        validation.
+    known_material_roles_by_id
+        Optional mapping from material ID to material role; used to verify
+        that required material roles are actually covered.
+    qualification_records
+        Optional mapping from universe ID to its last
+        :class:`AcceptedFragmentRecord`.  When provided, the merge fails
+        fragment-scoped if a fragment's saved qualification status is not
+        ``passed`` or its contract hash has drifted.
+    """
+    issues: list[UniverseMergeIssue] = []
+    invalid_fragment_ids: list[str] = []
+    qualification_records = qualification_records or {}
+
+    # --- Manifest self-consistency (fail-closed at manifest scope) ---
+    order = list(manifest.generation_order)
+    if len(order) != len(set(order)):
+        dupes = sorted({uid for uid in order if order.count(uid) > 1})
+        issues.append(UniverseMergeIssue(
+            code="merge.manifest_duplicate_in_order",
+            severity="error",
+            message=f"manifest generation_order has duplicates: {dupes}",
+            retry_scope="manifest",
+            metadata={"duplicate_ids": dupes},
+        ))
+    expected_count = manifest.expected_universe_count
+    if expected_count != len(manifest.items):
+        issues.append(UniverseMergeIssue(
+            code="merge.manifest_count_mismatch",
+            severity="error",
+            message=(
+                f"manifest expected_universe_count={expected_count} but "
+                f"items has {len(manifest.items)} entries"
+            ),
+            retry_scope="manifest",
+            metadata={"expected": expected_count, "actual": len(manifest.items)},
+        ))
+    item_ids = {item.universe_id for item in manifest.items}
+    if set(order) != item_ids:
+        issues.append(UniverseMergeIssue(
+            code="merge.manifest_order_items_mismatch",
+            severity="error",
+            message=(
+                "manifest generation_order does not match item universe_ids: "
+                f"order_only={sorted(set(order) - item_ids)} "
+                f"items_only={sorted(item_ids - set(order))}"
+            ),
+            retry_scope="manifest",
+        ))
+
+    # --- Fragment index by universe_id (detect duplicates) ---
+    frag_by_id: dict[str, UniverseDefinitionFragment] = {}
+    for frag in fragments:
+        uid = frag.universe_id
+        if uid in frag_by_id:
+            issues.append(UniverseMergeIssue(
+                code="merge.duplicate_fragment",
+                severity="error",
+                universe_id=uid,
+                fragment_hash=frag.fragment_hash or None,
+                message=f"duplicate fragment for universe_id {uid!r}",
+                retry_scope="fragment",
+                retryable=True,
+                json_path=f"/universes/{uid}",
+            ))
+            invalid_fragment_ids.append(uid)
+            continue
+        frag_by_id[uid] = frag
+
+    # --- Coverage: every manifest item must have exactly one fragment ---
+    merged_universes: list[dict[str, Any]] = []
+    manifest_item_by_id = {item.universe_id: item for item in manifest.items}
+
+    for uid in order:
+        item = manifest_item_by_id.get(uid)
+        if item is None:
+            # Already reported as manifest inconsistency.
+            continue
+        frag = frag_by_id.get(uid)
+        if frag is None:
+            issues.append(UniverseMergeIssue(
+                code="merge.missing_fragment",
+                severity="error",
+                universe_id=uid,
+                message=f"missing fragment for universe_id {uid!r}",
+                retry_scope="fragment",
+                retryable=True,
+                json_path=f"/universes/{uid}",
+            ))
+            invalid_fragment_ids.append(uid)
+            continue
+        universe_data = frag.universe or {}
+        universe_data_id = universe_data.get("universe_id")
+        if universe_data_id != uid:
+            issues.append(UniverseMergeIssue(
+                code="merge.universe_id_mismatch",
+                severity="error",
+                universe_id=uid,
+                fragment_hash=frag.fragment_hash or None,
+                message=(
+                    f"fragment universe_id={universe_data_id!r} does not match "
+                    f"manifest universe_id={uid!r}"
+                ),
+                retry_scope="fragment",
+                retryable=True,
+                json_path=f"/universes/{uid}/universe_id",
+                actual=universe_data_id,
+                expected=uid,
+            ))
+            invalid_fragment_ids.append(uid)
+            continue
+
+        # Kind consistency with manifest.
+        fragment_kind = universe_data.get("kind")
+        if item.kind and fragment_kind and fragment_kind != item.kind:
+            issues.append(UniverseMergeIssue(
+                code="merge.kind_mismatch",
+                severity="error",
+                universe_id=uid,
+                fragment_hash=frag.fragment_hash or None,
+                message=(
+                    f"fragment kind={fragment_kind!r} does not match manifest "
+                    f"kind={item.kind!r}"
+                ),
+                retry_scope="fragment",
+                retryable=True,
+                json_path=f"/universes/{uid}/kind",
+                expected=item.kind,
+                actual=fragment_kind,
+            ))
+            invalid_fragment_ids.append(uid)
+            continue
+
+        # Material reference checks (cell-level).
+        if known_material_ids is not None:
+            for cell in universe_data.get("cells", []) or []:
+                mid = cell.get("material_id")
+                if mid and mid not in known_material_ids:
+                    issues.append(UniverseMergeIssue(
+                        code="merge.unknown_material",
+                        severity="error",
+                        universe_id=uid,
+                        fragment_hash=frag.fragment_hash or None,
+                        message=(
+                            f"cell {cell.get('id')!r} in universe {uid!r} "
+                            f"references unknown material_id {mid!r}"
+                        ),
+                        retry_scope="fragment",
+                        retryable=True,
+                        json_path=f"/universes/{uid}/cells/{cell.get('id')}/material_id",
+                        actual=mid,
+                        expected=sorted(known_material_ids),
+                    ))
+                    if uid not in invalid_fragment_ids:
+                        invalid_fragment_ids.append(uid)
+
+        # Qualification/contract hash drift against the saved record.
+        rec = qualification_records.get(uid)
+        if rec is not None:
+            if rec.qualification_status != "passed":
+                issues.append(UniverseMergeIssue(
+                    code="merge.qualification_not_passed",
+                    severity="error",
+                    universe_id=uid,
+                    fragment_hash=frag.fragment_hash or None,
+                    message=(
+                        f"fragment {uid!r} qualification_status="
+                        f"{rec.qualification_status!r}; cannot enter merge"
+                    ),
+                    retry_scope="fragment",
+                    retryable=True,
+                    json_path=f"/universes/{uid}",
+                ))
+                if uid not in invalid_fragment_ids:
+                    invalid_fragment_ids.append(uid)
+            elif item.contract_hash and rec.manifest_contract_hash and rec.manifest_contract_hash != item.contract_hash:
+                issues.append(UniverseMergeIssue(
+                    code="merge.manifest_contract_drift",
+                    severity="error",
+                    universe_id=uid,
+                    fragment_hash=frag.fragment_hash or None,
+                    message=(
+                        f"fragment {uid!r} was qualified against contract_hash="
+                        f"{rec.manifest_contract_hash!r} but the current manifest "
+                        f"item has contract_hash={item.contract_hash!r}"
+                    ),
+                    retry_scope="fragment",
+                    retryable=True,
+                    json_path=f"/universes/{uid}",
+                    expected=item.contract_hash,
+                    actual=rec.manifest_contract_hash,
+                ))
+                if uid not in invalid_fragment_ids:
+                    invalid_fragment_ids.append(uid)
+
+        merged_universes.append(universe_data)
+
+    # --- Extra (undeclared) fragments ---
+    manifest_ids = set(order)
+    extra = set(frag_by_id.keys()) - manifest_ids
+    for eid in sorted(extra):
+        issues.append(UniverseMergeIssue(
+            code="merge.extra_fragment",
+            severity="error",
+            universe_id=eid,
+            fragment_hash=frag_by_id[eid].fragment_hash or None,
+            message=(
+                f"fragment {eid!r} is not declared in the manifest; "
+                f"it cannot enter the merged patch"
+            ),
+            retry_scope="fragment",
+            retryable=False,  # not safe to auto-replay: source of the extra is unclear
+            json_path=f"/universes/{eid}",
+        ))
+
+    if any(issue.severity == "error" for issue in issues):
+        return UniverseMergeResult(
+            ok=False,
+            merged_patch=None,
+            issues=issues,
+            invalid_fragment_ids=sorted(set(invalid_fragment_ids)),
+            manifest_id=manifest.manifest_id,
+            manifest_input_hash=manifest.input_hash,
+        )
+
+    patch = {"patch_type": "universes", "universes": merged_universes}
+    return UniverseMergeResult(
+        ok=True,
+        merged_patch=patch,
+        issues=issues,  # may carry warnings
+        invalid_fragment_ids=[],
+        merged_patch_hash=_compute_merged_patch_hash(patch),
+        manifest_id=manifest.manifest_id,
+        manifest_input_hash=manifest.input_hash,
+    )
+
+
 def merge_universe_fragments(
     *,
     manifest: UniverseManifest,
     fragments: list[UniverseDefinitionFragment],
     known_material_ids: set[str] | None = None,
+    known_material_roles_by_id: dict[str, str] | None = None,
+    qualification_records: dict[str, AcceptedFragmentRecord] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """Deterministically merge fragments into a standard UniversesPatch.
+    """Backward-compatible wrapper around :func:`merge_universe_fragments_structured`.
 
-    Returns (merged_patch_dict, error_codes).
+    Returns the legacy ``(merged_patch, error_codes)`` tuple.  New callers
+    should use the structured function directly so they can react to
+    fragment-scoped issues with targeted replay.
     """
-    errors: list[str] = []
-    # Build fragment index by universe_id.
-    frag_by_id: dict[str, UniverseDefinitionFragment] = {}
-    for frag in fragments:
-        uid = frag.universe_id
-        if uid in frag_by_id:
-            errors.append(f"merge.duplicate_fragment:{uid}")
-            continue
-        frag_by_id[uid] = frag
-    # Check all manifest items are covered.
-    merged_universes: list[dict[str, Any]] = []
-    for item in manifest.generation_order:
-        if item not in frag_by_id:
-            errors.append(f"merge.missing_fragment:{item}")
-            continue
-        frag = frag_by_id[item]
-        universe_data = frag.universe
-        # Verify universe_id matches.
-        if universe_data.get("universe_id") != item:
-            errors.append(f"merge.universe_id_mismatch:{item}")
-            continue
-        # Verify material references.
-        if known_material_ids is not None:
-            for cell in universe_data.get("cells", []):
-                mid = cell.get("material_id")
-                if mid and mid not in known_material_ids:
-                    errors.append(f"merge.unknown_material:{mid}")
-        merged_universes.append(universe_data)
-    # Check for extra undeclared fragments.
-    manifest_ids = set(manifest.generation_order)
-    extra = set(frag_by_id.keys()) - manifest_ids
-    for eid in extra:
-        errors.append(f"merge.extra_fragment:{eid}")
-    if errors:
-        return None, errors
-    patch = {"patch_type": "universes", "universes": merged_universes}
-    return patch, []
+    result = merge_universe_fragments_structured(
+        manifest=manifest,
+        fragments=fragments,
+        known_material_ids=known_material_ids,
+        known_material_roles_by_id=known_material_roles_by_id,
+        qualification_records=qualification_records,
+    )
+    return result.to_legacy_tuple()
 
 
-def validate_merged_patch(patch_dict: dict[str, Any], *, known_material_ids: set[str] | None = None, known_universe_ids: set[str] | None = None) -> tuple[bool, list[dict[str, Any]]]:
-    """Validate merged patch using existing validators."""
+def validate_merged_patch(
+    patch_dict: dict[str, Any],
+    *,
+    known_material_ids: set[str] | None = None,
+    known_universe_ids: set[str] | None = None,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Validate merged patch using existing validators.
+
+    Returns the legacy ``(ok, issues_list)`` tuple so existing callers and
+    tests continue to work.  Pure-Python, deterministic, no LLM.
+    """
     try:
         parsed = parse_patch_content("universes", patch_dict)
     except Exception as exc:
@@ -459,7 +896,17 @@ def validate_merged_patch(patch_dict: dict[str, Any], *, known_material_ids: set
         known_universe_ids=list(known_universe_ids) if known_universe_ids else [],
     )
     result = validate_patch(parsed, context=ctx)
-    issues = [{"code": i.code, "severity": i.severity, "message": i.message} for i in result.issues]
+    issues = [
+        {
+            "code": i.code,
+            "severity": i.severity,
+            "message": i.message,
+            "path": i.path,
+            "expected": i.expected,
+            "actual": i.actual,
+        }
+        for i in result.issues
+    ]
     return result.ok, issues
 
 
@@ -495,12 +942,18 @@ __all__ = [
     "UniverseManifest",
     "validate_manifest",
     "build_manifest_from_requirements",
+    "compute_manifest_item_contract_hash",
     "UniverseDefinitionFragment",
+    "AcceptedFragmentRecord",
     "FragmentStatus",
+    "FragmentQualificationStatus",
     "LargePatchGenerationSession",
     "UniversesGenerationMode",
     "estimate_universes_output_size",
     "should_fragment_universes",
+    "UniverseMergeIssue",
+    "UniverseMergeResult",
+    "merge_universe_fragments_structured",
     "merge_universe_fragments",
     "validate_merged_patch",
     "resolve_patch_output_budget",

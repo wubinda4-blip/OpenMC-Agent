@@ -1,8 +1,12 @@
 # OpenMC-Agent 技术报告与进度总览
 
-维护日期：2026-07-20
+维护日期：2026-07-21
 
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
+
+### 2026-07-21
+
+- **Phase 8B Step 4B-1 Universe Fragment Transaction Qualification**：新增 `universe_fragment_qualification.py`（schema/identity/kind/cell-role/material-ref/material-role/placeholder/duplicate-cell-id/canonical-hash 确定性 qualification），`AcceptedFragmentRecord` 持久化 data+hash+contract_hash+qualification_status；resume 逐项重新验证、只降级损坏 fragment。`UniverseManifestItem` 新增 localized_insert_requirement_id/base_path_component_profile_id/protected_through_path_roles 并计算 per-item `contract_hash`；`merge_universe_fragments_structured` 返回 `UniverseMergeResult`（fragment/manifest/global scope 归因 + `invalid_fragment_ids`），保留 `patch_generation.merge_failed` 顶层码以兼容现有 retry owner policy。`generate_universes_patch` 在 transaction 内实现 targeted replay（fragment-scoped failure 只重放 invalid fragments，manifest/global fail closed），LLM 调用分类为 provider_exception/parse_exception/empty 而非静默吞掉。确定性复现 run_004 类失败（`implicit_gas_gap` 中 `material_id="REPLACE"` 占位符）。57 新测试；3464 passed / 2 skipped；compileall clean；benchmark 21/21。详细文档 `docs/phase8b_step4b1_universe_fragment_transaction.md`。
 
 ### 2026-07-20
 
