@@ -415,7 +415,7 @@ def _array_index(part: str, array: list[Any], *, allow_append: bool) -> int:
     if not part.isdigit():
         raise IndexError("array index must be a non-negative integer")
     idx = int(part)
-    if idx < 0 or idx >= len(array):
+    if idx < 0 or idx > len(array) or (idx == len(array) and not allow_append):
         raise IndexError(idx)
     return idx
 
