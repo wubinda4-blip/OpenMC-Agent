@@ -205,7 +205,7 @@ class FactsReviewCoverageSummary(AgentBaseModel):
 
 
 class FactsReviewModelOutput(AgentBaseModel):
-    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    review_status: Literal["complete", "insufficient_evidence", "complete_with_gaps", "source_too_large", "malformed_input"]
     findings: list[FactsReviewFindingDraft] = Field(default_factory=list)
     reviewed_evidence_hashes: list[str] = Field(default_factory=list)
     coverage_summary: FactsReviewCoverageSummary = Field(default_factory=FactsReviewCoverageSummary)
@@ -539,7 +539,7 @@ class PlacementReviewCoverageSummary(AgentBaseModel):
 
 
 class PlacementReviewModelOutput(AgentBaseModel):
-    review_status: Literal["complete", "insufficient_evidence", "malformed_input"]
+    review_status: Literal["complete", "insufficient_evidence", "complete_with_gaps", "malformed_input"]
     findings: list[PlacementReviewFindingDraft] = Field(default_factory=list)
     reviewed_contract_row_ids: list[str] = Field(default_factory=list)
     reviewed_evidence_refs: list[str] = Field(default_factory=list)
@@ -790,7 +790,7 @@ class MaterialUniverseReviewCoverageSummary(AgentBaseModel):
 
 
 class MaterialUniverseReviewModelOutput(AgentBaseModel):
-    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    review_status: Literal["complete", "insufficient_evidence", "complete_with_gaps", "source_too_large", "malformed_input"]
     findings: list[MaterialUniverseReviewFindingDraft] = Field(default_factory=list)
     reviewed_contract_row_ids: list[str] = Field(default_factory=list)
     reviewed_evidence_refs: list[str] = Field(default_factory=list)
@@ -1086,7 +1086,7 @@ class AxialGeometryReviewCoverageSummary(AgentBaseModel):
 
 
 class AxialGeometryReviewModelOutput(AgentBaseModel):
-    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    review_status: Literal["complete", "insufficient_evidence", "complete_with_gaps", "source_too_large", "malformed_input"]
     findings: list[AxialGeometryReviewFindingDraft] = Field(default_factory=list)
     reviewed_contract_row_ids: list[str] = Field(default_factory=list)
     reviewed_evidence_refs: list[str] = Field(default_factory=list)
@@ -1281,7 +1281,7 @@ class AssembledPlanReviewCoverageSummary(AgentBaseModel):
 
 
 class AssembledPlanReviewModelOutput(AgentBaseModel):
-    review_status: Literal["complete", "insufficient_evidence", "source_too_large", "malformed_input"]
+    review_status: Literal["complete", "insufficient_evidence", "complete_with_gaps", "source_too_large", "malformed_input"]
     findings: list[AssembledPlanReviewFindingDraft] = Field(default_factory=list)
     reviewed_contract_row_ids: list[str] = Field(default_factory=list)
     reviewed_evidence_refs: list[str] = Field(default_factory=list)

@@ -75,6 +75,7 @@ class StructuredReviewResult(AgentBaseModel):
     error_code: str = ""
     error_detail: str = ""
     input_payload_hash: str = ""
+    raw_outputs: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -100,9 +101,16 @@ _VALID_FINDING_CATEGORIES = frozenset({
 })
 
 _REVIEW_STATUS_FIXES: dict[str, str] = {
-    "incomplete": "complete", "done": "complete",
-    "finished": "complete", "ok": "complete",
+    "incomplete": "complete",
+    "done": "complete",
+    "finished": "complete",
+    "ok": "complete",
+    "completed": "complete",
+    "reviewed": "complete",
+    "insufficient_evidence": "complete_with_gaps",
 }
+
+_ACCEPTED_REVIEW_STATUSES: frozenset[str] = frozenset({"complete", "complete_with_gaps"})
 
 
 def _unwrap_ann(ann: Any) -> Any:
@@ -291,6 +299,7 @@ def run_structured_review_call(
             input_payload_hash=input_hash,
         )
 
+    collected_raw: list[str] = []
     raw_result: StructuredOutputResult = run_structured_output_transaction(
         client=client,
         initial_prompt=initial_prompt,
@@ -303,6 +312,7 @@ def run_structured_review_call(
         allow_embedded_json=call_spec.allow_embedded_json,
         budget_available=_budget_available,
         charge_budget=_charge_budget,
+        raw_sink=lambda text, idx: collected_raw.append(text),
     )
     attempts = [
         StructuredReviewAttempt(**attempt.model_dump(mode="python"))
@@ -324,4 +334,5 @@ def run_structured_review_call(
         input_payload_hash=raw_result.input_payload_hash,
         error_code=error_code,
         error_detail=raw_result.error_detail,
+        raw_outputs=collected_raw,
     )

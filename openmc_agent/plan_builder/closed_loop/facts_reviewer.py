@@ -15,7 +15,11 @@ from .models import (
     FactsReviewModelOutput, PlanClosedLoopPolicy, PlanEvidencePack, PlanFindingCategory,
     PlanFindingSeverity, PlanGateId, PlanReviewFinding, SourceExcerpt,
 )
-from .review_io import StructuredReviewCallSpec, run_structured_review_call
+from .review_io import (
+    StructuredReviewCallSpec,
+    _ACCEPTED_REVIEW_STATUSES,
+    run_structured_review_call,
+)
 
 
 class FactsReviewResult(AgentBaseModel):
@@ -77,6 +81,33 @@ def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[
     return list(merged.values()), rejected
 
 
+def _aggregate_coverage(outputs: list[dict[str, Any]], *, expected_stage_count: int | None = None) -> bool:
+    """Aggregate review-stage outputs into a single coverage decision.
+
+    Rules (fail-closed):
+
+    * Every stage ``review_status`` must be in ``_ACCEPTED_REVIEW_STATUSES``.
+    * No finding may have ``severity == "error"`` (blocking).
+    * The number of outputs must match *expected_stage_count* when provided.
+    """
+    if not outputs:
+        return False
+    if expected_stage_count is not None and len(outputs) != expected_stage_count:
+        return False
+    statuses = [
+        str(item.get("output", {}).get("review_status", "")).strip()
+        for item in outputs
+    ]
+    if any(status not in _ACCEPTED_REVIEW_STATUSES for status in statuses):
+        return False
+    has_blocking = any(
+        str(finding.get("severity", "")).lower() == "error"
+        for item in outputs
+        for finding in item.get("output", {}).get("findings", [])
+    )
+    return not has_blocking
+
+
 def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client: Any, state: Any, policy: PlanClosedLoopPolicy) -> FactsReviewResult:
     # Phase 8B Step 3: stage-split path.
     if getattr(policy, "facts_review_stage_split", False) and evidence_packs:
@@ -103,8 +134,8 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
         )
         result.reviewer_calls += call.call_count
         result.schema_retries += call.schema_retry_count
+        result.raw_outputs.extend(call.raw_outputs)
         for attempt in call.attempts:
-            result.raw_outputs.append(attempt.raw_text)
             result.call_metadata.append({"pack_id": pack.evidence_pack_id, **attempt.model_dump(mode="json", exclude={"raw_text"})})
         if not call.ok or call.parsed_output is None:
             # Phase 8B Step 3: classify the failure precisely.
@@ -124,8 +155,7 @@ def run_facts_review(*, evidence_packs: list[PlanEvidencePack], reviewer_client:
         reviewed.update(out_entry["output"].get("reviewed_evidence_hashes", []))
         for finding in out_entry["output"].get("findings", []):
             reviewed.update(finding.get("evidence_hashes", []))
-    last_status = result.outputs[-1]["output"].get("review_status", "") if result.outputs else ""
-    result.coverage_complete = last_status == "complete"
+    result.coverage_complete = _aggregate_coverage(result.outputs, expected_stage_count=len(evidence_packs))
     if not result.coverage_complete:
         result.failure_code = "facts_review.coverage_incomplete"
     result.ok = not result.error
@@ -205,8 +235,8 @@ def _run_facts_review_staged(
         )
         result.reviewer_calls += call.call_count
         result.schema_retries += call.schema_retry_count
+        result.raw_outputs.extend(call.raw_outputs)
         for attempt in call.attempts:
-            result.raw_outputs.append(attempt.raw_text)
             result.call_metadata.append(
                 {"stage": stage.value, **attempt.model_dump(mode="json", exclude={"raw_text"})}
             )
@@ -229,9 +259,7 @@ def _run_facts_review_staged(
 
     result.findings = list({finding.finding_id: finding for finding in all_findings}.values())
     result.rejected = all_rejected
-    # Coverage in staged mode: all stages completed successfully.
-    last_status = result.outputs[-1]["output"].get("review_status", "") if result.outputs else ""
-    result.coverage_complete = last_status == "complete"
+    result.coverage_complete = _aggregate_coverage(result.outputs, expected_stage_count=len(STAGE_ORDER))
     if not result.coverage_complete:
         result.failure_code = "facts_review.coverage_incomplete"
     result.ok = not result.error
@@ -276,10 +304,13 @@ def _classify_review_failure(call: Any) -> str:
     if call.ok is True:
         return call.error_code or "facts_review.schema_invalid"
 
-    # Inspect raw_text of all attempts.
-    raw_texts = [
-        getattr(a, "raw_text", "") or "" for a in (call.attempts or [])
-    ]
+    # Inspect raw outputs captured at the provider boundary (P1 fix).
+    # Fall back to attempt.raw_text for callers that haven't been updated.
+    raw_texts = list(getattr(call, "raw_outputs", []) or [])
+    if not raw_texts:
+        raw_texts = [
+            getattr(a, "raw_text", "") or "" for a in (call.attempts or [])
+        ]
     # Empty response: all attempts produced empty content.
     if raw_texts and all(not text.strip() for text in raw_texts):
         return "facts.reviewer_empty_response"

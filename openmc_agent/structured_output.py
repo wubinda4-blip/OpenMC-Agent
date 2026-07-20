@@ -206,6 +206,7 @@ def run_structured_output_transaction(
     budget_available: Callable[[], bool] | None = None,
     charge_budget: Callable[[], None] | None = None,
     require_budget_accounting: bool = True,
+    raw_sink: Callable[[str, int], None] | None = None,
 ) -> StructuredOutputResult:
     """Run at most two schema-checked calls with a fixed business hash."""
 
@@ -288,6 +289,11 @@ def run_structured_output_transaction(
                 record.truncated_suspected = (
                     raw_text.rstrip()[-1:] not in {"}", "]"}
                 )
+                if raw_sink is not None:
+                    try:
+                        raw_sink(raw_text, attempt_index)
+                    except Exception:
+                        pass
             record.metadata.update(_metadata(client))
 
             if not record.raw_hash:
