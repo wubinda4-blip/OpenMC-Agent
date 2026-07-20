@@ -26,7 +26,6 @@ from openmc_agent.plan_builder.patch_generator import PatchGenerationContext
 from openmc_agent.plan_builder.patch_prompts import build_patch_prompt
 from openmc_agent.plan_builder.state import PlanBuildState
 from openmc_agent.plan_investigation.agent import (
-    BLOCK_CODE_UNKNOWN_TOOL,
     InvestigationAgent,
     InvestigationBudget,
     InvestigationContext,
@@ -317,7 +316,10 @@ def test_llm_request_for_repository_tool_is_blocked() -> None:
     )
     assert result is not None
     assert result.blocked
-    assert result.block_code == BLOCK_CODE_UNKNOWN_TOOL
+    # The unknown tool is now caught inside the structured-output
+    # transaction's repair loop; the lambda cannot self-correct so the
+    # transaction exhausts retries and surfaces as invalid LLM output.
+    assert result.block_code == "planning.investigation_invalid_llm_output"
 
 
 def test_llm_request_for_shell_exec_is_blocked() -> None:

@@ -159,4 +159,28 @@ def test_recorder_role_counting():
     assert ev["runtime_supervisor_network_call_count"] == 1
 
 
+def test_investigator_calls_count_as_planning():
+    """The investigation substage is part of planning; its calls must
+    count toward ``planning_network_call_count`` so a canary that stops
+    after Facts investigation is not falsely flagged as
+    ``real_llm_not_verified``.
+    """
+    rec = LLMCallRecorder(run_id="t1", model="ds:deepseek-v4-flash", provider="ds")
+    for role in ["plan_investigator", "plan_investigator"]:
+        rec.record_call(
+            role=role,
+            task_name="investigation",
+            client_instance_id="plan_investigator",
+            started_at="2026-01-01T00:00:01Z",
+            completed_at="2026-01-01T00:00:02Z",
+            duration_ms=1000,
+            success=True,
+            response_chars=500,
+            network_call_verified=True,
+        )
+    ev = rec.evidence_summary()
+    assert ev["planning_network_call_count"] == 2
+    assert ev["real_network_call_count"] == 2
+
+
 import pytest

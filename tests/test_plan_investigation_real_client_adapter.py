@@ -145,3 +145,84 @@ def test_recorder_attributes_investigator_calls_separately() -> None:
     roles = {rec["role"] for rec in recorder.to_dict_list()}
     assert "planning_patch" in roles
     assert PLAN_INVESTIGATOR_ROLE in roles
+
+
+def test_generate_patch_json_is_recorded_by_wrapper() -> None:
+    """The ``_PromptOnlyWrapper`` must intercept ``generate_patch_json``
+    (the structured-output transaction kernel's preferred call path) and
+    record it.  Without this, investigator calls bypass the recorder via
+    ``__getattr__`` delegation and produce a false
+    ``real_llm_not_verified`` truthfulness violation.
+    """
+
+    base_llm = _FakeBaseLLM(content='{"actions": []}')
+    recorder = LLMCallRecorder(
+        run_id="run_test", model="ds:deepseek-v4-flash", provider="ds", max_calls=10
+    )
+    client = make_investigation_llm_client(
+        base_llm=base_llm,
+        model_name="ds:deepseek-v4-flash",
+        recorder=recorder,
+    )
+    # The structured-output transaction kernel calls generate_patch_json
+    # when the inner client exposes it (StructuredPatchLLMClient does).
+    assert hasattr(client, "generate_patch_json")
+    client.generate_patch_json(
+        prompt="inv prompt",
+        patch_type="investigation_plan",
+        json_schema={"type": "object"},
+    )
+    assert recorder.call_count == 1
+    summary = recorder.evidence_summary()
+    # The call must be attributed to the investigator role, not silently
+    # dropped.
+    assert summary["total_calls"] == 1
+    roles = {rec["role"] for rec in recorder.to_dict_list()}
+    assert PLAN_INVESTIGATOR_ROLE in roles
+    # A non-fake provider with a successful call marks the network call
+    # as verified so truthfulness audits do not flag it.
+    assert summary["real_network_call_count"] == 1
+
+
+def test_generate_patch_json_via_structured_output_transaction() -> None:
+    """End-to-end: ``run_structured_output_transaction`` calling
+    ``generate_patch_json`` on the investigator wrapper must record the
+    call and return the parsed output.
+    """
+    from openmc_agent.structured_output import run_structured_output_transaction
+    from openmc_agent.plan_investigation.agent import InvestigationPlan
+
+    base_llm = _FakeBaseLLM(content='{"actions": []}')
+    recorder = LLMCallRecorder(
+        run_id="run_test", model="ds:deepseek-v4-flash", provider="ds", max_calls=10
+    )
+    client = make_investigation_llm_client(
+        base_llm=base_llm,
+        model_name="ds:deepseek-v4-flash",
+        recorder=recorder,
+    )
+
+    def _planner_call(c: Any, current_prompt: str) -> Any:
+        if hasattr(c, "generate_patch_json"):
+            return c.generate_patch_json(
+                prompt=current_prompt,
+                patch_type="investigation_plan",
+                json_schema=InvestigationPlan.model_json_schema(),
+            )
+        return c(current_prompt)
+
+    transaction = run_structured_output_transaction(
+        client=client,
+        initial_prompt="test prompt",
+        retry_prompt_builder=lambda raw, err: type(
+            "R", (), {"prompt": "repair", "input_payload_hash": "x"}
+        )(),
+        output_model=InvestigationPlan,
+        call=_planner_call,
+        payload={"k": "v"},
+        max_attempts=1,
+        budget_available=lambda: True,
+        charge_budget=lambda: None,
+    )
+    assert transaction.ok
+    assert recorder.call_count == 1

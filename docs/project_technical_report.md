@@ -1,8 +1,12 @@
 # OpenMC-Agent 技术报告与进度总览
 
-维护日期：2026-07-19
+维护日期：2026-07-20
 
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
+
+### 2026-07-20
+
+- **Phase 8C Step 2D real-canary closure**：修复 investigator recorder bypass（`_PromptOnlyWrapper` 未拦截 `generate_patch_json`→虚假 `real_llm_not_verified`）；将 tool/argument 验证整合进 structured-output transaction 的 `_normalize`，消除 `argument_invalid` 立即阻塞；`planning_network_call_count` 计入 `plan_investigator` role；新增 Facts 语义合成步骤（LLM 从工具证据合成 `model_scope`/`fuel_variant` 等谓词 claims，闭合 coverage gap）。GLM-5.2 真实 canary 验证：truth_violations 清空、Facts investigation 完成（6 claims 合成、coverage_complete=True）、Facts patch 生成有效、Facts Gate 可 ACCEPTED。3372 passed / 2 skipped；benchmark 21/21。
 
 ### 2026-07-19
 

@@ -254,12 +254,15 @@ class LLMCallRecorder:
     ) -> Any:
         """Wrap a ``Callable[[str], str]`` prompt-only client.
 
-        Used by the Phase 8A plan investigation layer, which calls the
-        LLM as ``client(prompt) -> str`` (no json_schema, no structured
-        output mode beyond what the prompt itself requests).  The
-        recorder attributes each call to the supplied ``role`` so
-        evidence/budget summaries can distinguish investigator calls
-        from planning-patch calls.
+        Used by the Phase 8A plan investigation layer.  The investigator
+        client may be invoked as ``client(prompt) -> str`` or via
+        ``generate_patch_json(prompt=..., patch_type=..., json_schema=...)``
+        (the structured-output transaction kernel prefers the latter when
+        the inner client exposes it).  Both paths are intercepted so the
+        recorder attributes each call to the supplied ``role``; otherwise
+        ``generate_patch_json`` would bypass the recorder via
+        ``__getattr__`` delegation and produce a false
+        ``real_llm_not_verified`` violation.
         """
 
         recorder = self
@@ -273,6 +276,46 @@ class LLMCallRecorder:
             def __getattr__(self, name: str) -> Any:
                 return getattr(self._inner, name)
 
+            def _record(
+                self,
+                started_iso: str,
+                ts: float,
+                success: bool,
+                result: Any,
+                err: str,
+                prompt_text: str,
+            ) -> None:
+                import time as _time
+
+                te = _time.perf_counter()
+                resp_chars = 0
+                if isinstance(result, str):
+                    resp_chars = len(result)
+                elif isinstance(result, dict):
+                    resp_chars = len(json.dumps(result, default=str))
+                elif result is not None:
+                    resp_chars = len(str(result))
+                recorder.record_call(
+                    role=role,
+                    task_name=effective_task,
+                    client_instance_id=self._client_id,
+                    started_at=started_iso,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                    duration_ms=round((te - ts) * 1000, 1),
+                    success=success,
+                    response_chars=resp_chars,
+                    error_type=err,
+                    prompt_hash=hashlib.sha256(prompt_text.encode()).hexdigest()[:16]
+                    if prompt_text
+                    else "",
+                    network_call_verified=success and not recorder._is_fake_provider(),
+                )
+
+            def _extract_prompt(self, args: tuple, kwargs: dict) -> str:
+                if args:
+                    return str(args[0])
+                return str(kwargs.get("prompt", ""))
+
             def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 recorder.check_budget()
                 t0 = datetime.now(timezone.utc)
@@ -283,14 +326,7 @@ class LLMCallRecorder:
                 success = True
                 err = ""
                 result: Any = None
-                # Extract prompt text for hashing.  We accept either a
-                # positional ``client(prompt)`` call or a keyword
-                # ``client(prompt=...)`` call.
-                prompt_text = ""
-                if args:
-                    prompt_text = str(args[0])
-                elif "prompt" in kwargs:
-                    prompt_text = str(kwargs["prompt"])
+                prompt_text = self._extract_prompt(args, kwargs)
                 try:
                     result = self._inner(*args, **kwargs)
                     return result
@@ -301,29 +337,30 @@ class LLMCallRecorder:
                     err = type(exc).__name__
                     raise
                 finally:
-                    te = _time.perf_counter()
-                    resp_chars = 0
-                    if isinstance(result, str):
-                        resp_chars = len(result)
-                    elif isinstance(result, dict):
-                        resp_chars = len(json.dumps(result, default=str))
-                    elif result is not None:
-                        resp_chars = len(str(result))
-                    recorder.record_call(
-                        role=role,
-                        task_name=effective_task,
-                        client_instance_id=self._client_id,
-                        started_at=started,
-                        completed_at=datetime.now(timezone.utc).isoformat(),
-                        duration_ms=round((te - ts) * 1000, 1),
-                        success=success,
-                        response_chars=resp_chars,
-                        error_type=err,
-                        prompt_hash=hashlib.sha256(prompt_text.encode()).hexdigest()[:16]
-                        if prompt_text
-                        else "",
-                        network_call_verified=success and not recorder._is_fake_provider(),
-                    )
+                    self._record(started, ts, success, result, err, prompt_text)
+
+            def generate_patch_json(self, *args: Any, **kwargs: Any) -> Any:
+                recorder.check_budget()
+                t0 = datetime.now(timezone.utc)
+                started = t0.isoformat()
+                import time as _time
+
+                ts = _time.perf_counter()
+                success = True
+                err = ""
+                result: Any = None
+                prompt_text = str(kwargs.get("prompt", ""))
+                try:
+                    result = self._inner.generate_patch_json(*args, **kwargs)
+                    return result
+                except LLMBudgetExhausted:
+                    raise
+                except Exception as exc:
+                    success = False
+                    err = type(exc).__name__
+                    raise
+                finally:
+                    self._record(started, ts, success, result, err, prompt_text)
 
             def generate_patch(self, *args: Any, **kwargs: Any) -> Any:
                 return self.__call__(*args, **kwargs)
@@ -391,7 +428,14 @@ class LLMCallRecorder:
         total = len(records)
         successful = [r for r in records if r.success]
         failed = [r for r in records if not r.success]
-        planning = [r for r in records if r.role == "planning_patch"]
+        # The investigation substage (role ``plan_investigator``) is part
+        # of the planning pipeline; its calls must count toward
+        # ``planning_network_call_count`` so the truthfulness audit does
+        # not flag a canary that stops after Facts investigation as
+        # ``real_llm_not_verified``.
+        planning = [
+            r for r in records if r.role in ("planning_patch", "plan_investigator")
+        ]
         runtime_diag = [r for r in records if r.role == "runtime_diagnostician"]
         runtime_prop = [r for r in records if r.role == "runtime_patch_proposer"]
         runtime_sup = [r for r in records if r.role == "runtime_supervisor"]

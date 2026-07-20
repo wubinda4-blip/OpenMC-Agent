@@ -28,11 +28,21 @@ def _context() -> tuple[InvestigationContext, object]:
 
 def test_investigation_planner_retries_non_json_and_records_hash() -> None:
     context, registry = _context()
-    responses = iter(["not json", json.dumps({"actions": [], "summary": "repaired"})])
-    agent = InvestigationAgent(registry=registry, llm_client=lambda _prompt: next(responses))
+    plan_responses = iter(["not json", json.dumps({"actions": [], "summary": "repaired"})])
+
+    def llm(prompt: str) -> str:
+        if "Facts extraction agent" in prompt:
+            return json.dumps({"claims": []})
+        return next(plan_responses)
+
+    agent = InvestigationAgent(registry=registry, llm_client=llm)
     result = agent.run(context)
     assert result.completed
     assert not result.blocked
-    assert result.planner_calls == 2
+    # The plan transaction used 2 calls (initial + retry).
+    # The synthesis transaction may add more; we only assert the plan
+    # portion here.  planner_calls now includes synthesis calls, so we
+    # check it is at least 2.
+    assert result.planner_calls >= 2
     assert result.schema_retries == 1
     assert result.planner_input_payload_hash

@@ -40,10 +40,11 @@ from .semantic_coverage import compile_semantic_coverage
 from .errors import PlanInvestigationIssue
 from .evidence_ledger import (
     PlanningEvidenceLedger,
+    add_claim,
     get_claim_by_id,
 )
 from .hashing import content_hash, short_id
-from .models import EvidenceClaim, SourceKind
+from .models import EvidenceClaim, EvidenceCriticality, EvidenceSourceRef, EvidenceStatus, SourceKind
 from .source_index import SourceIndex
 from .tool_artifacts import (
     ToolCallLedger,
@@ -89,6 +90,23 @@ BLOCK_CODE_INVALID_LLM_OUTPUT = "planning.investigation_invalid_llm_output"
 BLOCK_CODE_UNKNOWN_TOOL = "planning.investigation_unknown_tool"
 BLOCK_CODE_ARGUMENT_INVALID = "planning.investigation_argument_invalid"
 MAX_PLANNER_CALLS = 2
+
+# Predicates the Facts synthesis step may emit.  These MUST match the
+# ``semantic_kind`` of the Facts coverage targets defined in
+# :func:`executor_injection._semantic_targets_for_feature_contract` so
+# that :func:`compile_semantic_coverage` can match the synthesised
+# claims to targets via ``predicate == target.semantic_kind``.
+ALLOWED_FACTS_SYNTHESIS_PREDICATES: frozenset[str] = frozenset(
+    {
+        "model_scope",
+        "assembly_count",
+        "fuel_variant",
+        "has_spacer_grids",
+        "localized_insert",
+        "core_lattice_size",
+        "assembly_type_counts",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +221,27 @@ class InvestigationPlan(AgentBaseModel):
             if not isinstance(action.arguments, dict):
                 raise ValueError("investigation action arguments must be an object")
         return self
+
+
+class FactsSynthesisClaim(AgentBaseModel):
+    """One LLM-proposed Facts semantic claim.
+
+    ``predicate`` MUST be one of :data:`ALLOWED_FACTS_SYNTHESIS_PREDICATES`.
+    ``source_span_ids`` MUST reference spans that exist in the
+    investigation's source indexes (registered during the tool-execution
+    phase).
+    """
+
+    predicate: str
+    value: str = ""
+    source_span_ids: list[str] = Field(default_factory=list)
+    subject: str = ""
+
+
+class FactsSynthesisOutput(AgentBaseModel):
+    """Parsed LLM output for the Facts synthesis step."""
+
+    claims: list[FactsSynthesisClaim] = Field(default_factory=list)
 
 
 class InvestigationResult(AgentBaseModel):
@@ -358,6 +397,20 @@ class InvestigationAgent:
         try:
             plan = self.plan(context)
         except PlanInvestigationIssue as issue:
+            diag_warnings = list(warnings)
+            details = issue.details or {}
+            if details.get("parse_errors"):
+                diag_warnings.append(
+                    f"investigation parse_errors: {details['parse_errors']}"
+                )
+            if details.get("schema_errors"):
+                diag_warnings.append(
+                    f"investigation schema_errors: {details['schema_errors']}"
+                )
+            if details.get("error_code"):
+                diag_warnings.append(
+                    f"investigation transaction error_code: {details['error_code']}"
+                )
             return self._block(
                 session_id=session_id,
                 context=context,
@@ -367,7 +420,7 @@ class InvestigationAgent:
                 tool_results=tool_results,
                 evidence_claim_ids=evidence_claim_ids,
                 usage=usage,
-                warnings=warnings,
+                warnings=diag_warnings,
                 semantic_coverage=coverage.to_dict(),
             )
 
@@ -450,22 +503,72 @@ class InvestigationAgent:
                 )
                 break
 
-        transaction = self.last_plan_transaction
+        # Save the plan transaction before the synthesis step, which
+        # overwrites ``self.last_plan_transaction`` with its own
+        # structured-output transaction.
+        plan_transaction = self.last_plan_transaction
+
+        # Phase 8C Step 2D: semantic synthesis for all patch types.
+        # After the tool loop, the deterministic tools have produced
+        # generic-predicate claims that do not match the semantic
+        # coverage targets.  The synthesis step asks the LLM to read
+        # the gathered evidence and propose typed claims with the right
+        # predicates (Facts) or referencing the right requirement_ids
+        # (Materials/Universes).
+        #
+        # The synthesis is an LLM call, not a tool call; it does NOT
+        # consume the ``max_tool_calls`` budget.  It runs even when the
+        # tool loop blocked on ``BLOCK_CODE_BUDGET_EXCEEDED``.
+        synthesis_call_count = 0
+        synthesis_eligible_block = blocked_code in (None, BLOCK_CODE_BUDGET_EXCEEDED)
+        if (
+            synthesis_eligible_block
+            and not coverage.coverage_complete
+        ):
+            evidence_claim_ids, synthesis_call_count = self._synthesize_facts_claims(
+                context=context,
+                tool_results=tool_results,
+                evidence_claim_ids=evidence_claim_ids,
+                warnings=warnings,
+            )
+            usage.evidence_claims = len(evidence_claim_ids)
+            coverage = compile_semantic_coverage(
+                context=context,
+                ledger=context.ledger,
+                evidence_claim_ids=evidence_claim_ids,
+            )
+            if coverage.coverage_complete and skipped_action_reason is None:
+                skipped_action_reason = "coverage_completed_by_synthesis"
+            # If the only blocker was budget exhaustion and the
+            # synthesis completed the coverage, clear the block so the
+            # investigation can succeed.
+            if (
+                blocked_code == BLOCK_CODE_BUDGET_EXCEEDED
+                and coverage.coverage_complete
+            ):
+                blocked_code = None
+                blocked_message = None
+
         structured_payload_hash_drift = bool(
-            transaction and transaction.error_code == "structured_output.payload_hash_mismatch"
+            plan_transaction
+            and plan_transaction.error_code == "structured_output.payload_hash_mismatch"
         )
         structured_unbudgeted_retry = bool(
-            transaction
-            and any(not attempt.budget_charged for attempt in transaction.attempts)
+            plan_transaction
+            and any(not attempt.budget_charged for attempt in plan_transaction.attempts)
         )
         structured_stale_output_reused = bool(
-            transaction
+            plan_transaction
             and any(
                 "stale_output_reused" in attempt.parse_errors
-                for attempt in transaction.attempts
+                for attempt in plan_transaction.attempts
             )
         )
         completed = blocked_code is None
+        total_planner_calls = (
+            (plan_transaction.call_count if plan_transaction else 0)
+            + synthesis_call_count
+        )
         return InvestigationResult(
             session_id=session_id,
             patch_type=context.patch_type,
@@ -480,9 +583,9 @@ class InvestigationAgent:
             budget=context.budget,
             budget_used=usage,
             warnings=tuple(warnings),
-            planner_calls=transaction.call_count if transaction else 0,
-            schema_retries=transaction.schema_retry_count if transaction else 0,
-            planner_input_payload_hash=transaction.input_payload_hash if transaction else "",
+            planner_calls=total_planner_calls,
+            schema_retries=plan_transaction.schema_retry_count if plan_transaction else 0,
+            planner_input_payload_hash=plan_transaction.input_payload_hash if plan_transaction else "",
             semantic_coverage=coverage.to_dict(),
             skipped_actions=tuple(skipped_actions),
             skipped_action_reason=skipped_action_reason,
@@ -513,9 +616,12 @@ class InvestigationAgent:
         def _repair(raw: str, error: str) -> StructuredOutputRepairPrompt:
             repair_prompt = (
                 f"{prompt}\n\n"
-                "The previous response failed the investigation action schema. "
-                "Return one JSON object with an actions array and optional summary. "
-                "Do not add prose or unknown top-level fields.\n"
+                "The previous response could not be accepted.  Either the "
+                "JSON did not match the investigation action schema, or one "
+                "of the actions referenced an unknown tool or invalid "
+                "arguments.  Return one JSON object with an actions array "
+                "and optional summary.  Use only the tools listed above and "
+                "respect each tool's input schema.\n"
                 f"Validation error: {error}\n"
                 f"Previous output: {raw[:4000]}"
             )
@@ -526,7 +632,35 @@ class InvestigationAgent:
 
         def _normalize(candidate: dict[str, Any]) -> dict[str, Any]:
             if isinstance(candidate, list):
-                return {"actions": candidate}
+                candidate = {"actions": candidate}
+            if not isinstance(candidate, dict):
+                return candidate
+            actions = candidate.get("actions")
+            if not isinstance(actions, list):
+                return candidate
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                tool_name = action.get("tool", "")
+                if not isinstance(tool_name, str) or not tool_name.strip():
+                    continue
+                arguments = action.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    raise ValueError(
+                        f"action for tool '{tool_name}' has non-object arguments"
+                    )
+                try:
+                    self.registry.get(tool_name)
+                except PlanInvestigationIssue as issue:
+                    raise ValueError(
+                        f"unknown tool '{tool_name}': {issue.message}"
+                    ) from issue
+                validation = self.registry.validate_arguments(tool_name, arguments)
+                if validation:
+                    messages = "; ".join(i.message for i in validation)
+                    raise ValueError(
+                        f"invalid arguments for tool '{tool_name}': {messages}"
+                    )
             return candidate
 
         planner_budget_used = [0]
@@ -693,6 +827,324 @@ class InvestigationAgent:
                 evidence_claim_ids.append(claim_id)
         usage.evidence_claims = len(evidence_claim_ids)
         return result
+
+    # ------------------------------------------------------------------
+    # Semantic synthesis (Phase 8C Step 2D)
+    # ------------------------------------------------------------------
+
+    def _synthesize_facts_claims(
+        self,
+        context: InvestigationContext,
+        tool_results: list[InvestigationToolResult],
+        evidence_claim_ids: list[str],
+        warnings: list[str],
+    ) -> tuple[list[str], int]:
+        """Synthesise semantic claims from tool evidence.
+
+        After the tool-execution loop, the deterministic tools produce
+        claims with generic predicates (``search_hit``,
+        ``scope_indicator_present``, …) that do not match the semantic
+        coverage targets.  This step asks the LLM to read the gathered
+        evidence and propose typed claims that satisfy the coverage
+        targets.
+
+        For ``patch_type="facts"`` the claims' ``predicate`` must match
+        a target's ``semantic_kind`` (e.g. ``model_scope``).
+
+        For Materials/Universes the claims must reference a target's
+        ``requirement_id`` (extracted from ``target_id``) in their
+        ``subject`` or ``value`` so that
+        :func:`compile_semantic_coverage` can match them via the
+        ``exact_requirement`` rule.
+
+        Returns ``(updated_claim_ids, synthesis_call_count)``.
+        """
+
+        # 1. Collect the available source spans registered during tool
+        #    execution.  The LLM may ONLY reference these span_ids.
+        available_spans = self._collect_available_spans(context)
+        if not available_spans:
+            warnings.append("semantic synthesis skipped: no source spans available")
+            return evidence_claim_ids, 0
+
+        # 2. Determine which targets are still uncovered.
+        coverage = compile_semantic_coverage(
+            context=context,
+            ledger=context.ledger,
+            evidence_claim_ids=evidence_claim_ids,
+        )
+        uncovered_targets = [
+            t for t in coverage.targets if not t.covered and t.required
+        ]
+        if not uncovered_targets:
+            return evidence_claim_ids, 0
+
+        # 3. Build the synthesis prompt (different for Facts vs. others).
+        is_facts = context.patch_type == "facts"
+        if is_facts:
+            uncovered_labels = sorted({t.semantic_kind for t in uncovered_targets})
+        else:
+            uncovered_labels = sorted({
+                t.target_id.split(":", 1)[-1] for t in uncovered_targets
+            })
+
+        prompt = self._build_semantic_synthesis_prompt(
+            context=context,
+            available_spans=available_spans,
+            uncovered_labels=uncovered_labels,
+            uncovered_targets=uncovered_targets,
+            is_facts=is_facts,
+        )
+        payload = {
+            "patch_type": context.patch_type,
+            "uncovered_labels": sorted(uncovered_labels),
+            "span_count": len(available_spans),
+            "is_facts": is_facts,
+        }
+
+        def _repair(raw: str, error: str) -> StructuredOutputRepairPrompt:
+            repair_prompt = (
+                f"{prompt}\n\n"
+                "The previous response could not be parsed.  Return ONE "
+                "JSON object with a 'claims' array.  Each claim must have "
+                "'predicate', 'value', 'source_span_ids', and 'subject'.\n"
+                f"Validation error: {error}\n"
+                f"Previous output: {raw[:4000]}"
+            )
+            return StructuredOutputRepairPrompt(
+                prompt=repair_prompt,
+                input_payload_hash=canonical_payload_hash(payload),
+            )
+
+        def _normalize(candidate: dict[str, Any]) -> dict[str, Any]:
+            if isinstance(candidate, list):
+                return {"claims": candidate}
+            return candidate
+
+        synthesis_budget_used = [0]
+
+        def _budget_ok() -> bool:
+            return synthesis_budget_used[0] < 2
+
+        def _charge() -> None:
+            synthesis_budget_used[0] += 1
+
+        def _call(client: Any, current_prompt: str) -> Any:
+            if hasattr(client, "generate_patch_json"):
+                return client.generate_patch_json(
+                    prompt=current_prompt,
+                    patch_type=f"{context.patch_type}_synthesis",
+                    json_schema=FactsSynthesisOutput.model_json_schema(),
+                )
+            return client(current_prompt)
+
+        transaction = run_structured_output_transaction(
+            client=self.llm_client,
+            initial_prompt=prompt,
+            retry_prompt_builder=_repair,
+            output_model=FactsSynthesisOutput,
+            call=_call,
+            payload=payload,
+            normalize_candidate=_normalize,
+            max_attempts=2,
+            allow_embedded_json=True,
+            allow_top_level_array=True,
+            budget_available=_budget_ok,
+            charge_budget=_charge,
+        )
+        call_count = transaction.call_count
+
+        if not transaction.ok or transaction.parsed_output is None:
+            warnings.append(
+                f"{context.patch_type} synthesis did not produce valid output; "
+                f"error_code={transaction.error_code}"
+            )
+            return evidence_claim_ids, call_count
+
+        # 4. Validate and commit each synthesised claim.
+        output = FactsSynthesisOutput.model_validate(transaction.parsed_output)
+        added = 0
+        for proposal in output.claims:
+            if is_facts:
+                if proposal.predicate not in ALLOWED_FACTS_SYNTHESIS_PREDICATES:
+                    warnings.append(
+                        f"synthesis rejected predicate '{proposal.predicate}': "
+                        "not in allowed Facts set"
+                    )
+                    continue
+                subject = proposal.subject or proposal.predicate
+            else:
+                # For Materials/Universes, the subject MUST contain a
+                # requirement_id so the coverage matcher can find it.
+                requirement_ids = uncovered_labels
+                if not any(rid in (proposal.subject or "") or rid in (proposal.value or "")
+                           for rid in requirement_ids):
+                    warnings.append(
+                        f"synthesis rejected claim: subject/value does not "
+                        f"reference any required id {requirement_ids[:5]}"
+                    )
+                    continue
+                subject = proposal.subject or proposal.predicate or context.patch_type
+
+            refs: list[EvidenceSourceRef] = []
+            for span_id in proposal.source_span_ids:
+                span_info = next(
+                    (s for s in available_spans if s["span_id"] == span_id),
+                    None,
+                )
+                if span_info is None:
+                    continue
+                refs.append(
+                    EvidenceSourceRef(
+                        source_id=span_info["source_id"],
+                        span_id=span_info["span_id"],
+                        excerpt_hash=span_info["excerpt_hash"],
+                    )
+                )
+            claim = EvidenceClaim(
+                claim_id="",
+                subject=subject,
+                predicate=proposal.predicate,
+                value=proposal.value,
+                status=EvidenceStatus.EXPLICIT,
+                criticality=EvidenceCriticality.INFORMATIONAL,
+                source_refs=tuple(refs),
+                metadata={"synthesised": f"{context.patch_type}_semantic_synthesis"},
+            )
+            try:
+                add_claim(
+                    context.ledger,
+                    claim,
+                    source_indexes=context.source_indexes,
+                )
+                if claim.claim_id not in evidence_claim_ids:
+                    evidence_claim_ids.append(claim.claim_id)
+                added += 1
+            except PlanInvestigationIssue as issue:
+                if issue.code != "plan_investigation.duplicate_claim":
+                    warnings.append(
+                        f"synthesis could not add claim "
+                        f"'{proposal.predicate}': {issue.message}"
+                    )
+        if added:
+            warnings.append(
+                f"{context.patch_type}_synthesis_added_{added}_claims"
+            )
+        return evidence_claim_ids, call_count
+
+    def _collect_available_spans(
+        self, context: InvestigationContext
+    ) -> list[dict[str, str]]:
+        """Collect all registered source spans across all source indexes."""
+
+        spans: list[dict[str, str]] = []
+        for source_index in context.source_indexes.values():
+            for span in getattr(source_index, "_registered_spans", {}).values():
+                spans.append(
+                    {
+                        "source_id": span.source_id,
+                        "span_id": span.span_id,
+                        "excerpt_hash": span.excerpt_hash,
+                        "start_line": str(getattr(span, "start_line", "")),
+                        "end_line": str(getattr(span, "end_line", "")),
+                    }
+                )
+        return spans
+
+    def _build_semantic_synthesis_prompt(
+        self,
+        *,
+        context: InvestigationContext,
+        available_spans: list[dict[str, str]],
+        uncovered_labels: list[str],
+        uncovered_targets: list[Any],
+        is_facts: bool,
+    ) -> str:
+        """Build the LLM prompt for semantic synthesis."""
+
+        if is_facts:
+            header = (
+                "You are a Facts extraction agent for an OpenMC model-building pipeline."
+            )
+            target_desc = (
+                "Required semantic targets (propose claims whose 'predicate' "
+                "matches one of these kinds):"
+            )
+            value_instruction = (
+                "- 'predicate' MUST be one of the listed target kinds.\n"
+                "- 'subject' should be a short identifier (e.g. 'model_scope')."
+            )
+        else:
+            header = (
+                f"You are a {context.patch_type.capitalize()} evidence extraction agent "
+                "for an OpenMC model-building pipeline."
+            )
+            target_desc = (
+                "Required target identifiers (each claim's 'subject' or 'value' "
+                "MUST contain one of these ids so the coverage matcher can find it):"
+            )
+            value_instruction = (
+                f"- 'subject' or 'value' MUST contain one of the target ids listed above.\n"
+                f"- 'predicate' can be any descriptive string (e.g. "
+                f"'{context.patch_type}.requirement_satisfied')."
+            )
+
+        sections: list[str] = [
+            header,
+            "",
+            "The investigation tools have gathered evidence from the requirement",
+            "document.  Your task is to read the evidence and propose typed claims",
+            "that satisfy the required coverage targets.",
+            "",
+            f"Target patch type: {context.patch_type}",
+            "",
+            target_desc,
+        ]
+        for label in sorted(set(uncovered_labels)):
+            description = _FACTS_PREDICATE_DESCRIPTIONS.get(label, "")
+            if description:
+                sections.append(f"  - {label}: {description}")
+            else:
+                sections.append(f"  - {label}")
+        sections.append("")
+        sections.append("Available source spans (reference by span_id only):")
+        for span in available_spans[:100]:
+            sections.append(
+                f"  - span_id={span['span_id']}  "
+                f"source={span['source_id']}  "
+                f"lines={span.get('start_line', '?')}-{span.get('end_line', '?')}"
+            )
+        if len(available_spans) > 100:
+            sections.append(f"  ... ({len(available_spans) - 100} more spans omitted)")
+        sections.append("")
+        sections.append("Requirement excerpt:")
+        sections.append(context.requirement_excerpt)
+        sections.append("")
+        sections.append(
+            "Return ONE JSON object:\n"
+            '{"claims": [{"predicate": "<kind or description>", "value": "<extracted value>", '
+            '"source_span_ids": ["<span_id>", ...], "subject": "<short id>"}]}'
+            "\n\nRules:"
+            "\n- source_span_ids MUST reference spans from the list above."
+            "\n- Propose ONLY claims directly supported by the evidence."
+            "\n- Omit a target if the evidence does not mention it."
+            f"\n{value_instruction}"
+        )
+        return "\n".join(sections)
+
+
+# Descriptions shown to the LLM for each Facts semantic kind.  These are
+# reactor-neutral: they describe the *semantic role* of each target
+# without biasing the value toward any specific reactor type.
+_FACTS_PREDICATE_DESCRIPTIONS: dict[str, str] = {
+    "model_scope": "What spatial scope does the model cover? (e.g. full_core, single_assembly, pin_cell)",
+    "assembly_count": "How many assemblies does the core contain, if a full-core scope is declared?",
+    "fuel_variant": "What distinct fuel variants / enrichment levels are specified?",
+    "has_spacer_grids": "Does the design include spacer grids? (true/false + count if stated)",
+    "localized_insert": "What localized inserts (burnable poison, control rods, instrumentation tubes) are specified?",
+    "core_lattice_size": "What is the core lattice layout size? (e.g. rows x columns)",
+    "assembly_type_counts": "How many of each assembly type are present in the core?",
+}
 
 
 def _resolve_baseline_policy(

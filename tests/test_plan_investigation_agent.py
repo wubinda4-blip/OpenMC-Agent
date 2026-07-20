@@ -8,10 +8,8 @@ from typing import Any
 import pytest
 
 from openmc_agent.plan_investigation.agent import (
-    BLOCK_CODE_ARGUMENT_INVALID,
     BLOCK_CODE_BUDGET_EXCEEDED,
     BLOCK_CODE_INVALID_LLM_OUTPUT,
-    BLOCK_CODE_UNKNOWN_TOOL,
     InvestigationAction,
     InvestigationAgent,
     InvestigationBudget,
@@ -87,15 +85,25 @@ def test_agent_blocks_on_natural_language_tool_call() -> None:
 
 
 def test_agent_blocks_on_unknown_tool() -> None:
+    """When the LLM keeps returning an unknown tool even after the repair
+    prompt, the transaction exhausts retries and the session blocks with
+    ``BLOCK_CODE_INVALID_LLM_OUTPUT`` (the argument/tool validation is now
+    handled inside the structured-output transaction's repair loop, not in
+    the main execution loop).
+    """
     idx, ld, reg, ctx = _ctx()
     fake = _llm_returning([{"tool": "shell_exec", "arguments": {"cmd": "rm -rf /"}}])
     agent = InvestigationAgent(registry=reg, llm_client=fake)
     res = agent.run(ctx)
     assert res.blocked
-    assert res.block_code == BLOCK_CODE_UNKNOWN_TOOL
+    assert res.block_code == BLOCK_CODE_INVALID_LLM_OUTPUT
 
 
 def test_agent_blocks_on_invalid_argument() -> None:
+    """When the LLM keeps returning invalid arguments even after the repair
+    prompt, the transaction exhausts retries and blocks with
+    ``BLOCK_CODE_INVALID_LLM_OUTPUT``.
+    """
     idx, ld, reg, ctx = _ctx()
     fake = _llm_returning(
         [{"tool": TOOL_NAME_SEARCH_SOURCE_INDEX, "arguments": {}}]  # missing required query
@@ -103,7 +111,139 @@ def test_agent_blocks_on_invalid_argument() -> None:
     agent = InvestigationAgent(registry=reg, llm_client=fake)
     res = agent.run(ctx)
     assert res.blocked
-    assert res.block_code == BLOCK_CODE_ARGUMENT_INVALID
+    assert res.block_code == BLOCK_CODE_INVALID_LLM_OUTPUT
+
+
+def test_agent_repairs_invalid_arguments_on_second_attempt() -> None:
+    """When the LLM returns invalid arguments on the first attempt but
+    valid arguments on the repair attempt, the investigation should
+    complete successfully (the ``_normalize`` validation error feeds
+    into the transaction's repair prompt and the LLM fixes the issue).
+    """
+
+    plan_call_count = [0]
+
+    def fake_llm(prompt: str) -> str:
+        if "Facts extraction agent" in prompt:
+            return json.dumps({"claims": []})
+        plan_call_count[0] += 1
+        if plan_call_count[0] == 1:
+            return json.dumps(
+                {"actions": [{"tool": TOOL_NAME_SEARCH_SOURCE_INDEX, "arguments": {}}]}
+            )
+        return json.dumps(
+            {
+                "actions": [
+                    {"tool": TOOL_NAME_SEARCH_SOURCE_INDEX, "arguments": {"query": "alpha"}}
+                ]
+            }
+        )
+
+    idx, ld, reg, ctx = _ctx("alpha\nbeta\n")
+    agent = InvestigationAgent(registry=reg, llm_client=fake_llm)
+    res = agent.run(ctx)
+    assert res.completed
+    assert not res.blocked
+    # The plan LLM was called twice (initial + repair).
+    assert plan_call_count[0] == 2
+
+
+def test_agent_repairs_unknown_tool_on_second_attempt() -> None:
+    """When the LLM returns an unknown tool on the first attempt but a
+    valid tool on the repair attempt, the investigation should complete.
+    """
+
+    plan_call_count = [0]
+
+    def fake_llm(prompt: str) -> str:
+        if "Facts extraction agent" in prompt:
+            return json.dumps({"claims": []})
+        plan_call_count[0] += 1
+        if plan_call_count[0] == 1:
+            return json.dumps(
+                {"actions": [{"tool": "shell_exec", "arguments": {"cmd": "ls"}}]}
+            )
+        return json.dumps(
+            {
+                "actions": [
+                    {"tool": TOOL_NAME_SEARCH_SOURCE_INDEX, "arguments": {"query": "alpha"}}
+                ]
+            }
+        )
+
+    idx, ld, reg, ctx = _ctx("alpha\nbeta\n")
+    agent = InvestigationAgent(registry=reg, llm_client=fake_llm)
+    res = agent.run(ctx)
+    assert res.completed
+    assert not res.blocked
+    assert plan_call_count[0] == 2
+
+
+def test_facts_synthesis_produces_semantic_claims() -> None:
+    """The Facts synthesis step should produce claims whose predicates
+    match the semantic coverage targets (model_scope, fuel_variant, …)
+    so that ``compile_semantic_coverage`` can mark targets as covered.
+    """
+
+    # Capture a real span_id from the baseline search so the synthesis
+    # output can reference it.
+    captured_span_ids: list[str] = []
+
+    def fake_llm(prompt: str) -> str:
+        if "Facts extraction agent" in prompt:
+            # Extract span_ids from the prompt (they are listed in the
+            # "Available source spans" section).
+            import re
+            span_ids = re.findall(r"span_id=(\S+)", prompt)
+            return json.dumps(
+                {
+                    "claims": [
+                        {
+                            "predicate": "model_scope",
+                            "value": "single_assembly",
+                            "source_span_ids": span_ids[:1] if span_ids else [],
+                            "subject": "model_scope",
+                        }
+                    ]
+                }
+            )
+        return json.dumps({"actions": []})
+
+    idx, ld, reg, ctx = _ctx("alpha core beta\n")
+    agent = InvestigationAgent(registry=reg, llm_client=fake_llm)
+    res = agent.run(ctx)
+    assert res.completed
+    assert not res.blocked
+    semantic_kinds = {
+        "model_scope",
+        "assembly_count",
+        "fuel_variant",
+        "has_spacer_grids",
+        "localized_insert",
+        "core_lattice_size",
+        "assembly_type_counts",
+    }
+    found_semantic = False
+    for claim in ld.claims.values():
+        if claim.predicate in semantic_kinds:
+            found_semantic = True
+            break
+    assert found_semantic, "synthesis did not produce any semantic-predicate claims"
+
+
+def test_facts_synthesis_skipped_when_no_spans() -> None:
+    """When the tool loop produces no source spans (e.g. empty plan),
+    the synthesis step is skipped gracefully without blocking.
+    """
+
+    def fake_llm(prompt: str) -> str:
+        return json.dumps({"actions": []})
+
+    idx, ld, reg, ctx = _ctx("alpha\nbeta\n")
+    agent = InvestigationAgent(registry=reg, llm_client=fake_llm)
+    res = agent.run(ctx)
+    assert res.completed
+    assert not res.blocked
 
 
 def test_agent_respects_max_tool_calls_budget() -> None:
