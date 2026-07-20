@@ -1,0 +1,206 @@
+"""Phase 8B Step 4B-1+ — Facts review path normalization and revision trigger tests.
+
+Covers:
+
+* ``affected_json_paths`` with ``facts_subset.`` prefix → normalized to ``/X``.
+* Bare field names → normalized to ``/X``.
+* Already-canonical ``/X`` paths → unchanged (idempotent).
+* ``/materials/...`` and ``/universes/...`` paths → still rejected (scope guard).
+* End-to-end: findings with bare paths are accepted after normalization.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+
+from openmc_agent.plan_builder.closed_loop.facts_evidence import build_facts_evidence_packs
+from openmc_agent.plan_builder.closed_loop.facts_reviewer import _normalize, run_facts_review
+from openmc_agent.plan_builder.closed_loop.models import (
+    FactsReviewModelOutput,
+    PlanClosedLoopPolicy,
+    PlanEvidencePack,
+    PlanGateId,
+    PlanFindingCategory,
+    PlanFindingSeverity,
+    SourceExcerpt,
+)
+from openmc_agent.plan_builder.state import PlanBuildState
+
+
+def _make_pack() -> PlanEvidencePack:
+    return PlanEvidencePack(
+        evidence_pack_id="test",
+        gate_id=PlanGateId.FACTS,
+        source_excerpts=[SourceExcerpt(source_id="s1", text="excerpt")],
+        relevant_patches={"facts": {"expected_pyrex_count": None}},
+    )
+
+
+def _make_draft_dict(
+    code: str = "TEST",
+    severity: str = "error",
+    paths: list[str] | None = None,
+    evidence_hash: str = "",
+    repairable: bool = True,
+    category: str = "source_coverage",
+) -> dict[str, Any]:
+    return {
+        "code": code,
+        "severity": severity,
+        "category": category,
+        "message": "test finding",
+        "evidence_hashes": [evidence_hash] if evidence_hash else [],
+        "affected_json_paths": paths or ["/expected_pyrex_count"],
+        "repairable_by_llm": repairable,
+        "requires_human": False,
+        "confidence": 0.9,
+    }
+
+
+def _make_output(drafts: list[dict[str, Any]]) -> FactsReviewModelOutput:
+    return FactsReviewModelOutput.model_validate({
+        "review_status": "complete_with_gaps",
+        "reviewed_evidence_hashes": [],
+        "coverage_summary": {},
+        "findings": drafts,
+    })
+
+
+class TestPathNormalization:
+    """Direct tests for the _normalize path prefix fix."""
+
+    def test_facts_subset_prefix_normalized(self):
+        """facts_subset.X → /X."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(code="P1", paths=["facts_subset.expected_pyrex_count"], evidence_hash=eh),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 1
+        assert findings[0].affected_json_paths == ["/expected_pyrex_count"]
+        assert rejected == []
+
+    def test_bare_field_normalized(self):
+        """Bare field name → /field."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(code="P2", paths=["expected_pyrex_count"], evidence_hash=eh),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 1
+        assert findings[0].affected_json_paths == ["/expected_pyrex_count"]
+
+    def test_already_slash_prefixed_unchanged(self):
+        """/X stays /X (idempotent)."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(code="P3", paths=["/expected_pyrex_count"], evidence_hash=eh),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 1
+        assert findings[0].affected_json_paths == ["/expected_pyrex_count"]
+
+    def test_materials_path_still_rejected(self):
+        """/materials/... paths are still rejected (scope guard)."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(code="P4", paths=["/materials/fuel"], evidence_hash=eh),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 0
+        assert any(r.get("code") == "facts_review.path_out_of_scope" for r in rejected)
+
+    def test_universes_path_still_rejected(self):
+        """/universes/... paths are still rejected (scope guard)."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(code="P5", paths=["/universes/cell_1"], evidence_hash=eh),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 0
+        assert any(r.get("code") == "facts_review.path_out_of_scope" for r in rejected)
+
+    def test_multiple_paths_normalized(self):
+        """Multiple paths in one finding are all normalized."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(
+                code="P6",
+                paths=["facts_subset.expected_pyrex_count", "expected_thimble_plug_count", "/expected_spacer_grid_count"],
+                evidence_hash=eh,
+            ),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 1
+        assert findings[0].affected_json_paths == [
+            "/expected_pyrex_count",
+            "/expected_thimble_plug_count",
+            "/expected_spacer_grid_count",
+        ]
+
+    def test_facts_subset_with_nested_path(self):
+        """facts_subset.fuel_variant_requirements.0.variant_id → /fuel_variant_requirements.0.variant_id."""
+        pack = _make_pack()
+        eh = pack.source_excerpts[0].evidence_hash
+        output = _make_output([
+            _make_draft_dict(
+                code="P7",
+                paths=["facts_subset.fuel_variant_requirements"],
+                evidence_hash=eh,
+            ),
+        ])
+        findings, rejected = _normalize(output, pack)
+        assert len(findings) == 1
+        assert findings[0].affected_json_paths == ["/fuel_variant_requirements"]
+
+
+class TestEndToEndPathNormalization:
+    """End-to-end: run_facts_review accepts findings with bare paths."""
+
+    def test_run_facts_review_accepts_facts_subset_paths(self):
+        """A finding with facts_subset. prefix should be accepted, not rejected."""
+        policy = PlanClosedLoopPolicy()
+        packs = build_facts_evidence_packs(
+            requirement_text="variant A\n",
+            facts_patch={"patch_type": "facts"},
+            confirmed_facts={},
+            planning_metadata={},
+            policy=policy,
+        )
+        evidence = packs[0].source_excerpts[0].evidence_hash
+        payload = json.dumps({
+            "review_status": "complete_with_gaps",
+            "reviewed_evidence_hashes": [evidence],
+            "coverage_summary": {},
+            "findings": [
+                {
+                    "code": "WARN_NULL",
+                    "severity": "warning",
+                    "category": "source_coverage",
+                    "message": "expected count is null",
+                    "evidence_hashes": [evidence],
+                    "affected_json_paths": ["facts_subset.expected_pyrex_count"],
+                    "repairable_by_llm": True,
+                    "requires_human": False,
+                    "confidence": 0.8,
+                },
+            ],
+        })
+        result = run_facts_review(
+            evidence_packs=packs,
+            reviewer_client=lambda _: payload,
+            state=PlanBuildState(state_id="s", requirement_text="r"),
+            policy=policy,
+        )
+        assert len(result.findings) == 1
+        assert result.findings[0].affected_json_paths == ["/expected_pyrex_count"]
+        assert result.coverage_complete  # warning-only, no error findings

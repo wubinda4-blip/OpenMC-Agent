@@ -2213,13 +2213,13 @@ def run_incremental_planning(
         ]
         all_findings = consistency_findings + contract_preflight_findings + evidence_consistency_findings + list(review.findings)
         record_findings(state, stage, all_findings)
-        if not review.ok or not review.coverage_complete:
-            state.add_event("planning.facts_review_failed", review.error or "facts_review.coverage_incomplete", {})
+        if not review.ok:
+            state.add_event("planning.facts_review_failed", review.error or review.failure_code or "facts_review.schema_invalid", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
-                return IncrementalExecutionIssue(code=review.failure_code or "facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
+                return IncrementalExecutionIssue(code=review.failure_code or "facts_review.schema_invalid", severity="error", message="facts review output was unusable", patch_type="facts")
         review_deterministic_issues = list(consistency.issues) + list(contract_preflight_issues) + [f.model_dump(mode="json") for f in evidence_consistency_findings if hasattr(f, "model_dump")] + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
-                                       if not review.ok or not review.coverage_complete else [])
+                                       if not review.coverage_complete else [])
         actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=all_findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
         action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED
         decision = PlanReviewDecision(

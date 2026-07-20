@@ -49,6 +49,15 @@ def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[
         if unknown:
             rejected.append({"code": "facts_review.unknown_evidence_hash", "finding_code": draft.code, "unknown": sorted(unknown)})
             continue
+        normalized_paths: list[str] = []
+        for p in draft.affected_json_paths:
+            if p.startswith("facts_subset."):
+                p = "/" + p[len("facts_subset."):]
+            elif not p.startswith("/"):
+                p = "/" + p
+            normalized_paths.append(p)
+        if normalized_paths != draft.affected_json_paths:
+            draft = draft.model_copy(update={"affected_json_paths": normalized_paths})
         if any(not path.startswith("/") or path.startswith("/materials") or path.startswith("/universes") for path in draft.affected_json_paths):
             rejected.append({"code": "facts_review.path_out_of_scope", "finding_code": draft.code})
             continue

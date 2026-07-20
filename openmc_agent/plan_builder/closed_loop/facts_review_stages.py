@@ -241,6 +241,9 @@ def build_stage_review_prompt(
         "Find omissions, contradictions, or unsupported values FOR THIS STAGE ONLY.\n"
         "Use only supplied evidence_hashes. Never output an action, patch, RFC6902 operations, "
         "Markdown, tools, or reasoning.\n"
+        "Each affected_json_paths entry MUST use JSON Pointer notation with a leading / "
+        "(e.g., /expected_spacer_grid_count, /assembly_count), not bare field names "
+        "or facts_subset. prefixes.\n"
         "Return exactly one JSON object matching this JSON Schema; no prose before or after it.\n"
         "SCHEMA:\n" + schema_json +
         "\nINPUT:\n" + payload_json
