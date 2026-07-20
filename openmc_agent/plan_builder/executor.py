@@ -3978,9 +3978,20 @@ def run_incremental_planning(
         # LARGE_PATCH_MAX_TOKENS; other patch types keep the provider default.
         # For thinking-mode providers (ds:), reasoning_effort is capped in the
         # client instead — see DSChatClient.adjust_payload.
-        # P0-LARGE-STRUCTURED-PATCH: for universes, use the fragmented pipeline
-        # which auto-decides monolithic vs fragmented based on estimated size.
-        if patch_type == "universes" and universes_generation_mode != "off":
+        # P0-LARGE-STRUCTURED-PATCH: for universes and materials, use the
+        # fragmented pipeline which auto-decides monolithic vs fragmented
+        # based on estimated size and truncation history.
+        if patch_type == "materials" and getattr(state, 'metadata', {}).get("planning_material_requirement_set"):
+            from .materials_patch_pipeline import generate_materials_patch
+            result = generate_materials_patch(
+                requirement=requirement,
+                state=state,
+                llm_client=llm_client,
+                mode="auto",
+                max_tokens=LARGE_PATCH_MAX_TOKENS.get(patch_type),
+                safe_output_ratio=large_patch_safe_output_ratio,
+            )
+        elif patch_type == "universes" and universes_generation_mode != "off":
             from .universe_patch_pipeline import generate_universes_patch
             result = generate_universes_patch(
                 requirement=requirement,
