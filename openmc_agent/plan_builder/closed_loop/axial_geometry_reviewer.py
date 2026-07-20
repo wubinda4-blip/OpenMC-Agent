@@ -88,7 +88,12 @@ def _normalize(output: AxialGeometryReviewModelOutput, pack: Any) -> tuple[list[
         from .models import SourceExcerpt
         for item in pack.evidence_items:
             if item.ref_id in draft.evidence_refs:
-                excerpts.append(SourceExcerpt(source_id=item.ref_id, text=str(item.value)[:500], evidence_hash=item.canonical_hash))
+                excerpts.append(SourceExcerpt(
+                    source_id=item.ref_id,
+                    source_path=getattr(item, "json_path", None),
+                    text=str(item.value)[:500],
+                    metadata={"evidence_item_canonical_hash": item.canonical_hash},
+                ))
         finding = PlanReviewFinding(
             gate_id=PlanGateId.AXIAL_GEOMETRY, code=draft.code, severity=draft.severity,
             category=draft.category, message=draft.message, source_evidence=excerpts,

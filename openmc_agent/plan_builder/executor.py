@@ -1016,6 +1016,18 @@ def _maybe_compile_geometry_inventory(
         state.metadata["planning_universe_requirement_set"] = ureq_set.model_dump(
             mode="json"
         )
+        from openmc_agent.plan_builder.requirement_skeletons import (
+            compile_material_requirement_skeleton,
+            compile_universe_requirement_skeleton,
+        )
+        material_skeleton = compile_material_requirement_skeleton(
+            inventory=inventory, accepted_facts=facts_patch, evidence_ledger=ledger,
+        )
+        universe_skeleton = compile_universe_requirement_skeleton(
+            inventory=inventory, accepted_facts=facts_patch, evidence_ledger=ledger,
+        )
+        state.metadata["planning_material_requirement_skeleton"] = material_skeleton.model_dump(mode="json")
+        state.metadata["planning_universe_requirement_skeleton"] = universe_skeleton.model_dump(mode="json")
         state.add_event(
             "planning.geometry_inventory_compiled",
             "geometry component inventory compiled",
@@ -1033,6 +1045,8 @@ def _maybe_compile_geometry_inventory(
                     "geometry_component_inventory.json",
                     inventory.model_dump(mode="json"),
                 )
+                artifact_writer._write("material_requirement_skeleton.json", material_skeleton)
+                artifact_writer._write("universe_requirement_skeleton.json", universe_skeleton)
             except Exception:
                 pass
         return {
@@ -1440,13 +1454,31 @@ def _inventory_planning_constraints_for_patch_type(
         ledger_hash = ledger_dump.get("ledger_hash", "") if isinstance(ledger_dump, dict) else ""
     except Exception:
         ledger_hash = ""
-    return build_inventory_constraints_for_patch_type(
+    constraints = build_inventory_constraints_for_patch_type(
         patch_type=patch_type,
         inventory_dump=inv_dump,
         material_requirement_set_dump=mreq_dump,
         universe_requirement_set_dump=ureq_dump,
         ledger_hash=ledger_hash,
     )
+    skeleton_key = (
+        "planning_material_requirement_skeleton"
+        if patch_type == "materials"
+        else "planning_universe_requirement_skeleton"
+    )
+    skeleton = state.metadata.get(skeleton_key) or {}
+    for requirement in skeleton.get("requirements", []) if isinstance(skeleton, dict) else []:
+        constraints.append({
+            "constraint_type": f"{patch_type}_requirement_skeleton",
+            "derivation_status": "deterministically_derived",
+            "requirement": requirement,
+            "immutable_fields": (
+                ["material_id", "role", "source_variant"]
+                if patch_type == "materials"
+                else ["universe_id", "component_kind", "geometry_profile", "source_requirement_ids"]
+            ),
+        })
+    return constraints
 
 
 def _inventory_evidence_payloads_for_patch_type(
@@ -2879,6 +2911,10 @@ def run_incremental_planning(
         )
         from .closed_loop.material_universe_preflight import run_material_universe_preflight
         from .closed_loop.material_universe_reviewer import run_material_universe_review
+        if getattr(policy, "material_universe_review_split", False):
+            from .closed_loop.material_universe_review_split import run_material_universe_review_split
+        else:
+            run_material_universe_review_split = None
 
         stage = _material_universe_stage()
         if stage is None:
@@ -2960,7 +2996,7 @@ def run_incremental_planning(
         # In advisory mode, run the critic if a reviewer is available; never mutate.
         if policy.mode is PlanLoopMode.ADVISORY:
             if plan_reviewer_client is not None:
-                review = run_material_universe_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+                review = (run_material_universe_review_split or run_material_universe_review)(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
                 state.facts_review_history.append({"material_universe_review": review.model_dump(mode="json")})
                 if review.coverage_complete and not review.failure_code:
                     transition_stage(stage, PlanStageStatus.REVIEWED)
@@ -2976,7 +3012,7 @@ def run_incremental_planning(
         # If deterministic preflight has no blocking issues and no reviewer, accept.
         all_findings: list[Any] = []
         if plan_reviewer_client is not None:
-            review = run_material_universe_review(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
+            review = (run_material_universe_review_split or run_material_universe_review)(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
             all_findings = list(review.findings)
             state.facts_review_history.append({"material_universe_review": review.model_dump(mode="json")})
             if review.failure_code and not review.coverage_complete:
@@ -2985,7 +3021,15 @@ def run_incremental_planning(
                 return IncrementalExecutionIssue(code="planning.material_universe_review_failed", severity="error", message=f"material-universe review failed: {review.failure_code}", patch_type="materials")
         # Combine deterministic + critic findings.
         from .closed_loop.models import PlanFindingSeverity as _Sev, PlanReviewFinding as _Finding
-        det_findings = [_Finding(gate_id=PlanGateId.MATERIAL_UNIVERSE, code=str(item["code"]), severity=_Sev(item.get("severity", "error")), category="cross_patch_mismatch", message=str(item.get("message", "")), confidence=1.0, affected_patch_types=[item.get("owner_patch_type", "materials")] if item.get("owner_patch_type") else ["materials", "universes"]) for item in preflight.issues]
+        det_findings = [_Finding(
+            gate_id=PlanGateId.MATERIAL_UNIVERSE,
+            code=str(item["code"]), severity=_Sev(item.get("severity", "error")),
+            category="cross_patch_mismatch", message=str(item.get("message", "")),
+            confidence=1.0,
+            affected_patch_types=[item.get("owner_patch_type", "materials")] if item.get("owner_patch_type") else ["materials", "universes"],
+            affected_json_paths=list(item.get("affected_json_paths", []) or []),
+            metadata={key: item[key] for key in ("required_ids", "requirement_id", "universe_id", "material_id") if key in item},
+        ) for item in preflight.issues]
         # Phase 8A Step 5: append inventory-driven preflight findings.
         inventory_det_findings = [_Finding(gate_id=PlanGateId.MATERIAL_UNIVERSE, code=str(item["code"]), severity=_Sev(item.get("severity", "error")), category="cross_patch_mismatch", message=str(item.get("message", "")), confidence=1.0, affected_patch_types=[item.get("owner_patch_type", "materials")] if item.get("owner_patch_type") else ["materials", "universes"]) for item in inventory_preflight_issues]
         det_findings = det_findings + inventory_det_findings
@@ -3043,7 +3087,15 @@ def run_incremental_planning(
         from .closed_loop.retry_models import RetryTriggerOrigin
         for finding in error_findings:
             typed = normalize_retry_request(
-                {"code": finding.code, "issue_codes": [finding.code], "required_ids": finding.metadata.get("required_ids", []), "reason": finding.message, "material_id": finding.metadata.get("material_id"), "universe_id": finding.metadata.get("universe_id")},
+                {
+                    "code": finding.code,
+                    "issue_codes": [finding.code],
+                    "required_ids": finding.metadata.get("required_ids", []),
+                    "affected_json_paths": finding.affected_json_paths,
+                    "reason": finding.message,
+                    "material_id": finding.metadata.get("material_id"),
+                    "universe_id": finding.metadata.get("universe_id"),
+                },
                 state=state, origin=RetryTriggerOrigin.MATERIAL_UNIVERSE_GATE,
             )
             if typed is not None:

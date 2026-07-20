@@ -1351,6 +1351,7 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     # Phase-4 Material-Universe Review Gate mode.  Independent of placement
     # so users can enable one without the other.
     material_universe_review_mode: Literal["off", "advisory", "controlled"] = "off"
+    material_universe_review_split: bool = False
     # Phase-5 Axial Geometry Review Gate mode.
     axial_geometry_review_mode: Literal["off", "advisory", "controlled"] = "off"
     # Phase-6 Final / Assembled Plan Review Gate mode.

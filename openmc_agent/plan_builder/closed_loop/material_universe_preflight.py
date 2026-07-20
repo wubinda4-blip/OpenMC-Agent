@@ -49,7 +49,9 @@ def _collect_materials_issues(materials_patch: Any, view: MaterialUniverseBindin
             continue
         seen_ids.add(mid)
         if material.density_g_cm3 is not None and material.density_g_cm3 <= 0:
-            issues.append(_issue("material_universe.material_density_invalid", f"material {mid} density <= 0", row_kind="source_material_coverage", row_key=mid, material_id=mid, density=material.density_g_cm3))
+                issues.append(_issue("material_universe.material_density_invalid", f"material {mid} density <= 0", row_kind="source_material_coverage", row_key=mid, material_id=mid, density=material.density_g_cm3))
+        if material.density_g_cm3 is None and material.role in {"fuel", "cladding", "coolant", "absorber", "poison", "structural"}:
+            issues.append(_issue("material_universe.material_density_missing", f"material {mid} has no density", row_kind="source_material_coverage", row_key=mid, material_id=mid))
         # Compound formula must not live in transport composition.
         if material.compound_components:
             for element, fraction in material.composition.items():
@@ -59,6 +61,10 @@ def _collect_materials_issues(materials_patch: Any, view: MaterialUniverseBindin
                     break
             if not material.composition_basis or material.composition_basis == "unknown":
                 issues.append(_issue("material_universe.compound_fraction_basis_missing", f"material {mid} has compound_components but no composition_basis", row_kind="source_material_coverage", row_key=mid, material_id=mid))
+            for component in material.compound_components:
+                isotope_policy = getattr(component, "isotope_policy", None)
+                if isotope_policy in {None, "requires_confirmation"}:
+                    issues.append(_issue("material_universe.compound_isotope_unresolved", f"material {mid} compound {component.formula} has unresolved isotope policy", row_kind="source_material_coverage", row_key=mid, material_id=mid, compound=component.formula))
         # Fissile isotope policy: fuel material with composition U235 but no explicit policy warning.
         if material.role == "fuel" and material.composition:
             u235 = material.composition.get("U235")
@@ -165,6 +171,77 @@ def _collect_fuel_variant_issues(view: MaterialUniverseBindingView) -> list[dict
     return issues
 
 
+def _collect_required_universe_issues(state: Any, universes_patch: Any, view: MaterialUniverseBindingView) -> list[dict[str, Any]]:
+    """Check source-declared insert universes and variant identity locally."""
+    issues: list[dict[str, Any]] = []
+    universe_by_id = {item.universe_id: item for item in universes_patch.universes}
+    facts_env = _valid(state, "facts")
+    facts = facts_env.content if facts_env is not None and isinstance(facts_env.content, dict) else {}
+    inventory = getattr(state, "metadata", {}).get("planning_geometry_inventory") or {}
+    protected_profiles = {
+        str(profile.get("profile_id"))
+        for profile in inventory.get("radial_profiles", [])
+        if profile.get("protected_through_path_roles")
+    }
+    for req in facts.get("localized_insert_requirements", []) or []:
+        req_id = str(req.get("requirement_id", ""))
+        expected = [str(item) for item in req.get("expected_insert_universe_ids", []) or []]
+        required_profile = str(req.get("required_profile_id", ""))
+        for uid in expected:
+            universe = universe_by_id.get(uid)
+            if universe is None:
+                issues.append(_issue(
+                    "material_universe.localized_insert_universe_missing",
+                    f"localized insert {req_id} requires missing universe {uid}",
+                    row_kind="required_universe_material_structure", row_key=uid,
+                    universe_id=uid, requirement_id=req_id, required_ids=[uid],
+                    affected_json_paths=[f"/universes/{uid}"],
+                ))
+                continue
+            if required_profile in protected_profiles and not any(bool(cell.protected_through_path) for cell in universe.cells):
+                issues.append(_issue("material_universe.protected_path_missing", f"localized insert universe {uid} has no protected through-path cell", row_kind="required_universe_material_structure", row_key=uid, universe_id=uid, requirement_id=req_id))
+    # A fuel Universe may carry one and only one variant.  Do this per
+    # universe, rather than comparing all active variants globally.
+    for universe in universes_patch.universes:
+        if universe.kind != "fuel_pin":
+            continue
+        variants = {str(universe.fuel_variant_id)} if getattr(universe, "fuel_variant_id", None) else set()
+        cell_variants = {str(cell.source_variant_id) for cell in universe.cells if getattr(cell, "source_variant_id", None)}
+        variants |= cell_variants
+        if len(variants) > 1:
+            issues.append(_issue("material_universe.fuel_variant_collapsed", f"fuel universe {universe.universe_id} contains multiple variants", row_kind="fuel_variant_identity", row_key=universe.universe_id, universe_id=universe.universe_id, variant_ids=sorted(variants)))
+    return issues
+
+
+def _collect_requirement_skeleton_issues(state: Any, materials_patch: Any, universes_patch: Any) -> list[dict[str, Any]]:
+    """Validate generated patches against the post-Facts typed skeletons."""
+    issues: list[dict[str, Any]] = []
+    material_data = getattr(state, "metadata", {}).get("planning_material_requirement_skeleton")
+    universe_data = getattr(state, "metadata", {}).get("planning_universe_requirement_skeleton")
+    if isinstance(material_data, dict):
+        materials = list(materials_patch.materials)
+        for req in material_data.get("requirements", []):
+            role = str(req.get("role", ""))
+            variant = req.get("source_variant")
+            matches = [m for m in materials if m.role == role and (not variant or m.source_variant_id == variant)]
+            if not matches:
+                issues.append(_issue("material_universe.material_requirement_missing", f"material requirement {req.get('requirement_id', '')} is not covered", row_kind="source_material_coverage", row_key=str(req.get("requirement_id", "")), requirement_id=req.get("requirement_id"), expected_role=role, expected_variant=variant))
+            elif req.get("required_density") is not None and matches[0].density_g_cm3 is None:
+                issues.append(_issue("material_universe.required_density_missing", f"material requirement {req.get('requirement_id', '')} lacks required density", row_kind="source_material_coverage", row_key=str(req.get("requirement_id", "")), requirement_id=req.get("requirement_id"), material_id=matches[0].material_id))
+    if isinstance(universe_data, dict):
+        universes = list(universes_patch.universes)
+        for req in universe_data.get("requirements", []):
+            profile = str(req.get("geometry_profile", ""))
+            matches = []
+            for universe in universes:
+                metadata = getattr(universe, "metadata", {}) or {}
+                if metadata.get("geometry_profile_id") == profile or profile in (metadata.get("source_requirement_ids") or []):
+                    matches.append(universe)
+            if not matches:
+                issues.append(_issue("material_universe.required_universe_missing", f"universe requirement {profile} is not covered", row_kind="required_universe_material_structure", row_key=profile, geometry_profile_id=profile, component_kind=req.get("component_kind")))
+    return issues
+
+
 def _collect_background_issues(view: MaterialUniverseBindingView) -> list[dict[str, Any]]:
     """Background cell presence for fuel/guide-tube universes."""
     issues: list[dict[str, Any]] = []
@@ -206,6 +283,8 @@ def run_material_universe_preflight(*, state: Any, policy: PlanClosedLoopPolicy,
         issues.extend(_collect_materials_issues(materials_parsed, view, species_report or {}))
         issues.extend(_collect_universes_issues(universes_parsed, view))
         issues.extend(_collect_fuel_variant_issues(view))
+        issues.extend(_collect_required_universe_issues(state, universes_parsed, view))
+        issues.extend(_collect_requirement_skeleton_issues(state, materials_parsed, universes_parsed))
         issues.extend(_collect_background_issues(view))
     # Deduplicate by (code, row_key).
     deduped: list[dict[str, Any]] = []
