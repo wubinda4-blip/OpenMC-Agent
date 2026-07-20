@@ -47,6 +47,12 @@ _WORKED_EXAMPLE = """{
 
 
 def build_facts_revision_prompt(*, facts_patch: dict, findings: list[dict], evidence: list[dict], allowed_paths: list[str], confirmed_facts: dict) -> str:
+    # Phase 8B Step 3: list the required coverage fields explicitly so the
+    # LLM does not omit them.  This is reactor-neutral — the fields are
+    # the same structural slots every FactsPatch must fill, regardless of
+    # reactor type.  Empty-but-required fields are flagged so the LLM
+    # knows it MUST provide operations for them.
+    required_fields = _required_coverage_fields_with_status(facts_patch)
     return (
         "You are the Facts Revision Agent. Your task is to produce a single JSON "
         "FactsRevisionProposal object containing a list of RFC6902 JSON Patch "
@@ -61,7 +67,11 @@ def build_facts_revision_prompt(*, facts_patch: dict, findings: list[dict], evid
         "confidence (float 0..1), rationale (string), operations (array of "
         "{op, path, value} objects), and resolved_finding_ids (array of "
         "strings, may be empty).\n\n"
-        "Worked example (placeholder values, NOT a real answer):\n"
+        "REQUIRED COVERAGE FIELDS — your operations MUST address every field "
+        "listed as MISSING or EMPTY below.  An incomplete repair that leaves "
+        "a required field empty will be rejected automatically.\n"
+        + json.dumps(required_fields, ensure_ascii=False)
+        + "\n\nWorked example (placeholder values, NOT a real answer):\n"
         + _WORKED_EXAMPLE
         + "\n\nThe target FactsPatch JSON schema is provided ONLY so you "
         "know which values are valid at each path (use EXACT enum string "
@@ -73,3 +83,37 @@ def build_facts_revision_prompt(*, facts_patch: dict, findings: list[dict], evid
         + json.dumps({"facts_patch": facts_patch, "findings": findings, "evidence": evidence,
                       "allowed_paths": allowed_paths, "confirmed_facts": confirmed_facts}, ensure_ascii=False)
     )
+
+
+# Fields that every FactsPatch must cover.  Reactor-neutral — these are
+# structural slots, not reactor-type-specific values.
+_REQUIRED_COVERAGE_FIELDS: tuple[str, ...] = (
+    "/model_scope",
+    "/assembly_count",
+    "/assembly_type_counts",
+    "/fuel_variant_requirements",
+    "/localized_insert_requirements",
+    "/has_spacer_grids",
+)
+
+
+def _required_coverage_fields_with_status(facts_patch: dict) -> list[dict]:
+    """Return per-field status so the LLM sees which fields are empty."""
+
+    statuses: list[dict] = []
+    for path in _REQUIRED_COVERAGE_FIELDS:
+        key = path.lstrip("/")
+        value = facts_patch.get(key)
+        is_empty = (
+            value is None
+            or value == ""
+            or value == []
+            or value == {}
+            or value == "unknown"
+        )
+        statuses.append({
+            "path": path,
+            "status": "MISSING" if is_empty else "present",
+            "current_value": value,
+        })
+    return statuses

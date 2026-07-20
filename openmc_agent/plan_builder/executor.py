@@ -2016,6 +2016,57 @@ def run_incremental_planning(
         state.metadata["resolved_planning_scope"] = consistency.scope.model_dump(mode="json")
         state.metadata["facts_consistency_issues"] = consistency.issues
         state.metadata["expected_patch_family"] = {"scope": consistency.scope.value, "required": "assembly_catalog+core_layout" if consistency.scope.value in {"multi_assembly_core", "full_core"} else "pin_map"}
+        # Phase 8B Step 3: deterministic evidence↔Facts consistency check.
+        # Compares evidence ledger claims against FactsPatch field values
+        # so the gate can catch scope/insert/grid/fuel conflicts without
+        # relying on the LLM reviewer.
+        from .closed_loop.facts_evidence_consistency import check_facts_evidence_consistency
+        evidence_ledger_dump = state.metadata.get("planning_evidence_ledger")
+        evidence_consistency_findings: list[PlanReviewFinding] = []
+        if evidence_ledger_dump:
+            try:
+                from openmc_agent.plan_investigation.evidence_ledger import PlanningEvidenceLedger
+                _ledger = PlanningEvidenceLedger.model_validate(evidence_ledger_dump)
+                _ev_result = check_facts_evidence_consistency(
+                    facts_patch=facts_env.content,
+                    evidence_claims=_ledger.claims,
+                )
+                state.metadata["facts_evidence_consistency"] = _ev_result.to_issue_dicts()
+                for f in _ev_result.findings:
+                    evidence_consistency_findings.append(
+                        PlanReviewFinding(
+                            gate_id=PlanGateId.FACTS,
+                            code=f.code,
+                            severity=PlanFindingSeverity.ERROR,
+                            category=PlanFindingCategory.CROSS_PATCH_MISMATCH,
+                            message=f.message,
+                            affected_patch_types=["facts"],
+                            affected_json_paths=[f.path] if f.path else [],
+                            repairable_by_llm=f.repairable_by_llm,
+                            requires_human=f.requires_human,
+                            confidence=1.0,
+                            metadata={
+                                "deterministic": True,
+                                "evidence_consistency": True,
+                                "evidence_claim_ids": list(f.evidence_claim_ids),
+                                "expected_value": f.expected_value,
+                                "actual_value": f.actual_value,
+                                "repair_kind": "evidence_backed_repair",
+                            },
+                        )
+                    )
+                if _ev_result.findings:
+                    state.add_event(
+                        "planning.facts_evidence_consistency_failed",
+                        "evidence↔Facts consistency check found issues",
+                        {"codes": [f.code for f in _ev_result.findings]},
+                    )
+            except Exception:
+                state.add_event(
+                    "planning.facts_evidence_consistency_error",
+                    "evidence↔Facts consistency check raised; skipping",
+                    {},
+                )
         for filename, payload in (
             ("facts_feature_contract.json", contract),
             ("planning_scope_evidence.json", {"evidence": consistency.scope.evidence}),
@@ -2128,14 +2179,14 @@ def run_incremental_planning(
             for item in contract_preflight_issues
             if item.get("severity") == "error"
         ]
-        all_findings = consistency_findings + contract_preflight_findings + list(review.findings)
+        all_findings = consistency_findings + contract_preflight_findings + evidence_consistency_findings + list(review.findings)
         record_findings(state, stage, all_findings)
         if not review.ok or not review.coverage_complete:
             state.add_event("planning.facts_review_failed", review.error or "facts_review.coverage_incomplete", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
                 return IncrementalExecutionIssue(code=review.failure_code or "facts_review.coverage_incomplete", severity="error", message="facts review output was unusable or incomplete", patch_type="facts")
-        review_deterministic_issues = list(consistency.issues) + list(contract_preflight_issues) + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
+        review_deterministic_issues = list(consistency.issues) + list(contract_preflight_issues) + [f.model_dump(mode="json") for f in evidence_consistency_findings if hasattr(f, "model_dump")] + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
                                        if not review.ok or not review.coverage_complete else [])
         actions = compute_allowed_actions(policy=policy, stage_state=stage, findings=all_findings, deterministic_issues=review_deterministic_issues, additional_llm_calls_used=state.plan_loop_additional_llm_calls)
         action = actions[0] if actions else PlanReviewAction.FAIL_CLOSED

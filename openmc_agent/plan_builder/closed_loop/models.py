@@ -1339,6 +1339,12 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     max_facts_review_chunks: int = 8
     max_facts_review_source_chars: int = 96000
     enable_facts_review_synthesis: bool = True
+    # Phase 8B Step 3: stage-split review.  When True, the Facts Gate
+    # replaces the monolithic per-pack review with per-topic stage calls
+    # (scope, fuel_variant, assembly_structure, localized_insert,
+    # grid_axial, completeness).  Each stage sees only its FactsPatch
+    # subset, reducing prompt size from ~38 KB to ~8–15 KB per call.
+    facts_review_stage_split: bool = False
     plan_human_mode: Literal["off", "ambiguity_only"] = "off"
     plan_gates: list[PlanGateId] = Field(default_factory=list)
     placement_review_mode: Literal["off", "advisory", "controlled"] = "off"

@@ -16,6 +16,57 @@ from openmc_agent.schemas import AgentBaseModel
 from .fingerprints import compute_candidate_hash
 from .models import FactsRevisionProposal, PlanReviewFinding
 
+__all__ = [
+    "FactsRevisionEvaluation",
+    "FactsDeterministicRepair",
+    "allowed_paths_for_findings",
+    "normalize_facts_revision",
+    "evaluate_facts_revision",
+    "targeted_facts_repair",
+    "run_clone_validation",
+    "check_facts_repair_completeness",
+    "REQUIRED_COVERAGE_PATHS",
+]
+
+
+# ---------------------------------------------------------------------------
+# Phase 8B Step 3: repair coverage completeness
+# ---------------------------------------------------------------------------
+
+# Fields that every FactsPatch MUST have non-empty after repair.
+# Reactor-neutral structural slots — same list used in the repair prompt.
+REQUIRED_COVERAGE_PATHS: tuple[str, ...] = (
+    "/model_scope",
+    "/assembly_count",
+    "/assembly_type_counts",
+    "/fuel_variant_requirements",
+    "/localized_insert_requirements",
+    "/has_spacer_grids",
+)
+
+
+def check_facts_repair_completeness(candidate: dict[str, Any]) -> list[str]:
+    """Return the list of required coverage paths still empty in ``candidate``.
+
+    An empty list means the candidate is complete.  Used by
+    :func:`evaluate_facts_revision` to reject repairs that leave required
+    fields empty (``planning.facts_repair_incomplete``).
+    """
+
+    missing: list[str] = []
+    for pointer in REQUIRED_COVERAGE_PATHS:
+        key = pointer.lstrip("/")
+        value = candidate.get(key)
+        if (
+            value is None
+            or value == ""
+            or value == []
+            or value == {}
+            or value == "unknown"
+        ):
+            missing.append(pointer)
+    return missing
+
 
 class FactsRevisionEvaluation(AgentBaseModel):
     accepted: bool = False
@@ -168,6 +219,13 @@ def evaluate_facts_revision(*, facts_patch: dict[str, Any], proposal: FactsRevis
     for path, value in _confirmed_records(confirmed_facts):
         if _pointer_value(candidate, path) != value:
             return FactsRevisionEvaluation(candidate_hash=candidate_hash, reasons=["facts_revision.confirmed_fact_changed"])
+    # Phase 8B Step 3: enforce required coverage field completeness.
+    missing = check_facts_repair_completeness(candidate)
+    if missing:
+        return FactsRevisionEvaluation(
+            candidate_hash=candidate_hash,
+            reasons=[f"facts_revision.incomplete_coverage: {', '.join(missing)}"],
+        )
     return FactsRevisionEvaluation(accepted=True, candidate=candidate, candidate_hash=candidate_hash)
 
 

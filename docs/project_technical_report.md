@@ -6,6 +6,7 @@
 
 ### 2026-07-20
 
+- **Phase 8B Step 3 Facts Gate Stabilization**：新增 `facts_evidence_consistency.py` 确定性 evidence↔FactsPatch 一致性检查（scope/fuel_variant/localized_insert/spacer_grid 冲突不交 LLM）；拆分 Facts Reviewer 为 6 typed stages（SCOPE/FUEL_VARIANT/ASSEMBLY_STRUCTURE/LOCALIZED_INSERT/GRID_AXIAL/COMPLETENESS），每 stage 只看相关 FactsPatch 子集，prompt 从 ~38KB 降至 ~8–15KB；repair prompt 增加 REQUIRED COVERAGE FIELDS 强制覆盖，repair candidate 缺字段直接 `facts_revision.incomplete_coverage` block；reviewer 空响应→`facts.reviewer_empty_response`、自由文本 approve→`facts.reviewer_free_text_approve`。21 新测试。3393 passed / 2 skipped；benchmark 21/21。
 - **Phase 8C Step 2D real-canary closure**：修复 investigator recorder bypass（`_PromptOnlyWrapper` 未拦截 `generate_patch_json`→虚假 `real_llm_not_verified`）；将 tool/argument 验证整合进 structured-output transaction 的 `_normalize`，消除 `argument_invalid` 立即阻塞；`planning_network_call_count` 计入 `plan_investigator` role；新增 Facts 语义合成步骤（LLM 从工具证据合成 `model_scope`/`fuel_variant` 等谓词 claims，闭合 coverage gap）。GLM-5.2 真实 canary 验证：truth_violations 清空、Facts investigation 完成（6 claims 合成、coverage_complete=True）、Facts patch 生成有效、Facts Gate 可 ACCEPTED。3372 passed / 2 skipped；benchmark 21/21。
 
 ### 2026-07-19
