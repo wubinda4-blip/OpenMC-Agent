@@ -4,7 +4,7 @@
 
 The deterministic structured-output closure is implemented. Step 2D is **not
 declared complete** because the real VERA4 canary was rejected before execution
-by the tenant external-data transfer policy, even after two explicit
+by the tenant external-data transfer policy, even after three explicit
 authorizations.
 
 ## Delivered
@@ -34,6 +34,6 @@ authorizations.
 
 ## Canary boundary
 
-Both authorized attempts used a 40-minute campaign/wall budget and MU-gate
+All three authorized attempts used a 40-minute campaign/wall budget and MU-gate
 stop, but the platform rejected the external DeepSeek transfer before any
 workspace content was sent. No real-model acceptance claim is made.

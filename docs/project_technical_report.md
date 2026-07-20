@@ -552,6 +552,6 @@ runtime repair, or monolithic fallback path was introduced.
 - Validation: full non-OpenMC/non-LLM suite 3365 passed, 2 skipped, 392
   deselected; compileall passed; fake workflow 21/21; offline VERA4 mutations
   6/6. No baseline report is present.
-- Canary boundary: both authorized 40-minute VERA4 attempts were rejected before
+- Canary boundary: all three authorized 40-minute VERA4 attempts were rejected before
   execution by the tenant external-data transfer policy. Step 2D is not declared
   complete and no real-model acceptance claim is made.
