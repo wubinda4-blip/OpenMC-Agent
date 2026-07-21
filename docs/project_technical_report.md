@@ -592,6 +592,7 @@ runtime repair, or monolithic fallback path was introduced.
   missing_facts, assumptions, or source_notes as append-only metadata repairs,
   with auditable original reviewer flags. This records uncertainty; it never
   authorizes inferred physical values or changes mixed-path findings.
-- The executor no longer carries a divergent rereview-only override. Validation
-  covers initial action selection, closure, pointer descendants, and mixed-path
-  fail-closed behavior.
+- The executor no longer carries a divergent rereview-only override. Validation:
+  focused Facts regressions 21 passed; full non-OpenMC/non-LLM suite and
+  compileall passed; fake workflow benchmark 21/21. Baseline diff is unavailable
+  because no baseline report is present.
