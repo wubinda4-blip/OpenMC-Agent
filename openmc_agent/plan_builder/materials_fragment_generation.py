@@ -383,6 +383,50 @@ def should_fragment_materials(
 
 
 # ---------------------------------------------------------------------------
+# Enum synonym normalization (pre-qualification)
+# ---------------------------------------------------------------------------
+
+_ENUM_SYNONYMS: dict[str, dict[str, str]] = {
+    "composition_basis": {
+        "mass_frac": "weight_frac",
+        "mass_fraction": "weight_frac",
+        "weight_fraction": "weight_frac",
+        "weight_percent": "weight_frac",
+        "atom_fraction": "atom_frac",
+        "atomic_fraction": "atom_frac",
+        "atom_percent": "atom_frac",
+        "atoms": "atom_frac",
+    },
+    "composition_status": {
+        "library": "needs_library",
+        "from_library": "needs_library",
+        "derived": "derived_from_mixture",
+        "mixture": "derived_from_mixture",
+        "unknown": "needs_confirmation",
+        "unconfirmed": "needs_confirmation",
+        "assumed": "approximate",
+    },
+    "density_status": {
+        "given": "confirmed",
+        "from_source": "source_provided",
+        "estimated": "approximate",
+        "unknown": "needs_confirmation",
+    },
+}
+
+
+def _normalize_material_enum_synonyms(mat_data: dict[str, Any]) -> dict[str, Any]:
+    """Map common LLM enum synonyms to valid Pydantic literal values."""
+    for field, mapping in _ENUM_SYNONYMS.items():
+        val = mat_data.get(field)
+        if isinstance(val, str):
+            normalized = mapping.get(val.strip().lower())
+            if normalized:
+                mat_data[field] = normalized
+    return mat_data
+
+
+# ---------------------------------------------------------------------------
 # Fragment qualification (deterministic)
 # ---------------------------------------------------------------------------
 
@@ -462,6 +506,9 @@ def qualify_material_fragment(
             return MaterialFragmentQualificationResult(
                 ok=False, material_id=frag_mid, issues=issues,
                 qualification_attempt=attempt_index)
+
+    # 3b. Normalize common LLM enum synonyms before schema validation.
+    mat_data = _normalize_material_enum_synonyms(mat_data)
 
     # 4. Schema validation via authoritative MaterialsPatch.
     try:
