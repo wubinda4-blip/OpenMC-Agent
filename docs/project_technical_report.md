@@ -4,7 +4,9 @@
 
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
 
-### 2026-07-21
+### 2026-07-22
+
+- **Phase 8C Step 2F-1 Inventory-First Universe Contract Closure — MU Gate REACHED**：在真实 GLM-5.2 VERA4 canary v9 中首次到达 Material-Universe Gate。核心改动：controlled 模式下 universes 只消费 `InventoryUniverseRequirementSet`（不再 emit `implicit:*`），增加 material-role preflight（`unavailable_material_role` blocker 在 LLM 调用前阻塞不可满足合同），fragment prompt 含 role→material_id binding，第二次尝试用 schema-repair prompt。Canary v9 (`c876abd`)：Facts accepted、Materials **6/6**、Universes **5/5**（全部 first-attempt，0 failure）、34 LLM calls、~58min。MU Gate review_failed（15 findings，2 repair attempts，预期迭代闭合）。同时修复 latent bug：`_maybe_execute_research_for_gate` 缺 `PlanStageStatus` import（v7 触发）。18 new tests；3565 passed / 2 skipped；compileall clean；benchmark 21/21。
 
 - **Phase 8C Step 2F Facts→MU Canary（4 轮迭代修复）**：在真实 GLM-5.2 VERA4 canary 中验证 Facts→Materials→Universes 全链路。经过 6 次 canary 迭代发现并修复 4 个 P0/P1 问题：(1) materials fragment pipeline 使用 bare `json.loads` 无法处理 markdown fence / CoT — 加 `parse_llm_patch_json` fallback；(2) fragment prompt 未列有效 enum 值，LLM 返回 `mass_frac` 而非 `weight_frac` — 加显式 enum 约束；(3) Facts rereviewer 将 `/missing_facts` finding 标为 `repairable_by_llm=False` — 对 soft metadata fields 覆盖该分类；(4) LLM 对 structural material 返回 `composition_status='library'` 等 synonym — 加 `_normalize_material_enum_synonyms` 预处理。最终结果（canary v6, `0d4c1ed`）：Facts accepted、Materials **6/6** accepted、Universes **8/9** accepted（失败: `implicit_gas_gap` parse+qualification）、MU gate 未到达、0 truth violations、23 LLM calls、60.3min。Universe `implicit_gas_gap` fragment 是 LLM 难以生成的 implicit geometry element。3547 passed / 2 skipped；compileall clean；benchmark 21/21。
 
