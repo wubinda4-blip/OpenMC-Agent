@@ -997,6 +997,31 @@ def generate_universes_patch(
             }],
         )
 
+    # Stamp inventory metadata onto each generated universe so downstream
+    # preflights can resolve geometry_profile_id and source_requirement_ids.
+    # Without this, MU/inventory preflights cannot match universes to
+    # inventory profiles (root cause of v9's 10 false-positive findings).
+    manifest_by_uid = {item.universe_id: item for item in manifest.items}
+    for universe in merge_result.merged_patch.get("universes", []):
+        uid = universe.get("universe_id", "")
+        m_item = manifest_by_uid.get(uid)
+        if m_item is None:
+            continue
+        u_meta = dict(universe.get("metadata") or {})
+        if m_item.base_path_component_profile_id:
+            u_meta["geometry_profile_id"] = m_item.base_path_component_profile_id
+        if m_item.source_requirement_ids:
+            u_meta["source_requirement_ids"] = list(m_item.source_requirement_ids)
+        for mk in ("component_kind", "profile_kind", "fuel_variant_id"):
+            if mk in m_item.metadata:
+                u_meta[mk] = m_item.metadata[mk]
+        if m_item.fuel_variant_id:
+            u_meta["fuel_variant_id"] = m_item.fuel_variant_id
+        if m_item.localized_insert_requirement_id:
+            u_meta["localized_insert_requirement_id"] = m_item.localized_insert_requirement_id
+        if u_meta:
+            universe["metadata"] = u_meta
+
     # Create the authoritative PlanPatchEnvelope.
     import hashlib
     patch_hash = (

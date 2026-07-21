@@ -367,6 +367,7 @@ class UniverseSpecPatch(_PatchBase):
     cells: list[CellLayerPatch]
     source_note: str | None = None
     assumptions: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class UniversesPatch(_PatchBase):

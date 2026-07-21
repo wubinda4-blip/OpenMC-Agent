@@ -225,14 +225,22 @@ def validate_materials_against_requirement_set(
     elif isinstance(materials_patch, dict):
         materials_list = list(materials_patch.get("materials", []) or [])
 
-    material_ids = {getattr(m, "material_id", "") for m in materials_list}
-    material_ids.discard("")
+    material_ids: set[str] = set()
+    for m in materials_list:
+        mid = m.get("material_id", "") if isinstance(m, dict) else getattr(m, "material_id", "")
+        if mid:
+            material_ids.add(mid)
     materials_by_role: dict[str, list[str]] = {}
     for m in materials_list:
-        role = getattr(m, "role", "") or ""
+        if isinstance(m, dict):
+            role = m.get("role", "") or ""
+            mid = m.get("material_id", "")
+        else:
+            role = getattr(m, "role", "") or ""
+            mid = getattr(m, "material_id", "")
         if not role:
             continue
-        materials_by_role.setdefault(role, []).append(getattr(m, "material_id", ""))
+        materials_by_role.setdefault(role, []).append(mid)
 
     covered: list[str] = []
     uncovered: list[str] = []

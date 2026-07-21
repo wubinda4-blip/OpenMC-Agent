@@ -39,6 +39,16 @@ def _issue(code: str, message: str, *, severity: str = "error", row_kind: str = 
     return payload
 
 
+def _universe_metadata(universe: Any) -> dict[str, Any]:
+    """Extract metadata dict from a universe (handles both model and dict)."""
+    if isinstance(universe, dict):
+        return universe.get("metadata") or {}
+    meta = getattr(universe, "metadata", None)
+    if isinstance(meta, dict):
+        return meta
+    return {}
+
+
 def _collect_materials_issues(materials_patch: Any, view: MaterialUniverseBindingView, species_report: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -227,6 +237,16 @@ def _collect_required_universe_issues(state: Any, universes_patch: Any, view: Ma
         for u in kind_matched_universes:
             aggregate_cell_roles |= universe_cell_roles.get(u.universe_id, set())
 
+        # Profile-based fallback: if any universe was generated from an
+        # inventory profile bound to this localized insert requirement,
+        # consider all expected IDs covered.  The universe carries
+        # metadata.localized_insert_requirement_id (stamped by the
+        # fragmented pipeline from the manifest item).
+        profile_covered = any(
+            _universe_metadata(u).get("localized_insert_requirement_id") == req_id
+            for u in universes_patch.universes
+        )
+
         for uid in expected:
             universe = universe_by_id.get(uid)
             if universe is not None:
@@ -236,11 +256,12 @@ def _collect_required_universe_issues(state: Any, universes_patch: Any, view: Ma
                 continue
             # Exact ID not found — check segment-role coverage as fallback.
             if required_segment_roles and required_segment_roles.issubset(aggregate_cell_roles):
-                # The required segment roles are covered by some universe
-                # of the matching kind, even though the ID differs.  This
-                # is a naming mismatch, not a missing universe.
                 continue
-            # Neither exact ID nor role coverage — report missing.
+            # Profile-based fallback: the universe was generated from an
+            # inventory profile bound to this insert requirement.
+            if profile_covered:
+                continue
+            # Neither exact ID, role coverage, nor profile binding — report missing.
             issues.append(_issue(
                 "material_universe.localized_insert_universe_missing",
                 f"localized insert {req_id} requires missing universe {uid}",
@@ -282,8 +303,8 @@ def _collect_requirement_skeleton_issues(state: Any, materials_patch: Any, unive
             profile = str(req.get("geometry_profile", ""))
             matches = []
             for universe in universes:
-                metadata = getattr(universe, "metadata", {}) or {}
-                if metadata.get("geometry_profile_id") == profile or profile in (metadata.get("source_requirement_ids") or []):
+                u_meta = _universe_metadata(universe)
+                if u_meta.get("geometry_profile_id") == profile or profile in (u_meta.get("source_requirement_ids") or []):
                     matches.append(universe)
             if not matches:
                 issues.append(_issue("material_universe.required_universe_missing", f"universe requirement {profile} is not covered", row_kind="required_universe_material_structure", row_key=profile, geometry_profile_id=profile, component_kind=req.get("component_kind")))
