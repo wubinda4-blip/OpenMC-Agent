@@ -3132,6 +3132,32 @@ def run_incremental_planning(
             artifact_writer=artifact_writer,
             controlled_mode=(policy.mode is PlanLoopMode.CONTROLLED),
         )
+        # Deterministic contract blocking: when the preflight has
+        # blocking errors (material-reference, profile-coverage, variant,
+        # localized-insert), skip the reviewer and block immediately.
+        # This avoids wasting LLM calls on inputs that cannot pass review
+        # and prevents the review_failed→review_failed transition error.
+        _blocking_preflight = [i for i in preflight.issues if i.get("severity") == "error"]
+        if _blocking_preflight and policy.mode is PlanLoopMode.CONTROLLED:
+            transition_stage(stage, PlanStageStatus.BLOCKED)
+            state.add_event(
+                "planning.material_universe_contract_preflight_failed",
+                "material-universe gate blocked by deterministic preflight errors",
+                {
+                    "blocking_error_count": len(_blocking_preflight),
+                    "error_codes": sorted({i.get("code", "?") for i in _blocking_preflight}),
+                },
+            )
+            return IncrementalExecutionIssue(
+                code="planning.material_universe.contract_preflight_failed",
+                severity="error",
+                message=(
+                    f"material-universe deterministic preflight found "
+                    f"{len(_blocking_preflight)} blocking errors; "
+                    f"codes: {sorted({i.get('code', '?') for i in _blocking_preflight})}"
+                ),
+                patch_type="materials",
+            )
         # Build evidence pack (needed for review even in advisory).
         pack = build_material_universe_evidence_pack(state=state, policy=policy, species_report=species_report, deterministic_issues=preflight.issues)
         artifact_writer._write("material_universe_evidence_pack.json", pack)
