@@ -2548,6 +2548,17 @@ def run_incremental_planning(
                 if not remaining:
                     closure_failure_code = "planning.facts_revision.incomplete_closure"
                     break
+                # Findings whose affected_json_paths point only to soft metadata
+                # fields (/missing_facts, /assumptions, /source_notes) are always
+                # LLM-repairable: the revision can add/append to these fields
+                # without human judgment. Override the reviewer's classification
+                # so an overly conservative repairable_by_llm=False does not
+                # block the gate on a metadata-only finding.
+                _SOFT_FACTS_PATHS = {"/missing_facts", "/assumptions", "/source_notes"}
+                for item in remaining:
+                    paths = set(getattr(item, "affected_json_paths", []) or [])
+                    if paths and paths.issubset(_SOFT_FACTS_PATHS) and not item.requires_human:
+                        item.repairable_by_llm = True
                 if any(item.requires_human or not item.repairable_by_llm for item in remaining):
                     closure_failure_code = "planning.facts_revision.unresolved_requires_human"
                     break
