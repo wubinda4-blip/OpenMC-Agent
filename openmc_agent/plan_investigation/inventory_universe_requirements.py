@@ -146,6 +146,12 @@ def extract_universe_requirements_from_inventory(
             for pid in req.required_by_profile_ids:
                 profile_to_roles.setdefault(pid, []).append(req.role)
 
+    # Build a lookup: profile_id → localized_insert_requirement_id so
+    # each universe requirement knows which insert it belongs to.
+    profile_to_insert: dict[str, str] = {}
+    for binding in inventory.localized_insert_profiles:
+        profile_to_insert[binding.profile_id] = binding.insert_requirement_id
+
     for profile in inventory.radial_profiles:
         roles = profile_to_roles.get(profile.profile_id, list(profile.required_material_roles))
         cell_roles = list(profile.required_cell_roles)
@@ -162,6 +168,7 @@ def extract_universe_requirements_from_inventory(
             profile_kind=profile.profile_kind,
             component_kind=profile.component_kind,
             fuel_variant_id=profile.fuel_variant_id,
+            localized_insert_requirement_id=profile_to_insert.get(profile.profile_id),
             required_cell_roles=tuple(cell_roles),
             required_material_roles=tuple(roles),
             protected_through_path_roles=tuple(profile.protected_through_path_roles),
