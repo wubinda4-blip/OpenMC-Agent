@@ -311,15 +311,19 @@ def _generate_and_qualify_one_fragment(
     try:
         candidate = json.loads(raw_text)
     except Exception:
+        from .patch_generator import parse_llm_patch_json
         try:
-            from .patch_generator import _looks_truncated
-            if _looks_truncated(raw_text):
-                prior_failures.append("json_truncated")
-            else:
-                prior_failures.append(f"json_parse_error")
+            candidate = parse_llm_patch_json(raw_text, "materials")
         except Exception:
-            prior_failures.append("json_parse_error")
-        return None, None, outcome
+            try:
+                from .patch_generator import _looks_truncated
+                if _looks_truncated(raw_text):
+                    prior_failures.append("json_truncated")
+                else:
+                    prior_failures.append("json_parse_error")
+            except Exception:
+                prior_failures.append("json_parse_error")
+            return None, None, outcome
 
     qualification = qualify_material_fragment(
         raw_fragment=candidate,

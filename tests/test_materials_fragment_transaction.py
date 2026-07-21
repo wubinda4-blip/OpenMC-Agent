@@ -619,3 +619,50 @@ class TestGenerateMaterialsPatchIntegration:
         )
         assert result.ok
         assert result.parsed_patch["materials"][0]["source_variant_id"] == "region_1"
+
+    def test_markdown_fenced_json_extracted(self):
+        """LLM response wrapped in markdown fences should still parse."""
+        from openmc_agent.plan_builder.materials_patch_pipeline import generate_materials_patch
+        from openmc_agent.plan_builder.patch_generator import FakePatchLLM
+
+        rs = _make_requirement_set([_make_requirement("m1", "fuel", "v1")])
+        manifest = build_material_manifest(rs)
+        mid = manifest.generation_order[0]
+        item = manifest.item_by_id(mid)
+        mat = _make_material_data(mid=mid, role="fuel", variant="v1")
+
+        fenced = "```json\n" + json.dumps({"patch_type": "materials", "materials": [mat]}) + "\n```"
+        llm = FakePatchLLM([fenced])
+        state = PlanBuildState(state_id="s", requirement_text="test")
+        state.metadata["planning_material_requirement_set"] = rs.model_dump(mode="json")
+
+        result = generate_materials_patch(
+            requirement="test", state=state, llm_client=llm,
+            mode="fragmented", max_fragment_attempts=1,
+        )
+        assert result.ok
+        assert len(result.parsed_patch["materials"]) == 1
+
+    def test_cot_prose_before_json_extracted(self):
+        """LLM response with chain-of-thought before JSON should still parse."""
+        from openmc_agent.plan_builder.materials_patch_pipeline import generate_materials_patch
+        from openmc_agent.plan_builder.patch_generator import FakePatchLLM
+
+        rs = _make_requirement_set([_make_requirement("m1", "fuel", "v1")])
+        manifest = build_material_manifest(rs)
+        mid = manifest.generation_order[0]
+        item = manifest.item_by_id(mid)
+        mat = _make_material_data(mid=mid, role="fuel", variant="v1")
+
+        json_str = json.dumps({"patch_type": "materials", "materials": [mat]})
+        cot = "Let me analyze the fuel composition for this variant.\nThe material should be UO2 with 3.5 wt% enrichment.\n" + json_str
+        llm = FakePatchLLM([cot])
+        state = PlanBuildState(state_id="s", requirement_text="test")
+        state.metadata["planning_material_requirement_set"] = rs.model_dump(mode="json")
+
+        result = generate_materials_patch(
+            requirement="test", state=state, llm_client=llm,
+            mode="fragmented", max_fragment_attempts=1,
+        )
+        assert result.ok
+        assert len(result.parsed_patch["materials"]) == 1
