@@ -585,3 +585,13 @@ runtime repair, or monolithic fallback path was introduced.
 - Facts revision now performs up to three clone/rereview closure rounds through the shared structured-output transaction; only a clean rereview commits, while duplicate, incomplete, and human-only closures fail with stable codes.
 - Completeness review keeps downstream material/geometry/universe targets nonblocking at Facts, and mandatory investigation baseline coverage now skips the planner entirely.
 - Validation: focused Facts/investigation regressions 57 passed; full non-OpenMC/non-LLM suite and compileall passed; fake workflow 21/21. Baseline diff skipped because the baseline report is absent; OpenMC 0.15.3 imports in `openmc-env`.
+
+## 2026-07-21 - Facts metadata finding classification normalization
+
+- Facts review normalization now classifies source-backed findings confined to
+  missing_facts, assumptions, or source_notes as append-only metadata repairs,
+  with auditable original reviewer flags. This records uncertainty; it never
+  authorizes inferred physical values or changes mixed-path findings.
+- The executor no longer carries a divergent rereview-only override. Validation
+  covers initial action selection, closure, pointer descendants, and mixed-path
+  fail-closed behavior.

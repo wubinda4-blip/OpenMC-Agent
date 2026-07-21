@@ -211,6 +211,76 @@ class TestExecutorRevisionTrigger:
 class TestExecutorRevisionClosure:
     """A valid partial repair must continue with its remaining findings."""
 
+    def test_metadata_only_error_is_normalized_before_initial_revision_action(self, monkeypatch) -> None:
+        monkeypatch.setattr(executor, "default_patch_task_order", lambda _: ["facts"])
+        monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: ["facts"])
+        monkeypatch.setattr(executor, "assemble_state_if_ready", lambda state, **_: state.model_copy(update={"assembled_plan": {"ok": True}}))
+        facts = {
+            "patch_type": "facts",
+            "model_scope": "single_assembly",
+            "assembly_count": 1,
+            "assembly_type_counts": {"a": 1},
+            "fuel_variant_requirements": [{"variant_id": "fuel"}],
+            "localized_insert_requirements": [{"requirement_id": "insert", "insert_kind": "pyrex_rod"}],
+            "has_spacer_grids": False,
+        }
+        patch_llm = FakePatchLLM([json.dumps(facts)])
+        repair_llm = FakePatchLLM([json.dumps({
+            "proposal_id": "record_blank_operating_state",
+            "confidence": 0.9,
+            "rationale": "record the source-declared missing state identifier",
+            "operations": [{
+                "op": "add",
+                "path": "/missing_facts/-",
+                "value": "Operating state identifier is blank/unspecified in source text.",
+            }],
+            "resolved_finding_ids": [],
+        })])
+        calls = {"count": 0}
+
+        def reviewer(prompt: str) -> str:
+            calls["count"] += 1
+            payload = json.loads(prompt.split("INPUT:\n", 1)[1])
+            excerpts = payload.get("source_excerpts", [])
+            evidence_hash = excerpts[0]["evidence_hash"] if excerpts else ""
+            findings = [] if calls["count"] > 1 else [{
+                "code": "missing_operating_state_unrecorded",
+                "severity": "error",
+                "category": "source_coverage",
+                "message": "record the blank source operating state in missing_facts",
+                "evidence_hashes": [evidence_hash],
+                "affected_json_paths": ["/missing_facts"],
+                "repairable_by_llm": False,
+                "requires_human": True,
+                "confidence": 0.95,
+            }]
+            return json.dumps({
+                "review_status": "complete_with_gaps" if findings else "complete",
+                "reviewed_evidence_hashes": [evidence_hash] if evidence_hash else [],
+                "coverage_summary": {},
+                "findings": findings,
+            })
+
+        result = run_incremental_planning(
+            requirement="Model ONLY operating state '' in this run.",
+            state=PlanBuildState(
+                state_id="metadata-closure",
+                requirement_text="Model ONLY operating state '' in this run.",
+            ),
+            llm_client=patch_llm,
+            plan_loop_policy={"mode": "controlled"},
+            plan_reviewer_client=reviewer,
+            plan_repair_client=repair_llm,
+        )
+        assert result.ok
+        stage = result.state.plan_loop_stages["plan_gate_facts"]
+        assert stage.status is PlanStageStatus.ACCEPTED
+        assert stage.repair_count == 1
+        repaired = [item for item in result.state.patches.values() if item.patch_type == "facts" and item.status == "valid"][-1]
+        assert repaired.content["missing_facts"] == [
+            "Operating state identifier is blank/unspecified in source text."
+        ]
+
     def test_two_repairs_close_in_one_facts_gate_call(self, monkeypatch) -> None:
         monkeypatch.setattr(executor, "default_patch_task_order", lambda _: ["facts"])
         monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: ["facts"])

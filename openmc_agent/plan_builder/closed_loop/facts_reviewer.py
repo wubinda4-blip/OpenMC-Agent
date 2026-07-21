@@ -12,7 +12,7 @@ from openmc_agent.schemas import AgentBaseModel
 
 from .facts_review_prompts import build_facts_review_prompt, build_facts_review_schema_retry_prompt
 from .models import (
-    FactsReviewModelOutput, PlanClosedLoopPolicy, PlanEvidencePack, PlanFindingCategory,
+    FactsReviewFindingDraft, FactsReviewModelOutput, PlanClosedLoopPolicy, PlanEvidencePack, PlanFindingCategory,
     PlanFindingSeverity, PlanGateId, PlanReviewFinding, SourceExcerpt,
 )
 from .review_io import (
@@ -34,6 +34,32 @@ class FactsReviewResult(AgentBaseModel):
     raw_outputs: list[str] = Field(default_factory=list)
     call_metadata: list[dict[str, Any]] = Field(default_factory=list)
     failure_code: str = ""
+
+
+_FACTS_RECORDING_METADATA_ROOTS = (
+    "/missing_facts",
+    "/assumptions",
+    "/source_notes",
+)
+
+
+def _is_facts_recording_metadata_path(path: str) -> bool:
+    return any(path == root or path.startswith(f"{root}/") for root in _FACTS_RECORDING_METADATA_ROOTS)
+
+
+def _normalize_recording_metadata_classification(
+    draft: FactsReviewFindingDraft,
+) -> tuple[FactsReviewFindingDraft, dict[str, Any] | None]:
+    # Metadata repairs record an evidence-backed gap; they never infer a value.
+    paths = draft.affected_json_paths
+    if not paths or not all(_is_facts_recording_metadata_path(path) for path in paths):
+        return draft, None
+    original = {
+        "reason": "facts_metadata_recording",
+        "original_repairable_by_llm": draft.repairable_by_llm,
+        "original_requires_human": draft.requires_human,
+    }
+    return draft.model_copy(update={"repairable_by_llm": True, "requires_human": False}), original
 
 
 def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[list[PlanReviewFinding], list[dict[str, Any]]]:
@@ -61,6 +87,7 @@ def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[
         if any(not path.startswith("/") or path.startswith("/materials") or path.startswith("/universes") for path in draft.affected_json_paths):
             rejected.append({"code": "facts_review.path_out_of_scope", "finding_code": draft.code})
             continue
+        draft, classification_override = _normalize_recording_metadata_classification(draft)
         if draft.requires_human and draft.repairable_by_llm:
             rejected.append({"code": "facts_review.invalid_finding_contract", "finding_code": draft.code})
             continue
@@ -82,7 +109,8 @@ def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[
             confidence=draft.confidence,
             metadata={"expected_value": draft.expected_value, "current_value": draft.current_value,
                       "candidate_interpretations": [item.model_dump(mode="json") for item in draft.candidate_interpretations],
-                      "downstream_impact": draft.downstream_impact},
+                      "downstream_impact": draft.downstream_impact,
+                      **({"classification_override": classification_override} if classification_override else {})},
         )
         accepted.append(finding)
     # Finding identity excludes wording and unions evidence under the same semantic fingerprint.

@@ -45,6 +45,7 @@ def _make_draft_dict(
     paths: list[str] | None = None,
     evidence_hash: str = "",
     repairable: bool = True,
+    requires_human: bool = False,
     category: str = "source_coverage",
 ) -> dict[str, Any]:
     return {
@@ -53,9 +54,9 @@ def _make_draft_dict(
         "category": category,
         "message": "test finding",
         "evidence_hashes": [evidence_hash] if evidence_hash else [],
-        "affected_json_paths": paths or ["/expected_pyrex_count"],
+        "affected_json_paths": ["/expected_pyrex_count"] if paths is None else paths,
         "repairable_by_llm": repairable,
-        "requires_human": False,
+        "requires_human": requires_human,
         "confidence": 0.9,
     }
 
@@ -161,6 +162,43 @@ class TestPathNormalization:
         findings, rejected = _normalize(output, pack)
         assert len(findings) == 1
         assert findings[0].affected_json_paths == ["/fuel_variant_requirements"]
+
+    @pytest.mark.parametrize("path", ["/missing_facts", "/missing_facts/0", "/assumptions/0", "/source_notes/source_1"])
+    def test_metadata_recording_paths_override_conservative_classification(self, path: str):
+        pack = _make_pack()
+        evidence_hash = pack.source_excerpts[0].evidence_hash
+        output = _make_output([_make_draft_dict(code="MISSING_OPERATING_STATE", paths=[path], evidence_hash=evidence_hash, repairable=False, requires_human=True)])
+        findings, rejected = _normalize(output, pack)
+        assert rejected == []
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.repairable_by_llm is True
+        assert finding.requires_human is False
+        assert finding.metadata["classification_override"] == {
+            "reason": "facts_metadata_recording",
+            "original_repairable_by_llm": False,
+            "original_requires_human": True,
+        }
+
+    @pytest.mark.parametrize("paths", [["/missing_facts_extra"], ["/missing_facts", "/expected_pyrex_count"]])
+    def test_non_metadata_or_mixed_paths_keep_reviewer_classification(self, paths: list[str]):
+        pack = _make_pack()
+        evidence_hash = pack.source_excerpts[0].evidence_hash
+        output = _make_output([_make_draft_dict(code="NON_METADATA", paths=paths, evidence_hash=evidence_hash, repairable=False, requires_human=True)])
+        findings, rejected = _normalize(output, pack)
+        assert rejected == []
+        assert len(findings) == 1
+        assert findings[0].repairable_by_llm is False
+        assert findings[0].requires_human is True
+        assert "classification_override" not in findings[0].metadata
+
+    def test_empty_path_error_is_not_promoted_to_metadata_repair(self):
+        pack = _make_pack()
+        evidence_hash = pack.source_excerpts[0].evidence_hash
+        output = _make_output([_make_draft_dict(code="EMPTY_PATH", paths=[], evidence_hash=evidence_hash, repairable=False, requires_human=True)])
+        findings, rejected = _normalize(output, pack)
+        assert findings == []
+        assert any(item["code"] == "facts_review.invalid_finding_contract" for item in rejected)
 
 
 class TestEndToEndPathNormalization:
