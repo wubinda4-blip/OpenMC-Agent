@@ -63,6 +63,11 @@ def build_facts_revision_prompt(*, facts_patch: dict, findings: list[dict], evid
         '{"op": "replace", "path": "/field_name", "value": <new value>}. '
         "Do not output the underlying FactsPatch shape. "
         "Do not output the input payload back.\n\n"
+        "CLOSURE RULE: address every supplied blocking finding in this round. "
+        "List every finding ID you resolve in resolved_finding_ids. Do not claim "
+        "a finding is resolved unless the operations make the source-backed change. "
+        "Never invent a material, geometry, or reactor fact when the supplied "
+        "evidence does not support it.\n\n"
         "The output object must have these fields: proposal_id (string), "
         "confidence (float 0..1), rationale (string), operations (array of "
         "{op, path, value} objects), and resolved_finding_ids (array of "

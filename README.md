@@ -609,3 +609,18 @@ the failed patch; its validator text remains structured execution metadata
 rather than becoming part of the source requirement.  Large-lattice detection
 accepts only explicit `NxM`/`N×M` notation, avoiding accidental interpretation
 of hyphenated document identifiers as core dimensions.
+
+### Facts Gate closure and controlled investigation
+
+Facts revision is a bounded, source-backed closure transaction: a candidate is
+committed only after rereview has no blocking findings. Partial repairs continue
+with the remaining finding set for at most three rounds; duplicate candidates,
+input-hash drift, invalid structured output, and unresolved human-only facts
+remain fail-closed. The Facts completeness critic records downstream Materials,
+Placement, Axial, and Universe gaps as warnings rather than treating them as
+FactsPatch errors.
+
+Controlled investigation first executes its mandatory baseline and recomputes
+semantic coverage. If coverage is already complete, it skips the planner and
+records `skipped_after_coverage_complete`; otherwise the existing two-attempt
+structured planner transaction remains mandatory.

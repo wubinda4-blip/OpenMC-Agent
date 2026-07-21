@@ -394,6 +394,27 @@ class InvestigationAgent:
         coverage = compile_semantic_coverage(
             context=context, ledger=context.ledger, evidence_claim_ids=evidence_claim_ids
         )
+        # The mandatory baseline is authoritative. If it has already covered
+        # every source-backed target, do not call the planner just to obtain
+        # actions that will be skipped. This also prevents a recoverable
+        # provider-format failure from blocking an already-complete session.
+        if coverage.coverage_complete:
+            return InvestigationResult(
+                session_id=session_id,
+                patch_type=context.patch_type,
+                tool_calls=tuple(tool_ledger.records),
+                tool_results=tuple(tool_results),
+                evidence_claim_ids=tuple(evidence_claim_ids),
+                summary="mandatory baseline completed semantic coverage",
+                completed=True,
+                blocked=False,
+                budget=context.budget,
+                budget_used=usage,
+                warnings=tuple(warnings),
+                semantic_coverage=coverage.to_dict(),
+                skipped_actions=("planner",),
+                skipped_action_reason="skipped_after_coverage_complete",
+            )
         try:
             plan = self.plan(context)
         except PlanInvestigationIssue as issue:

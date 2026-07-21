@@ -415,3 +415,23 @@ class TestReviewerFailureClassification:
         call = _Call()
         code = _classify_review_failure(call)
         assert code == "structured_review.schema_invalid"
+
+
+class TestCompletenessOwnership:
+    def test_prompt_keeps_downstream_contracts_nonblocking(self):
+        from openmc_agent.plan_builder.closed_loop.models import PlanEvidencePack, PlanGateId, SourceExcerpt
+
+        pack = PlanEvidencePack(
+            evidence_pack_id="ownership",
+            gate_id=PlanGateId.FACTS,
+            source_excerpts=[SourceExcerpt(source_id="s", text="source")],
+            relevant_patches={"facts": {"missing_facts": []}},
+        )
+        request = FactsReviewStageRequest(
+            stage=FactsReviewStage.COMPLETENESS,
+            facts_subset={"missing_facts": []},
+            evidence_excerpts=[{"text": "source"}],
+        )
+        prompt = build_stage_review_prompt(request, pack)
+        assert "downstream requirement contracts" in prompt
+        assert "never as a Facts Gate error" in prompt

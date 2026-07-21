@@ -2299,73 +2299,117 @@ def run_incremental_planning(
             state.add_event("planning.facts_awaiting_human", "facts ambiguity requires typed confirmation", {"question_count": len(state.plan_human_questions)})
             return IncrementalExecutionIssue(code="planning.facts_awaiting_human", severity="error", message="facts gate awaiting human confirmation", patch_type="facts")
         if action is PlanReviewAction.REVISE_CURRENT_PATCH and plan_repair_client is not None:
-            from .closed_loop.facts_revision import evaluate_facts_revision, normalize_facts_revision, allowed_paths_for_findings
+            from .closed_loop.facts_revision import (
+                MAX_FACTS_REVISION_CLOSURE_ROUNDS,
+                allowed_paths_for_findings,
+                evaluate_facts_revision,
+                facts_revision_closure_fingerprint,
+                normalize_facts_revision,
+            )
             from .closed_loop.facts_revision_prompts import build_facts_revision_prompt
             from .closed_loop.models import FactsRevisionProposal
+            from .closed_loop.review_io import StructuredReviewCallSpec, run_structured_review_call
+            from openmc_agent.structured_output import canonical_payload_hash
+
             transition_stage(stage, PlanStageStatus.REPAIRING)
-            stage.repair_count += 1
-            state.add_event("planning.facts_revision_started", "facts-only revision started", {})
-            blocking = [item for item in all_findings if item.severity.value == "error"]
-            issue_fingerprint = compute_issue_fingerprint(
-                gate_id="facts", code="facts_review.blocking_set", affected_patch_type="facts",
-                actual=sorted(item.finding_id for item in blocking),
-            )
-            stage.issue_fingerprint = issue_fingerprint
-            if state.plan_loop_issue_attempts_by_fingerprint.get(issue_fingerprint, 0) >= policy.max_attempts_per_issue_fingerprint:
-                transition_stage(stage, PlanStageStatus.BLOCKED)
-                return IncrementalExecutionIssue(code="planning.closed_loop.issue_attempt_budget_exhausted", severity="error", message="facts revision attempt budget exhausted", patch_type="facts")
-            prompt = build_facts_revision_prompt(
-                facts_patch=facts_env.content,
-                findings=[item.model_dump(mode="json") for item in blocking],
-                evidence=[item.model_dump(mode="json") for pack in packs for item in pack.source_excerpts],
-                allowed_paths=allowed_paths_for_findings(blocking), confirmed_facts=state.confirmed_facts,
-            )
-            prompt_path = artifact_writer.write_text(f"facts_revision_prompt_{stage.repair_count - 1:03d}.txt", prompt)
-            if prompt_path:
-                state.plan_loop_artifacts.append(prompt_path)
-            # Two-attempt retry: the first attempt uses the standard
-            # facts-revision prompt; if parsing fails (empty response from a
-            # thinking-mode provider or prose-wrapped JSON), the second
-            # attempt prepends a stricter "Output only JSON, no prose"
-            # directive.  Mirrors run_structured_review_call semantics.
-            raw: Any = None
-            parse_error: Exception | None = None
-            for attempt_index in range(2):
-                if state.plan_loop_additional_llm_calls >= policy.max_total_additional_llm_calls:
-                    parse_error = RuntimeError("planning.closed_loop.budget_exhausted")
+            candidate_facts = facts_env.content
+            closure_findings = [item for item in all_findings if item.severity.value == "error"]
+            closure_failure_code = "planning.facts_revision.incomplete_closure"
+            closure_rounds_completed = 0
+
+            for closure_round in range(MAX_FACTS_REVISION_CLOSURE_ROUNDS):
+                if closure_round:
+                    transition_stage(stage, PlanStageStatus.REPAIRING)
+                stage.repair_count += 1
+                closure_rounds_completed = closure_round + 1
+                issue_fingerprint = facts_revision_closure_fingerprint(closure_findings)
+                stage.issue_fingerprint = issue_fingerprint
+                if state.plan_loop_issue_attempts_by_fingerprint.get(issue_fingerprint, 0) >= policy.max_attempts_per_issue_fingerprint:
+                    closure_failure_code = "planning.facts_revision.attempt_budget_exhausted"
                     break
-                effective_prompt = prompt
-                if attempt_index == 1:
-                    effective_prompt = (
-                        "Output only a single JSON FactsRevisionProposal object. "
-                        "Do not emit any prose, explanation, chain-of-thought, or "
-                        "markdown fences. The first character of your response must "
-                        "be '{' and the last must be '}'.\n\n" + prompt
-                    )
+
+                allowed_paths = allowed_paths_for_findings(closure_findings)
+                revision_input = {
+                    "facts_patch": candidate_facts,
+                    "findings": [item.model_dump(mode="json") for item in closure_findings],
+                    "evidence": [item.model_dump(mode="json") for pack in packs for item in pack.source_excerpts],
+                    "allowed_paths": allowed_paths,
+                    "confirmed_facts": state.confirmed_facts,
+                }
+                prompt = build_facts_revision_prompt(
+                    facts_patch=candidate_facts,
+                    findings=revision_input["findings"],
+                    evidence=revision_input["evidence"],
+                    allowed_paths=allowed_paths,
+                    confirmed_facts=state.confirmed_facts,
+                )
+                prompt_path = artifact_writer.write_text(
+                    f"facts_revision_prompt_{closure_round:03d}.txt", prompt,
+                )
+                if prompt_path:
+                    state.plan_loop_artifacts.append(prompt_path)
+
+                revision_call = run_structured_review_call(
+                    client=plan_repair_client,
+                    initial_prompt=prompt,
+                    retry_prompt_builder=lambda raw, error: (
+                        "Output only one JSON FactsRevisionProposal object. Do not emit prose, "
+                        "reasoning, or markdown fences. Preserve the immutable input payload and "
+                        "correct only the output schema.\n\n" + prompt
+                    ),
+                    output_model=FactsRevisionProposal,
+                    call_spec=StructuredReviewCallSpec(
+                        role_id="facts_revision",
+                        gate_id=PlanGateId.FACTS,
+                        schema_name="FactsRevisionProposal",
+                        json_schema=FactsRevisionProposal.model_json_schema(),
+                        artifact_prefix="facts_revision",
+                        input_payload_hash=canonical_payload_hash(revision_input),
+                    ),
+                    state=state,
+                    stage=stage,
+                    policy=policy,
+                )
+                telemetry = {
+                    "round": closure_round,
+                    "issue_fingerprint": issue_fingerprint,
+                    "input_payload_hash": revision_call.input_payload_hash,
+                    "call_count": revision_call.call_count,
+                    "schema_retry_count": revision_call.schema_retry_count,
+                    "error_code": revision_call.error_code,
+                    "attempts": [
+                        item.model_dump(mode="json", exclude={"raw_text"})
+                        for item in revision_call.attempts
+                    ],
+                }
+                if not revision_call.ok or revision_call.parsed_output is None:
+                    state.facts_revision_history.append(telemetry)
+                    closure_failure_code = revision_call.error_code or "planning.facts_revision.schema_invalid"
+                    break
                 try:
-                    raw = (plan_repair_client.generate_patch_json(
-                        prompt=effective_prompt, patch_type="facts_revision",
-                        json_schema=FactsRevisionProposal.model_json_schema(), temperature=0,
-                    ) if hasattr(plan_repair_client, "generate_patch_json") else plan_repair_client(effective_prompt))
-                    state.plan_loop_additional_llm_calls += 1
-                    proposal = normalize_facts_revision(raw)
-                    parse_error = None
-                    break
+                    proposal = normalize_facts_revision(revision_call.parsed_output)
                 except Exception as exc:
-                    parse_error = exc
-                    state.facts_revision_history.append({"attempt": attempt_index, "error": str(exc), "raw_chars": len(raw) if isinstance(raw, str) else 0})
-                    raw = None
-            try:
-                if parse_error is not None:
-                    raise parse_error
+                    telemetry["normalization_error"] = str(exc)
+                    state.facts_revision_history.append(telemetry)
+                    closure_failure_code = "planning.facts_revision.schema_invalid"
+                    break
+
                 evaluation = evaluate_facts_revision(
-                    facts_patch=facts_env.content, proposal=proposal, findings=blocking,
+                    facts_patch=candidate_facts,
+                    proposal=proposal,
+                    findings=closure_findings,
                     confirmed_facts=state.confirmed_facts,
                     prior_candidate_hashes=state.plan_loop_candidate_hashes_by_fingerprint.get(issue_fingerprint, []),
                 )
-                proposal_path = artifact_writer._write(f"facts_revision_proposal_{stage.repair_count - 1:03d}.json", proposal)
-                candidate_path = artifact_writer._write(f"facts_revision_candidate_{stage.repair_count - 1:03d}.json", evaluation.candidate or {})
-                evaluation_path = artifact_writer._write(f"facts_revision_evaluation_{stage.repair_count - 1:03d}.json", evaluation)
+                proposal_path = artifact_writer._write(
+                    f"facts_revision_proposal_{closure_round:03d}.json", proposal,
+                )
+                candidate_path = artifact_writer._write(
+                    f"facts_revision_candidate_{closure_round:03d}.json", evaluation.candidate or {},
+                )
+                evaluation_path = artifact_writer._write(
+                    f"facts_revision_evaluation_{closure_round:03d}.json", evaluation,
+                )
                 for path in (proposal_path, candidate_path, evaluation_path):
                     if path:
                         state.plan_loop_artifacts.append(path)
@@ -2374,87 +2418,185 @@ def run_incremental_planning(
                     if duplicate:
                         evaluation.accepted = False
                         evaluation.reasons.append("facts_revision.no_progress")
-                state.facts_revision_history.append({"proposal": proposal.model_dump(mode="json"), "evaluation": evaluation.model_dump(mode="json"), "issue_fingerprint": issue_fingerprint})
-                if evaluation.accepted and evaluation.candidate is not None:
-                    # The candidate is still isolated.  Re-review it before
-                    # touching the durable envelope or any downstream patch.
-                    transition_stage(stage, PlanStageStatus.VALIDATING)
-                    stage.validation_count += 1
-                    transition_stage(stage, PlanStageStatus.REVIEWING)
-                    stage.review_count += 1
-                    rereview = run_facts_review(evidence_packs=build_facts_evidence_packs(requirement_text=requirement, facts_patch=evaluation.candidate, confirmed_facts=state.confirmed_facts, planning_metadata=state.metadata, policy=policy), reviewer_client=plan_reviewer_client, state=state, policy=policy)
-                    # Phase 8C Step 2: deterministic-first acceptance.
-                    # Run the deterministic consistency preflight on the
-                    # candidate.  When the rereview LLM is flaky
-                    # (schema_invalid / output_not_json) but the
-                    # deterministic preflight says the candidate has no
-                    # blocking issues, accept the candidate.  The
-                    # deterministic check is authoritative; the LLM
-                    # rereview is a defence-in-depth check, not a single
-                    # point of failure.
-                    candidate_consistency = run_facts_consistency_preflight(
-                        feature_contract=contract, facts_patch=evaluation.candidate,
+                telemetry["proposal_id"] = proposal.proposal_id
+                telemetry["evaluation"] = evaluation.model_dump(mode="json")
+                state.facts_revision_history.append(telemetry)
+                if not evaluation.accepted or evaluation.candidate is None:
+                    closure_failure_code = (
+                        "planning.facts_revision.no_progress"
+                        if "facts_revision.no_progress" in evaluation.reasons
+                        else "planning.facts_revision.incomplete_closure"
+                    )
+                    break
+
+                # The candidate remains isolated until a full rereview clears
+                # every error finding. A valid candidate with residual findings
+                # becomes the next round's immutable input, never a durable patch.
+                transition_stage(stage, PlanStageStatus.VALIDATING)
+                stage.validation_count += 1
+                transition_stage(stage, PlanStageStatus.REVIEWING)
+                stage.review_count += 1
+                rereview = run_facts_review(
+                    evidence_packs=build_facts_evidence_packs(
+                        requirement_text=requirement,
+                        facts_patch=evaluation.candidate,
                         confirmed_facts=state.confirmed_facts,
-                        existing_valid_patch_types=[item.patch_type for item in state.get_valid_patches()],
+                        planning_metadata=state.metadata,
+                        policy=policy,
+                    ),
+                    reviewer_client=plan_reviewer_client,
+                    state=state,
+                    policy=policy,
+                )
+                candidate_consistency = run_facts_consistency_preflight(
+                    feature_contract=contract,
+                    facts_patch=evaluation.candidate,
+                    confirmed_facts=state.confirmed_facts,
+                    existing_valid_patch_types=[item.patch_type for item in state.get_valid_patches()],
+                )
+                candidate_consistency_ok = not any(
+                    item.get("severity") == "error" for item in candidate_consistency.issues
+                )
+                rereview_passing = (
+                    rereview.ok
+                    and rereview.coverage_complete
+                    and not any(item.severity.value == "error" for item in rereview.findings)
+                )
+                rereview_schema_failed = (
+                    not rereview.ok and "schema_invalid" in (rereview.failure_code or "")
+                )
+                accept_candidate = rereview_passing or (
+                    rereview_schema_failed and candidate_consistency_ok
+                )
+                state.facts_revision_history.append({
+                    "round": closure_round,
+                    "proposal_id": proposal.proposal_id,
+                    "rereview": rereview.model_dump(mode="json", exclude={"raw_outputs"}),
+                    "candidate_consistency_ok": candidate_consistency_ok,
+                    "committed": accept_candidate,
+                })
+                if accept_candidate:
+                    before_path = artifact_writer._write("facts_patch_before.json", facts_env.content)
+                    after_path = artifact_writer._write("facts_patch_after.json", evaluation.candidate)
+                    for path in (before_path, after_path):
+                        if path:
+                            state.plan_loop_artifacts.append(path)
+                    state.invalidate_patch_types(
+                        _expand_patch_repair_targets(["facts"]),
+                        reason="accepted facts revision",
+                        issues=[{"code": "facts_revision.accepted", "proposal_id": proposal.proposal_id}],
                     )
-                    candidate_consistency_ok = not any(
-                        item.get("severity") == "error" for item in candidate_consistency.issues
+                    repaired = PlanPatchEnvelope(
+                        patch_id=f"{facts_env.patch_id}_repair_{stage.repair_count}",
+                        patch_type="facts",
+                        content=evaluation.candidate,
+                        source="repair",
+                        status="valid",
+                        metadata={
+                            "proposal_id": proposal.proposal_id,
+                            "candidate_hash": evaluation.candidate_hash,
+                            "closure_round": closure_round,
+                            "closure_input_hash": revision_call.input_payload_hash,
+                        },
                     )
-                    rereview_passing = (
-                        rereview.ok and rereview.coverage_complete
-                        and not any(item.severity.value == "error" for item in rereview.findings)
+                    state.add_patch(repaired)
+                    record_findings(state, stage, rereview.findings)
+                    transition_stage(stage, PlanStageStatus.ACCEPTED)
+                    stage.metadata["accepted_input_hash"] = facts_gate_input_hash(state, policy=policy)
+                    stage.metadata["facts_revision_closure"] = {
+                        "rounds": closure_round + 1,
+                        "final_candidate_hash": evaluation.candidate_hash,
+                        "input_payload_hash": revision_call.input_payload_hash,
+                    }
+                    state.add_event(
+                        "planning.facts_revision_accepted",
+                        "facts revision atomically committed after clone rereview",
+                        {
+                            "proposal_id": proposal.proposal_id,
+                            "candidate_hash": evaluation.candidate_hash,
+                            "closure_round": closure_round,
+                            "rereview_schema_failed": rereview_schema_failed,
+                            "candidate_consistency_ok": candidate_consistency_ok,
+                        },
                     )
-                    rereview_schema_failed = (
-                        not rereview.ok
-                        and "schema_invalid" in (rereview.failure_code or "")
-                    )
-                    accept_candidate = rereview_passing or (
-                        rereview_schema_failed and candidate_consistency_ok
-                    )
-                    if accept_candidate:
-                        before_path = artifact_writer._write("facts_patch_before.json", facts_env.content)
-                        after_path = artifact_writer._write("facts_patch_after.json", evaluation.candidate)
-                        for path in (before_path, after_path):
-                            if path:
-                                state.plan_loop_artifacts.append(path)
-                        state.invalidate_patch_types(_expand_patch_repair_targets(["facts"]), reason="accepted facts revision", issues=[{"code": "facts_revision.accepted", "proposal_id": proposal.proposal_id}])
-                        repaired = PlanPatchEnvelope(patch_id=f"{facts_env.patch_id}_repair_{stage.repair_count}", patch_type="facts", content=evaluation.candidate, source="repair", status="valid", metadata={"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash})
-                        state.add_patch(repaired)
-                        record_findings(state, stage, rereview.findings)
-                        transition_stage(stage, PlanStageStatus.ACCEPTED)
-                        stage.metadata["accepted_input_hash"] = facts_gate_input_hash(state, policy=policy)
-                        state.add_event("planning.facts_revision_accepted", "facts revision atomically committed after clone re-review", {"proposal_id": proposal.proposal_id, "candidate_hash": evaluation.candidate_hash, "rereview_schema_failed": rereview_schema_failed, "candidate_consistency_ok": candidate_consistency_ok})
-                        # Phase 8A Step 6: compile the GeometryComponentInventory
-                        # on the repair-acceptance path too (the first-try
-                        # acceptance path is in the APPROVE branch above).
-                        # In controlled mode a compile failure blocks the
-                        # run with planning.inventory.compilation_failed.
-                        if _investigation_config_resolved is not None and not _investigation_config_resolved.is_off:
-                            inventory_status = _maybe_compile_geometry_inventory(
-                                state=state,
-                                facts_env=repaired,
-                                requirement=requirement,
-                                artifact_writer=artifact_writer,
+                    if _investigation_config_resolved is not None and not _investigation_config_resolved.is_off:
+                        inventory_status = _maybe_compile_geometry_inventory(
+                            state=state,
+                            facts_env=repaired,
+                            requirement=requirement,
+                            artifact_writer=artifact_writer,
+                        )
+                        if not inventory_status.get("compiled") and _investigation_config_resolved.is_controlled:
+                            transition_stage(stage, PlanStageStatus.BLOCKED)
+                            return IncrementalExecutionIssue(
+                                code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
+                                severity="error",
+                                message=(
+                                    "controlled mode: geometry inventory compilation failed after facts revision: "
+                                    f"{inventory_status.get('error', 'unknown')}"
+                                ),
+                                patch_type="facts",
                             )
-                            if not inventory_status.get("compiled"):
-                                if _investigation_config_resolved.is_controlled:
-                                    transition_stage(stage, PlanStageStatus.BLOCKED)
-                                    return IncrementalExecutionIssue(
-                                        code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
-                                        severity="error",
-                                        message=(
-                                            f"controlled mode: geometry inventory compilation failed "
-                                            f"after facts revision: {inventory_status.get('error', 'unknown')}"
-                                        ),
-                                        patch_type="facts",
-                                    )
-                        return None
-                    state.facts_revision_history.append({"proposal_id": proposal.proposal_id, "re_review": rereview.model_dump(mode="json"), "committed": False})
-            except Exception as exc:
-                state.facts_revision_history.append({"error": str(exc)})
+                    return None
+
+                if not rereview.ok:
+                    closure_failure_code = rereview.failure_code or "planning.facts_revision.rereview_unusable"
+                    break
+                remaining = [
+                    item for item in rereview.findings if item.severity.value == "error"
+                ]
+                if not remaining:
+                    closure_failure_code = "planning.facts_revision.incomplete_closure"
+                    break
+                if any(item.requires_human or not item.repairable_by_llm for item in remaining):
+                    closure_failure_code = "planning.facts_revision.unresolved_requires_human"
+                    break
+                next_fingerprint = facts_revision_closure_fingerprint(remaining)
+                if next_fingerprint == issue_fingerprint:
+                    stage.no_progress_count += 1
+                    state.plan_loop_no_progress_events.append({
+                        "stage_id": stage.stage_id,
+                        "issue_fingerprint": issue_fingerprint,
+                        "candidate_hash": evaluation.candidate_hash,
+                        "count": stage.no_progress_count,
+                    })
+                    state.add_event(
+                        "planning.no_progress_detected",
+                        "facts rereview retained the same unresolved finding set",
+                        {"stage_id": stage.stage_id, "issue_fingerprint": issue_fingerprint},
+                    )
+                    closure_failure_code = "planning.facts_revision.no_progress"
+                    break
+                candidate_facts = evaluation.candidate
+                closure_findings = remaining
+                state.add_event(
+                    "planning.facts_revision_closure_continues",
+                    "facts revision cleared a subset of findings; continuing with remaining closure set",
+                    {
+                        "round": closure_round,
+                        "resolved_count": len(closure_findings) - len(remaining),
+                        "remaining_count": len(remaining),
+                        "candidate_hash": evaluation.candidate_hash,
+                    },
+                )
+
             transition_stage(stage, PlanStageStatus.BLOCKED)
-            state.add_event("planning.facts_revision_rejected", "facts revision rejected", {})
-            return IncrementalExecutionIssue(code="planning.facts_revision_rejected", severity="error", message="facts revision did not pass clone/review acceptance", patch_type="facts")
+            stage.metadata["facts_revision_closure"] = {
+                "rounds": closure_rounds_completed,
+                "failure_code": closure_failure_code,
+                "unresolved_finding_ids": [item.finding_id for item in closure_findings],
+            }
+            state.add_event(
+                "planning.facts_revision_closure_blocked",
+                "facts revision closure did not reach a clean rereview",
+                {"failure_code": closure_failure_code, "rounds": closure_rounds_completed},
+            )
+            return IncrementalExecutionIssue(
+                code=closure_failure_code,
+                severity="error",
+                message="facts revision closure did not pass clone/review acceptance",
+                patch_type="facts",
+            )
         transition_stage(stage, PlanStageStatus.BLOCKED)
         state.add_event("planning.facts_gate_blocked", "facts gate blocked by deterministic policy", {"action": action.value})
         return IncrementalExecutionIssue(code="planning.facts_gate_blocked", severity="error", message=f"facts gate action={action.value}", patch_type="facts")

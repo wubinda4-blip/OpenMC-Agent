@@ -13,7 +13,7 @@ from openmc_agent.plan_builder.validators import validate_patch
 from openmc_agent.repair_proposal import apply_json_patch_to_clone
 from openmc_agent.schemas import AgentBaseModel
 
-from .fingerprints import compute_candidate_hash
+from .fingerprints import compute_candidate_hash, compute_issue_fingerprint
 from .models import FactsRevisionProposal, PlanReviewFinding
 
 __all__ = [
@@ -25,6 +25,8 @@ __all__ = [
     "targeted_facts_repair",
     "run_clone_validation",
     "check_facts_repair_completeness",
+    "facts_revision_closure_fingerprint",
+    "MAX_FACTS_REVISION_CLOSURE_ROUNDS",
     "REQUIRED_COVERAGE_PATHS",
 ]
 
@@ -43,6 +45,29 @@ REQUIRED_COVERAGE_PATHS: tuple[str, ...] = (
     "/localized_insert_requirements",
     "/has_spacer_grids",
 )
+
+# Internal safety cap; no CLI tuning is exposed for this closure loop.
+MAX_FACTS_REVISION_CLOSURE_ROUNDS = 3
+
+
+def facts_revision_closure_fingerprint(findings: list[PlanReviewFinding]) -> str:
+    """Fingerprint unresolved Facts errors without relying on critic prose."""
+    rows = sorted(
+        (
+            item.code,
+            tuple(sorted(item.affected_json_paths)),
+            tuple(sorted(excerpt.evidence_hash for excerpt in item.source_evidence)),
+            item.requires_human,
+            item.repairable_by_llm,
+        )
+        for item in findings
+    )
+    return compute_issue_fingerprint(
+        gate_id="facts",
+        code="facts_revision.unresolved_closure",
+        affected_patch_type="facts",
+        actual=rows,
+    )
 
 
 def check_facts_repair_completeness(candidate: dict[str, Any]) -> list[str]:

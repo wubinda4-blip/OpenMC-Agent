@@ -575,3 +575,9 @@ runtime repair, or monolithic fallback path was introduced.
 - Canary boundary: all three authorized 40-minute VERA4 attempts were rejected before
   execution by the tenant external-data transfer policy. Step 2D is not declared
   complete and no real-model acceptance claim is made.
+
+## 2026-07-21 — Phase 8C Step 2E Facts closure and baseline early-stop
+
+- Facts revision now performs up to three clone/rereview closure rounds through the shared structured-output transaction; only a clean rereview commits, while duplicate, incomplete, and human-only closures fail with stable codes.
+- Completeness review keeps downstream material/geometry/universe targets nonblocking at Facts, and mandatory investigation baseline coverage now skips the planner entirely.
+- Validation: focused Facts/investigation regressions 57 passed; full non-OpenMC/non-LLM suite and compileall passed; fake workflow 21/21. Baseline diff skipped because the baseline report is absent; OpenMC 0.15.3 imports in `openmc-env`.

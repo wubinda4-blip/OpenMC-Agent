@@ -182,9 +182,12 @@ _STAGE_INSTRUCTIONS: dict[FactsReviewStage, str] = {
         "active_fuel_region_cm and axial_domain_cm valid intervals?"
     ),
     FactsReviewStage.COMPLETENESS: (
-        "Focus ONLY on completeness: are there downstream-critical facts "
-        "that the source mentions but the patch omits?  Check missing_facts "
-        "and assumptions for gaps."
+        "Focus ONLY on FactsPatch completeness. Flag an error only when a "
+        "source-backed fact belongs in the supplied FactsPatch fields. Material "
+        "composition or density, detailed axial geometry, placement, and universe "
+        "definition belong to downstream requirement contracts: record those only "
+        "as warnings with downstream_impact, never as a Facts Gate error. Check "
+        "missing_facts and assumptions for explicitly recorded gaps."
     ),
 }
 

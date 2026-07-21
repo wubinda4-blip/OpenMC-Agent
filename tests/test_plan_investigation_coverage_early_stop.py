@@ -26,18 +26,17 @@ def test_coverage_complete_skips_remaining_actions(monkeypatch) -> None:
             coverage_complete=True,
         ),
     )
-    client = lambda _prompt: json.dumps(
-        {
-            "actions": [
-                {"tool": "search_source_index", "arguments": {"query": "unused"}},
-                {"tool": "search_source_index", "arguments": {"query": "also_unused"}},
-            ]
-        }
-    )
+    planner_calls = {"count": 0}
+
+    def client(_prompt: str) -> str:
+        planner_calls["count"] += 1
+        return json.dumps({"actions": []})
+
     result = InvestigationAgent(registry=registry, llm_client=client).run(context)
     assert result.completed
     assert not result.blocked
-    assert result.skipped_actions == ("search_source_index", "search_source_index")
+    assert planner_calls["count"] == 0
+    assert result.planner_calls == 0
+    assert result.skipped_actions == ("planner",)
     assert len(result.tool_calls) == 3  # mandatory baseline only
-
     assert result.skipped_action_reason == "skipped_after_coverage_complete"
