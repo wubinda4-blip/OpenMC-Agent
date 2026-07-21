@@ -1095,6 +1095,7 @@ def _maybe_execute_research_for_gate(
     search_source_index).  No shell, no network search, no repository
     grep.  Budget knobs enforce bounded execution.
     """
+    from .closed_loop.models import PlanStageStatus
 
     if not error_findings:
         return False
