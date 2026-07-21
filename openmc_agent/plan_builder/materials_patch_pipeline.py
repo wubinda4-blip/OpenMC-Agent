@@ -200,6 +200,10 @@ def _build_material_fragment_prompt(
         "\nOutput a single JSON object with keys: patch_type, materials (list with ONE material)."
     )
     lines.append("The material must have: material_id, name, role, density_g_cm3, density_status, composition, composition_basis, composition_status.")
+    lines.append("Enum constraints (use EXACTLY one of the listed values):")
+    lines.append("- density_status: confirmed | source_provided | library | approximate | needs_confirmation")
+    lines.append("- composition_basis: atom_frac | weight_frac | atom_density_barn_cm | stoichiometric_ratio | ppm_by_weight | ppm_by_atom | unknown")
+    lines.append("- composition_status: confirmed | approximate | needs_library | needs_confirmation | placeholder | derived_from_mixture")
     lines.append("IMPORTANT rules:")
     lines.append("- Do NOT use placeholder values (REPLACE, TBD, unknown) for material_id or composition.")
     lines.append("- Do NOT merge fuel variants into one material.")
