@@ -538,11 +538,12 @@ class TestGenerateMaterialsPatchIntegration:
             _make_requirement("m2", "coolant", None),
         ])
         manifest = build_material_manifest(rs)
-        ids = list(manifest.material_ids)
 
-        # Build fake responses — one per material.
+        # Build fake responses — one per material, in generation_order
+        # (a deterministic list) so response order matches pipeline
+        # consumption order regardless of PYTHONHASHSEED.
         responses = []
-        for mid in ids:
+        for mid in manifest.generation_order:
             item = manifest.item_by_id(mid)
             mat = _make_material_data(
                 mid=mid, role=item.role, variant=item.source_variant_id,
