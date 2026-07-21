@@ -4135,6 +4135,10 @@ def run_incremental_planning(
             )
         elif patch_type == "universes" and universes_generation_mode != "off":
             from .universe_patch_pipeline import generate_universes_patch
+            # In controlled/inventory mode, pass the compiled inventory
+            # universe requirement set so the pipeline consumes only
+            # source-backed requirements (no legacy implicit:* fallback).
+            _inv_universe_req = state.metadata.get("planning_universe_requirement_set")
             result = generate_universes_patch(
                 requirement=requirement,
                 state=state,
@@ -4143,6 +4147,7 @@ def run_incremental_planning(
                 max_tokens=universe_fragment_max_tokens or LARGE_PATCH_MAX_TOKENS.get(patch_type),
                 safe_output_ratio=large_patch_safe_output_ratio,
                 strict_structured=strict_structured_patch_output,
+                inventory_universe_requirement_set=_inv_universe_req,
             )
         else:
             result = generate_patch(

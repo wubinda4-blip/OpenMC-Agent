@@ -199,12 +199,58 @@ def _call_llm_fragment(
     return _FragmentLLMOutcome(response=resp, outcome_kind="ok")
 
 
+def _preflight_material_role_coverage(
+    manifest: UniverseManifest,
+    material_roles_by_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Check that every required_material_role has at least one accepted material.
+
+    Returns a list of issue dicts (empty = pass).  When any role is
+    uncovered, the pipeline blocks deterministically with
+    ``unavailable_material_role`` — no LLM call is wasted.
+    """
+    available_roles = set(material_roles_by_id.values())
+    issues: list[dict[str, Any]] = []
+    for item in manifest.items:
+        for role in item.required_material_roles:
+            if role not in available_roles:
+                issues.append({
+                    "code": "patch_generation.unavailable_material_role",
+                    "severity": "error",
+                    "message": (
+                        f"universe '{item.universe_id}' requires material role "
+                        f"'{role}' but no accepted material provides it"
+                    ),
+                    "metadata": {
+                        "universe_id": item.universe_id,
+                        "required_role": role,
+                        "available_roles": sorted(available_roles),
+                    },
+                })
+    return issues
+
+
+def _build_role_binding_map(
+    item: UniverseManifestItem,
+    material_roles_by_id: dict[str, str],
+) -> dict[str, list[str]]:
+    """Map each required_material_role to accepted material IDs with that role."""
+    binding: dict[str, list[str]] = {}
+    for role in item.required_material_roles:
+        binding[role] = sorted(
+            mid for mid, mrole in material_roles_by_id.items()
+            if mrole == role
+        )
+    return binding
+
+
 def _build_fragment_prompt(
     item: UniverseManifestItem,
     *,
     requirement: str,
     material_summary: str,
     prior_failures: list[str] | None = None,
+    role_binding: dict[str, list[str]] | None = None,
 ) -> str:
     """Build a focused prompt for generating one universe."""
     lines = [
@@ -217,6 +263,11 @@ def _build_fragment_prompt(
         lines.append(f"Required material IDs: {', '.join(item.required_material_ids)}")
     if item.required_material_roles:
         lines.append(f"Required material roles: {', '.join(item.required_material_roles)}")
+    if role_binding:
+        lines.append("\nRole → material bindings (use these exact material_id values):")
+        for role, mids in sorted(role_binding.items()):
+            lines.append(f"  {role} → {', '.join(mids) if mids else '<NONE AVAILABLE — role unsatisfied>'}")
+        lines.append("Each required role above MUST be referenced by at least one cell's material_id.")
     if item.fuel_variant_id:
         lines.append(f"Fuel variant: {item.fuel_variant_id}")
     if item.protected_through_path_roles:
@@ -243,6 +294,71 @@ def _build_fragment_prompt(
                     "id": "<unique_cell_id>",
                     "role": item.required_cell_roles[0] if item.required_cell_roles else "filler",
                     "material_id": "<one_of_the_materials_listed_above>",
+                    "region_kind": "cylinder",
+                    "r_min_cm": 0.0,
+                    "r_max_cm": 0.4,
+                }
+            ],
+        }],
+    }, indent=2))
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def _build_schema_repair_prompt(
+    item: UniverseManifestItem,
+    *,
+    requirement: str,
+    material_summary: str,
+    role_binding: dict[str, list[str]] | None = None,
+    prior_failures: list[str] | None = None,
+) -> str:
+    """Focused schema-repair prompt for the second attempt.
+
+    This prompt is sent when the first attempt failed qualification.
+    It shows the exact JSON schema, the exact failures, and asks for
+    a minimal repair — no narrative, no reasoning, just the corrected JSON.
+    """
+    lines = [
+        f"SCHEMA REPAIR: fix the universe definition for universe_id={item.universe_id}.",
+        f"Kind: {item.kind}",
+        "",
+        "The previous attempt failed. Fix ONLY the errors listed below.",
+        "Output ONLY a JSON object — no prose, no explanation.",
+        "",
+    ]
+    if item.required_cell_roles:
+        lines.append(f"Required cell roles (each MUST appear in at least one cell): {', '.join(item.required_cell_roles)}")
+    if item.required_material_roles:
+        lines.append(f"Required material roles: {', '.join(item.required_material_roles)}")
+    if role_binding:
+        lines.append("\nRole → material bindings (MUST use these exact material_id values):")
+        for role, mids in sorted(role_binding.items()):
+            if mids:
+                lines.append(f"  {role} → {', '.join(mids)}")
+            else:
+                lines.append(f"  {role} → <NO MATERIAL AVAILABLE>")
+        lines.append("Each required role MUST be referenced by at least one cell.")
+    lines.append(f"\nAvailable materials:\n{material_summary}")
+    if prior_failures:
+        lines.append(f"\nERRORS TO FIX:")
+        for failure in prior_failures[-5:]:
+            lines.append(f"  - {failure}")
+    lines.append("")
+    lines.append("Required JSON schema (fill in real values):")
+    lines.append("```json")
+    lines.append(json.dumps({
+        "patch_type": "universes",
+        "universes": [{
+            "universe_id": item.universe_id,
+            "kind": item.kind,
+            "cells": [
+                {
+                    "id": "<cell_1>",
+                    "role": item.required_cell_roles[0] if item.required_cell_roles else "filler",
+                    "material_id": role_binding.get(
+                        item.required_material_roles[0], ["<material_id>"]
+                    )[0] if role_binding and item.required_material_roles else "<material_id>",
                     "region_kind": "cylinder",
                     "r_min_cm": 0.0,
                     "r_max_cm": 0.4,
@@ -388,10 +504,22 @@ def _generate_and_qualify_one_fragment(
     LLM call fails or qualification fails, ``record`` is ``None`` and the
     other return values carry the diagnostic.
     """
-    prompt = _build_fragment_prompt(
-        item, requirement=requirement, material_summary=material_summary,
-        prior_failures=prior_failures,
-    )
+    # Build role → material_id binding for the prompt.
+    role_binding = _build_role_binding_map(item, material_roles_by_id)
+
+    # Attempt 0: full prompt.  Attempt 1+: focused schema-repair prompt.
+    if attempt_index == 0:
+        prompt = _build_fragment_prompt(
+            item, requirement=requirement, material_summary=material_summary,
+            prior_failures=prior_failures,
+            role_binding=role_binding,
+        )
+    else:
+        prompt = _build_schema_repair_prompt(
+            item, requirement=requirement, material_summary=material_summary,
+            role_binding=role_binding,
+            prior_failures=prior_failures,
+        )
     frag_max = resolve_patch_output_budget(
         explicit=explicit_max_tokens, fragment_mode=True,
         provider_max_output=effective_max_tokens,
@@ -499,6 +627,7 @@ def generate_universes_patch(
     safe_output_ratio: float = 0.6,
     strict_structured: bool = False,
     max_merge_replays: int = 2,
+    inventory_universe_requirement_set: Any = None,
 ) -> PatchGenerationResult:
     """Generate a universes patch, using fragmentation when necessary.
 
@@ -560,11 +689,19 @@ def generate_universes_patch(
         except Exception:
             pass
 
-    requirement_set = extract_universe_requirements(
-        facts=facts_obj, materials=materials_obj,
-        canonical_task_plan=getattr(state, "canonical_task_plan", None),
-        confirmed_records=getattr(state, "plan_confirmed_plan_fact_records", None),
-    )
+    if inventory_universe_requirement_set is not None:
+        from .universe_fragment_generation import (
+            convert_inventory_to_generation_requirements,
+        )
+        requirement_set = convert_inventory_to_generation_requirements(
+            inventory_universe_requirement_set
+        )
+    else:
+        requirement_set = extract_universe_requirements(
+            facts=facts_obj, materials=materials_obj,
+            canonical_task_plan=getattr(state, "canonical_task_plan", None),
+            confirmed_records=getattr(state, "plan_confirmed_plan_fact_records", None),
+        )
 
     # Check for existing checkpoint session.
     session = _get_session(state, requirement_set.input_hash)
@@ -666,6 +803,19 @@ def generate_universes_patch(
         for item in manifest.items:
             if not item.contract_hash:
                 item.recompute_contract_hash()
+
+    # Material-role preflight: verify every required_material_role has at
+    # least one accepted material.  Without this the LLM is asked to
+    # generate a universe referencing a role that cannot be satisfied —
+    # guaranteed to fail qualification.  Block deterministically instead.
+    preflight_issues = _preflight_material_role_coverage(
+        manifest, material_roles_by_id,
+    )
+    if preflight_issues:
+        _save_session(state, session)
+        return PatchGenerationResult(
+            ok=False, patch_type=patch_type, issues=preflight_issues,
+        )
 
     # Resume verification: downgrade corrupted accepted fragments BEFORE
     # generating anything new.  Only the corrupted ones are regenerated.

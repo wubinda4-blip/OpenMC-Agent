@@ -192,6 +192,126 @@ def extract_universe_requirements(
 
 
 # ---------------------------------------------------------------------------
+# Inventory-driven requirement conversion (controlled mode)
+# ---------------------------------------------------------------------------
+
+_COMPONENT_KIND_TO_UNIVERSE_KIND: dict[str, str] = {
+    "fuel_pin": "fuel_pin",
+    "fuel": "fuel_pin",
+    "guide_tube": "guide_tube",
+    "instrument_tube": "instrument_tube",
+    "control_rod": "control_rod",
+    "absorber_insert": "control_rod",
+    "poison_insert": "pyrex_rod",
+    "pyrex_rod": "pyrex_rod",
+    "thimble_plug": "thimble_plug",
+    "water_pin": "water_cell",
+    "moderator_region": "water_cell",
+    "end_plug": "custom",
+    "gas_gap": "custom",
+    "plenum": "custom",
+    "spacer_grid": "custom",
+    "support_plate": "custom",
+    "nozzle": "custom",
+    "core_plate": "custom",
+    "dashpot": "custom",
+    "reflector": "custom",
+    "vessel_or_boundary": "custom",
+    "custom": "custom",
+}
+
+
+def convert_inventory_to_generation_requirements(
+    inventory_set: Any,
+) -> UniverseGenerationRequirementSet:
+    """Convert ``InventoryUniverseRequirementSet`` → ``UniverseGenerationRequirementSet``.
+
+    This is the controlled-mode path: no ``implicit:*`` requirements are
+    emitted.  Every requirement is source-backed by an inventory profile.
+
+    The inventory_set argument may be a Pydantic model or a plain dict
+    (as stored in ``state.metadata``); both are accepted.
+    """
+    # Accept both model instances and plain dicts.
+    if isinstance(inventory_set, dict):
+        requirements_data = inventory_set.get("requirements", [])
+        unresolved_data = inventory_set.get("unresolved_requirements", [])
+        inv_hash = inventory_set.get("inventory_hash", "")
+        mat_hash = inventory_set.get("material_requirement_set_hash", "")
+    else:
+        requirements_data = [r.model_dump(mode="json") for r in inventory_set.requirements]
+        unresolved_data = [r.model_dump(mode="json") for r in inventory_set.unresolved_requirements]
+        inv_hash = inventory_set.inventory_hash
+        mat_hash = inventory_set.material_requirement_set_hash
+
+    requirements: list[UniverseGenerationRequirement] = []
+    for rd in requirements_data:
+        component_kind = rd.get("component_kind", "custom")
+        profile_kind = rd.get("profile_kind", "")
+        kind = _COMPONENT_KIND_TO_UNIVERSE_KIND.get(component_kind, "custom")
+        geometry_profile_id = rd.get("geometry_profile_id", "")
+        fuel_variant_id = rd.get("fuel_variant_id")
+        # Build a deterministic universe_id from the profile id.
+        universe_id = geometry_profile_id or rd.get("requirement_id", "").replace(":", "_")
+        if fuel_variant_id and kind == "fuel_pin":
+            universe_id = f"u_fuel_{fuel_variant_id}"
+        elif kind == "guide_tube":
+            universe_id = "u_guide_tube"
+        elif kind == "instrument_tube":
+            universe_id = "u_instrument_tube"
+        source_ids = [rd.get("requirement_id", universe_id)] + list(rd.get("source_claim_ids", []))
+        requirements.append(UniverseGenerationRequirement(
+            requirement_id=rd.get("requirement_id", universe_id),
+            universe_id=universe_id,
+            kind=kind,
+            required_cell_roles=list(rd.get("required_cell_roles", [])),
+            required_material_roles=list(rd.get("required_material_roles", [])),
+            fuel_variant_id=fuel_variant_id,
+            localized_insert_requirement_id=rd.get("localized_insert_requirement_id"),
+            base_path_component_profile_id=geometry_profile_id,
+            protected_through_path_roles=list(rd.get("protected_through_path_roles", [])),
+            source_requirement_ids=source_ids,
+            resolved=rd.get("resolved", True),
+            metadata={
+                "component_kind": component_kind,
+                "profile_kind": profile_kind,
+                "required_layer_roles": list(rd.get("required_layer_roles", [])),
+                "source_span_ids": list(rd.get("source_span_ids", [])),
+                "requirement_source": "inventory",
+            },
+        ))
+
+    unresolved: list[UniverseGenerationRequirement] = []
+    for rd in unresolved_data:
+        unresolved.append(UniverseGenerationRequirement(
+            requirement_id=rd.get("requirement_id", ""),
+            universe_id=rd.get("geometry_profile_id", ""),
+            kind=_COMPONENT_KIND_TO_UNIVERSE_KIND.get(rd.get("component_kind", "custom"), "custom"),
+            required_material_roles=list(rd.get("required_material_roles", [])),
+            resolved=False,
+            metadata={"unresolved_fields": list(rd.get("unresolved_fields", []))},
+        ))
+
+    payload = canonical_json_dumps({
+        "reqs": [r.model_dump(mode="json") for r in requirements],
+        "inv_hash": inv_hash,
+        "mat_hash": mat_hash,
+        "source": "inventory",
+    })
+    input_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return UniverseGenerationRequirementSet(
+        requirements=requirements,
+        unresolved_requirements=unresolved,
+        input_hash=input_hash,
+        metadata={
+            "requirement_source": "inventory",
+            "inventory_hash": inv_hash,
+            "material_requirement_set_hash": mat_hash,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Manifest
 # ---------------------------------------------------------------------------
 
