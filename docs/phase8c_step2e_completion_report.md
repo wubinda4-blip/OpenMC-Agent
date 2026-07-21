@@ -16,4 +16,7 @@
 
 ## Canary boundary
 
-No real-model acceptance is claimed in this report. The next local VERA4 canary should run Facts-only first, then the focused fragmented Materials case, then Material–Universe. Acceptance requires Facts Gate `ACCEPTED`, no recoverable JSON or coverage-complete budget block in investigation, MU Gate reached, and zero truth violations.
+Real-model acceptance is now confirmed for the Facts gate.
+
+- **VERA4 Facts-only canary** (`data/runs/phase8c_step2e_canary_v2/`, `5889817`, GLM-5.2): Facts gate **ACCEPTED** via three-round closure. Round-0 fixed 4 aggregate counts (pyrex=80, thimble_plug=112, guide_tube=216, instrument_tube=9); round-1 fixed spacer_grid=72. Rereview passed with complete coverage and zero error findings. 21 LLM calls, 35.7min, 0 truth violations, 0 human interventions. Prior canary attempts (phase8b_step4b2_canary_run1/2) were both `BLOCKED_BY_GATE:facts`.
+- Next step: Material-Universe gate canary (Facts → MU). Materials fragmented pipeline is ready (verified via 2-material focused test in 4B-2). Universes fragmented pipeline verified in 4B-1. Full five-gate canary remains pending.
