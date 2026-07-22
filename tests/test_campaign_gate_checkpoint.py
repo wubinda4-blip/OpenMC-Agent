@@ -71,3 +71,15 @@ def test_facts_action_checkpoint_preserves_timeout_telemetry(tmp_path) -> None:
     assert action.status == "provider_timeout"
     assert action.billed_call_count == 1
     assert action.arguments_hash == "payload-hash"
+
+
+def test_completed_facts_action_rejects_sensitive_progress() -> None:
+    with pytest.raises(ValueError, match="sensitive/raw"):
+        FactsActionCheckpoint(
+            action_id="facts:planner",
+            tool_name="planner",
+            arguments_hash="h",
+            status="completed",
+            unfinished=False,
+            normalized_progress={"prompt_text": "must not persist"},
+        )

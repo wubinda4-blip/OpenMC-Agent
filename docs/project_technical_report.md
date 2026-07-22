@@ -1,8 +1,12 @@
 # OpenMC-Agent 技术报告与进度总览
 
-维护日期：2026-07-21
+维护日期：2026-07-22
 
 ### 2026-07-22
+
+- **Phase 8C Step 3B 修正状态**：accepted boundaries 按 `gate:facts` -> `patch:materials` -> `patch:universes` -> `gate:material_universe` 排序。checkpoint/store/callback 全部 fail-closed；hydrate 区分无 snapshot 与漂移/损坏，验证 `state_hash` 和 requirement/input/policy/git/structured-output hashes。Facts action checkpoint 只保存 hash、规范化 planner/tool progress、最小 source spans 与 claim；恢复会先校验上下文指纹，再重建 ledger/index，跳过已完成 action，provider timeout/未完成 action 单独重跑。
+- **验证结果**：全量非 OpenMC/非 LLM pytest、`compileall -q openmc_agent scripts` 与 fake benchmark `21/21` 均通过；新增 action interruption/resume 回归后 focused tests `52 passed`。Facts 与 MU 各完成一次 target-only `live-review`（最长 1800 s）；Facts 仅返回 source-gap warning，MU 完成 3 个 review scope 并产生可复现 finding 终态。baseline regression diff 未运行：`data/evals/workflow/baseline/evaluation_report.json` 不存在。
+- **风险/边界**：MU live finding 来自最小 v13 fixture 的未证实 composition/implicit-role 数据，尚未完成 replay 分类与闭合；因此按分层策略没有运行完整 VERA4 canary。replay 只支持 Facts 与 Material-Universe 两 gate，不改变材料、universe、物理或 renderer 合同。
 
 - **Phase 8C Step 3A MU Gate 可达性与恢复协议**：新增 gate checkpoint 数据合同与原子 JSON store，accepted gate 复用同时校验 input/evidence/inventory/structured-output policy/canonical hashes；任一漂移 fail-closed。Facts investigation provider deadline 独立记录为 `provider.timeout`，保留已计费调用、deadline、payload hash，禁止隐藏 schema retry；未完成 session 不写入可复用 cache。新增 checkpoint/timeout 回归覆盖；MU deterministic preflight 与 v12/v13 binding 回归保持零错误。
 - **验证结果**：focused MU/investigation/replay tests `24 passed`；全量非 OpenMC/非 LLM `3579 passed, 2 skipped, 392 deselected`；compileall、fake benchmark `21/21` 与 `git diff --check` clean。真实 VERA4 canary 已启动但在 provider 调用前被 `BLOCKED_BY_LLM_ENVIRONMENT` 阻塞（`glm` API 环境未配置），未宣称 gate 完成。

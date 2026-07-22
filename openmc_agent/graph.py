@@ -392,6 +392,8 @@ def build_plan_graph(
     plan_investigation_registry: Any = None,
     plan_investigation_policy_registry: Any = None,
     plan_investigation_output_dir: str | Path | None = None,
+    checkpoint_callback: Any = None,
+    facts_action_callback: Any = None,
 ):
     if checkpoint_path is not None and checkpointer is not None:
         raise ValueError("Use either checkpoint_path or checkpointer, not both")
@@ -442,6 +444,8 @@ def build_plan_graph(
             plan_investigation_registry=plan_investigation_registry,
             plan_investigation_policy_registry=plan_investigation_policy_registry,
             plan_investigation_output_dir=plan_investigation_output_dir,
+            checkpoint_callback=checkpoint_callback,
+            facts_action_callback=facts_action_callback,
         ),
     )
     graph.add_node(
@@ -1556,6 +1560,8 @@ def _run_incremental_plan_generation(
     plan_investigation_registry: Any = None,
     plan_investigation_policy_registry: Any = None,
     plan_investigation_output_dir: str | Path | None = None,
+    checkpoint_callback: Any = None,
+    facts_action_callback: Any = None,
 ) -> GraphState:
     """Run the incremental patch executor and inject the assembled plan.
 
@@ -1653,6 +1659,8 @@ def _run_incremental_plan_generation(
         plan_investigation_registry=plan_investigation_registry,
         plan_investigation_policy_registry=plan_investigation_policy_registry,
         plan_investigation_output_dir=plan_investigation_output_dir,
+        checkpoint_callback=checkpoint_callback,
+        facts_action_callback=facts_action_callback,
     )
 
     # Phase 7B/7C: save incremental artifacts for diagnosis (before state_updates).
@@ -1868,6 +1876,8 @@ def _make_generate_plan_node(
     llm_repair_model: str | None = None,
     llm_repair_allow_fallback: bool = True,
     llm_repair_max_proposals: int = 1,
+    checkpoint_callback: Any = None,
+    facts_action_callback: Any = None,
 ):
     def _generate_plan(state: GraphState) -> GraphState:
         if state.get("error"):
@@ -1913,6 +1923,8 @@ def _make_generate_plan_node(
                 plan_investigation_registry=plan_investigation_registry,
                 plan_investigation_policy_registry=plan_investigation_policy_registry,
                 plan_investigation_output_dir=plan_investigation_output_dir,
+                checkpoint_callback=checkpoint_callback,
+                facts_action_callback=facts_action_callback,
             )
             # If fallback was requested, strip marker and continue to monolithic.
             if inc_result.pop("_fallback_to_monolithic", False):
@@ -1954,6 +1966,8 @@ def _make_generate_plan_node(
                     plan_investigation_registry=plan_investigation_registry,
                     plan_investigation_policy_registry=plan_investigation_policy_registry,
                     plan_investigation_output_dir=plan_investigation_output_dir,
+                    checkpoint_callback=checkpoint_callback,
+                    facts_action_callback=facts_action_callback,
                 )
                 if inc_result.pop("_fallback_to_monolithic", False):
                     _progress(

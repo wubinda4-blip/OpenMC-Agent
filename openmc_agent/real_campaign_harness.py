@@ -81,6 +81,10 @@ from openmc_agent.plan_builder.closed_loop.campaign_checkpoint import (
     CampaignGateCheckpoint,
     CampaignCheckpointStore,
 )
+from openmc_agent.plan_builder.closed_loop.state_snapshot import (
+    make_boundary_checkpoint_callback,
+    make_facts_action_callback,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -658,6 +662,14 @@ class CampaignResumeFingerprint:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "CampaignResumeFingerprint":
+        data = dict(value)
+        for field_name in ("enabled_gates", "review_modes", "plan_investigation_patch_types"):
+            if field_name in data:
+                data[field_name] = tuple(data[field_name])
+        return cls(**data)
+
     def mismatches_against(self, other: "CampaignResumeFingerprint") -> list[str]:
         out: list[str] = []
         for field_name in (
@@ -1188,6 +1200,20 @@ def run_real_canary_once(
             "max_runtime_iterations": config.max_runtime_iterations,
         },
     }
+    checkpoint_store = CampaignCheckpointStore(run_dir / "campaign_checkpoint.json")
+    checkpoint_fingerprints = {
+        "requirement_hash": config.fingerprint.requirement_sha,
+        "input_hash": input_sha,
+        "policy_hash": config.fingerprint.plan_policy_hash,
+        "git_sha": git_sha,
+        "structured_output_policy_hash": config.fingerprint.structured_output_policy_hash,
+    }
+    graph_kwargs["checkpoint_callback"] = make_boundary_checkpoint_callback(
+        checkpoint_store,
+        campaign_id=config.run_id,
+        fingerprints=checkpoint_fingerprints,
+    )
+    graph_kwargs["facts_action_callback"] = make_facts_action_callback(checkpoint_store)
     # Phase 8A Step 4: pass plan investigation config + client to the
     # graph when enabled.  The graph forwards them to the incremental
     # executor's Facts investigation stage.
@@ -1235,6 +1261,8 @@ def run_real_canary_once(
         "records_path": str(run_dir / "simulation_runs.jsonl"),
         "use_incremental_executor": True,
     }
+    if config.metadata.get("resume_accepted_state") is not None:
+        initial_state["accepted_plan_build_state"] = config.metadata["resume_accepted_state"]
 
     ws: dict[str, Any] = {}
     try:
@@ -1744,6 +1772,7 @@ def run_real_canary_campaign(
         "material_policy": campaign.material_policy,
         "runtime_mode": campaign.runtime_supervisor_mode,
         "openmc_cross_sections_fingerprint": fingerprint.openmc_cross_sections_fingerprint,
+        "resume_fingerprint": fingerprint.to_dict(),
         "start_time": datetime.now(timezone.utc).isoformat(),
         "end_time": None,
         "environment": {
@@ -1789,27 +1818,8 @@ def run_real_canary_campaign(
     if campaign.resume and (output_dir / "campaign_manifest.json").exists():
         try:
             old_manifest = json.loads((output_dir / "campaign_manifest.json").read_text())
-            old_fingerprint = CampaignResumeFingerprint(
-                git_sha=old_manifest.get("git_sha", ""),
-                input_sha=old_manifest.get("input_sha", ""),
-                requirement_sha=old_manifest.get("requirement_sha", ""),
-                human_answer_sha=old_manifest.get("human_answer_sha", ""),
-                model=old_manifest.get("model", ""),
-                provider=old_manifest.get("provider", ""),
-                reasoning_effort="default",
-                output_mode="auto",
-                plan_policy_hash=old_manifest.get("policy_hash", ""),
-                enabled_gates=tuple(old_manifest.get("enabled_gates", [])),
-                review_modes=tuple(old_manifest.get("review_modes", [])),
-                universes_generation_mode=old_manifest.get("universes_generation_mode", "auto"),
-                universe_fragment_max_tokens=old_manifest.get("universe_fragment_max_tokens"),
-                large_patch_safe_output_ratio=float(old_manifest.get("large_patch_safe_output_ratio", 0.6)),
-                strict_structured_patch_output=bool(old_manifest.get("strict_structured_patch_output", True)),
-                material_policy=old_manifest.get("material_policy", "strict"),
-                runtime_mode=old_manifest.get("runtime_mode", "deterministic"),
-                openmc_cross_sections_fingerprint=old_manifest.get(
-                    "openmc_cross_sections_fingerprint", ""
-                ),
+            old_fingerprint = CampaignResumeFingerprint.from_dict(
+                old_manifest["resume_fingerprint"]
             )
             mismatches = fingerprint.mismatches_against(old_fingerprint)
             if mismatches:
@@ -1820,8 +1830,30 @@ def run_real_canary_campaign(
             old_results_path = output_dir / "campaign_results.json"
             if old_results_path.exists():
                 results = json.loads(old_results_path.read_text())
-        except Exception:
-            pass
+        except Exception as exc:
+            manifest["aggregate_status"] = "CONFIG_MISMATCH"
+            manifest["resume_mismatches"] = ["resume_fingerprint"]
+            manifest["resume_error"] = str(exc)[:500]
+            _write_json_atomic(output_dir / "campaign_manifest.json", manifest)
+            return manifest
+
+    manifest["completed_runs"] = len(results)
+    manifest["successful_runs"] = sum(
+        1 for r in results
+        if "PASSED" in r.get("final_disposition", "") and "FAIL" not in r.get("final_disposition", "")
+    )
+    manifest["failed_runs"] = manifest["completed_runs"] - manifest["successful_runs"]
+    completed_indices = {
+        int(str(r.get("run_id", "0")).removeprefix("run_"))
+        for r in results
+        if str(r.get("run_id", "")).removeprefix("run_").isdigit()
+    }
+    manifest["pending_runs"] = [
+        i for i in range(1, campaign.runs + 1) if i not in completed_indices
+    ]
+    _write_json_atomic(output_dir / "campaign_manifest.json", manifest)
+    _write_json_atomic(output_dir / "campaign_results.json", results)
+    _write_json_atomic(output_dir / "llm_budget.json", llm_budget.to_dict())
 
     # Execute runs.
     for i in range(1, campaign.runs + 1):
@@ -1876,6 +1908,24 @@ def run_real_canary_campaign(
             plan_investigation_require_source_backed_evidence=campaign.plan_investigation_require_source_backed_evidence,
             plan_investigation_max_tokens=campaign.plan_investigation_max_tokens,
         )
+        if campaign.resume:
+            checkpoint_store = CampaignCheckpointStore(run_dir / "campaign_checkpoint.json")
+            try:
+                snapshot = checkpoint_store.hydrate_accepted_state(
+                    requirement_hash=fingerprint.requirement_sha,
+                    input_hash=input_sha,
+                    policy_hash=fingerprint.plan_policy_hash,
+                    git_sha=git_sha,
+                    structured_output_policy_hash=fingerprint.structured_output_policy_hash,
+                )
+            except ValueError as exc:
+                manifest["aggregate_status"] = "CONFIG_MISMATCH"
+                manifest["resume_mismatches"] = ["accepted_state_snapshot"]
+                manifest["resume_error"] = str(exc)[:500]
+                _write_json_atomic(output_dir / "campaign_manifest.json", manifest)
+                return manifest
+            if snapshot is not None:
+                run_config.metadata["resume_accepted_state"] = snapshot.plan_build_state
 
         result = run_real_canary_once(
             run_config,

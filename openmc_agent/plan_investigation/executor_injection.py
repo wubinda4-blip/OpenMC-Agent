@@ -467,6 +467,7 @@ def run_facts_investigation_stage(
     artifact_output_dir: Path | None = None,
     add_event: Callable[[str, str, dict[str, Any]], None] | None = None,
     feature_contract: Any = None,
+    action_callback: Callable[..., None] | None = None,
 ) -> InvestigationStageOutcome:
     """Run the Facts investigation stage (Phase 8A Step 4 wrapper).
 
@@ -502,6 +503,7 @@ def run_facts_investigation_stage(
         feature_contract=feature_contract,
         artifact_output_dir=artifact_output_dir,
         add_event=add_event,
+        action_callback=action_callback,
     )
 
 
@@ -537,6 +539,7 @@ def run_patch_investigation_stage(
     feature_contract: Any = None,
     artifact_output_dir: Path | None = None,
     add_event: Callable[[str, str, dict[str, Any]], None] | None = None,
+    action_callback: Callable[..., None] | None = None,
 ) -> InvestigationStageOutcome:
     """Run the investigation stage for any patch type (facts/materials/universes).
 
@@ -649,6 +652,7 @@ def run_patch_investigation_stage(
         material_requirement_set=material_requirement_set,
         universe_requirement_set=universe_requirement_set,
         feature_contract=feature_contract,
+        action_callback=action_callback,
     )
     if result is None:
         return InvestigationStageOutcome(

@@ -20,6 +20,7 @@
 - **检索增强**：本地 OpenMC Python API 内省 + few-shot 示例注入到生成 prompt。
 - **可观测**：每次运行产出 `transcript.json`、`capability_report.json`、`TODO.md` 与 JSONL 运行记录。
 - **Controlled investigation and structured repair**: Facts / Materials / Universes investigation and all five gate reviewers share a bounded two-attempt JSON/schema transaction; the business payload hash is fixed, and redundant tools stop once semantic evidence coverage is complete while uncovered targets remain fail-closed.
+- **Phase 8C Step 3B checkpoint/replay**: accepted boundaries are persisted as sanitized, state-hashed snapshots in chronological order (`gate:facts` -> `patch:materials` -> `patch:universes` -> `gate:material_universe`). Resume rejects corruption or fingerprint drift; completed Facts actions persist only normalized replay progress and are reused without another planner/tool call. Gate replay reconstructs `PlanBuildState`, runs deterministic Facts/MU preflight, and routes recorded/live review through production normalization. Full-canary acceptance remains a separate milestone.
 
 ---
 

@@ -281,7 +281,7 @@ class TestExecutorRevisionClosure:
             "Operating state identifier is blank/unspecified in source text."
         ]
 
-    def test_two_repairs_close_in_one_facts_gate_call(self, monkeypatch) -> None:
+    def test_two_repairs_close_in_one_facts_gate_call(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr(executor, "default_patch_task_order", lambda _: ["facts"])
         monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: ["facts"])
         monkeypatch.setattr(executor, "assemble_state_if_ready", lambda state, **_: state.model_copy(update={"assembled_plan": {"ok": True}}))
@@ -307,7 +307,7 @@ class TestExecutorRevisionClosure:
             findings = [] if not path else [{"code": code, "severity": "error", "category": "source_coverage", "message": "missing", "evidence_hashes": [evidence_hash], "affected_json_paths": [path], "repairable_by_llm": True, "requires_human": False, "confidence": 0.9}]
             return json.dumps({"review_status": "complete_with_gaps" if findings else "complete", "reviewed_evidence_hashes": [evidence_hash] if evidence_hash else [], "coverage_summary": {}, "findings": findings})
 
-        result = run_incremental_planning(requirement="small source", state=PlanBuildState(state_id="closure", requirement_text="small source"), llm_client=patch_llm, plan_loop_policy={"mode": "controlled"}, plan_reviewer_client=reviewer, plan_repair_client=repair_llm)
+        result = run_incremental_planning(requirement="small source", state=PlanBuildState(state_id="closure", requirement_text="small source"), llm_client=patch_llm, plan_loop_policy={"mode": "controlled"}, plan_reviewer_client=reviewer, plan_repair_client=repair_llm, plan_loop_output_dir=tmp_path)
         assert result.ok
         stage = result.state.plan_loop_stages["plan_gate_facts"]
         assert stage.status is PlanStageStatus.ACCEPTED
@@ -315,3 +315,16 @@ class TestExecutorRevisionClosure:
         assert stage.metadata["facts_revision_closure"]["rounds"] == 2
         repaired = [item for item in result.state.patches.values() if item.patch_type == "facts" and item.status == "valid"][-1]
         assert repaired.content["expected_pyrex_count"] == repaired.content["expected_thimble_plug_count"] == 1
+        artifacts = tmp_path / "incremental" / "plan_closed_loop"
+        assert (artifacts / "facts_rereview_result_000.json").exists()
+        assert (artifacts / "facts_rereview_result_001.json").exists()
+        gate_result = json.loads((artifacts / "facts_gate_result.json").read_text())
+        assert gate_result["initial_decision"]["action"] == "revise_current_patch"
+        assert [item["accepted_for_commit"] for item in gate_result["candidate_validation"]["rounds"]] == [False, True]
+        assert gate_result["candidate_commit"]["committed"] is True
+        assert gate_result["final_gate_status"] == {
+            "accepted": True,
+            "failure_code": None,
+            "status": "accepted",
+            "terminal_reason": "candidate_committed_and_accepted",
+        }

@@ -1713,6 +1713,8 @@ def run_incremental_planning(
     plan_investigation_registry: Any = None,
     plan_investigation_policy_registry: Any = None,
     plan_investigation_output_dir: str | Path | None = None,
+    checkpoint_callback: Any = None,
+    facts_action_callback: Any = None,
 ) -> IncrementalExecutionResult:
     """Run the full incremental planning pipeline.
 
@@ -1825,6 +1827,13 @@ def run_incremental_planning(
     required = required_patch_types_for_state(state)
     advisory_enabled = policy.mode is PlanLoopMode.ADVISORY
     artifact_writer = PlanLoopArtifactWriter(plan_loop_output_dir, policy.artifact_subdir)
+
+    def _persist_checkpoint(boundary: str) -> None:
+        # Phase 8C Step 3B: persist a sanitized snapshot at accepted
+        # boundaries.  No-op when no callback was supplied (legacy path).
+        if checkpoint_callback is None:
+            return
+        checkpoint_callback(boundary, state)
 
     def _write_advisory_artifacts() -> dict[str, Any] | None:
         if not advisory_enabled:
@@ -2000,6 +2009,37 @@ def run_incremental_planning(
         stage = _facts_stage()
         if stage is None:
             return None
+        initial_decision_result: dict[str, Any] | None = None
+        candidate_validation_rounds: list[dict[str, Any]] = []
+        candidate_commit_result: dict[str, Any] = {
+            "attempted": False,
+            "committed": False,
+        }
+
+        def _write_facts_gate_result(
+            terminal_reason: str,
+            *,
+            failure_code: str | None = None,
+        ) -> None:
+            payload = {
+                "gate_id": "facts",
+                "initial_decision": initial_decision_result,
+                "candidate_validation": {
+                    "attempted": bool(candidate_validation_rounds),
+                    "rounds": candidate_validation_rounds,
+                    "final": candidate_validation_rounds[-1] if candidate_validation_rounds else None,
+                },
+                "candidate_commit": candidate_commit_result,
+                "final_gate_status": {
+                    "status": stage.status.value,
+                    "accepted": stage.status is PlanStageStatus.ACCEPTED,
+                    "terminal_reason": terminal_reason,
+                    "failure_code": failure_code,
+                },
+            }
+            path = artifact_writer.write_facts_gate_result(payload)
+            if path and path not in state.plan_loop_artifacts:
+                state.plan_loop_artifacts.append(path)
         # Phase 8C Step 1: accepted_input_hash replay protection.
         # The Facts gate was the only gate that did not save
         # accepted_input_hash (audit defect).  When the input is unchanged
@@ -2027,10 +2067,12 @@ def run_incremental_planning(
         if budget is not None:
             transition_stage(stage, PlanStageStatus.BLOCKED)
             state.add_event("planning.closed_loop_budget_exhausted", "facts gate budget exhausted before review", {"budget": budget})
+            _write_facts_gate_result("budget_exhausted", failure_code="planning.closed_loop.budget_exhausted")
             return IncrementalExecutionIssue(code="planning.closed_loop.budget_exhausted", severity="error", message=f"facts gate budget exhausted: {budget}", patch_type="facts")
         state.add_event("planning.facts_gate_started", "facts evidence review gate started", {})
         facts_env = next((item for item in state.patches.values() if item.patch_type == "facts" and item.status == "valid"), None)
         if facts_env is None:
+            _write_facts_gate_result("missing_patch", failure_code="planning.facts_gate_missing_patch")
             return IncrementalExecutionIssue(code="planning.facts_gate_missing_patch", severity="error", message="facts patch unavailable for review", patch_type="facts")
         # Feature/Facts reconciliation happens before any independent reviewer.
         # It is deterministic and therefore cannot be bypassed by a fluent but
@@ -2133,13 +2175,16 @@ def run_incremental_planning(
             state.add_event("planning.facts_review_failed", code, {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
+                _write_facts_gate_result("review_source_too_large", failure_code=code)
                 return IncrementalExecutionIssue(code=code, severity="error", message="source exceeds facts review coverage budget", patch_type="facts")
         if plan_reviewer_client is None:
             state.add_event("planning.facts_reviewer_unavailable", "facts reviewer client unavailable", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
+                _write_facts_gate_result("reviewer_unavailable", failure_code="planning.facts_reviewer_unavailable")
                 return IncrementalExecutionIssue(code="planning.facts_reviewer_unavailable", severity="error", message="controlled facts review requires a reviewer", patch_type="facts")
             transition_stage(stage, PlanStageStatus.REVIEW_FAILED)
+            _write_facts_gate_result("reviewer_unavailable")
             return None
         state.add_event("planning.facts_review_started", "independent facts critic called", {"pack_count": len(packs)})
         review = run_facts_review(evidence_packs=packs, reviewer_client=plan_reviewer_client, state=state, policy=policy)
@@ -2218,6 +2263,7 @@ def run_incremental_planning(
             state.add_event("planning.facts_review_failed", review.error or review.failure_code or "facts_review.schema_invalid", {})
             if policy.mode is PlanLoopMode.CONTROLLED:
                 transition_stage(stage, PlanStageStatus.BLOCKED)
+                _write_facts_gate_result("initial_review_unusable", failure_code=review.failure_code or "facts_review.schema_invalid")
                 return IncrementalExecutionIssue(code=review.failure_code or "facts_review.schema_invalid", severity="error", message="facts review output was unusable", patch_type="facts")
         review_deterministic_issues = list(consistency.issues) + list(contract_preflight_issues) + [f.model_dump(mode="json") for f in evidence_consistency_findings if hasattr(f, "model_dump")] + ([{"code": "facts_review.coverage_incomplete", "severity": "error", "blocking": True}]
                                        if not review.coverage_complete else [])
@@ -2230,6 +2276,7 @@ def run_incremental_planning(
             allowed_actions_snapshot=actions or [PlanReviewAction.FAIL_CLOSED], decided_by="deterministic",
         )
         record_decision(state, stage, decision)
+        initial_decision_result = decision.model_dump(mode="json")
         decision_path = artifact_writer._write("facts_review_decision.json", decision)
         if decision_path:
             state.plan_loop_artifacts.append(decision_path)
@@ -2237,6 +2284,7 @@ def run_incremental_planning(
         if policy.mode is PlanLoopMode.ADVISORY:
             transition_stage(stage, PlanStageStatus.REVIEWED if review.ok and review.coverage_complete else PlanStageStatus.REVIEW_FAILED)
             state.add_event("planning.facts_review_advisory_completed", "facts review recorded without plan mutation", {"review_success": review.ok and review.coverage_complete})
+            _write_facts_gate_result("advisory_review_completed")
             return None
         if action is PlanReviewAction.APPROVE:
             # Acceptance is bound to the reconciled scope and a post-Facts
@@ -2273,6 +2321,10 @@ def run_incremental_planning(
                 if not inventory_status.get("compiled"):
                     if _investigation_config_resolved.is_controlled:
                         transition_stage(stage, PlanStageStatus.BLOCKED)
+                        _write_facts_gate_result(
+                            "inventory_compilation_failed",
+                            failure_code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
+                        )
                         return IncrementalExecutionIssue(
                             code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
                             severity="error",
@@ -2287,6 +2339,8 @@ def run_incremental_planning(
                         "advisory mode: inventory compilation failed, continuing with legacy path",
                         {"error": inventory_status.get("error", "")[:160]},
                     )
+            _write_facts_gate_result("initial_decision_approved")
+            _persist_checkpoint("gate:facts")
             return None
         if action is PlanReviewAction.ASK_HUMAN:
             from .closed_loop.facts_human import build_facts_human_question
@@ -2298,6 +2352,7 @@ def run_incremental_planning(
                         state.plan_human_questions[question.question_id] = question
             artifact_writer._write("facts_human_questions.json", list(state.plan_human_questions.values()))
             state.add_event("planning.facts_awaiting_human", "facts ambiguity requires typed confirmation", {"question_count": len(state.plan_human_questions)})
+            _write_facts_gate_result("awaiting_human", failure_code="planning.facts_awaiting_human")
             return IncrementalExecutionIssue(code="planning.facts_awaiting_human", severity="error", message="facts gate awaiting human confirmation", patch_type="facts")
         if action is PlanReviewAction.REVISE_CURRENT_PATCH and plan_repair_client is not None:
             from .closed_loop.facts_revision import (
@@ -2437,18 +2492,45 @@ def run_incremental_planning(
                 stage.validation_count += 1
                 transition_stage(stage, PlanStageStatus.REVIEWING)
                 stage.review_count += 1
+                rereview_packs = build_facts_evidence_packs(
+                    requirement_text=requirement,
+                    facts_patch=evaluation.candidate,
+                    confirmed_facts=state.confirmed_facts,
+                    planning_metadata=state.metadata,
+                    policy=policy,
+                )
+                for index, pack in enumerate(rereview_packs):
+                    pack_path = artifact_writer._write(
+                        f"facts_rereview_evidence_pack_{closure_round:03d}_{index:03d}.json",
+                        pack,
+                    )
+                    prompt_path = artifact_writer.write_text(
+                        f"facts_rereview_prompt_{closure_round:03d}_{index:03d}.txt",
+                        build_facts_review_prompt(pack),
+                    )
+                    for path in (pack_path, prompt_path):
+                        if path:
+                            state.plan_loop_artifacts.append(path)
                 rereview = run_facts_review(
-                    evidence_packs=build_facts_evidence_packs(
-                        requirement_text=requirement,
-                        facts_patch=evaluation.candidate,
-                        confirmed_facts=state.confirmed_facts,
-                        planning_metadata=state.metadata,
-                        policy=policy,
-                    ),
+                    evidence_packs=rereview_packs,
                     reviewer_client=plan_reviewer_client,
                     state=state,
                     policy=policy,
                 )
+                for index, raw_output in enumerate(rereview.raw_outputs):
+                    path = artifact_writer._write(
+                        f"facts_rereview_raw_{closure_round:03d}_{index:03d}.json",
+                        {"raw": raw_output},
+                    )
+                    if path:
+                        state.plan_loop_artifacts.append(path)
+                for index, output in enumerate(rereview.outputs):
+                    path = artifact_writer._write(
+                        f"facts_rereview_normalized_{closure_round:03d}_{index:03d}.json",
+                        output,
+                    )
+                    if path:
+                        state.plan_loop_artifacts.append(path)
                 candidate_consistency = run_facts_consistency_preflight(
                     feature_contract=contract,
                     facts_patch=evaluation.candidate,
@@ -2469,6 +2551,29 @@ def run_incremental_planning(
                 accept_candidate = rereview_passing or (
                     rereview_schema_failed and candidate_consistency_ok
                 )
+                validation_result = {
+                    "round": closure_round,
+                    "proposal_id": proposal.proposal_id,
+                    "candidate_hash": evaluation.candidate_hash,
+                    "revision_evaluation_accepted": evaluation.accepted,
+                    "candidate_consistency_ok": candidate_consistency_ok,
+                    "rereview_ok": rereview.ok,
+                    "rereview_coverage_complete": rereview.coverage_complete,
+                    "rereview_error_finding_count": sum(
+                        item.severity.value == "error" for item in rereview.findings
+                    ),
+                    "rereview_failure_code": rereview.failure_code,
+                    "accepted_for_commit": accept_candidate,
+                }
+                candidate_validation_rounds.append(validation_result)
+                for filename, payload in (
+                    (f"facts_rereview_findings_{closure_round:03d}.json", rereview.findings),
+                    (f"facts_rereview_candidate_consistency_{closure_round:03d}.json", candidate_consistency),
+                    (f"facts_rereview_result_{closure_round:03d}.json", validation_result),
+                ):
+                    path = artifact_writer._write(filename, payload)
+                    if path:
+                        state.plan_loop_artifacts.append(path)
                 state.facts_revision_history.append({
                     "round": closure_round,
                     "proposal_id": proposal.proposal_id,
@@ -2477,6 +2582,13 @@ def run_incremental_planning(
                     "committed": accept_candidate,
                 })
                 if accept_candidate:
+                    candidate_commit_result.update({
+                        "attempted": True,
+                        "committed": False,
+                        "round": closure_round,
+                        "proposal_id": proposal.proposal_id,
+                        "candidate_hash": evaluation.candidate_hash,
+                    })
                     before_path = artifact_writer._write("facts_patch_before.json", facts_env.content)
                     after_path = artifact_writer._write("facts_patch_after.json", evaluation.candidate)
                     for path in (before_path, after_path):
@@ -2501,6 +2613,8 @@ def run_incremental_planning(
                         },
                     )
                     state.add_patch(repaired)
+                    candidate_commit_result["committed"] = True
+                    candidate_commit_result["patch_id"] = repaired.patch_id
                     record_findings(state, stage, rereview.findings)
                     transition_stage(stage, PlanStageStatus.ACCEPTED)
                     stage.metadata["accepted_input_hash"] = facts_gate_input_hash(state, policy=policy)
@@ -2529,6 +2643,10 @@ def run_incremental_planning(
                         )
                         if not inventory_status.get("compiled") and _investigation_config_resolved.is_controlled:
                             transition_stage(stage, PlanStageStatus.BLOCKED)
+                            _write_facts_gate_result(
+                                "candidate_committed_inventory_compilation_failed",
+                                failure_code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
+                            )
                             return IncrementalExecutionIssue(
                                 code=inventory_status.get("failure_code") or "planning.inventory.compilation_failed",
                                 severity="error",
@@ -2538,6 +2656,8 @@ def run_incremental_planning(
                                 ),
                                 patch_type="facts",
                             )
+                    _write_facts_gate_result("candidate_committed_and_accepted")
+                    _persist_checkpoint("gate:facts")
                     return None
 
                 if not rereview.ok:
@@ -2592,6 +2712,7 @@ def run_incremental_planning(
                 "facts revision closure did not reach a clean rereview",
                 {"failure_code": closure_failure_code, "rounds": closure_rounds_completed},
             )
+            _write_facts_gate_result("revision_closure_blocked", failure_code=closure_failure_code)
             return IncrementalExecutionIssue(
                 code=closure_failure_code,
                 severity="error",
@@ -2600,6 +2721,7 @@ def run_incremental_planning(
             )
         transition_stage(stage, PlanStageStatus.BLOCKED)
         state.add_event("planning.facts_gate_blocked", "facts gate blocked by deterministic policy", {"action": action.value})
+        _write_facts_gate_result("initial_decision_blocked", failure_code="planning.facts_gate_blocked")
         return IncrementalExecutionIssue(code="planning.facts_gate_blocked", severity="error", message=f"facts gate action={action.value}", patch_type="facts")
 
     repair_request = state.metadata.pop("plan_validation_repair", None)
@@ -3212,6 +3334,7 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.ACCEPTED)
             stage.metadata["accepted_input_hash"] = input_hash
             state.add_event("planning.material_universe_gate_accepted", "material-universe gate accepted", {"input_hash": input_hash})
+            _persist_checkpoint("gate:material_universe")
             return None
         # Route blocking findings through Phase-3B retry.
         human_required = any(f.requires_human for f in error_findings)
@@ -3932,6 +4055,7 @@ def run_incremental_planning(
                     else (Path(plan_loop_output_dir) if plan_loop_output_dir else None)
                 ),
                 add_event=lambda evt, msg, data: state.add_event(evt, msg, data),
+                action_callback=facts_action_callback,
             )
             # Step 4 only runs the Facts investigation; the shared
             # SourceIndex + Ledger caches are reserved for Step 5+ when
@@ -4085,6 +4209,7 @@ def run_incremental_planning(
                     else (Path(plan_loop_output_dir) if plan_loop_output_dir else None)
                 ),
                 add_event=lambda evt, msg, data: state.add_event(evt, msg, data),
+                action_callback=facts_action_callback,
             )
             if investigation_outcome.blocked:
                 block_code = investigation_outcome.block_code or (
@@ -4250,6 +4375,10 @@ def run_incremental_planning(
                         },
                     )
             state.add_patch(result.envelope)
+            if result.envelope.status == "valid" and patch_type == "materials":
+                _persist_checkpoint("patch:materials")
+            if result.envelope.status == "valid" and patch_type == "universes":
+                _persist_checkpoint("patch:universes")
             if patch_type == "facts":
                 facts_gate_issue = _run_facts_gate()
                 if facts_gate_issue is not None:

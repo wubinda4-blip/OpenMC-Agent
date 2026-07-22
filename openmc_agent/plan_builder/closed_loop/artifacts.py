@@ -67,6 +67,10 @@ class PlanLoopArtifactWriter:
     def write_human_questions(self, questions: Any) -> str | None:
         return self._write("human_questions.json", _payload(questions))
 
+    def write_facts_gate_result(self, result: dict[str, Any]) -> str | None:
+        """Write the terminal Facts gate summary without replacing legacy artifacts."""
+        return self._write("facts_gate_result.json", result)
+
     def write_gate_registry(self) -> str | None:
         return self._write("gate_registry.json", {
             "contract_version": PLAN_CLOSED_LOOP_CONTRACT_VERSION,

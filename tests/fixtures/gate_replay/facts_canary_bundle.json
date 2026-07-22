@@ -1,0 +1,62 @@
+{
+  "bundle_schema_version": "1.0",
+  "snapshot_schema_version": "1.0",
+  "gate_id": "facts",
+  "campaign_id": "canary_facts_v12",
+  "upstream_accepted": {},
+  "canonical_hashes": {
+    "input": "facts-input-hash-aaaa",
+    "policy": "facts-policy-hash-bbbb"
+  },
+  "normalized_state": {
+    "state_id": "pbs_facts_canary",
+    "requirement_text": "Build a single-assembly PWR benchmark pin cell.",
+    "planning_mode": "incremental",
+    "extracted_facts": {
+      "model_scope": "single_assembly",
+      "fuel_variant": "uo2",
+      "assembly_count": 1
+    },
+    "confirmed_facts": {
+      "model_scope": "single_assembly"
+    },
+    "patches": {
+      "patch_facts_001": {
+        "patch_id": "patch_facts_001",
+        "patch_type": "facts",
+        "schema_version": "v1",
+        "content": {
+          "patch_type": "facts",
+          "benchmark_id": "PWR_PIN",
+          "model_scope": "single_assembly",
+          "fuel_variant": "uo2"
+        },
+        "source": "llm",
+        "status": "valid"
+      }
+    },
+    "plan_loop_stages": {
+      "plan_gate_facts": {
+        "stage_id": "plan_gate_facts",
+        "gate_id": "facts",
+        "status": "accepted",
+        "metadata": {"accepted_input_hash": "facts-input-hash-aaaa"}
+      }
+    }
+  },
+  "recorded_reviews": [
+    {
+      "review_status": "complete",
+      "findings": [],
+      "reviewed_evidence_hashes": [],
+      "coverage_summary": {}
+    }
+  ],
+  "recorded_inventory": {
+    "planning_geometry_inventory": {
+      "components": ["fuel", "cladding", "coolant"]
+    }
+  },
+  "bundle_hash": "",
+  "created_at": "2026-07-22T00:00:00+00:00"
+}

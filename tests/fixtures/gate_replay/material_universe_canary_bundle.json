@@ -1,0 +1,67 @@
+{
+  "bundle_schema_version": "1.0",
+  "snapshot_schema_version": "1.0",
+  "gate_id": "material_universe",
+  "campaign_id": "canary_mu_v13",
+  "upstream_accepted": {
+    "facts": true
+  },
+  "canonical_hashes": {
+    "input": "mu-input-hash-cccc",
+    "policy": "mu-policy-hash-dddd",
+    "facts": "facts-input-hash-aaaa"
+  },
+  "normalized_state": {
+    "state_id": "pbs_mu_canary",
+    "requirement_text": "Build a single-assembly PWR benchmark pin cell.",
+    "planning_mode": "incremental",
+    "patches": {
+      "patch_materials_001": {
+        "patch_id": "patch_materials_001",
+        "patch_type": "materials",
+        "schema_version": "v1",
+        "content": {
+          "materials": [
+            {"material_id": "fuel", "name": "fuel", "role": "fuel", "composition": {"U235": 0.045}, "composition_basis": "atom_frac", "composition_status": "confirmed", "density_g_cm3": 10.0, "density_status": "confirmed"}
+          ]
+        },
+        "source": "llm",
+        "status": "valid"
+      },
+      "patch_universes_001": {
+        "patch_id": "patch_universes_001",
+        "patch_type": "universes",
+        "schema_version": "v1",
+        "content": {
+          "universes": [
+            {"universe_id": "u_fuel", "kind": "fuel_pin", "cells": [{"id": "fuel_cell", "role": "fuel", "material_id": "fuel", "region_kind": "cylinder", "r_max_cm": 0.4}, {"id": "coolant_cell", "role": "coolant", "region_kind": "background"}]}
+          ]
+        },
+        "source": "llm",
+        "status": "valid"
+      }
+    },
+    "plan_loop_stages": {
+      "plan_gate_material_universe": {
+        "stage_id": "plan_gate_material_universe",
+        "gate_id": "material_universe",
+        "status": "accepted",
+        "metadata": {"accepted_input_hash": "mu-input-hash-cccc"}
+      }
+    }
+  },
+  "recorded_reviews": [
+    {
+      "review_status": "complete",
+      "findings": [],
+      "reviewed_ids": [],
+      "reviewed_evidence_refs": []
+    }
+  ],
+  "recorded_inventory": {
+    "planning_material_requirement_set": {"requirements": ["fuel"]},
+    "planning_universe_requirement_set": {"requirements": ["u_fuel"]}
+  },
+  "bundle_hash": "",
+  "created_at": "2026-07-22T00:00:00+00:00"
+}

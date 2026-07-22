@@ -27,6 +27,8 @@ from openmc_agent.plan_investigation.tool_registry import (
     TOOL_NAME_SEARCH_SOURCE_INDEX,
     build_default_step2_registry,
 )
+from openmc_agent.plan_builder.closed_loop.campaign_checkpoint import CampaignCheckpointStore
+from openmc_agent.plan_builder.closed_loop.state_snapshot import make_facts_action_callback
 
 
 def _ctx(text="alpha\nbeta\ngamma\n"):
@@ -62,6 +64,55 @@ def test_agent_executes_valid_actions_and_produces_evidence() -> None:
     # The claim is queryable in the ledger.
     matches = find_claims(ld, predicate="search_hit")
     assert len(matches) >= 1
+
+
+def test_action_checkpoint_resume_reuses_completed_planner_and_tools(tmp_path) -> None:
+    """An interruption after the normalized planner result is durable must
+    not repeat the planner or already-completed deterministic tool actions.
+    """
+
+    store = CampaignCheckpointStore(tmp_path / "campaign_checkpoint.json")
+    durable_callback = make_facts_action_callback(store)
+    interrupted = [False]
+
+    def crash_after_planner(**kwargs) -> None:
+        durable_callback(**kwargs)
+        if kwargs["tool_name"] == "planner" and not interrupted[0]:
+            interrupted[0] = True
+            raise RuntimeError("simulated process interruption")
+
+    setattr(crash_after_planner, "restore_action", durable_callback.restore_action)
+    planner_calls = [0]
+
+    def fake_llm(prompt: str) -> str:
+        if "Facts extraction agent" in prompt:
+            return json.dumps({"claims": []})
+        planner_calls[0] += 1
+        return json.dumps({"actions": []})
+
+    _, _, registry, first_context = _ctx("assembly alpha\n")
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        InvestigationAgent(
+            registry=registry,
+            llm_client=fake_llm,
+            action_callback=crash_after_planner,
+        ).run(first_context)
+    assert planner_calls == [1]
+
+    # A fresh process reconstructs the source index and ledger.  Completed
+    # baseline actions and the normalized planner plan are restored from the
+    # checkpoint rather than invoking their original work again.
+    _, _, resumed_registry, resumed_context = _ctx("assembly alpha\n")
+    result = InvestigationAgent(
+        registry=resumed_registry,
+        llm_client=fake_llm,
+        action_callback=make_facts_action_callback(
+            CampaignCheckpointStore(tmp_path / "campaign_checkpoint.json")
+        ),
+    ).run(resumed_context)
+    assert result.completed
+    assert planner_calls == [1]
+    assert len(result.tool_calls) == 3
 
 
 def test_agent_blocks_on_invalid_json() -> None:

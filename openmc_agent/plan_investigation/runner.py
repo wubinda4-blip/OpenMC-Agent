@@ -275,6 +275,7 @@ def run_investigation_stage(
     material_requirement_set: Any = None,
     universe_requirement_set: Any = None,
     feature_contract: Any = None,
+    action_callback: Callable[..., None] | None = None,
 ) -> InvestigationResult | None:
     """Run the optional investigation stage.
 
@@ -377,7 +378,7 @@ def run_investigation_stage(
         universe_requirement_set=universe_requirement_set,
         feature_contract=feature_contract,
     )
-    agent = InvestigationAgent(registry=registry, llm_client=llm_client)
+    agent = InvestigationAgent(registry=registry, llm_client=llm_client, action_callback=action_callback)
     result = agent.run(context)
 
     # Controlled post-check: require source-backed evidence.

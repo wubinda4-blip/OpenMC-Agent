@@ -44,7 +44,14 @@ from .evidence_ledger import (
     get_claim_by_id,
 )
 from .hashing import content_hash, short_id
-from .models import EvidenceClaim, EvidenceCriticality, EvidenceSourceRef, EvidenceStatus, SourceKind
+from .models import (
+    EvidenceClaim,
+    EvidenceCriticality,
+    EvidenceSourceRef,
+    EvidenceStatus,
+    SourceKind,
+    SourceSpan,
+)
 from .source_index import SourceIndex
 from .tool_artifacts import (
     ToolCallLedger,
@@ -340,10 +347,17 @@ class InvestigationAgent:
         *,
         registry: InvestigationToolRegistry,
         llm_client: InvestigationLLMClient,
+        action_callback: Callable[..., None] | None = None,
     ) -> None:
         self.registry = registry
         self.llm_client = llm_client
         self.last_plan_transaction: StructuredOutputResult | None = None
+        # Phase 8C Step 3B: optional action-level checkpoint callback.
+        # Records hashes/status/billing/deadline only after each tool
+        # action and on provider timeout/completion.  Never receives
+        # prompts, reasoning or raw responses.
+        self.action_callback = action_callback
+        self._action_counter = 0
 
     # ------------------------------------------------------------------
     # Public surface
@@ -422,7 +436,22 @@ class InvestigationAgent:
                 skipped_action_reason="skipped_after_coverage_complete",
             )
         try:
-            plan = self.plan(context)
+            plan = self._restore_planner_action(context)
+            if plan is None:
+                plan = self.plan(context)
+                # A parsed action plan is normalized structured output, not a
+                # provider raw response.  Persist it before any tool action
+                # so an interruption cannot bill the planner again.
+                self._record_action_checkpoint(
+                    context=context,
+                    tool_name="planner",
+                    arguments={"kind": "investigation_plan"},
+                    normalized_progress={
+                        "plan": {
+                            "actions": [a.model_dump(mode="json") for a in plan.actions],
+                        }
+                    },
+                )
         except PlanInvestigationIssue as issue:
             diag_warnings = list(warnings)
             details = issue.details or {}
@@ -437,6 +466,14 @@ class InvestigationAgent:
             if details.get("error_code"):
                 diag_warnings.append(
                     f"investigation transaction error_code: {details['error_code']}"
+                )
+            # Phase 8C Step 3B: record provider-timeout checkpoint.
+            if issue.code == "provider.timeout":
+                self._record_action_checkpoint(
+                    context=context,
+                    tool_name="planner",
+                    arguments={"plan": "provider_timeout"},
+                    status="provider_timeout",
                 )
             return self._block(
                 session_id=session_id,
@@ -485,6 +522,25 @@ class InvestigationAgent:
                 blocked_message = "; ".join(issue.message for issue in validation)
                 break
 
+            replayed = self._restore_tool_action(
+                context=context,
+                tool_name=action.tool,
+                arguments=action.arguments,
+                tool_ledger=tool_ledger,
+                tool_results=tool_results,
+                evidence_claim_ids=evidence_claim_ids,
+                usage=usage,
+            )
+            if replayed is not None:
+                coverage = compile_semantic_coverage(
+                    context=context, ledger=context.ledger, evidence_claim_ids=evidence_claim_ids
+                )
+                if coverage.coverage_complete:
+                    skipped_action_reason = "skipped_after_coverage_complete"
+                    skipped_actions.extend(item.tool for item in plan.actions[index + 1 :])
+                    break
+                continue
+
             usage.tool_calls += 1
             exec_context = ToolExecutionContext(
                 source_indexes=context.source_indexes,
@@ -516,6 +572,13 @@ class InvestigationAgent:
                 if claim_id not in evidence_claim_ids:
                     evidence_claim_ids.append(claim_id)
             usage.evidence_claims = len(evidence_claim_ids)
+            self._record_action_checkpoint(
+                context=context,
+                tool_name=action.tool,
+                arguments=action.arguments,
+                status="completed" if tool_result.ok else "failed",
+                normalized_progress=self._tool_action_progress(context, tool_result),
+            )
             coverage = compile_semantic_coverage(
                 context=context, ledger=context.ledger, evidence_claim_ids=evidence_claim_ids
             )
@@ -833,6 +896,18 @@ class InvestigationAgent:
             )
             return None
         usage.tool_calls += 1
+        replayed = self._restore_tool_action(
+            context=context,
+            tool_name=tool_name,
+            arguments=arguments,
+            tool_ledger=tool_ledger,
+            tool_results=tool_results,
+            evidence_claim_ids=evidence_claim_ids,
+            usage=usage,
+            already_charged=True,
+        )
+        if replayed is not None:
+            return replayed
         request = InvestigationToolRequest(
             tool_name=tool_name,
             arguments=dict(arguments),
@@ -854,6 +929,194 @@ class InvestigationAgent:
                 error_codes=(issue.code,),
                 warnings=(issue.message,),
             )
+        tool_results.append(result)
+        record_tool_call(
+            tool_ledger,
+            tool_name=tool_name,
+            arguments=arguments,
+            result=result,
+            caller_stage=context.caller_stage,
+        )
+        for claim_id in result.evidence_claim_ids:
+            if claim_id not in evidence_claim_ids:
+                evidence_claim_ids.append(claim_id)
+        usage.evidence_claims = len(evidence_claim_ids)
+        self._record_action_checkpoint(
+            context=context,
+            tool_name=tool_name,
+            arguments=arguments,
+            status="completed" if result.ok else "failed",
+            normalized_progress=self._tool_action_progress(context, result),
+        )
+        return result
+
+    # ------------------------------------------------------------------
+    # Phase 8C Step 3B: action-level checkpoint recording
+    # ------------------------------------------------------------------
+
+    def _record_action_checkpoint(
+        self,
+        *,
+        context: InvestigationContext,
+        tool_name: str,
+        arguments: dict[str, Any],
+        status: str = "completed",
+        normalized_progress: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one action checkpoint immediately after an action boundary.
+
+        No-op when no callback was supplied.  Never raises.  Records only
+        the arguments hash, tool name, status, billed call count, deadline,
+        and minimal normalized progress — never prompts, reasoning or raw
+        provider responses.
+        """
+        if self.action_callback is None:
+            return
+        arguments_hash = canonical_payload_hash(arguments)
+        action_id = canonical_payload_hash({
+            "patch_type": context.patch_type,
+            "tool_name": tool_name,
+            "arguments_hash": arguments_hash,
+        })
+        billed = 0
+        deadline = ""
+        tx = self.last_plan_transaction
+        if tx is not None:
+            billed = tx.billed_call_count
+            deadline = tx.provider_deadline
+        context_hash, campaign_fingerprints = self._checkpoint_context(context)
+        self.action_callback(
+            action_id=action_id,
+            patch_type=context.patch_type,
+            tool_name=tool_name,
+            arguments_hash=arguments_hash,
+            status=status if status != "failed" else "pending",
+            billed_call_count=billed,
+            provider_deadline=deadline,
+            unfinished=(status != "completed"),
+            context_hash=context_hash,
+            campaign_fingerprints=campaign_fingerprints,
+            normalized_progress=normalized_progress or {},
+        )
+
+    def _checkpoint_context(self, context: InvestigationContext) -> tuple[str, dict[str, str]]:
+        """Return immutable inputs that must match before action reuse."""
+
+        fingerprints = {
+            "requirement_hash": content_hash(context.requirement_text),
+            "patch_type": context.patch_type,
+            "caller_stage": context.caller_stage,
+            "source_indexes_hash": canonical_payload_hash(
+                sorted((source_id, index.index_hash) for source_id, index in context.source_indexes.items())
+            ),
+            "budget_hash": canonical_payload_hash(context.budget.model_dump(mode="json")),
+        }
+        return canonical_payload_hash(fingerprints), fingerprints
+
+    def _action_id(
+        self, *, context: InvestigationContext, tool_name: str, arguments: dict[str, Any]
+    ) -> tuple[str, str]:
+        arguments_hash = canonical_payload_hash(arguments)
+        return (
+            canonical_payload_hash({
+                "patch_type": context.patch_type,
+                "tool_name": tool_name,
+                "arguments_hash": arguments_hash,
+            }),
+            arguments_hash,
+        )
+
+    def _restore_progress(
+        self, *, context: InvestigationContext, tool_name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        restore = getattr(self.action_callback, "restore_action", None)
+        if not callable(restore):
+            return None
+        action_id, arguments_hash = self._action_id(
+            context=context, tool_name=tool_name, arguments=arguments
+        )
+        context_hash, campaign_fingerprints = self._checkpoint_context(context)
+        return restore(
+            action_id=action_id,
+            patch_type=context.patch_type,
+            tool_name=tool_name,
+            arguments_hash=arguments_hash,
+            context_hash=context_hash,
+            campaign_fingerprints=campaign_fingerprints,
+        )
+
+    def _restore_planner_action(self, context: InvestigationContext) -> InvestigationPlan | None:
+        progress = self._restore_progress(
+            context=context, tool_name="planner", arguments={"kind": "investigation_plan"}
+        )
+        if progress is None:
+            return None
+        try:
+            return InvestigationPlan.model_validate(progress["plan"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PlanInvestigationIssue(
+                "planning.investigation_checkpoint_invalid",
+                "completed planner checkpoint has invalid normalized progress",
+            ) from exc
+
+    def _tool_action_progress(
+        self, context: InvestigationContext, result: InvestigationToolResult
+    ) -> dict[str, Any]:
+        """Capture just enough deterministic data to replay a completed tool."""
+
+        claims = [
+            context.ledger.claims[claim_id].model_dump(mode="json")
+            for claim_id in result.evidence_claim_ids
+            if claim_id in context.ledger.claims
+        ]
+        spans: list[dict[str, Any]] = []
+        for ref in result.source_refs:
+            index = context.source_indexes.get(ref.source_id)
+            span = getattr(index, "_registered_spans", {}).get(ref.span_id) if index else None
+            if span is not None:
+                spans.append(span.model_dump(mode="json"))
+        return {
+            "tool_result": result.model_dump(mode="json"),
+            "claims": claims,
+            "source_spans": spans,
+        }
+
+    def _restore_tool_action(
+        self,
+        *,
+        context: InvestigationContext,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tool_ledger: ToolCallLedger,
+        tool_results: list[InvestigationToolResult],
+        evidence_claim_ids: list[str],
+        usage: InvestigationBudgetUsage,
+        already_charged: bool = False,
+    ) -> InvestigationToolResult | None:
+        progress = self._restore_progress(
+            context=context, tool_name=tool_name, arguments=arguments
+        )
+        if progress is None:
+            return None
+        try:
+            for raw_span in progress.get("source_spans", []):
+                span = SourceSpan.model_validate(raw_span)
+                index = context.source_indexes.get(span.source_id)
+                if index is None:
+                    raise ValueError(f"unknown source_id={span.source_id}")
+                index.register_span(span)
+            for raw_claim in progress.get("claims", []):
+                claim = EvidenceClaim.model_validate(raw_claim)
+                if claim.claim_id not in context.ledger.claims:
+                    add_claim(context.ledger, claim, source_indexes=context.source_indexes)
+            result = InvestigationToolResult.model_validate(progress["tool_result"])
+        except Exception as exc:
+            raise PlanInvestigationIssue(
+                "planning.investigation_checkpoint_invalid",
+                f"completed {tool_name} checkpoint cannot be replayed",
+            ) from exc
+        if not already_charged:
+            usage.tool_calls += 1
         tool_results.append(result)
         record_tool_call(
             tool_ledger,
