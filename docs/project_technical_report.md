@@ -4,6 +4,10 @@
 
 ### 2026-07-23
 
+- **Phase 8C Step 3H Shared Insert-Profile MU Preflight Closure**：真实 VERA4 MU checkpoint run 到达 Facts accepted、Materials/Universes valid，但 MU deterministic preflight 阻塞 `material_universe.localized_insert_universe_missing`：同一个 thimble-plug radial profile 服务 C/E 两个 localized insert requirements，旧 `profile_id → insert_requirement_id` 单值映射把 `thimble_plug_C` 覆盖成 `thimble_plug_E`。修复为一对多 localized insert requirement IDs，并让 MU preflight 对旧 checkpoint 通过 GeometryComponentInventory 反查 profile coverage。
+- **验证结果**：该真实 run 的旧 `plan_build_state.json` 离线重跑 MU preflight 已 `ok=True`、blocking issues 清零，仅剩 enrichment/background warnings。Focused tests `32 passed`；全量非 OpenMC/非 LLM `3673 passed, 2 skipped, 392 deselected`；`compileall`、fake benchmark `21/21`、baseline regression diff 均通过。
+- **风险/边界**：本修复不硬编码 thimble/PWR，仅表达共享 radial profile 可服务多个 localized insert contracts。尚未声明新的 MU accepted；下一步需重跑同一 MU checkpoint canary，确认 MU reviewer 实际执行并产出终态。
+
 - **Phase 8C Step 3G MU Target 验收完成 + 下游离线推进**：composition-basis 修复完成 T0/T1/T2 验收：focused deterministic tests `4 passed`；MU `preflight` replay accepted；v13 `recorded-review` accepted，coverage complete、reviewer_calls=3、schema_retries=0、blocking/rejected finding 均为 0；target-only MU `live-review` accepted，live_review_invoked=True、coverage complete、reviewer_calls=3、issues/findings/rejected 均为空。
 - **验证结果**：下游 offline qualification 继续通过，Placement/Axial/Assembled 三个 fixture 的 preflight 与 recorded-review 均 accepted、blocking/rejected finding 为 0；focused downstream tests `30 passed`。本轮未运行完整 Facts→MU canary，避免把里程碑 canary 用作日常定位。
 - **风险/边界**：MU target acceptance 证明当前 bundle/reviewer path 已闭合，但不等同于新的真实 Facts→Materials→Universes generation 成功。下一步真实验收应在 production campaign 到达 MU accepted checkpoint 后提取下游 bundles，按 Placement → Axial → Assembled 执行 target-only live-review；三者闭合后再跑一次完整 milestone canary。

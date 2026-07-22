@@ -92,6 +92,37 @@ def test_material_role_set_propagates_to_requirement() -> None:
     assert "fuel" in req.required_material_roles
 
 
+def test_shared_profile_preserves_all_localized_insert_requirement_ids() -> None:
+    profile = RadialProfileRequirement(
+        profile_id="prof_shared_plug",
+        profile_kind="plug_in_guide_tube",
+        component_kind="thimble_plug",
+        required_cell_roles=("structural", "coolant"),
+        required_material_roles=("structural", "coolant"),
+    )
+    inv = _inventory(
+        [profile],
+        bindings=[
+            LocalizedInsertProfileBinding(
+                insert_requirement_id="plug_C",
+                insert_kind="thimble_plug",
+                profile_id=profile.profile_id,
+                material_role="structural",
+            ),
+            LocalizedInsertProfileBinding(
+                insert_requirement_id="plug_E",
+                insert_kind="thimble_plug",
+                profile_id=profile.profile_id,
+                material_role="structural",
+            ),
+        ],
+    )
+    req_set = extract_universe_requirements_from_inventory(inv)
+    req = req_set.requirements[0]
+    assert req.localized_insert_requirement_id == "plug_C"
+    assert req.localized_insert_requirement_ids == ("plug_C", "plug_E")
+
+
 def test_requirement_set_hash_deterministic() -> None:
     inv = _inventory([_fuel_profile("v1")])
     a = extract_universe_requirements_from_inventory(inv)

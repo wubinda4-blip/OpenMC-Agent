@@ -1019,6 +1019,17 @@ def generate_universes_patch(
             u_meta["fuel_variant_id"] = m_item.fuel_variant_id
         if m_item.localized_insert_requirement_id:
             u_meta["localized_insert_requirement_id"] = m_item.localized_insert_requirement_id
+        localized_insert_ids = list(
+            m_item.localized_insert_requirement_ids
+            or m_item.metadata.get("localized_insert_requirement_ids", [])
+            or []
+        )
+        if m_item.localized_insert_requirement_id and m_item.localized_insert_requirement_id not in localized_insert_ids:
+            localized_insert_ids.append(m_item.localized_insert_requirement_id)
+        if localized_insert_ids:
+            u_meta["localized_insert_requirement_ids"] = sorted(
+                set(str(item) for item in localized_insert_ids if item)
+            )
         if u_meta:
             universe["metadata"] = u_meta
 

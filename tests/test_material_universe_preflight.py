@@ -73,6 +73,104 @@ def test_atom_frac_stoichiometric_ratio_detected_before_reviewer() -> None:
     assert any(i.get("source_validator") for i in result.issues if i["code"] == "materials.composition_fraction_sum_invalid")
 
 
+def test_shared_localized_insert_profile_metadata_covers_multiple_requirements() -> None:
+    facts = {
+        "patch_type": "facts",
+        "model_scope": "multi_assembly_core",
+        "localized_insert_requirements": [
+            {
+                "requirement_id": "plug_C",
+                "insert_kind": "thimble_plug",
+                "required_segment_roles": ["thimble_plug"],
+                "expected_insert_universe_ids": ["u_thimble_plug"],
+            },
+            {
+                "requirement_id": "plug_E",
+                "insert_kind": "thimble_plug",
+                "required_segment_roles": ["thimble_plug"],
+                "expected_insert_universe_ids": ["u_thimble_plug"],
+            },
+        ],
+    }
+    universes = {
+        "patch_type": "universes",
+        "universes": [
+            {
+                "universe_id": "profile_shared_plug",
+                "kind": "thimble_plug",
+                "cells": [
+                    {"id": "plug", "role": "structural", "material_id": "clad", "region_kind": "cylinder"},
+                    {"id": "water", "role": "coolant", "material_id": "coolant", "region_kind": "background"},
+                ],
+                "metadata": {
+                    "geometry_profile_id": "profile_shared_plug",
+                    "localized_insert_requirement_id": "plug_C",
+                    "localized_insert_requirement_ids": ["plug_C", "plug_E"],
+                },
+            }
+        ],
+    }
+    state = _state(facts=facts, universes=universes)
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    missing = [
+        i for i in result.issues
+        if i["code"] == "material_universe.localized_insert_universe_missing"
+    ]
+    assert missing == []
+
+
+def test_shared_localized_insert_profile_inventory_fallback_covers_old_checkpoint_metadata() -> None:
+    facts = {
+        "patch_type": "facts",
+        "model_scope": "multi_assembly_core",
+        "localized_insert_requirements": [
+            {
+                "requirement_id": "plug_C",
+                "insert_kind": "thimble_plug",
+                "required_segment_roles": ["thimble_plug"],
+                "expected_insert_universe_ids": ["u_thimble_plug"],
+            },
+            {
+                "requirement_id": "plug_E",
+                "insert_kind": "thimble_plug",
+                "required_segment_roles": ["thimble_plug"],
+                "expected_insert_universe_ids": ["u_thimble_plug"],
+            },
+        ],
+    }
+    universes = {
+        "patch_type": "universes",
+        "universes": [
+            {
+                "universe_id": "profile_shared_plug",
+                "kind": "thimble_plug",
+                "cells": [
+                    {"id": "plug", "role": "structural", "material_id": "clad", "region_kind": "cylinder"},
+                    {"id": "water", "role": "coolant", "material_id": "coolant", "region_kind": "background"},
+                ],
+                "metadata": {
+                    "geometry_profile_id": "profile_shared_plug",
+                    "localized_insert_requirement_id": "plug_E",
+                },
+            }
+        ],
+    }
+    state = _state(facts=facts, universes=universes)
+    state.metadata["planning_geometry_inventory"] = {
+        "localized_insert_profiles": [
+            {"insert_requirement_id": "plug_C", "profile_id": "profile_shared_plug"},
+            {"insert_requirement_id": "plug_E", "profile_id": "profile_shared_plug"},
+        ],
+        "radial_profiles": [],
+    }
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    missing = [
+        i for i in result.issues
+        if i["code"] == "material_universe.localized_insert_universe_missing"
+    ]
+    assert missing == []
+
+
 def test_unknown_material_reference_detected() -> None:
     state = _state(universes={"patch_type": "universes", "universes": [
         {"universe_id": "u", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "does_not_exist", "region_kind": "cylinder"}]},

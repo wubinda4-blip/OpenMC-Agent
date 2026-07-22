@@ -61,6 +61,7 @@ class UniverseGenerationRequirement(AgentBaseModel):
     required_material_roles: list[str] = Field(default_factory=list)
     fuel_variant_id: str | None = None
     localized_insert_requirement_id: str | None = None
+    localized_insert_requirement_ids: list[str] = Field(default_factory=list)
     base_path_component_profile_id: str | None = None
     protected_through_path_roles: list[str] = Field(default_factory=list)
     source_requirement_ids: list[str] = Field(default_factory=list)
@@ -259,6 +260,11 @@ def convert_inventory_to_generation_requirements(
             universe_id = "u_guide_tube"
         elif kind == "instrument_tube":
             universe_id = "u_instrument_tube"
+        localized_insert_ids = list(rd.get("localized_insert_requirement_ids", []) or [])
+        singular_insert_id = rd.get("localized_insert_requirement_id")
+        if singular_insert_id and singular_insert_id not in localized_insert_ids:
+            localized_insert_ids.append(singular_insert_id)
+        localized_insert_ids = sorted(set(str(item) for item in localized_insert_ids if item))
         source_ids = [rd.get("requirement_id", universe_id)] + list(rd.get("source_claim_ids", []))
         requirements.append(UniverseGenerationRequirement(
             requirement_id=rd.get("requirement_id", universe_id),
@@ -267,7 +273,8 @@ def convert_inventory_to_generation_requirements(
             required_cell_roles=list(rd.get("required_cell_roles", [])),
             required_material_roles=list(rd.get("required_material_roles", [])),
             fuel_variant_id=fuel_variant_id,
-            localized_insert_requirement_id=rd.get("localized_insert_requirement_id"),
+            localized_insert_requirement_id=localized_insert_ids[0] if localized_insert_ids else None,
+            localized_insert_requirement_ids=localized_insert_ids,
             base_path_component_profile_id=geometry_profile_id,
             protected_through_path_roles=list(rd.get("protected_through_path_roles", [])),
             source_requirement_ids=source_ids,
@@ -278,6 +285,7 @@ def convert_inventory_to_generation_requirements(
                 "required_layer_roles": list(rd.get("required_layer_roles", [])),
                 "source_span_ids": list(rd.get("source_span_ids", [])),
                 "requirement_source": "inventory",
+                "localized_insert_requirement_ids": localized_insert_ids,
             },
         ))
 
@@ -327,6 +335,7 @@ _MANIFEST_CONTRACT_FIELDS: tuple[str, ...] = (
     "required_material_roles",
     "fuel_variant_id",
     "localized_insert_requirement_id",
+    "localized_insert_requirement_ids",
     "base_path_component_profile_id",
     "protected_through_path_roles",
     "source_requirement_ids",
@@ -370,6 +379,7 @@ class UniverseManifestItem(AgentBaseModel):
     source_requirement_ids: list[str] = Field(default_factory=list)
     dependency_ids: list[str] = Field(default_factory=list)
     localized_insert_requirement_id: str | None = None
+    localized_insert_requirement_ids: list[str] = Field(default_factory=list)
     base_path_component_profile_id: str | None = None
     # --- Non-contract fields ---
     contract_hash: str = ""
@@ -454,6 +464,7 @@ def build_manifest_from_requirements(
             required_material_roles=list(req.required_material_roles),
             fuel_variant_id=req.fuel_variant_id,
             localized_insert_requirement_id=req.localized_insert_requirement_id,
+            localized_insert_requirement_ids=list(req.localized_insert_requirement_ids),
             base_path_component_profile_id=req.base_path_component_profile_id,
             protected_through_path_roles=list(req.protected_through_path_roles),
             source_requirement_ids=list(req.source_requirement_ids or [req.requirement_id]),

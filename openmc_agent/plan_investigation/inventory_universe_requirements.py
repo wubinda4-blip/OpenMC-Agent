@@ -72,6 +72,7 @@ class InventoryUniverseRequirement(AgentBaseModel):
     component_kind: str
     fuel_variant_id: str | None = None
     localized_insert_requirement_id: str | None = None
+    localized_insert_requirement_ids: tuple[str, ...] = Field(default_factory=tuple)
     required_cell_roles: tuple[str, ...] = Field(default_factory=tuple)
     required_material_roles: tuple[str, ...] = Field(default_factory=tuple)
     protected_through_path_roles: tuple[str, ...] = Field(default_factory=tuple)
@@ -146,15 +147,18 @@ def extract_universe_requirements_from_inventory(
             for pid in req.required_by_profile_ids:
                 profile_to_roles.setdefault(pid, []).append(req.role)
 
-    # Build a lookup: profile_id → localized_insert_requirement_id so
-    # each universe requirement knows which insert it belongs to.
-    profile_to_insert: dict[str, str] = {}
+    # Build a lookup: profile_id → localized_insert_requirement_ids so
+    # each universe requirement knows which inserts it belongs to.  A
+    # single insert cross-section can satisfy multiple placement contracts
+    # (e.g. the same component profile reused by multiple assembly types).
+    profile_to_inserts: dict[str, list[str]] = {}
     for binding in inventory.localized_insert_profiles:
-        profile_to_insert[binding.profile_id] = binding.insert_requirement_id
+        profile_to_inserts.setdefault(binding.profile_id, []).append(binding.insert_requirement_id)
 
     for profile in inventory.radial_profiles:
         roles = profile_to_roles.get(profile.profile_id, list(profile.required_material_roles))
         cell_roles = list(profile.required_cell_roles)
+        insert_ids = tuple(sorted(set(profile_to_inserts.get(profile.profile_id, []))))
         req = InventoryUniverseRequirement(
             requirement_id=short_id(
                 "ureq",
@@ -168,7 +172,8 @@ def extract_universe_requirements_from_inventory(
             profile_kind=profile.profile_kind,
             component_kind=profile.component_kind,
             fuel_variant_id=profile.fuel_variant_id,
-            localized_insert_requirement_id=profile_to_insert.get(profile.profile_id),
+            localized_insert_requirement_id=insert_ids[0] if insert_ids else None,
+            localized_insert_requirement_ids=insert_ids,
             required_cell_roles=tuple(cell_roles),
             required_material_roles=tuple(roles),
             protected_through_path_roles=tuple(profile.protected_through_path_roles),

@@ -49,6 +49,17 @@ def _universe_metadata(universe: Any) -> dict[str, Any]:
     return {}
 
 
+def _metadata_covers_localized_insert(meta: dict[str, Any], req_id: str) -> bool:
+    if not req_id:
+        return False
+    if meta.get("localized_insert_requirement_id") == req_id:
+        return True
+    values = meta.get("localized_insert_requirement_ids") or []
+    if isinstance(values, str):
+        values = [values]
+    return req_id in {str(item) for item in values}
+
+
 def _collect_materials_issues(materials_patch: Any, view: MaterialUniverseBindingView, species_report: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -200,6 +211,12 @@ def _collect_required_universe_issues(state: Any, universes_patch: Any, view: Ma
         for profile in inventory.get("radial_profiles", [])
         if profile.get("protected_through_path_roles")
     }
+    insert_profiles_by_requirement: dict[str, set[str]] = {}
+    for binding in inventory.get("localized_insert_profiles", []) or []:
+        req_id = str(binding.get("insert_requirement_id") or "")
+        profile_id = str(binding.get("profile_id") or "")
+        if req_id and profile_id:
+            insert_profiles_by_requirement.setdefault(req_id, set()).add(profile_id)
     # Pre-compute cell-role coverage for each universe.
     universe_cell_roles: dict[str, set[str]] = {}
     for univ in universes_patch.universes:
@@ -243,9 +260,15 @@ def _collect_required_universe_issues(state: Any, universes_patch: Any, view: Ma
         # metadata.localized_insert_requirement_id (stamped by the
         # fragmented pipeline from the manifest item).
         profile_covered = any(
-            _universe_metadata(u).get("localized_insert_requirement_id") == req_id
+            _metadata_covers_localized_insert(_universe_metadata(u), req_id)
             for u in universes_patch.universes
         )
+        if not profile_covered and req_id in insert_profiles_by_requirement:
+            required_profile_ids = insert_profiles_by_requirement[req_id]
+            profile_covered = any(
+                str(_universe_metadata(u).get("geometry_profile_id") or "") in required_profile_ids
+                for u in universes_patch.universes
+            )
 
         for uid in expected:
             universe = universe_by_id.get(uid)
