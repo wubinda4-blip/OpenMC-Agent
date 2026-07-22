@@ -1,6 +1,12 @@
 # OpenMC-Agent 技术报告与进度总览
 
-维护日期：2026-07-22
+维护日期：2026-07-23
+
+### 2026-07-23
+
+- **Phase 8C Step 3G MU Target 验收完成 + 下游离线推进**：composition-basis 修复完成 T0/T1/T2 验收：focused deterministic tests `4 passed`；MU `preflight` replay accepted；v13 `recorded-review` accepted，coverage complete、reviewer_calls=3、schema_retries=0、blocking/rejected finding 均为 0；target-only MU `live-review` accepted，live_review_invoked=True、coverage complete、reviewer_calls=3、issues/findings/rejected 均为空。
+- **验证结果**：下游 offline qualification 继续通过，Placement/Axial/Assembled 三个 fixture 的 preflight 与 recorded-review 均 accepted、blocking/rejected finding 为 0；focused downstream tests `30 passed`。本轮未运行完整 Facts→MU canary，避免把里程碑 canary 用作日常定位。
+- **风险/边界**：MU target acceptance 证明当前 bundle/reviewer path 已闭合，但不等同于新的真实 Facts→Materials→Universes generation 成功。下一步真实验收应在 production campaign 到达 MU accepted checkpoint 后提取下游 bundles，按 Placement → Axial → Assembled 执行 target-only live-review；三者闭合后再跑一次完整 milestone canary。
 
 ### 2026-07-22
 
