@@ -2370,6 +2370,7 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.REPAIRING)
             candidate_facts = facts_env.content
             closure_findings = [item for item in all_findings if item.severity.value == "error"]
+            latest_unresolved_findings = list(closure_findings)
             closure_failure_code = "planning.facts_revision.incomplete_closure"
             closure_rounds_completed = 0
 
@@ -2581,6 +2582,7 @@ def run_incremental_planning(
                     "candidate_consistency_ok": candidate_consistency_ok,
                     "committed": accept_candidate,
                 })
+                record_findings(state, stage, rereview.findings)
                 if accept_candidate:
                     candidate_commit_result.update({
                         "attempted": True,
@@ -2615,7 +2617,6 @@ def run_incremental_planning(
                     state.add_patch(repaired)
                     candidate_commit_result["committed"] = True
                     candidate_commit_result["patch_id"] = repaired.patch_id
-                    record_findings(state, stage, rereview.findings)
                     transition_stage(stage, PlanStageStatus.ACCEPTED)
                     stage.metadata["accepted_input_hash"] = facts_gate_input_hash(state, policy=policy)
                     stage.metadata["facts_revision_closure"] = {
@@ -2666,6 +2667,7 @@ def run_incremental_planning(
                 remaining = [
                     item for item in rereview.findings if item.severity.value == "error"
                 ]
+                latest_unresolved_findings = list(remaining)
                 if not remaining:
                     closure_failure_code = "planning.facts_revision.incomplete_closure"
                     break
@@ -2689,13 +2691,14 @@ def run_incremental_planning(
                     closure_failure_code = "planning.facts_revision.no_progress"
                     break
                 candidate_facts = evaluation.candidate
+                resolved_count = len(closure_findings) - len(remaining)
                 closure_findings = remaining
                 state.add_event(
                     "planning.facts_revision_closure_continues",
                     "facts revision cleared a subset of findings; continuing with remaining closure set",
                     {
                         "round": closure_round,
-                        "resolved_count": len(closure_findings) - len(remaining),
+                        "resolved_count": resolved_count,
                         "remaining_count": len(remaining),
                         "candidate_hash": evaluation.candidate_hash,
                     },
@@ -2705,7 +2708,7 @@ def run_incremental_planning(
             stage.metadata["facts_revision_closure"] = {
                 "rounds": closure_rounds_completed,
                 "failure_code": closure_failure_code,
-                "unresolved_finding_ids": [item.finding_id for item in closure_findings],
+                "unresolved_finding_ids": [item.finding_id for item in latest_unresolved_findings],
             }
             state.add_event(
                 "planning.facts_revision_closure_blocked",
@@ -2997,6 +3000,7 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.ACCEPTED)
             stage.metadata["accepted_input_hash"] = input_hash
             state.add_event("planning.assembled_plan_gate_accepted", "assembled-plan gate accepted", {"input_hash": input_hash})
+            _persist_checkpoint("gate:assembled_plan")
             return None
         human_required = any(f.requires_human for f in error_findings)
         if human_required and policy.enable_human_gate:
@@ -3141,6 +3145,7 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.ACCEPTED)
             stage.metadata["accepted_input_hash"] = input_hash
             state.add_event("planning.axial_geometry_gate_accepted", "axial-geometry gate accepted", {"input_hash": input_hash})
+            _persist_checkpoint("gate:axial_geometry")
             return None
         human_required = any(f.requires_human for f in error_findings)
         if human_required and policy.enable_human_gate:
@@ -3570,6 +3575,7 @@ def run_incremental_planning(
             transition_stage(stage, PlanStageStatus.ACCEPTED)
             stage.metadata["accepted_input_hash"] = pack.input_hash
             state.add_event("planning.placement_gate_accepted", "placement gate accepted", {"input_hash": pack.input_hash})
+            _persist_checkpoint("gate:placement")
             return None
         if action is PlanReviewAction.ASK_HUMAN:
             from .closed_loop.placement_human import build_placement_human_question

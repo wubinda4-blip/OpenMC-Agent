@@ -9,8 +9,11 @@ import pytest
 
 from openmc_agent.plan_builder.closed_loop.campaign_checkpoint import (
     ACCEPTED_BOUNDARIES,
+    BOUNDARY_GATE_ASSEMBLED_PLAN,
+    BOUNDARY_GATE_AXIAL_GEOMETRY,
     BOUNDARY_GATE_FACTS,
     BOUNDARY_GATE_MATERIAL_UNIVERSE,
+    BOUNDARY_GATE_PLACEMENT,
     BOUNDARY_PATCH_MATERIALS,
     BOUNDARY_PATCH_UNIVERSES,
     CampaignCheckpointStore,
@@ -26,6 +29,12 @@ from openmc_agent.plan_builder.closed_loop.gate_replay import (
     GateReplayResult,
     load_gate_replay_bundle,
     run_gate_replay,
+)
+from openmc_agent.plan_builder.closed_loop.material_universe_finding_classification import (
+    classify_material_universe_finding,
+)
+from openmc_agent.plan_builder.closed_loop.material_universe_issue_policy import (
+    registered_material_universe_issue_codes,
 )
 from openmc_agent.plan_builder.closed_loop.state_snapshot import (
     make_boundary_checkpoint_callback,
@@ -55,6 +64,12 @@ def _mu_bundle() -> GateReplayBundle:
     )
 
 
+def _mu_v13_findings_bundle() -> GateReplayBundle:
+    return GateReplayBundle.model_validate(
+        _load_fixture("material_universe_v13_findings_bundle.json")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixture validity (baseline)
 # ---------------------------------------------------------------------------
@@ -73,6 +88,12 @@ def test_facts_fixture_loads_and_preflights_clean() -> None:
 
 def test_mu_fixture_loads_and_preflights_clean() -> None:
     bundle = _mu_bundle()
+    result = run_gate_replay(bundle, mode=GateReplayMode.PREFLIGHT)
+    assert result.ok, [i.message for i in result.issues]
+
+
+def test_mu_v13_finding_fixture_preflights_clean() -> None:
+    bundle = _mu_v13_findings_bundle()
     result = run_gate_replay(bundle, mode=GateReplayMode.PREFLIGHT)
     assert result.ok, [i.message for i in result.issues]
 
@@ -217,6 +238,95 @@ def test_mu_old_error_mutation_now_clean_in_recorded_review() -> None:
     assert result.recorded_review_replayed
 
 
+def test_mu_v13_recorded_findings_close_to_nonblocking_diagnostics() -> None:
+    """The sanitized v13 recorded-review fixture keeps the old MU finding
+    target but current normalization closes stale/deterministic blockers.
+    """
+    bundle = _mu_v13_findings_bundle()
+    recorded_codes = {
+        finding["code"]
+        for review in bundle.recorded_reviews
+        for finding in review.get("findings", [])
+    }
+    assert recorded_codes == {
+        "material_universe.enrichment_contract_mismatch",
+        "material_universe.background_missing",
+        "material_universe.contract_material_id_mismatch",
+        "material_universe.contract_material_role_mismatch",
+        "material_universe.material_role_conflict",
+        "material_universe.material_count_role_count_mismatch",
+    }
+
+    result = run_gate_replay(bundle, mode=GateReplayMode.RECORDED_REVIEW)
+
+    assert result.ok, [i.message for i in result.issues]
+    assert result.recorded_review_replayed
+    assert result.review_output is not None
+    diagnostics = result.review_output["finding_diagnostics"]
+    assert diagnostics["coverage_complete"] is True
+    assert diagnostics["blocking_finding_count"] == 0
+    assert diagnostics["rejected_summary"] == {
+        "material_universe_review.repeated_deterministic_issue": 2,
+        "material_universe_review.stale_finding_closed": 1,
+        "material_universe_review.over_specific_role_contract": 1,
+    }
+    remaining = {
+        item["code"]: item["classification"]
+        for item in diagnostics["classification_summary"]
+    }
+    assert remaining == {
+        "material_universe.material_role_conflict": "reviewer_false_positive",
+        "material_universe.material_count_role_count_mismatch": "binding_metadata_gap",
+    }
+
+
+def test_mu_recorded_review_rejects_scope_mismatch() -> None:
+    bundle = _mu_v13_findings_bundle()
+    reviews = [dict(item) for item in bundle.recorded_reviews]
+    # Put a universes-only row into the materials scope.  Replay must reject
+    # the finding instead of misrouting it to Materials.
+    reviews[0] = dict(reviews[0])
+    reviews[0]["findings"] = [
+        {
+            "code": "material_universe.material_role_conflict",
+            "severity": "warning",
+            "category": "cross_patch_mismatch",
+            "message": "scope mismatch mutation",
+            "evidence_refs": ["U024"],
+            "contract_row_ids": ["rums:u_fuel_region_1_2p11"],
+            "affected_json_paths": ["records[0]"],
+            "repairable_by_llm": False,
+            "requires_human": False,
+            "confidence": 0.9,
+            "expected_semantics": "materials scope should not own rums rows",
+            "current_semantics": "mutated fixture",
+            "metadata": {},
+        }
+    ]
+    bundle = bundle.model_copy(update={"recorded_reviews": reviews})
+    bundle = bundle.model_copy(update={"bundle_hash": bundle.compute_bundle_hash()})
+
+    result = run_gate_replay(bundle, mode=GateReplayMode.RECORDED_REVIEW)
+
+    assert result.ok
+    assert result.review_output is not None
+    assert any(
+        item["code"] == "material_universe_review.scope_contract_mismatch"
+        for item in result.review_output["rejected"]
+    )
+
+
+def test_mu_finding_classifier_covers_registered_codes_and_unknown_fails_closed() -> None:
+    for code in registered_material_universe_issue_codes():
+        classification = classify_material_universe_finding(code)
+        assert classification.classification != "unknown_code", code
+        assert not classification.fail_closed, code
+
+    unknown = classify_material_universe_finding("material_universe.future_new_code")
+    assert unknown.classification == "unknown_code"
+    assert unknown.fail_closed
+
+
 def test_mu_deterministic_error_in_state_blocks_preflight_state_check() -> None:
     """If the normalized state itself is incomplete (mutation removed it),
     preflight fails closed rather than masking an old error."""
@@ -316,6 +426,7 @@ def test_live_review_output_sanitized_no_raw_response() -> None:
     assert "api_key" not in out
     assert "raw_outputs" not in out
     assert sanitized["review_output"] is not None
+    assert "call_diagnostics" in sanitized["review_output"]
 
 
 def test_live_reviewer_raising_caught() -> None:
@@ -332,6 +443,39 @@ def test_live_reviewer_raising_caught() -> None:
 
 def test_default_live_timeout_documented() -> None:
     assert DEFAULT_LIVE_REVIEW_TIMEOUT_SECONDS == 1800
+
+
+def test_downstream_bundle_requires_policy_snapshot_hash() -> None:
+    raw = _facts_bundle().model_dump(mode="json")
+    raw.update({
+        "gate_id": "placement",
+        "upstream_accepted": {"facts": True},
+        "policy_snapshot": {"mode": "controlled", "placement_review_mode": "controlled"},
+        "canonical_hashes": {"input": "input", "policy": "policy", "policy_snapshot": "wrong"},
+        "bundle_hash": "",
+    })
+    bundle = GateReplayBundle.model_validate(raw)
+    result = run_gate_replay(bundle, mode=GateReplayMode.PREFLIGHT)
+    assert not result.ok
+    assert any(item.code == "gate_replay.policy_snapshot_hash_drift" for item in result.issues)
+
+
+def test_downstream_bundle_create_replays_through_production_review() -> None:
+    from tests._axial_geometry_fixtures import state_with_axial_patches
+    from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy
+
+    bundle = GateReplayBundle.create(
+        gate_id="axial_geometry",
+        state=state_with_axial_patches(),
+        policy=PlanClosedLoopPolicy(mode="controlled", axial_geometry_review_mode="controlled"),
+        upstream_accepted={"facts": True, "material_universe": True, "placement": True},
+        canonical_hashes={"input": "input", "policy": "policy"},
+        recorded_reviews=[{"review_status": "complete", "findings": []}],
+    )
+    result = run_gate_replay(bundle, mode=GateReplayMode.RECORDED_REVIEW)
+    assert result.recorded_review_replayed
+    assert result.terminal_status in {"accepted", "blocked"}
+    assert "prompt" not in json.dumps(bundle.model_dump(mode="json"), sort_keys=True).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -495,11 +639,16 @@ def test_resume_does_not_reuse_earlier_boundary_when_later_drifts(tmp_path) -> N
 
 
 def test_accepted_boundaries_ordered() -> None:
-    assert ACCEPTED_BOUNDARIES == (
+    assert ACCEPTED_BOUNDARIES[:4] == (
         BOUNDARY_GATE_FACTS,
         BOUNDARY_PATCH_MATERIALS,
         BOUNDARY_PATCH_UNIVERSES,
         BOUNDARY_GATE_MATERIAL_UNIVERSE,
+    )
+    assert ACCEPTED_BOUNDARIES[4:] == (
+        BOUNDARY_GATE_PLACEMENT,
+        BOUNDARY_GATE_AXIAL_GEOMETRY,
+        BOUNDARY_GATE_ASSEMBLED_PLAN,
     )
 
 

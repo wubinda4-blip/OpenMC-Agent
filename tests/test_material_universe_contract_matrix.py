@@ -44,6 +44,30 @@ def test_source_material_coverage_row_for_fuel_variant() -> None:
     assert fuel_rows[0].coverage_status == "pass"
 
 
+def test_source_material_coverage_uses_matching_variant_material_id() -> None:
+    state = PlanBuildState(state_id="mu-matrix-variant", requirement_text="r")
+    state.add_patch(PlanPatchEnvelope(patch_id="facts", patch_type="facts", content={"patch_type": "facts", "model_scope": "single_assembly", "fuel_variant_requirements": [
+        {"variant_id": "region_1", "enrichment_wt_percent": 2.11},
+        {"variant_id": "region_2", "enrichment_wt_percent": 2.619},
+    ]}, status="valid"))
+    state.add_patch(PlanPatchEnvelope(patch_id="materials", patch_type="materials", content={"patch_type": "materials", "materials": [
+        {"material_id": "fuel_region_1", "name": "r1", "role": "fuel", "density_g_cm3": 10.0, "source_variant_id": "region_1"},
+        {"material_id": "fuel_region_2", "name": "r2", "role": "fuel", "density_g_cm3": 10.0, "source_variant_id": "region_2"},
+    ]}, status="valid"))
+    state.add_patch(PlanPatchEnvelope(patch_id="universes", patch_type="universes", content={"patch_type": "universes", "universes": [
+        {"universe_id": "fuel", "kind": "fuel_pin", "cells": [
+            {"id": "pellet", "role": "fuel", "material_id": "fuel_region_2", "region_kind": "cylinder"}
+        ]},
+    ]}, status="valid"))
+
+    view = build_material_universe_binding_view(state=state)
+    matrix = build_material_universe_contract_matrix(view)
+    rows = {row.row_id: row for row in matrix.rows}
+
+    assert rows["smc:fuel_variant:region_1"].material_id == "fuel_region_1"
+    assert rows["smc:fuel_variant:region_2"].material_id == "fuel_region_2"
+
+
 def test_fuel_variant_identity_row_passes_when_material_and_universe_exist() -> None:
     state = _state()
     view = build_material_universe_binding_view(state=state)

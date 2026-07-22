@@ -34,6 +34,8 @@ _MATERIALS_CODES = {
     "material_universe.material_provenance_missing",
     "material_universe.density_provenance_missing",
     "material_universe.materials_schema_invalid",
+    "material_universe.contract_material_id_mismatch",
+    "material_universe.contract_material_role_mismatch",
 }
 
 # Universes-owned: the universe/cell structure or reference is wrong.
@@ -60,6 +62,8 @@ _UNIVERSES_CODES = {
     "material_universe.fuel_variant_collapsed",
     "material_universe.variant_identity_mismatch",
     "material_universe.universes_schema_invalid",
+    "material_universe.material_role_conflict",
+    "material_universe.material_count_role_count_mismatch",
 }
 
 # Fuel-variant issues where the root cause is the material (not the universe).

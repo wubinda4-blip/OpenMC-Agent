@@ -40,14 +40,19 @@ class MaterialUniverseReviewResult(AgentBaseModel):
 
 def _normalize(output: MaterialUniverseReviewModelOutput, pack: Any) -> tuple[list[PlanReviewFinding], list[dict[str, Any]]]:
     evidence_refs = {item.ref_id for item in pack.evidence_items}
-    contract_row_ids = {row.row_id for row in pack.contract_matrix.rows}
+    contract_row_by_id = {row.row_id: row for row in pack.contract_matrix.rows}
+    contract_row_ids = set(contract_row_by_id)
     material_ids = {m.material_id for m in pack.binding_view.material_records}
     universe_ids = {u.universe_id for u in pack.binding_view.universe_records}
+    deterministic_codes = {str(item.get("code", "")) for item in getattr(pack, "deterministic_issues", []) or []}
     accepted: list[PlanReviewFinding] = []
     rejected: list[dict[str, Any]] = []
     for draft in output.findings:
         if not draft.code.strip():
             rejected.append({"code": "material_universe_review.invalid_finding_contract", "reason": "blank code"})
+            continue
+        if draft.code in deterministic_codes:
+            rejected.append({"code": "material_universe_review.repeated_deterministic_issue", "finding_code": draft.code})
             continue
         unknown_refs = set(draft.evidence_refs) - evidence_refs
         if unknown_refs:
@@ -57,6 +62,51 @@ def _normalize(output: MaterialUniverseReviewModelOutput, pack: Any) -> tuple[li
         if unknown_rows:
             rejected.append({"code": "material_universe_review.unknown_contract_row", "finding_code": draft.code, "unknown": sorted(unknown_rows)})
             continue
+        expected_material_id = draft.metadata.get("expected_material_id")
+        actual_material_id = draft.metadata.get("actual_material_id")
+        if expected_material_id and actual_material_id:
+            rows = [contract_row_by_id[row_id] for row_id in draft.contract_row_ids]
+            if any(row.material_id == expected_material_id for row in rows):
+                rejected.append({
+                    "code": "material_universe_review.stale_finding_closed",
+                    "finding_code": draft.code,
+                    "reason": "current contract row already references expected material_id",
+                })
+                continue
+            if any(
+                row.row_kind == "source_material_coverage"
+                and row.coverage_status == "pass"
+                and row.metadata.get("expected_variant_id") is None
+                for row in rows
+            ):
+                rejected.append({
+                    "code": "material_universe_review.over_specific_role_contract",
+                    "finding_code": draft.code,
+                    "reason": "role-only source contract does not require a distinct material_id",
+                })
+                continue
+        review_scope = str(draft.metadata.get("review_scope", ""))
+        if review_scope:
+            scope_rows = {
+                "materials": {"source_material_coverage", "fuel_variant_identity"},
+                "universes": {"required_universe_material_structure"},
+                "binding": {"material_to_cell_binding"},
+            }.get(review_scope)
+            if scope_rows is None:
+                rejected.append({"code": "material_universe_review.invalid_scope", "finding_code": draft.code, "scope": review_scope})
+                continue
+            mismatched_rows = [
+                row_id for row_id in draft.contract_row_ids
+                if contract_row_by_id[row_id].row_kind not in scope_rows
+            ]
+            if mismatched_rows:
+                rejected.append({
+                    "code": "material_universe_review.scope_contract_mismatch",
+                    "finding_code": draft.code,
+                    "scope": review_scope,
+                    "contract_row_ids": sorted(mismatched_rows),
+                })
+                continue
         # Reject owner/action fields if the Critic tried to set them.
         if "owner" in draft.metadata or "action" in draft.metadata:
             rejected.append({"code": "material_universe_review.owner_action_forbidden", "finding_code": draft.code})

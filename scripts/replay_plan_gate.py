@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """CLI for replaying a GateReplayBundle (Phase 8C Step 3B).
 
-Re-evaluates a previously-accepted Facts or Material-Universe gate from a
+Re-evaluates a previously-accepted plan gate from a
 **sanitized** bundle without touching production checkpoints.
 
 Modes
@@ -36,7 +36,7 @@ from typing import Any
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Replay a GateReplayBundle for Facts or Material-Universe gate.",
+        description="Replay a GateReplayBundle for any of the five plan gates.",
     )
     parser.add_argument(
         "--bundle",

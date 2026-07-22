@@ -62,12 +62,47 @@ def _normalize_recording_metadata_classification(
     return draft.model_copy(update={"repairable_by_llm": True, "requires_human": False}), original
 
 
+def _normalize_confirmation_not_error_classification(
+    draft: FactsReviewFindingDraft,
+) -> tuple[FactsReviewFindingDraft, dict[str, Any] | None]:
+    """Downgrade self-contradictory reviewer confirmations.
+
+    Real reviewers occasionally emit an error-severity finding whose own
+    message explicitly says the condition is a coverage confirmation rather
+    than an error.  Treating that as a non-repairable blocker prevents the
+    revision loop from fixing genuinely remaining repairable findings.
+    Keep the finding visible as a warning with provenance instead of
+    suppressing the code.
+    """
+    if (
+        draft.severity is not PlanFindingSeverity.ERROR
+        or draft.category is not PlanFindingCategory.SOURCE_COVERAGE
+        or draft.requires_human
+        or draft.repairable_by_llm
+    ):
+        return draft, None
+    message = draft.message.lower()
+    confirmation_markers = (
+        "recorded as a coverage confirmation",
+        "not an error",
+    )
+    if not all(marker in message for marker in confirmation_markers):
+        return draft, None
+    original = {
+        "reason": "facts_reviewer_confirmation_not_error",
+        "original_severity": draft.severity.value,
+        "original_repairable_by_llm": draft.repairable_by_llm,
+        "original_requires_human": draft.requires_human,
+    }
+    return draft.model_copy(update={"severity": PlanFindingSeverity.WARNING}), original
+
+
 def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[list[PlanReviewFinding], list[dict[str, Any]]]:
     evidence = {item.evidence_hash: item for item in pack.source_excerpts}
     facts = pack.relevant_patches.get("facts", {})
     accepted: list[PlanReviewFinding] = []
     rejected: list[dict[str, Any]] = []
-    for draft in output.findings:
+    for index, draft in enumerate(output.findings):
         if not draft.code.strip():
             rejected.append({"code": "facts_review.invalid_finding_contract", "reason": "blank code"})
             continue
@@ -88,6 +123,11 @@ def _normalize(output: FactsReviewModelOutput, pack: PlanEvidencePack) -> tuple[
             rejected.append({"code": "facts_review.path_out_of_scope", "finding_code": draft.code})
             continue
         draft, classification_override = _normalize_recording_metadata_classification(draft)
+        confirmation_override = None
+        if classification_override is None:
+            draft, confirmation_override = _normalize_confirmation_not_error_classification(draft)
+            classification_override = confirmation_override
+        output.findings[index] = draft
         if draft.requires_human and draft.repairable_by_llm:
             rejected.append({"code": "facts_review.invalid_finding_contract", "finding_code": draft.code})
             continue

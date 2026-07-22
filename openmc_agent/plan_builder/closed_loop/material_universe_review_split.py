@@ -51,7 +51,11 @@ def _scope_payload(pack: Any, scope: str) -> dict[str, Any]:
     elif scope == "universes":
         records = [item.model_dump(mode="json") for item in view.universe_records]
         rows = [row.model_dump(mode="json") for row in matrix.rows if row.row_kind == "required_universe_material_structure"]
-        instruction = "Review only Universe existence, geometry profile, required cells, and required material bindings."
+        instruction = (
+            "Review only Universe existence, geometry profile, required cells, and required material roles. "
+            "UniverseRecord.material_ids is a de-duplicated set, not a cell-aligned material vector; "
+            "cell-to-material mapping belongs to the binding scope."
+        )
         issue_kinds = {"required_universe_material_structure"}
     else:
         records = [item.model_dump(mode="json") for item in view.cell_material_bindings]
@@ -109,6 +113,8 @@ def _filter_raw_findings(raw_findings: list[dict[str, Any]]) -> tuple[list[Mater
 def _as_combined_output(parsed: _SplitReviewOutput, scope: str) -> tuple[MaterialUniverseReviewModelOutput, list[dict[str, Any]]]:
     """Convert split output + filter incomplete findings."""
     valid_findings, rejected = _filter_raw_findings(parsed.findings)
+    for finding in valid_findings:
+        finding.metadata = {**finding.metadata, "review_scope": scope}
     coverage = MaterialUniverseReviewCoverageSummary(reviewed_evidence_refs=list(parsed.reviewed_evidence_refs))
     if scope == "materials":
         coverage.reviewed_material_ids = list(parsed.reviewed_ids)

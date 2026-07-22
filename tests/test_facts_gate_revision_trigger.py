@@ -328,3 +328,84 @@ class TestExecutorRevisionClosure:
             "status": "accepted",
             "terminal_reason": "candidate_committed_and_accepted",
         }
+
+    def test_blocked_closure_metadata_uses_latest_rereview_findings(self, monkeypatch) -> None:
+        monkeypatch.setattr(executor, "default_patch_task_order", lambda _: ["facts"])
+        monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: ["facts"])
+        monkeypatch.setattr(executor, "assemble_state_if_ready", lambda state, **_: state.model_copy(update={"assembled_plan": {"ok": True}}))
+        facts = {
+            "patch_type": "facts",
+            "model_scope": "single_assembly",
+            "assembly_count": 1,
+            "assembly_type_counts": {"a": 1},
+            "fuel_variant_requirements": [{"variant_id": "fuel"}],
+            "localized_insert_requirements": [{"requirement_id": "insert", "insert_kind": "pyrex_rod"}],
+            "has_spacer_grids": False,
+        }
+        patch_llm = FakePatchLLM([json.dumps(facts)])
+        repair_llm = FakePatchLLM([
+            json.dumps({
+                "proposal_id": "repair_count",
+                "confidence": 0.9,
+                "rationale": "repair the old count finding",
+                "operations": [{"op": "replace", "path": "/expected_pyrex_count", "value": 80}],
+                "resolved_finding_ids": [],
+            }),
+        ])
+        calls = {"count": 0}
+
+        def reviewer(prompt: str) -> str:
+            calls["count"] += 1
+            payload = json.loads(prompt.split("INPUT:\n", 1)[1])
+            excerpts = payload.get("source_excerpts", [])
+            evidence_hash = excerpts[0]["evidence_hash"] if excerpts else ""
+            if calls["count"] == 1:
+                finding = {
+                    "code": "OLD_COUNT_NULL",
+                    "severity": "error",
+                    "category": "source_coverage",
+                    "message": "expected_pyrex_count is null; set it to 80",
+                    "evidence_hashes": [evidence_hash] if evidence_hash else [],
+                    "affected_json_paths": ["/expected_pyrex_count"],
+                    "repairable_by_llm": True,
+                    "requires_human": False,
+                    "confidence": 0.9,
+                    "expected_value": 80,
+                    "current_value": None,
+                }
+            else:
+                finding = {
+                    "code": "NEW_PHYSICAL_AMBIGUITY",
+                    "severity": "error",
+                    "category": "physical_ambiguity",
+                    "message": "new ambiguity remains after the count repair",
+                    "evidence_hashes": [evidence_hash] if evidence_hash else [],
+                    "affected_json_paths": ["/model_scope"],
+                    "repairable_by_llm": False,
+                    "requires_human": True,
+                    "confidence": 0.9,
+                }
+            return json.dumps({
+                "review_status": "complete_with_gaps",
+                "reviewed_evidence_hashes": [evidence_hash] if evidence_hash else [],
+                "coverage_summary": {},
+                "findings": [finding],
+            })
+
+        result = run_incremental_planning(
+            requirement="small source",
+            state=PlanBuildState(state_id="closure-blocked", requirement_text="small source"),
+            llm_client=patch_llm,
+            plan_loop_policy={"mode": "controlled"},
+            plan_reviewer_client=reviewer,
+            plan_repair_client=repair_llm,
+        )
+        assert not result.ok
+        stage = result.state.plan_loop_stages["plan_gate_facts"]
+        assert stage.status is PlanStageStatus.BLOCKED
+        closure = stage.metadata["facts_revision_closure"]
+        assert closure["failure_code"] == "planning.facts_revision.unresolved_requires_human"
+        unresolved_ids = closure["unresolved_finding_ids"]
+        assert len(unresolved_ids) == 1
+        unresolved = result.state.plan_review_findings[unresolved_ids[0]]
+        assert unresolved.code == "NEW_PHYSICAL_AMBIGUITY"

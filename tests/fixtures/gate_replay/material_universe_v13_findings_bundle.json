@@ -1,0 +1,1833 @@
+{
+  "bundle_hash": "79a65210ab92ed9127328c9c5e37bb8d1352aa2060131fa1043fa4bf6faa509a",
+  "bundle_schema_version": "1.0",
+  "campaign_id": "phase8c_step3_canary_v13_sanitized",
+  "canonical_hashes": {
+    "facts": "0d835364a2c692def1d21c50ed88c750fbdf9df97d74f7122822cb0054a99e8e",
+    "input": "e0144c8851cd24a98c90c59f2e711674af650797c6354463cb35f7be5c057490",
+    "policy": "3fb6a16dbd3d44632ec2eb42466ef3e93cbc166fe16dddcbe31e271351d24f3b"
+  },
+  "created_at": "2026-07-22T00:00:00Z",
+  "gate_id": "material_universe",
+  "normalized_state": {
+    "assembled_plan": null,
+    "benchmark_id": null,
+    "build_log": [],
+    "canonical_task_plan": null,
+    "component_tasks": [],
+    "confirmed_facts": {},
+    "extracted_facts": {},
+    "facts_review_history": [],
+    "facts_revision_history": [],
+    "material_composition_report": null,
+    "material_species_resolution_report": null,
+    "metadata": {},
+    "patch_generation_attempts_by_context": {},
+    "patch_generation_candidate_hashes_by_context": {},
+    "patch_status": {},
+    "patches": {
+      "materials_fragmented_69e1af4ca6c669f0": {
+        "content": {
+          "materials": [
+            {
+              "composition": {
+                "O16": 0.666667,
+                "U235": 0.007122,
+                "U238": 0.326211
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 10.257,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "source_provided",
+              "derivation_method": null,
+              "material_id": "mat_54adcbd1042009c9",
+              "mixture_components": [],
+              "name": "Table P4-1/P4-2 Region 1",
+              "role": "fuel",
+              "source_note": null,
+              "source_variant_id": "region_1_2p11",
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "Cr": 0.001,
+                "Fe": 0.002,
+                "Sn": 0.015,
+                "Zr": 0.982
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 6.56,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_e452b8f661dc26d3",
+              "mixture_components": [],
+              "name": "Zircaloy-4 Cladding",
+              "role": "cladding",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "B10": 0.0001438,
+                "B11": 0.0005786,
+                "H1": 0.66617,
+                "O16": 0.33311
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 0.74258,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_075746f0313228a3",
+              "mixture_components": [],
+              "name": "Borated coolant/moderator at HZP 565 K (VERA Problem 4)",
+              "role": "coolant",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "He4": 1.0
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 8.63e-05,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "approximate",
+              "derivation_method": null,
+              "material_id": "mat_0ea0b72ac47092b4",
+              "mixture_components": [],
+              "name": "Helium gap/plenum gas (VERA HZP 565 K)",
+              "role": "gas",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "O16": 0.118519,
+                "U235": 0.023086,
+                "U238": 0.858395
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 10.257,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "source_provided",
+              "derivation_method": null,
+              "material_id": "mat_1e20fc2c1b57e6a4",
+              "mixture_components": [],
+              "name": "Table P4-1/P4-2 Region 2",
+              "role": "fuel",
+              "source_note": null,
+              "source_variant_id": "region_2_2p619",
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "Al27": 0.011688,
+                "B10": 0.004063,
+                "B11": 0.016381,
+                "Na23": 0.030351,
+                "O16": 0.539888,
+                "Si28": 0.366447,
+                "Si29": 0.018693,
+                "Si30": 0.012489
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 2.23,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_deaca6fca0f98e05",
+              "mixture_components": [],
+              "name": "Pyrex Edge Assemblies",
+              "role": "poison",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "Cr": 0.19,
+                "Fe": 0.695,
+                "Mn": 0.018,
+                "Ni": 0.097
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 7.9,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_63fb64d7ca6b3672",
+              "mixture_components": [],
+              "name": "Pyrex Cladding (SS-304)",
+              "role": "cladding",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "B10": 0.0001438,
+                "B11": 0.0005789,
+                "H1": 0.6662,
+                "O16": 0.33311
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "approximate",
+              "compound_components": [],
+              "density_g_cm3": 0.7434,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_11d74206b7eeb351",
+              "mixture_components": [],
+              "name": "Borated Water Coolant — Pyrex Edge Assembly Guide Tubes",
+              "role": "coolant",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "C": 0.0004,
+                "Cr": 0.19,
+                "Fe": 0.691885,
+                "Mn": 0.02,
+                "Ni": 0.0925,
+                "P": 0.0002,
+                "S": 1.5e-05,
+                "Si": 0.005
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 7.94,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_a27dbd0f3acd5ecc",
+              "mixture_components": [],
+              "name": "corner assembly guide thimble plug (304 stainless steel)",
+              "role": "structural",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "H1": 0.666667,
+                "O16": 0.333333
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 0.7406,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_7992ae9657213c03",
+              "mixture_components": [],
+              "name": "Coolant (Light Water, HZP)",
+              "role": "coolant",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "C": 0.0008,
+                "Cr": 0.19,
+                "Fe": 0.6792,
+                "Mn": 0.02,
+                "Ni": 0.1,
+                "Si": 0.01
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 7.94,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "source_provided",
+              "derivation_method": null,
+              "material_id": "mat_6ab3d8e00173a8d7",
+              "mixture_components": [],
+              "name": "Thimble plug (Type 304 stainless steel) - edge assemblies",
+              "role": "structural",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "B10": 0.0001438,
+                "B11": 0.000579,
+                "H1": 0.66617,
+                "O16": 0.33311
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 0.74058,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_453add1a6e96b874",
+              "mixture_components": [],
+              "name": "Borated Water Coolant – Edge Assembly Thimble Plug Region (HZP, 565 K, 1300 ppm B)",
+              "role": "coolant",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "Ag": 0.8089,
+                "Cd": 0.0485,
+                "In": 0.1425
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 10.17,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_1ba29d7418cc1d42",
+              "mixture_components": [],
+              "name": "RCCA Absorber (AIC)",
+              "role": "absorber",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "Cr": 0.19,
+                "Fe": 0.695,
+                "Mn": 0.02,
+                "Ni": 0.095
+              },
+              "composition_basis": "weight_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 7.9,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "confirmed",
+              "derivation_method": null,
+              "material_id": "mat_d21e080accc8c553",
+              "mixture_components": [],
+              "name": "RCCA Cladding - Type 304 Stainless Steel",
+              "role": "cladding",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            },
+            {
+              "composition": {
+                "B10": 0.0001438,
+                "B11": 0.0005786,
+                "H1": 0.66613,
+                "O16": 0.333068
+              },
+              "composition_basis": "atom_frac",
+              "composition_status": "confirmed",
+              "compound_components": [],
+              "density_g_cm3": 0.7407,
+              "density_requires_human_confirmation": false,
+              "density_source": null,
+              "density_status": "approximate",
+              "derivation_method": null,
+              "material_id": "mat_a839a531090c0967",
+              "mixture_components": [],
+              "name": "VERA P4 HZP Coolant 565K 1300ppm B",
+              "role": "coolant",
+              "source_note": null,
+              "source_variant_id": null,
+              "temperature_K": null,
+              "variant_scope": null,
+              "warnings": []
+            }
+          ],
+          "patch_type": "materials"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "materials_fragmented_69e1af4ca6c669f0",
+        "patch_type": "materials",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "patch_facts_0": {
+        "content": {
+          "active_fuel_region_cm": [
+            11.951,
+            377.711
+          ],
+          "assembly_count": 9,
+          "assembly_pitch_cm": 21.5,
+          "assembly_type_counts": {
+            "C": 4,
+            "E": 4,
+            "R": 1
+          },
+          "assumptions": [
+            "Base operating state selected: RCCA poison bottom at z=257.9 cm as the primary modeling case",
+            "Recommended RCCA upper endplug (~1.90 cm solid SS304) is an explicit approximation, not uniquely specified in the original benchmark",
+            "Structural alloys (Zircaloy-4, SS304, Inconel-718) must use true isotopic compositions; pure-element approximations must be flagged as low-fidelity",
+            "Inter-assembly water gap is 0.08 cm total (0.04 cm half-gap per assembly side) filled with borated water",
+            "Nozzle and core plate regions replace the entire 3×3 cross-section with homogenized slabs; detailed 17×17 lattice is not retained in these axial zones",
+            "Spacer grids are modeled as mass-conserving outer frame overlays that do not cut through fuel rods, guide tubes, or instrument tubes"
+          ],
+          "axial_domain_cm": [
+            -55.0,
+            463.937
+          ],
+          "benchmark_id": "VERA-4",
+          "boundary_scope": "Radial outer surfaces of entire 3×3 region are reflective; axial top (z=463.937 cm) and bottom (z=-55.0 cm) are vacuum; interfaces between nine assemblies are transmission boundaries.",
+          "core_lattice_size": [
+            3,
+            3
+          ],
+          "expected_guide_tube_count": null,
+          "expected_instrument_tube_count": null,
+          "expected_pin_count": null,
+          "expected_pyrex_count": null,
+          "expected_spacer_grid_count": null,
+          "expected_thimble_plug_count": null,
+          "fuel_variant_requirements": [
+            {
+              "assembly_type_ids": [
+                "C",
+                "R"
+              ],
+              "density_g_cm3": 10.257,
+              "enrichment_wt_percent": 2.11,
+              "expected_assembly_count": 5,
+              "source_label": "Table P4-1/P4-2 Region 1",
+              "source_note": "VERA Problem 4 Table P4-2: U-235 2.1100 wt%, U-234 0.0174%, U-236 0.0097%, U-238 97.8629%; used in 4 corner (C) and 1 center RCCA (R) assemblies",
+              "variant_id": "region_1_2p11"
+            },
+            {
+              "assembly_type_ids": [
+                "E"
+              ],
+              "density_g_cm3": 10.257,
+              "enrichment_wt_percent": 2.619,
+              "expected_assembly_count": 4,
+              "source_label": "Table P4-1/P4-2 Region 2",
+              "source_note": "VERA Problem 4 Table P4-2: U-235 2.6190 wt%, U-234 0.0219%, U-236 0.0120%, U-238 97.3471%; used in 4 edge (E) assemblies",
+              "variant_id": "region_2_2p619"
+            }
+          ],
+          "geometry_type": "3d_rectangular_multi_assembly",
+          "has_axial_geometry": true,
+          "has_spacer_grids": true,
+          "has_special_pin_map": true,
+          "lattice_size": [
+            17,
+            17
+          ],
+          "localized_insert_requirements": [
+            {
+              "anchor_z_cm": null,
+              "assembly_type_ids": [
+                "E"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 4,
+              "expected_coordinate_count_per_assembly": 20,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "pyrex_rod",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "pyrex_profile",
+              "required_segment_roles": [
+                "pyrex_poison",
+                "pyrex_upper_plenum"
+              ],
+              "requirement_id": "pyrex_edge_assemblies",
+              "requires_human_confirmation": false,
+              "source_note": "§13: Pyrex annular poison in 20 of 24 guide tubes per E assembly; poison segment 15.761–376.441 cm, upper He plenum 376.441–397.510 cm; remaining 4 guide tubes hold thimble plugs"
+            },
+            {
+              "anchor_z_cm": 388.81,
+              "assembly_type_ids": [
+                "C"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 4,
+              "expected_coordinate_count_per_assembly": 24,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "thimble_plug",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "thimble_plug_profile",
+              "required_segment_roles": [
+                "thimble_plug"
+              ],
+              "requirement_id": "thimble_plug_corner_assemblies",
+              "requires_human_confirmation": false,
+              "source_note": "§14: SS304 solid thimble plug in all 24 guide tubes of each C assembly; plug spans 383.310–394.310 cm"
+            },
+            {
+              "anchor_z_cm": 388.81,
+              "assembly_type_ids": [
+                "E"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 4,
+              "expected_coordinate_count_per_assembly": 4,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "thimble_plug",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "thimble_plug_profile",
+              "required_segment_roles": [
+                "thimble_plug"
+              ],
+              "requirement_id": "thimble_plug_edge_assemblies",
+              "requires_human_confirmation": false,
+              "source_note": "§6.4/§14: 4 of 24 guide tubes in each E assembly hold thimble plugs at coordinates (6,6),(6,12),(12,6),(12,12); plug spans 383.310–394.310 cm"
+            },
+            {
+              "anchor_z_cm": 257.9,
+              "assembly_type_ids": [
+                "R"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 1,
+              "expected_coordinate_count_per_assembly": 24,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "control_rod",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "rcca_profile_base",
+              "required_segment_roles": [
+                "aic_absorber",
+                "b4c_absorber",
+                "upper_plenum",
+                "upper_endplug"
+              ],
+              "requirement_id": "rcca_center_assembly",
+              "requires_human_confirmation": false,
+              "source_note": "§15: 24 RCCA rodlets in center R assembly guide tubes; AIC bottom 101.60 cm + B4C 259.08 cm + He plenum 10.70 cm + endplug ~1.90 cm; base case poison bottom z=257.9 cm; all 24 rodlets move rigidly together"
+            }
+          ],
+          "material_roles": [
+            "fuel_region1_uo2",
+            "fuel_region2_uo2",
+            "cladding_zircaloy4",
+            "coolant_borated_water",
+            "guide_tube_wall_zircaloy4",
+            "instrument_tube_wall_zircaloy4",
+            "grid_inconel718",
+            "grid_zircaloy4",
+            "ss304",
+            "helium",
+            "pyrex",
+            "aic",
+            "b4c",
+            "nozzle_homogenized_ss304_coolant",
+            "core_plate_homogenized_ss304_coolant"
+          ],
+          "missing_facts": [
+            "Operating state selection template was empty; base case (z_bottom=257.9 cm) assumed as primary variant",
+            "Helium density not specified in benchmark; must use nominal library value with source annotation",
+            "RCCA upper endplug is an explicit approximation (~1.90 cm) noted in assumptions, not a uniquely specified benchmark detail"
+          ],
+          "model_scope": "multi_assembly_core",
+          "patch_type": "facts",
+          "pin_pitch_cm": 1.26,
+          "scoped_expected_counts": [
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 2376
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 264
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 264
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 264
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 216
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 24
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 24
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 24
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 9
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 1
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 1
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 1
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 72
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 8
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 8
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 8
+            }
+          ],
+          "selected_variant": "base",
+          "source_notes": [
+            "VERA Core Physics Benchmark Problems, CASL-U-2012-0131-004, Problem #4",
+            "All quantitative values extracted directly from the problem specification sections §1–§24"
+          ],
+          "symmetry_description": "Full 3×3 model with no symmetry reduction. Reflective boundaries only on the outer 3×3 region faces, not on inter-assembly interfaces."
+        },
+        "issues": [
+          {
+            "code": "facts_revision.accepted",
+            "proposal_id": "facts_revision_001"
+          }
+        ],
+        "metadata": {
+          "invalidated_reason": "accepted facts revision"
+        },
+        "patch_id": "patch_facts_0",
+        "patch_type": "facts",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "invalid"
+      },
+      "patch_facts_0_repair_1": {
+        "content": {
+          "active_fuel_region_cm": [
+            11.951,
+            377.711
+          ],
+          "assembly_count": 9,
+          "assembly_pitch_cm": 21.5,
+          "assembly_type_counts": {
+            "C": 4,
+            "E": 4,
+            "R": 1
+          },
+          "assumptions": [
+            "Operating state: BOL (beginning of life) / HZP (hot zero power) at 565 K isothermal conditions; no burnup or thermal-hydraulic feedback calculated",
+            "Power level: 0% FP for all states; HZP condition with 1360 ppm soluble boron at 2250 psia",
+            "Base operating state selected: RCCA poison bottom at z=257.9 cm as the primary modeling case",
+            "Recommended RCCA upper endplug (~1.90 cm solid SS304) is an explicit approximation, not uniquely specified in the original benchmark",
+            "Structural alloys (Zircaloy-4, SS304, Inconel-718) must use true isotopic compositions; pure-element approximations must be flagged as low-fidelity",
+            "Inter-assembly water gap is 0.08 cm total (0.04 cm half-gap per assembly side) filled with borated water",
+            "Nozzle and core plate regions replace the entire 3×3 cross-section with homogenized slabs; detailed 17×17 lattice is not retained in these axial zones",
+            "Spacer grids are modeled as mass-conserving outer frame overlays that do not cut through fuel rods, guide tubes, or instrument tubes"
+          ],
+          "axial_domain_cm": [
+            -55.0,
+            463.937
+          ],
+          "benchmark_id": "VERA-4",
+          "boundary_scope": "Radial outer surfaces of entire 3×3 region are reflective; axial top (z=463.937 cm) and bottom (z=-55.0 cm) are vacuum; interfaces between nine assemblies are transmission boundaries.",
+          "core_lattice_size": [
+            3,
+            3
+          ],
+          "expected_guide_tube_count": null,
+          "expected_instrument_tube_count": null,
+          "expected_pin_count": null,
+          "expected_pyrex_count": 80,
+          "expected_spacer_grid_count": 72,
+          "expected_thimble_plug_count": 112,
+          "fuel_variant_requirements": [
+            {
+              "assembly_type_ids": [
+                "C",
+                "R"
+              ],
+              "density_g_cm3": 10.257,
+              "enrichment_wt_percent": 2.11,
+              "expected_assembly_count": 5,
+              "source_label": "Table P4-1/P4-2 Region 1",
+              "source_note": "VERA Problem 4 Table P4-2: U-235 2.1100 wt%, U-234 0.0174%, U-236 0.0097%, U-238 97.8629%; used in 4 corner (C) and 1 center RCCA (R) assemblies",
+              "variant_id": "region_1_2p11"
+            },
+            {
+              "assembly_type_ids": [
+                "E"
+              ],
+              "density_g_cm3": 10.257,
+              "enrichment_wt_percent": 2.619,
+              "expected_assembly_count": 4,
+              "source_label": "Table P4-1/P4-2 Region 2",
+              "source_note": "VERA Problem 4 Table P4-2: U-235 2.6190 wt%, U-234 0.0219%, U-236 0.0120%, U-238 97.3471%; used in 4 edge (E) assemblies",
+              "variant_id": "region_2_2p619"
+            }
+          ],
+          "geometry_type": "3d_rectangular_multi_assembly",
+          "has_axial_geometry": true,
+          "has_spacer_grids": true,
+          "has_special_pin_map": true,
+          "lattice_size": [
+            17,
+            17
+          ],
+          "localized_insert_requirements": [
+            {
+              "anchor_z_cm": null,
+              "assembly_type_ids": [
+                "E"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 4,
+              "expected_coordinate_count_per_assembly": 20,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "pyrex_rod",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "pyrex_profile",
+              "required_segment_roles": [
+                "pyrex_poison",
+                "pyrex_upper_plenum"
+              ],
+              "requirement_id": "pyrex_edge_assemblies",
+              "requires_human_confirmation": false,
+              "source_note": "§13: Pyrex annular poison in 20 of 24 guide tubes per E assembly; poison segment 15.761–376.441 cm, upper He plenum 376.441–397.510 cm; remaining 4 guide tubes hold thimble plugs"
+            },
+            {
+              "anchor_z_cm": 388.81,
+              "assembly_type_ids": [
+                "C"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 4,
+              "expected_coordinate_count_per_assembly": 24,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "thimble_plug",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "thimble_plug_profile",
+              "required_segment_roles": [
+                "thimble_plug"
+              ],
+              "requirement_id": "thimble_plug_corner_assemblies",
+              "requires_human_confirmation": false,
+              "source_note": "§14: SS304 solid thimble plug in all 24 guide tubes of each C assembly; plug spans 383.310–394.310 cm"
+            },
+            {
+              "anchor_z_cm": 388.81,
+              "assembly_type_ids": [
+                "E"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 4,
+              "expected_coordinate_count_per_assembly": 4,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "thimble_plug",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "thimble_plug_profile",
+              "required_segment_roles": [
+                "thimble_plug"
+              ],
+              "requirement_id": "thimble_plug_edge_assemblies",
+              "requires_human_confirmation": false,
+              "source_note": "§6.4/§14: 4 of 24 guide tubes in each E assembly hold thimble plugs at coordinates (6,6),(6,12),(12,6),(12,12); plug spans 383.310–394.310 cm"
+            },
+            {
+              "anchor_z_cm": 257.9,
+              "assembly_type_ids": [
+                "R"
+              ],
+              "control_state_id": "base",
+              "expected_assembly_instance_count": 1,
+              "expected_coordinate_count_per_assembly": 24,
+              "expected_insert_universe_ids": [],
+              "host_kind": "guide_tube",
+              "insert_kind": "control_rod",
+              "required_in_detailed_domain": true,
+              "required_profile_id": "rcca_profile_base",
+              "required_segment_roles": [
+                "aic_absorber",
+                "b4c_absorber",
+                "upper_plenum",
+                "upper_endplug"
+              ],
+              "requirement_id": "rcca_center_assembly",
+              "requires_human_confirmation": false,
+              "source_note": "§15: 24 RCCA rodlets in center R assembly guide tubes; AIC bottom 101.60 cm + B4C 259.08 cm + He plenum 10.70 cm + endplug ~1.90 cm; base case poison bottom z=257.9 cm; all 24 rodlets move rigidly together"
+            }
+          ],
+          "material_roles": [
+            "fuel_region1_uo2",
+            "fuel_region2_uo2",
+            "cladding_zircaloy4",
+            "coolant_borated_water",
+            "guide_tube_wall_zircaloy4",
+            "instrument_tube_wall_zircaloy4",
+            "grid_inconel718",
+            "grid_zircaloy4",
+            "ss304",
+            "helium",
+            "pyrex",
+            "aic",
+            "b4c",
+            "nozzle_homogenized_ss304_coolant",
+            "core_plate_homogenized_ss304_coolant"
+          ],
+          "missing_facts": [
+            "Operating state selection template was empty; base case (z_bottom=257.9 cm) assumed as primary variant",
+            "Helium density not specified in benchmark; must use nominal library value with source annotation",
+            "RCCA upper endplug is an explicit approximation (~1.90 cm) noted in assumptions, not a uniquely specified benchmark detail"
+          ],
+          "model_scope": "multi_assembly_core",
+          "patch_type": "facts",
+          "pin_pitch_cm": 1.26,
+          "scoped_expected_counts": [
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 2376
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 264
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 264
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "fuel_pin",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 264
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 216
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 24
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 24
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "guide_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 24
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 9
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 1
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 1
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "instrument_tube",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 1
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": null,
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "core_total",
+              "source_note": null,
+              "value": 72
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "C",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 8
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "E",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 8
+            },
+            {
+              "assembly_instance_id": null,
+              "assembly_type_id": "R",
+              "derivation": null,
+              "derived": false,
+              "provenance_refs": [],
+              "requires_human_confirmation": false,
+              "role": "spacer_grid",
+              "scope": "assembly_type",
+              "source_note": null,
+              "value": 8
+            }
+          ],
+          "selected_variant": "base",
+          "source_notes": [
+            "VERA Core Physics Benchmark Problems, CASL-U-2012-0131-004, Problem #4",
+            "All quantitative values extracted directly from the problem specification sections §1–§24",
+            "Operating conditions: BOL/HZP at 565 K isothermal, 0% FP, 2250 psia, 1360 ppm soluble boron; no burnup or thermal-hydraulic feedback (§1, §4)",
+            "Localized insert counts from §6.5: Pyrex paths = 4×20 = 80; thimble-plug paths = 4×24 + 4×4 = 112; RCCA rodlet paths = 1×24 = 24",
+            "Spacer grid count from §11: 8 grids per assembly × 9 assemblies = 72 total (18 end grids + 54 middle grids)"
+          ],
+          "symmetry_description": "Full 3×3 model with no symmetry reduction. Reflective boundaries only on the outer 3×3 region faces, not on inter-assembly interfaces."
+        },
+        "issues": [],
+        "metadata": {
+          "candidate_hash": "02baf3117c5d4a81aeabb4f6ff318e896a4162393369e4dd87ea2c7fb42bddca",
+          "closure_input_hash": "76decc47271c4729444022109c823b80aec980a690c5c1293e9de5af1fba6fb2",
+          "closure_round": 0,
+          "proposal_id": "facts_revision_001"
+        },
+        "patch_id": "patch_facts_0_repair_1",
+        "patch_type": "facts",
+        "schema_version": "v1",
+        "source": "repair",
+        "status": "valid"
+      },
+      "universes_fragmented_65b5a136de637617": {
+        "content": {
+          "patch_type": "universes",
+          "universes": [
+            {
+              "cells": [
+                {
+                  "id": "cell_fuel_inner",
+                  "material_id": "mat_1e20fc2c1b57e6a4",
+                  "r_max_cm": 0.2,
+                  "r_min_cm": 0.0,
+                  "region_kind": "cylinder",
+                  "role": "fuel"
+                },
+                {
+                  "id": "cell_fuel_outer",
+                  "material_id": "mat_54adcbd1042009c9",
+                  "r_max_cm": 0.4,
+                  "r_min_cm": 0.2,
+                  "region_kind": "cylinder",
+                  "role": "fuel"
+                },
+                {
+                  "id": "cell_gas",
+                  "material_id": "mat_0ea0b72ac47092b4",
+                  "r_max_cm": 0.42,
+                  "r_min_cm": 0.4,
+                  "region_kind": "cylinder",
+                  "role": "gas"
+                },
+                {
+                  "id": "cell_cladding",
+                  "material_id": "mat_63fb64d7ca6b3672",
+                  "r_max_cm": 0.48,
+                  "r_min_cm": 0.42,
+                  "region_kind": "cylinder",
+                  "role": "cladding"
+                },
+                {
+                  "id": "cell_coolant",
+                  "material_id": "mat_075746f0313228a3",
+                  "r_max_cm": 0.7,
+                  "r_min_cm": 0.48,
+                  "region_kind": "cylinder",
+                  "role": "coolant"
+                }
+              ],
+              "kind": "fuel_pin",
+              "metadata": {
+                "fuel_variant_id": "region_1_2p11",
+                "geometry_profile_id": "profile_400a0f905c3f8919",
+                "source_requirement_ids": [
+                  "ureq_9e3b85c5af0152a8"
+                ]
+              },
+              "universe_id": "u_fuel_region_1_2p11"
+            },
+            {
+              "cells": [
+                {
+                  "id": "cell_fuel_inner",
+                  "material_id": "mat_1e20fc2c1b57e6a4",
+                  "r_max_cm": 0.2,
+                  "r_min_cm": 0.0,
+                  "region_kind": "cylinder",
+                  "role": "fuel"
+                },
+                {
+                  "id": "cell_fuel_outer",
+                  "material_id": "mat_54adcbd1042009c9",
+                  "r_max_cm": 0.4,
+                  "r_min_cm": 0.2,
+                  "region_kind": "cylinder",
+                  "role": "fuel"
+                },
+                {
+                  "id": "cell_gas",
+                  "material_id": "mat_0ea0b72ac47092b4",
+                  "r_max_cm": 0.41,
+                  "r_min_cm": 0.4,
+                  "region_kind": "cylinder",
+                  "role": "gas"
+                },
+                {
+                  "id": "cell_cladding",
+                  "material_id": "mat_63fb64d7ca6b3672",
+                  "r_max_cm": 0.475,
+                  "r_min_cm": 0.41,
+                  "region_kind": "cylinder",
+                  "role": "cladding"
+                },
+                {
+                  "id": "cell_coolant",
+                  "material_id": "mat_075746f0313228a3",
+                  "r_max_cm": 0.7,
+                  "r_min_cm": 0.475,
+                  "region_kind": "cylinder",
+                  "role": "coolant"
+                }
+              ],
+              "kind": "fuel_pin",
+              "metadata": {
+                "fuel_variant_id": "region_2_2p619",
+                "geometry_profile_id": "profile_f4cc509cf22642ac",
+                "source_requirement_ids": [
+                  "ureq_827cade2c36119b7"
+                ]
+              },
+              "universe_id": "u_fuel_region_2_2p619"
+            },
+            {
+              "cells": [
+                {
+                  "id": "pyrex_poison_inner",
+                  "material_id": "mat_deaca6fca0f98e05",
+                  "r_max_cm": 0.21463,
+                  "r_min_cm": 0.0,
+                  "region_kind": "cylinder",
+                  "role": "poison"
+                },
+                {
+                  "id": "pyrex_poison_outer",
+                  "material_id": "mat_deaca6fca0f98e05",
+                  "r_max_cm": 0.42926,
+                  "r_min_cm": 0.21463,
+                  "region_kind": "cylinder",
+                  "role": "poison"
+                },
+                {
+                  "id": "pyrex_cladding",
+                  "material_id": "mat_63fb64d7ca6b3672",
+                  "r_max_cm": 0.4826,
+                  "r_min_cm": 0.42926,
+                  "region_kind": "cylinder",
+                  "role": "cladding"
+                },
+                {
+                  "id": "pyrex_coolant",
+                  "material_id": "mat_075746f0313228a3",
+                  "r_max_cm": 0.561,
+                  "r_min_cm": 0.4826,
+                  "region_kind": "cylinder",
+                  "role": "coolant"
+                }
+              ],
+              "kind": "pyrex_rod",
+              "metadata": {
+                "geometry_profile_id": "profile_ccbfbfe662be7f42",
+                "localized_insert_requirement_id": "pyrex_edge_assemblies",
+                "source_requirement_ids": [
+                  "ureq_f9d025b16279775d"
+                ]
+              },
+              "universe_id": "profile_ccbfbfe662be7f42"
+            },
+            {
+              "cells": [
+                {
+                  "id": "profile_52c0c06bdefe3473_cell_1",
+                  "material_id": "mat_6ab3d8e00173a8d7",
+                  "r_max_cm": 0.5334,
+                  "r_min_cm": 0.0,
+                  "region_kind": "cylinder",
+                  "role": "structural"
+                },
+                {
+                  "id": "profile_52c0c06bdefe3473_cell_2",
+                  "material_id": "mat_075746f0313228a3",
+                  "r_max_cm": 0.5615,
+                  "r_min_cm": 0.5334,
+                  "region_kind": "cylinder",
+                  "role": "coolant"
+                },
+                {
+                  "id": "profile_52c0c06bdefe3473_cell_3",
+                  "material_id": "mat_a27dbd0f3acd5ecc",
+                  "r_max_cm": 0.612,
+                  "r_min_cm": 0.5615,
+                  "region_kind": "cylinder",
+                  "role": "structural"
+                },
+                {
+                  "id": "profile_52c0c06bdefe3473_cell_4",
+                  "material_id": "mat_11d74206b7eeb351",
+                  "r_max_cm": 0.7114,
+                  "r_min_cm": 0.612,
+                  "region_kind": "cylinder",
+                  "role": "coolant"
+                }
+              ],
+              "kind": "thimble_plug",
+              "metadata": {
+                "geometry_profile_id": "profile_52c0c06bdefe3473",
+                "localized_insert_requirement_id": "thimble_plug_edge_assemblies",
+                "source_requirement_ids": [
+                  "ureq_63e3a97066e62dce"
+                ]
+              },
+              "universe_id": "profile_52c0c06bdefe3473"
+            },
+            {
+              "cells": [
+                {
+                  "id": "control_rod_absorber_inner",
+                  "material_id": "mat_1ba29d7418cc1d42",
+                  "r_max_cm": 0.4096,
+                  "r_min_cm": 0.0,
+                  "region_kind": "cylinder",
+                  "role": "absorber"
+                },
+                {
+                  "id": "control_rod_absorber_outer",
+                  "material_id": "mat_1ba29d7418cc1d42",
+                  "r_max_cm": 0.4826,
+                  "r_min_cm": 0.4096,
+                  "region_kind": "cylinder",
+                  "role": "absorber"
+                },
+                {
+                  "id": "control_rod_cladding",
+                  "material_id": "mat_63fb64d7ca6b3672",
+                  "r_max_cm": 0.5334,
+                  "r_min_cm": 0.4826,
+                  "region_kind": "cylinder",
+                  "role": "cladding"
+                },
+                {
+                  "id": "control_rod_coolant",
+                  "material_id": "mat_075746f0313228a3",
+                  "r_max_cm": 0.71176,
+                  "r_min_cm": 0.5334,
+                  "region_kind": "cylinder",
+                  "role": "coolant"
+                }
+              ],
+              "kind": "control_rod",
+              "metadata": {
+                "geometry_profile_id": "profile_c3ff1590c3d88a4c",
+                "localized_insert_requirement_id": "rcca_center_assembly",
+                "source_requirement_ids": [
+                  "ureq_c441fb2dec979567"
+                ]
+              },
+              "universe_id": "profile_c3ff1590c3d88a4c"
+            }
+          ]
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "universes_fragmented_65b5a136de637617",
+        "patch_type": "universes",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      }
+    },
+    "placement_dependency_requests": [],
+    "placement_review_history": [],
+    "placement_revision_history": [],
+    "plan_confirmed_fact_records": {},
+    "plan_confirmed_plan_fact_records": {},
+    "plan_human_answers": {},
+    "plan_human_questions": {},
+    "plan_investigation_schema_version": null,
+    "plan_loop_additional_llm_calls": 0,
+    "plan_loop_artifacts": [],
+    "plan_loop_candidate_hashes_by_fingerprint": {},
+    "plan_loop_contract_version": "0.5",
+    "plan_loop_issue_attempts_by_fingerprint": {},
+    "plan_loop_mode": "off",
+    "plan_loop_no_progress_events": [],
+    "plan_loop_policy": {},
+    "plan_loop_stages": {
+      "plan_gate_facts": {
+        "attempt_count": 1,
+        "completed_at": "2026-07-22T02:48:06.864432+00:00",
+        "decision_ids": [
+          "facts_decision_000"
+        ],
+        "finding_ids": [
+          "c077a8e0337d18c4d368d3733ad908c40a4f1c3819eba6285058556ab6361663",
+          "ef1b26e38fd635b8c75ebe2bdfbdfde9d1d96af5b50b1b1ca5ba35be215c28ed",
+          "ebaaff2a20f1ccfeebc8f57a1eb8c62eeba3f639da1589d4a649397c2ba2a5c8",
+          "d92b60f1a3ae0e52d8d38bc12374ce8f5907ee7fc35ecaca825d9eab15d4901a",
+          "fbdb53ae1f4525120d355597805a1c9056bc1772e280cfebe5f987ed24f9f381",
+          "731312c44d7c829883c68263024a7011f5d76ce7f923d2cc49c7270e856df17d",
+          "093495e798f8d958b1bd58ce57ee697412545026610cbffdbdd6bd1b64663463",
+          "e3d8954944855b00dbd966c63a57503fe712ef77c52644f524ce2846eb231456",
+          "1c31b927baf27cffe70cfcab439b55b1f2aa7f30dc0dcc36b8fb277435623f11",
+          "6ee58738817b02194b8ce2adc2bdf60610d20d5107977ff8a0c7d24087a0a75e",
+          "7a1572c106fc6f6842c041d715f8aebcfda3903f4b4027f3a0b02fb7b9b82baa",
+          "cc00f8834dbceef9d6fd2b3af162e5a6b78ed7194a0c1e46e74cf56815d8baf0",
+          "d002344d9ed26486eeed9f76870f88564431b3929ff622812898acc83e526a71",
+          "0a127f8157280d18c4b48a3011984fd79f50505f69d51a8d88ab6ec80fcc6fd5",
+          "f7b92275d1876d95b33d2e77f50338b7a9d53ac1755b7095a56d82ee50abb95a",
+          "08eff82695d279262609824c9c6eb65aca033e35eda10fcd0dd808646b04fdf3"
+        ],
+        "gate_id": "facts",
+        "human_round_count": 0,
+        "issue_fingerprint": "72af466b47875a2b8611cc8c868e21ee248334e26eb0c28e525e0e618daa5123",
+        "last_patch_hashes": {},
+        "latest_candidate_hash": "02baf3117c5d4a81aeabb4f6ff318e896a4162393369e4dd87ea2c7fb42bddca",
+        "metadata": {
+          "accepted_input_hash": "0d835364a2c692def1d21c50ed88c750fbdf9df97d74f7122822cb0054a99e8e",
+          "facts_revision_closure": {
+            "final_candidate_hash": "02baf3117c5d4a81aeabb4f6ff318e896a4162393369e4dd87ea2c7fb42bddca",
+            "input_payload_hash": "76decc47271c4729444022109c823b80aec980a690c5c1293e9de5af1fba6fb2",
+            "rounds": 1
+          }
+        },
+        "no_progress_count": 0,
+        "patch_types": [
+          "facts"
+        ],
+        "repair_count": 1,
+        "review_count": 2,
+        "stage_id": "plan_gate_facts",
+        "started_at": "2026-07-22T02:19:07.099174+00:00",
+        "status": "accepted",
+        "updated_at": "2026-07-22T02:48:06.864432+00:00",
+        "validation_count": 2
+      },
+      "plan_gate_material_universe": {
+        "attempt_count": 0,
+        "completed_at": "2026-07-22T04:26:40.935615+00:00",
+        "decision_ids": [],
+        "finding_ids": [
+          "b9fd7c4a38f870c0c13f6ccd174ff3a5b3807ddfd7eb8130b1a4a4412ade7f38",
+          "95ef4e838224ce82a5523521b5715a5317edebc52d7560d0534d81633d41b092",
+          "ebd5ec033e4a49d2205a11c72e140755f29bdc87e2f3610f6f890939c9ebfa82",
+          "f76217767df93f9f1b91b7af448cd80602da2ce0aa47cd38aa5b1abf08a0ba74",
+          "736c02d05e19716ae2878a3568df3b3bcb7c7beb00ed94756ee56b7013128dbc",
+          "b8ff1fd43a0a7af076593f3b9dc6800291665ca496d8c6b9ac131a43518136ae"
+        ],
+        "gate_id": "material_universe",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {},
+        "no_progress_count": 0,
+        "patch_types": [
+          "materials",
+          "universes"
+        ],
+        "repair_count": 0,
+        "review_count": 1,
+        "stage_id": "plan_gate_material_universe",
+        "started_at": "2026-07-22T04:21:08.643364+00:00",
+        "status": "blocked",
+        "updated_at": "2026-07-22T04:26:40.935615+00:00",
+        "validation_count": 1
+      }
+    },
+    "plan_retry_attempts_by_fingerprint": {},
+    "plan_retry_budget": {},
+    "plan_retry_candidate_hashes_by_fingerprint": {},
+    "plan_retry_cycle_trace": [],
+    "plan_retry_execution_plans": {},
+    "plan_retry_gate_invalidation_counts": {},
+    "plan_retry_gate_replay_attempt_counts": {},
+    "plan_retry_gate_replay_counts": {},
+    "plan_retry_gate_replay_success_counts": {},
+    "plan_retry_human_questions": {},
+    "plan_retry_issue_fingerprints_by_request": {},
+    "plan_retry_outcome": null,
+    "plan_retry_owner_regenerations": {},
+    "plan_retry_pending_request_ids": [],
+    "plan_retry_requests": {},
+    "plan_retry_rounds": [],
+    "plan_retry_task_plan_hash_history": [],
+    "plan_review_decisions": {},
+    "plan_review_findings": {},
+    "planning_evidence_ledger": null,
+    "planning_feature_contract": null,
+    "planning_mode": "incremental",
+    "planning_source_manifest": null,
+    "requirement_text": "[REDACTED: VERA4 Phase 8C Step 3C MU replay fixture]",
+    "resolved_planning_scope": null,
+    "root_cause_attempts_by_fingerprint": {},
+    "root_cause_candidate_hashes": {},
+    "root_cause_retry_history": [],
+    "selected_variant": null,
+    "state_id": "pbs_4778a4a4e5bb4f5d",
+    "validation_full_patch_regenerations_by_fingerprint": {},
+    "validation_issues": [],
+    "validation_repair_attempts_by_fingerprint": {},
+    "validation_repair_candidate_hashes": {},
+    "validation_repair_history": []
+  },
+  "recorded_inventory": {
+    "contains_auth_material": false,
+    "contains_private_chain": false,
+    "contains_provider_output": false,
+    "fixture_source": "phase8c_step3_canary_v13 sanitized normalized PlanBuildState",
+    "recorded_mu_finding_count": 6
+  },
+  "recorded_reviews": [
+    {
+      "concise_summary": "Recorded v13 materials-scope MU findings.",
+      "findings": [
+        {
+          "affected_json_paths": [],
+          "category": "cross_patch_mismatch",
+          "code": "material_universe.enrichment_contract_mismatch",
+          "confidence": 1.0,
+          "contract_row_ids": [
+            "fvi:region_2_2p619"
+          ],
+          "current_semantics": "see normalized recorded fixture metadata",
+          "evidence_refs": [
+            "V052"
+          ],
+          "expected_semantics": "see normalized recorded fixture metadata",
+          "message": "variant region_2_2p619 source=2.619 material=0.023086",
+          "metadata": {
+            "variant_id": "region_2_2p619"
+          },
+          "repairable_by_llm": false,
+          "requires_human": false,
+          "severity": "warning"
+        },
+        {
+          "affected_json_paths": [
+            "contract_rows[row_id=smc:fuel_variant:region_2_2p619].material_id"
+          ],
+          "category": "cross_patch_mismatch",
+          "code": "material_universe.contract_material_id_mismatch",
+          "confidence": 0.95,
+          "contract_row_ids": [
+            "smc:fuel_variant:region_2_2p619",
+            "fvi:region_2_2p619"
+          ],
+          "current_semantics": "see normalized recorded fixture metadata",
+          "evidence_refs": [
+            "F001",
+            "V051",
+            "V052"
+          ],
+          "expected_semantics": "see normalized recorded fixture metadata",
+          "message": "Coverage contract row for region_2_2p619 used the Region 1 material instead of the Region 2 material.",
+          "metadata": {
+            "actual_material_id": "mat_54adcbd1042009c9",
+            "expected_material_id": "mat_1e20fc2c1b57e6a4",
+            "source_variant_id": "region_2_2p619"
+          },
+          "repairable_by_llm": false,
+          "requires_human": true,
+          "severity": "error"
+        },
+        {
+          "affected_json_paths": [
+            "contract_rows[row_id=smc:localized_insert:thimble_plug_edge_assemblies].material_id"
+          ],
+          "category": "cross_patch_mismatch",
+          "code": "material_universe.contract_material_role_mismatch",
+          "confidence": 0.7,
+          "contract_row_ids": [
+            "smc:localized_insert:thimble_plug_edge_assemblies",
+            "smc:localized_insert:thimble_plug_corner_assemblies"
+          ],
+          "current_semantics": "see normalized recorded fixture metadata",
+          "evidence_refs": [
+            "M013",
+            "M014",
+            "C035",
+            "C036"
+          ],
+          "expected_semantics": "see normalized recorded fixture metadata",
+          "message": "Edge thimble-plug role contract required unnecessary edge-specific material identity.",
+          "metadata": {
+            "actual_material_id": "mat_a27dbd0f3acd5ecc",
+            "expected_material_id": "mat_6ab3d8e00173a8d7",
+            "requirement_id": "localized_insert:thimble_plug_edge_assemblies"
+          },
+          "repairable_by_llm": false,
+          "requires_human": true,
+          "severity": "warning"
+        }
+      ],
+      "review_status": "complete",
+      "reviewed_evidence_refs": [],
+      "reviewed_ids": [],
+      "scope": "materials"
+    },
+    {
+      "concise_summary": "Recorded v13 universes-scope MU findings.",
+      "findings": [
+        {
+          "affected_json_paths": [],
+          "category": "cross_patch_mismatch",
+          "code": "material_universe.background_missing",
+          "confidence": 1.0,
+          "contract_row_ids": [
+            "rums:u_fuel_region_2_2p619"
+          ],
+          "current_semantics": "see normalized recorded fixture metadata",
+          "evidence_refs": [
+            "U025"
+          ],
+          "expected_semantics": "see normalized recorded fixture metadata",
+          "message": "fuel_pin universe has no background cell",
+          "metadata": {
+            "universe_id": "u_fuel_region_2_2p619"
+          },
+          "repairable_by_llm": false,
+          "requires_human": false,
+          "severity": "warning"
+        },
+        {
+          "affected_json_paths": [
+            "records[0].material_ids[0]",
+            "records[2].material_ids[0]"
+          ],
+          "category": "cross_patch_mismatch",
+          "code": "material_universe.material_role_conflict",
+          "confidence": 0.85,
+          "contract_row_ids": [
+            "rums:u_fuel_region_1_2p11",
+            "rums:u_fuel_region_2_2p619",
+            "rums:profile_ccbfbfe662be7f42",
+            "rums:profile_52c0c06bdefe3473",
+            "rums:profile_c3ff1590c3d88a4c"
+          ],
+          "current_semantics": "see normalized recorded fixture metadata",
+          "evidence_refs": [
+            "M009",
+            "M010",
+            "M013",
+            "M015",
+            "U024",
+            "U025",
+            "U026",
+            "U028",
+            "C029",
+            "C033",
+            "C037"
+          ],
+          "expected_semantics": "see normalized recorded fixture metadata",
+          "message": "Recorded reviewer interpreted the first material_id slot across universes as conflicting roles.",
+          "metadata": {
+            "material_id": "mat_075746f0313228a3"
+          },
+          "repairable_by_llm": false,
+          "requires_human": true,
+          "severity": "warning"
+        },
+        {
+          "affected_json_paths": [
+            "records[2].material_ids",
+            "records[4].material_ids"
+          ],
+          "category": "cross_patch_mismatch",
+          "code": "material_universe.material_count_role_count_mismatch",
+          "confidence": 0.7,
+          "contract_row_ids": [
+            "rums:profile_ccbfbfe662be7f42",
+            "rums:profile_c3ff1590c3d88a4c"
+          ],
+          "current_semantics": "see normalized recorded fixture metadata",
+          "evidence_refs": [
+            "M013",
+            "M014",
+            "M015",
+            "M016",
+            "M021",
+            "M022",
+            "M023",
+            "U026",
+            "U028",
+            "C033",
+            "C034",
+            "C045",
+            "C046"
+          ],
+          "expected_semantics": "see normalized recorded fixture metadata",
+          "message": "Recorded reviewer interpreted unique material_ids count as needing to equal cell_count.",
+          "metadata": {
+            "affected_universes": [
+              {
+                "cell_count": 4,
+                "kind": "pyrex_rod",
+                "material_count": 3,
+                "universe_id": "profile_ccbfbfe662be7f42"
+              },
+              {
+                "cell_count": 4,
+                "kind": "control_rod",
+                "material_count": 3,
+                "universe_id": "profile_c3ff1590c3d88a4c"
+              }
+            ]
+          },
+          "repairable_by_llm": false,
+          "requires_human": true,
+          "severity": "warning"
+        }
+      ],
+      "review_status": "complete",
+      "reviewed_evidence_refs": [],
+      "reviewed_ids": [],
+      "scope": "universes"
+    },
+    {
+      "concise_summary": "Recorded v13 binding scope had no distinct finding.",
+      "findings": [],
+      "review_status": "complete",
+      "reviewed_evidence_refs": [],
+      "reviewed_ids": [],
+      "scope": "binding"
+    }
+  ],
+  "snapshot_schema_version": "1.0",
+  "upstream_accepted": {
+    "facts": true
+  }
+}

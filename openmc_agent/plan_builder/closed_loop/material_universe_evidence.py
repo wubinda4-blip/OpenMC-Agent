@@ -90,7 +90,19 @@ def build_material_universe_contract_matrix(view: MaterialUniverseBindingView, i
     for contract in view.required_material_contracts:
         rid = contract["requirement_id"]
         role = contract.get("expected_role", "")
-        actual_material_ids = [m.material_id for m in view.material_records if m.role == role and not contract.get("implicit")]
+        expected_variant = contract.get("expected_variant_id")
+        if expected_variant:
+            actual_material_ids = [
+                m.material_id
+                for m in view.material_records
+                if m.role == role and m.source_variant_id == expected_variant
+            ]
+        else:
+            actual_material_ids = [
+                m.material_id
+                for m in view.material_records
+                if m.role == role and not contract.get("implicit")
+            ]
         if not actual_material_ids and contract.get("implicit"):
             actual_material_ids = [m.material_id for m in view.material_records if m.role == role]
         coverage = "pass" if actual_material_ids else ("ambiguous" if contract.get("implicit") else "fail")

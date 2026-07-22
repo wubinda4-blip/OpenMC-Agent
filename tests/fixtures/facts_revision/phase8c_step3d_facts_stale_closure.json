@@ -1,0 +1,83 @@
+{
+  "fixture_id": "phase8c_step3d_facts_stale_closure",
+  "source": {
+    "run_label": "phase8c_step3c_vera4_full_canary",
+    "gate": "facts",
+    "final_disposition": "BLOCKED_BY_GATE:facts",
+    "failure_code": "planning.facts_revision.unresolved_requires_human",
+    "sanitized": true
+  },
+  "initial_stale_count_findings": [
+    {
+      "code": "LZI_NULL_PYREX_COUNT",
+      "affected_json_paths": ["/expected_pyrex_count"],
+      "expected_value": 80,
+      "repairable_by_llm": true,
+      "requires_human": false
+    },
+    {
+      "code": "LZI_NULL_GUIDE_TUBE_COUNT",
+      "affected_json_paths": ["/expected_guide_tube_count"],
+      "expected_value": 216,
+      "repairable_by_llm": true,
+      "requires_human": false
+    },
+    {
+      "code": "LZI_NULL_THIMBLE_PLUG_COUNT",
+      "affected_json_paths": ["/expected_thimble_plug_count"],
+      "expected_value": 112,
+      "repairable_by_llm": true,
+      "requires_human": false
+    },
+    {
+      "code": "LZI_NULL_INSTRUMENT_TUBE_COUNT",
+      "affected_json_paths": ["/expected_instrument_tube_count"],
+      "expected_value": 9,
+      "repairable_by_llm": true,
+      "requires_human": false
+    }
+  ],
+  "revision_candidate_values": {
+    "/expected_pyrex_count": 80,
+    "/expected_guide_tube_count": 216,
+    "/expected_thimble_plug_count": 112,
+    "/expected_instrument_tube_count": 9
+  },
+  "latest_rereview_error_findings": [
+    {
+      "code": "FUEL_VARIANT_COUNT_TOTAL_MISMATCH",
+      "severity": "error",
+      "category": "source_coverage",
+      "message": "The facts_subset lists 2 fuel_variant_requirements entries, but the expected_assembly_count values sum to 9 and no enrichment level is omitted; no duplicate variant_id is present. This finding is recorded as a coverage confirmation, not an error.",
+      "affected_json_paths": ["/fuel_variant_requirements"],
+      "repairable_by_llm": false,
+      "requires_human": false
+    },
+    {
+      "code": "MISSING_BOUNDARY_CONDITION_ASSUMPTION",
+      "severity": "error",
+      "category": "source_coverage",
+      "message": "Source-backed boundary-condition conventions are absent from assumptions.",
+      "affected_json_paths": ["/assumptions"],
+      "repairable_by_llm": true,
+      "requires_human": false
+    },
+    {
+      "code": "MISSING_FEEDBACK_SCOPE_ASSUMPTION",
+      "severity": "error",
+      "category": "source_coverage",
+      "message": "Source-backed no-burnup/no-thermal-feedback scope convention is absent from assumptions.",
+      "affected_json_paths": ["/assumptions"],
+      "repairable_by_llm": true,
+      "requires_human": false
+    }
+  ],
+  "blocked_metadata_before_fix": {
+    "unresolved_finding_codes": [
+      "LZI_NULL_PYREX_COUNT",
+      "LZI_NULL_GUIDE_TUBE_COUNT",
+      "LZI_NULL_THIMBLE_PLUG_COUNT",
+      "LZI_NULL_INSTRUMENT_TUBE_COUNT"
+    ]
+  }
+}

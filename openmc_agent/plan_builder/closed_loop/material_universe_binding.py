@@ -185,6 +185,19 @@ def _role_compatible(cell_role: str, material_role: str) -> str:
     return "fail"
 
 
+def _composition_fraction_to_wt_percent(value: float | None) -> float | None:
+    """Normalize composition values for comparison with source wt%.
+
+    Materials patches may encode composition as either percentages
+    (``2.11``) or fractions (``0.0211``) depending on the composition basis.
+    The Material-Universe binding view exposes one canonical wt% number so
+    deterministic preflight does not report unit false positives.
+    """
+    if value is None:
+        return None
+    return value * 100.0 if 0.0 <= value <= 1.0 else value
+
+
 def build_material_universe_binding_view(*, state: Any, species_report: dict[str, Any] | None = None) -> MaterialUniverseBindingView:
     """Construct the static binding view from valid patches.
 
@@ -285,6 +298,7 @@ def build_material_universe_binding_view(*, state: Any, species_report: dict[str
             enrichment = None
             if material_id and material_id in material_by_id:
                 enrichment = material_by_id[material_id].composition.get("U235") if material_by_id[material_id].composition else None
+                enrichment = _composition_fraction_to_wt_percent(enrichment)
             variant_bindings.append(FuelVariantBinding(
                 variant_id=variant.variant_id,
                 source_enrichment_wt_percent=variant.enrichment_wt_percent,

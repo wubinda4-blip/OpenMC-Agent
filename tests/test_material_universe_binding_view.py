@@ -77,6 +77,16 @@ def test_fuel_variant_binding_links_material_to_active_fuel_universe() -> None:
     assert variant.status == "pass"
 
 
+def test_fuel_variant_binding_normalizes_fractional_u235_to_wt_percent() -> None:
+    state = _state(materials={"patch_type": "materials", "materials": [
+        {"material_id": "fuel_21", "name": "fuel 2.1", "role": "fuel", "density_g_cm3": 10.0, "composition": {"U235": 0.021}, "source_variant_id": "fuel_21"},
+    ]})
+
+    view = build_material_universe_binding_view(state=state)
+
+    assert view.fuel_variant_bindings[0].material_enrichment_wt_percent == 2.1
+
+
 def test_hash_ordering_is_stable() -> None:
     state = _state()
     view1 = build_material_universe_binding_view(state=state)

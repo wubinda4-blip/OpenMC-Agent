@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,6 +29,9 @@ from openmc_agent.plan_builder.closed_loop.models import (
     SourceExcerpt,
 )
 from openmc_agent.plan_builder.state import PlanBuildState
+
+
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "facts_revision"
 
 
 def _make_pack() -> PlanEvidencePack:
@@ -199,6 +203,56 @@ class TestPathNormalization:
         findings, rejected = _normalize(output, pack)
         assert findings == []
         assert any(item["code"] == "facts_review.invalid_finding_contract" for item in rejected)
+
+    def test_confirmation_not_error_reviewer_finding_is_downgraded_to_warning(self):
+        pack = _make_pack()
+        evidence_hash = pack.source_excerpts[0].evidence_hash
+        payload = _make_draft_dict(
+            code="FUEL_VARIANT_COUNT_TOTAL_MISMATCH",
+            paths=["/fuel_variant_requirements"],
+            evidence_hash=evidence_hash,
+            repairable=False,
+            requires_human=False,
+        )
+        payload["message"] = (
+            "The facts_subset lists 2 fuel_variant_requirements entries, but "
+            "the expected_assembly_count values sum to 9 and no enrichment "
+            "level is omitted; no duplicate variant_id is present. This finding "
+            "is recorded as a coverage confirmation, not an error."
+        )
+        output = _make_output([payload])
+        findings, rejected = _normalize(output, pack)
+        assert rejected == []
+        assert len(findings) == 1
+        assert findings[0].severity is PlanFindingSeverity.WARNING
+        assert output.findings[0].severity is PlanFindingSeverity.WARNING
+        assert findings[0].metadata["classification_override"] == {
+            "reason": "facts_reviewer_confirmation_not_error",
+            "original_severity": "error",
+            "original_repairable_by_llm": False,
+            "original_requires_human": False,
+        }
+
+    def test_step3d_t3_fixture_contradictory_finding_is_sanitized_and_downgraded(self):
+        fixture_path = FIXTURE_ROOT / "phase8c_step3d_facts_stale_closure.json"
+        raw = fixture_path.read_text(encoding="utf-8")
+        lowered = raw.lower()
+        for forbidden in ("api_key", "prompt_text", "raw_provider_output", "reasoning_content", "sk-"):
+            assert forbidden not in lowered
+        fixture = json.loads(raw)
+        pack = _make_pack()
+        evidence_hash = pack.source_excerpts[0].evidence_hash
+        contradictory = fixture["latest_rereview_error_findings"][0]
+        contradictory = {
+            **contradictory,
+            "evidence_hashes": [evidence_hash],
+            "confidence": 0.9,
+        }
+        output = _make_output([contradictory])
+        findings, rejected = _normalize(output, pack)
+        assert rejected == []
+        assert findings[0].code == "FUEL_VARIANT_COUNT_TOTAL_MISMATCH"
+        assert findings[0].severity is PlanFindingSeverity.WARNING
 
 
 class TestEndToEndPathNormalization:

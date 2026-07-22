@@ -26,6 +26,9 @@ __all__ = [
     "BOUNDARY_PATCH_UNIVERSES",
     "BOUNDARY_GATE_FACTS",
     "BOUNDARY_GATE_MATERIAL_UNIVERSE",
+    "BOUNDARY_GATE_PLACEMENT",
+    "BOUNDARY_GATE_AXIAL_GEOMETRY",
+    "BOUNDARY_GATE_ASSEMBLED_PLAN",
     "ACCEPTED_BOUNDARIES",
     "checkpoint_fingerprint",
 ]
@@ -173,6 +176,9 @@ BOUNDARY_PATCH_MATERIALS: str = "patch:materials"
 BOUNDARY_PATCH_UNIVERSES: str = "patch:universes"
 BOUNDARY_GATE_FACTS: str = "gate:facts"
 BOUNDARY_GATE_MATERIAL_UNIVERSE: str = "gate:material_universe"
+BOUNDARY_GATE_PLACEMENT: str = "gate:placement"
+BOUNDARY_GATE_AXIAL_GEOMETRY: str = "gate:axial_geometry"
+BOUNDARY_GATE_ASSEMBLED_PLAN: str = "gate:assembled_plan"
 
 # Ordered from earliest to latest accepted boundary.  Hydration selects the
 # latest *valid* snapshot, i.e. the one closest to the end of this list.
@@ -181,6 +187,9 @@ ACCEPTED_BOUNDARIES: tuple[str, ...] = (
     BOUNDARY_PATCH_MATERIALS,
     BOUNDARY_PATCH_UNIVERSES,
     BOUNDARY_GATE_MATERIAL_UNIVERSE,
+    BOUNDARY_GATE_PLACEMENT,
+    BOUNDARY_GATE_AXIAL_GEOMETRY,
+    BOUNDARY_GATE_ASSEMBLED_PLAN,
 )
 
 
