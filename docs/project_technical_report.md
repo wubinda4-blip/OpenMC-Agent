@@ -4,7 +4,9 @@
 
 ### 2026-07-22
 
-- **Phase 8C Step 3G MU Composition-Basis Preflight Closure**：Step 3D Facts→MU canary 已到达 MU：Facts accepted、Materials 15/15、Universes 5/5、MU preflight 0 error、truth violations 0、MU reviewer 3 calls；唯一 blocker 为 `material_universe.invalid_composition_sum_for_basis`（water 声明 `atom_frac` 但 H1=2/O16=1 为 stoichiometric ratio）。修复将 `atom_frac`/`weight_frac` 的 composition sum 合同前移到 MaterialsPatch validator、materials fragment qualification 与 MU preflight。
+- **Phase 8C Step 3G 下游 Gate 恢复循环 + Live-Review 编排**：(1) 新增 `tests/test_downstream_gate_recovery.py`（10 tests）覆盖 Placement retry_controller 完整循环（resolved/no-progress/budget/stale）和 Axial/Assembled re-replay 恢复（block→mutate→accepted、rejected fail-closed、deterministic replay）。(2) 新增 `scripts/extract_downstream_replay_bundles.py` 从真实 `campaign_checkpoint.json` 提取 `production_accepted` 下游 bundle。(3) 新增 `scripts/run_downstream_live_review.py` 按 Placement→Axial→Assembled 顺序运行 preflight+review（支持 live/recorded/preflight 三模式、early-break/continue-on-fail），MU accepted 后可直接使用。
+- **验证结果**：Step 3G focused tests `18 passed`（recovery 10 + live-review 8）；`compileall -q openmc_agent scripts` 通过。全量验证与 baseline diff 见下文。
+- **风险/边界**：恢复循环测试用 fake producer/validator，不声明真实 provider 验收。extract 脚本依赖真实 campaign 到达下游 boundary snapshot，当前所有真实 canary 均未到达 placement。live-review 编排脚本的管道已用 offline bundle 验证（recorded-review 模式），真实 live-review 需等 MU accepted。
 - **验证结果**：全量非 OpenMC/非 LLM 测试 `3662 passed, 2 skipped, 392 deselected`；`compileall`、fake benchmark `21/21`、baseline regression diff 均通过。fraction basis 现在允许 partial sum `<=1` 与 percent-style `≈100`，拒绝 `1<sum<100` 的未归一化化学计量比；`material_universe.invalid_composition_sum_for_basis` 注册为 materials-owned deterministic preflight gap。
 - **风险/边界**：不自动改写材料成分，不改变 renderer 或 OpenMC transport semantics；LLM 仍可选择 `stoichiometric_ratio` 表达化学式。修复后需重跑 Facts→MU milestone canary，预期该问题在 reviewer 前由 deterministic preflight/qualification 拦截或由 generation 修正。
 
