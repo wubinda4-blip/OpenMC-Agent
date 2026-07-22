@@ -404,16 +404,16 @@ def compile_geometry_component_inventory(
         )
         # Add supporting material roles (cladding, coolant, gas) so the
         # MaterialsPatch includes them and universe cells can reference
-        # valid material IDs.
+        # valid material IDs.  These are shared materials — NOT bound
+        # to a specific fuel variant — so fuel_variant_id is left None.
         for srole in _sup_roles:
             material_role_reqs.append(
                 MaterialRoleRequirement(
                     requirement_id=short_id(
                         "mrole",
-                        {"role": srole, "variant": variant_id},
+                        {"role": srole, "scope": "shared"},
                     ),
                     role=srole,
-                    fuel_variant_id=variant_id,
                     required_by_profile_ids=(profile_id,),
                     status="required",
                 )
@@ -514,8 +514,9 @@ def compile_geometry_component_inventory(
     #    profile_kind, required_cell_roles, fuel_variant_id).  Fuel
     #    variants NEVER dedupe (each has its own composition); structural
     #    components like end plugs share a profile when identical.
-    seen_profile_keys: set[str] = set()
+    seen_profile_keys: dict[str, str] = {}  # key → surviving profile_id
     deduped_profiles: list[RadialProfileRequirement] = []
+    dropped_to_surviving: dict[str, str] = {}  # dropped_id → surviving_id
     for profile in radial_profiles:
         key = content_hash(
             {
@@ -527,9 +528,25 @@ def compile_geometry_component_inventory(
             }
         )
         if key in seen_profile_keys:
+            surviving_id = seen_profile_keys[key]
+            dropped_to_surviving[profile.profile_id] = surviving_id
             continue
-        seen_profile_keys.add(key)
+        seen_profile_keys[key] = profile.profile_id
         deduped_profiles.append(profile)
+
+    # Re-map localized insert bindings whose profile was deduped to point
+    # to the surviving profile.  This ensures every insert requirement
+    # has a valid profile in radial_profiles.
+    for binding in localized_bindings:
+        if binding.profile_id in dropped_to_surviving:
+            binding.profile_id = dropped_to_surviving[binding.profile_id]
+
+    # Re-map material role requirements whose profile was deduped.
+    for mrr in material_role_reqs:
+        remapped = tuple(
+            dropped_to_surviving.get(pid, pid) for pid in mrr.required_by_profile_ids
+        )
+        mrr.required_by_profile_ids = remapped
 
     # E. Build the inventory.
     inventory = GeometryComponentInventory(
