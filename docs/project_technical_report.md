@@ -12,6 +12,10 @@
 - **验证结果**：Step 3E focused offline qualification tests `53 passed`；三个 clean fixture 的 preflight/recorded-review 均 accepted、coverage complete、blocking/rejected 均为 0。未运行真实 LLM canary，未将合成 upstream chain 表述为 MU 或 VERA4 acceptance。
 - **风险/边界**：mutation 证明 deterministic blocker/owner route 稳定性，不替代真实 provider 验收。MU accepted 后仍需依次运行 Placement → Axial Geometry → Assembled target-only live-review，每次最长 1800 秒；三个 live-review 闭合后才运行一次完整 milestone canary。
 
+- **Phase 8C Step 3F 五 Gate 离线 Campaign 恢复资格**：新增脱敏版本化 `CampaignRecoveryScenario`、clean 五 gate recorded campaign 与恢复故障矩阵。runner 复用 checkpoint/store、gate replay、生产 downstream resume seam 和 dependency graph，覆盖漂移、损坏、敏感字段、缺失上游、timeout/schema/finding blocker 及上游 patch 变更闭包。
+- **验证结果**：Step 3F focused recovery tests `13 passed`；离线 matrix `15` 场景，clean accepted、故障场景受控 blocked，输出仅含 hash、边界复用/失效、调用计数和稳定 issue code。未运行真实 LLM/OpenMC，不将结果表述为 MU 或下游 provider acceptance。
+- **风险/边界**：该阶段证明恢复与失效传播，不证明真实 provider 或 renderer 资格；Step 3D Facts canary 仍独立运行。后续真实验收仍需 MU accepted 后按 Placement → Axial → Assembled target-only live-review 顺序执行。
+
 - **Phase 8C Step 3D Facts Revision Stale-Finding Closure**：T3 full VERA4 canary 已实际完成 1 run，但未到 MU：`BLOCKED_BY_GATE:facts`，`planning.facts_revision.unresolved_requires_human`，Facts blocked、MU pending、truth violations 0、15 real LLM calls。根因是 Facts revision rereview 后的 closure metadata 仍引用初审旧 count findings，且 reviewer 将“coverage confirmation, not an error”自相矛盾输出保留为 non-repairable error。
 - **验证结果**：修复 Facts reviewer confirmation-not-error 降级为 warning，并让 Facts revision blocked metadata/registry 使用最新 rereview unresolved findings；新增脱敏 Step 3D fixture，不含 prompt/raw provider output/reasoning/secrets/原始 canary 日志。Focused Facts/GateReplay tests `58 passed`；全量非 OpenMC/非 LLM pytest `3620 passed, 2 skipped, 392 deselected`；`compileall -q openmc_agent scripts`、fake benchmark `21/21` 与 fixture baseline diff 均通过。
 - **风险/边界**：本修复只处理 Facts revision closure 状态机与 reviewer normalization，不改 MU、Materials/Universes generation、renderer 或物理合同。修复后需先跑 Facts target-only live-review；Facts accepted 后再重跑 `--stop-after-gate material_universe` T3。
