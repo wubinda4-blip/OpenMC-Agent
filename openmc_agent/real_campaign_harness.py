@@ -1547,8 +1547,11 @@ def _write_run_artifacts(
         "runtime_mode": config.runtime_supervisor_mode,
         "max_runtime_iterations": config.max_runtime_iterations,
         "wall_time_limit_s": config.wall_time_limit_s,
-        "max_llm_calls": config.max_llm_calls,
-    })
+         "max_llm_calls": config.max_llm_calls,
+         "plan_loop_max_review_rounds": config.policy.max_review_rounds_per_gate,
+         "plan_loop_max_repair_rounds": config.policy.max_repair_rounds_per_gate,
+         "plan_loop_max_additional_llm_calls": config.policy.max_total_additional_llm_calls,
+     })
     _write_json_atomic(run_dir / "run_result.json", result.to_dict())
 
 
@@ -1606,6 +1609,11 @@ class CanaryCampaignConfig:
     # Materials/Universes/Axial/Assembled budget.  Reactor-neutral gate
     # name; not a VERA-specific branch.
     stop_after_gate: str | None = None
+    # Explicit closed-loop budgets prevent Facts closure from starving
+    # downstream Material/Universe gates.
+    plan_loop_max_review_rounds: int = 2
+    plan_loop_max_repair_rounds: int = 2
+    plan_loop_max_additional_llm_calls: int = 24
 
 
 def run_real_canary_campaign(
@@ -1649,9 +1657,16 @@ def run_real_canary_campaign(
         cumulative_gates = enabled_gates_through(campaign.stop_after_gate)
         policy = make_five_gate_controlled_policy(
             enabled_gate_ids=tuple(g.value for g in cumulative_gates),
+            max_review_rounds_per_gate=campaign.plan_loop_max_review_rounds,
+            max_repair_rounds_per_gate=campaign.plan_loop_max_repair_rounds,
+            max_total_additional_llm_calls=campaign.plan_loop_max_additional_llm_calls,
         )
     else:
-        policy = make_five_gate_controlled_policy()
+        policy = make_five_gate_controlled_policy(
+            max_review_rounds_per_gate=campaign.plan_loop_max_review_rounds,
+            max_repair_rounds_per_gate=campaign.plan_loop_max_repair_rounds,
+            max_total_additional_llm_calls=campaign.plan_loop_max_additional_llm_calls,
+        )
     fingerprint = compute_resume_fingerprint(
         case=campaign.case,
         env_status=env_status,
@@ -1752,6 +1767,9 @@ def run_real_canary_campaign(
             "wall_time_limit_s": campaign.wall_time_limit_s,
             "campaign_timeout_s": campaign.campaign_timeout_s,
             "max_llm_calls": effective_max_calls,
+            "plan_loop_max_review_rounds": campaign.plan_loop_max_review_rounds,
+            "plan_loop_max_repair_rounds": campaign.plan_loop_max_repair_rounds,
+            "plan_loop_max_additional_llm_calls": campaign.plan_loop_max_additional_llm_calls,
             "llm_budget": llm_budget.to_dict(),
         },
         "aggregate_status": status,

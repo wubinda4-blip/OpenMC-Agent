@@ -110,6 +110,18 @@ def main() -> int:
         "--max-llm-calls", type=int,
         help="Override the estimated budget; --max-llm-calls always wins.",
     )
+    parser.add_argument(
+        "--plan-loop-max-review-rounds", type=int, default=2,
+        help="Maximum reviewer rounds per enabled gate.",
+    )
+    parser.add_argument(
+        "--plan-loop-max-repair-rounds", type=int, default=2,
+        help="Maximum repair rounds per enabled gate.",
+    )
+    parser.add_argument(
+        "--plan-loop-max-additional-llm-calls", type=int, default=24,
+        help="Shared deterministic closed-loop review/repair call budget.",
+    )
     parser.add_argument("--expected-patch-count", type=int, default=8)
     parser.add_argument("--expected-universe-count", type=int, default=0)
     parser.add_argument(
@@ -266,6 +278,9 @@ def main() -> int:
         plan_investigation_require_source_backed_evidence=args.plan_investigation_require_source_backed_evidence,
         plan_investigation_max_tokens=args.plan_investigation_max_tokens,
         stop_after_gate=args.stop_after_gate,
+        plan_loop_max_review_rounds=args.plan_loop_max_review_rounds,
+        plan_loop_max_repair_rounds=args.plan_loop_max_repair_rounds,
+        plan_loop_max_additional_llm_calls=args.plan_loop_max_additional_llm_calls,
     )
 
     manifest = run_real_canary_campaign(args.output_dir, campaign)

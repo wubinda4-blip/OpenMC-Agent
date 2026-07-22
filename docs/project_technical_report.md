@@ -8,6 +8,8 @@
 - **验证结果**：focused MU/investigation/replay tests `24 passed`；全量非 OpenMC/非 LLM `3579 passed, 2 skipped, 392 deselected`；compileall、fake benchmark `21/21` 与 `git diff --check` clean。真实 VERA4 canary 已启动但在 provider 调用前被 `BLOCKED_BY_LLM_ENVIRONMENT` 阻塞（`glm` API 环境未配置），未宣称 gate 完成。
 - **风险/边界**：本次只加强恢复与真实性 telemetry，不改变材料、universe、几何或 renderer 合同；provider 持续超时仍报告为外部运行阻塞，不可宣称 MU Gate 完成。
 
+- **Step 3A 重配 canary 分析**：扩大 Facts/MU closed-loop budget 到 review=4、repair=4、additional calls=60，并保留 Facts→Materials→Universes→MU reviewer 路径。当前后台 retry 尚未形成终态 artifact；中间 Facts 证据显示 scope/fuel/assembly 已通过，但 completeness 仍有 boundary/end-plug provenance gaps。已确认 checkpoint 仍需从最终 artifact writer 前移到 action/gate 完成时。
+
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
 
 ### 2026-07-22
