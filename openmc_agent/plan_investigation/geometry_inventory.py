@@ -66,6 +66,42 @@ INVENTORY_SCHEMA_VERSION: str = "0.1"
 INVENTORY_NOT_FACTS_ACCEPTED_CODE: str = "planning.inventory.facts_gate_not_accepted"
 
 
+# Standard supporting material roles for each component kind.
+# These are structurally necessary for the universe definition — every
+# fuel pin has cladding and coolant; every guide tube has structural
+# walls and internal coolant; etc.  Without declaring these roles, the
+# MaterialsPatch omits them, and the LLM generates universe cells that
+# reference non-existent material IDs (e.g. "helium", "water").
+_SUPPORTING_MATERIAL_ROLES: dict[str, tuple[str, ...]] = {
+    "fuel_pin": ("cladding", "coolant", "gas"),
+    "guide_tube": ("structural", "coolant"),
+    "instrument_tube": ("structural", "coolant"),
+    "control_rod": ("cladding", "coolant"),
+    "absorber_insert": ("cladding", "coolant"),
+    "poison_insert": ("cladding", "coolant"),
+    "pyrex_rod": ("cladding", "coolant"),
+    "thimble_plug": ("coolant",),
+    "end_plug": ("structural",),
+    "gas_gap": ("structural",),
+    "water_pin": (),
+    "moderator_region": (),
+}
+
+# Standard cell roles implied by each component kind.
+_SUPPORTING_CELL_ROLES: dict[str, tuple[str, ...]] = {
+    "fuel_pin": ("fuel", "cladding", "gas", "coolant"),
+    "guide_tube": ("structural", "coolant"),
+    "instrument_tube": ("structural", "coolant"),
+    "control_rod": ("absorber", "cladding", "coolant"),
+    "absorber_insert": ("absorber", "cladding", "coolant"),
+    "poison_insert": ("poison", "cladding", "coolant"),
+    "pyrex_rod": ("poison", "cladding", "coolant"),
+    "thimble_plug": ("structural", "coolant"),
+    "water_pin": ("coolant",),
+    "moderator_region": ("coolant",),
+}
+
+
 # ---------------------------------------------------------------------------
 # Building blocks
 # ---------------------------------------------------------------------------
@@ -337,14 +373,17 @@ def compile_geometry_component_inventory(
             "profile",
             {"k": "active_fuel_pin", "v": variant_id},
         )
+        _component_kind = ComponentKind.FUEL_PIN.value
+        _sup_roles = _SUPPORTING_MATERIAL_ROLES.get(_component_kind, ())
+        _sup_cells = _SUPPORTING_CELL_ROLES.get(_component_kind, ())
         radial_profiles.append(
             RadialProfileRequirement(
                 profile_id=profile_id,
                 profile_kind=ProfileKind.ACTIVE_FUEL_PIN.value,
-                component_kind=ComponentKind.FUEL_PIN.value,
+                component_kind=_component_kind,
                 fuel_variant_id=variant_id,
-                required_cell_roles=("fuel",),
-                required_material_roles=("fuel",),
+                required_cell_roles=("fuel",) + _sup_cells,
+                required_material_roles=("fuel",) + _sup_roles,
                 applicable_assembly_type_ids=tuple(
                     getattr(variant, "assembly_type_ids", []) or []
                 ),
@@ -363,26 +402,43 @@ def compile_geometry_component_inventory(
                 status="required",
             )
         )
+        # Add supporting material roles (cladding, coolant, gas) so the
+        # MaterialsPatch includes them and universe cells can reference
+        # valid material IDs.
+        for srole in _sup_roles:
+            material_role_reqs.append(
+                MaterialRoleRequirement(
+                    requirement_id=short_id(
+                        "mrole",
+                        {"role": srole, "variant": variant_id},
+                    ),
+                    role=srole,
+                    fuel_variant_id=variant_id,
+                    required_by_profile_ids=(profile_id,),
+                    status="required",
+                )
+            )
 
     # B. Localized inserts → profile + host component + material role.
     for req in getattr(accepted_facts, "localized_insert_requirements", []) or []:
         req_id = getattr(req, "requirement_id", "")
         insert_kind = getattr(req, "insert_kind", "custom")
+        _component_kind = _insert_kind_to_component(insert_kind)
+        _primary_role = _insert_kind_to_material_role(insert_kind)
+        _sup_roles = _SUPPORTING_MATERIAL_ROLES.get(_component_kind, ())
+        _sup_cells = _SUPPORTING_CELL_ROLES.get(_component_kind, ())
         profile_id = short_id(
             "profile",
             {"k": _insert_kind_to_profile(insert_kind), "req": req_id},
         )
+        _primary_cell = "absorber" if insert_kind == "control_rod" else ("poison" if insert_kind == "pyrex_rod" else "structural")
         radial_profiles.append(
             RadialProfileRequirement(
                 profile_id=profile_id,
                 profile_kind=_insert_kind_to_profile(insert_kind),
-                component_kind=_insert_kind_to_component(insert_kind),
-                required_cell_roles=("absorber",) if insert_kind == "control_rod" else ("poison",),
-                required_material_roles=(
-                    ("absorber",) if insert_kind == "control_rod"
-                    else ("poison",) if insert_kind == "pyrex_rod"
-                    else ("structural",)
-                ),
+                component_kind=_component_kind,
+                required_cell_roles=(_primary_cell,) + _sup_cells,
+                required_material_roles=(_primary_role,) + _sup_roles,
                 applicable_assembly_type_ids=tuple(getattr(req, "assembly_type_ids", []) or []),
                 status="resolved",
             )
@@ -390,31 +446,30 @@ def compile_geometry_component_inventory(
         host_kind = "guide_tube"
         if getattr(req, "host_kind", "guide_tube") == "instrument_tube":
             host_kind = "instrument_tube"
-        material_role = _insert_kind_to_material_role(insert_kind)
         localized_bindings.append(
             LocalizedInsertProfileBinding(
                 insert_requirement_id=req_id,
                 insert_kind=insert_kind,
                 profile_id=profile_id,
                 host_component_kind=host_kind,
-                material_role=material_role,
+                material_role=_primary_role,
             )
         )
-        # Each localized insert also creates a MaterialRoleRequirement
-        # so the Materials patch knows it must declare an absorber /
-        # poison / structural material for this insert.
-        material_role_reqs.append(
-            MaterialRoleRequirement(
-                requirement_id=short_id(
-                    "mrole",
-                    {"role": material_role, "insert": req_id},
-                ),
-                role=material_role,
-                localized_insert_requirement_id=req_id,
-                required_by_profile_ids=(profile_id,),
-                status="required",
+        # Each localized insert creates MaterialRoleRequirements for
+        # its primary role plus supporting roles (cladding, coolant).
+        for mrole in (_primary_role,) + _sup_roles:
+            material_role_reqs.append(
+                MaterialRoleRequirement(
+                    requirement_id=short_id(
+                        "mrole",
+                        {"role": mrole, "insert": req_id},
+                    ),
+                    role=mrole,
+                    localized_insert_requirement_id=req_id,
+                    required_by_profile_ids=(profile_id,),
+                    status="required",
+                )
             )
-        )
 
     # C. Component evidence claims from the ledger → radial profiles /
     #    axial regions / material roles.  The LLM-driven synthesis path
