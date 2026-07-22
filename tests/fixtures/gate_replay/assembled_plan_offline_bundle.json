@@ -1,0 +1,543 @@
+{
+  "bundle_hash": "c7321db4729c0e0db7b42501ff5ad68bb4238f67f1e3f1a7ace278faffd1608e",
+  "bundle_schema_version": "1.0",
+  "campaign_id": "",
+  "canonical_hashes": {
+    "input": "9cda16ac6b26649e82a596c9becf4ae0901cf38b48d609571433806acad9062e",
+    "policy": "aa89fe162c3441edecd52b9b859e0f32deb06a2c3252e1014ccab8189a7f939c",
+    "policy_snapshot": "aa89fe162c3441edecd52b9b859e0f32deb06a2c3252e1014ccab8189a7f939c"
+  },
+  "created_at": "",
+  "fixture_fingerprint": "5a94d6bba559984b23a1888e1b3da4b5c6db0de0a8a7ea7489b4b9964159462d",
+  "gate_id": "assembled_plan",
+  "normalized_state": {
+    "assembled_plan": {
+      "capability_report": {
+        "executable_subsystems": [
+          "materials",
+          "cells",
+          "universes",
+          "rect_lattice",
+          "assembly"
+        ],
+        "is_executable": true,
+        "issues": [],
+        "reasons": [],
+        "renderability": "exportable",
+        "required_human_confirmations": [],
+        "supported_renderer": "assembly",
+        "unsupported_subsystems": [],
+        "warnings": []
+      },
+      "complex_model": {
+        "assemblies": [
+          {
+            "boundary": null,
+            "id": "asm1",
+            "lattice_id": "lat1",
+            "name": "fuel_assembly",
+            "pitch_cm": null,
+            "purpose": ""
+          }
+        ],
+        "assumptions": [],
+        "cells": [
+          {
+            "component_path_id": null,
+            "component_role": null,
+            "fill_id": "m_fuel",
+            "fill_type": "material",
+            "id": "c1",
+            "name": "fuel_cell",
+            "protected_through_path": false,
+            "purpose": "",
+            "region_id": "r1",
+            "temperature_k": null
+          }
+        ],
+        "control_rods": [],
+        "core": null,
+        "kind": "assembly",
+        "lattice_loadings": [],
+        "lattices": [
+          {
+            "center_cm": null,
+            "expected_counts": null,
+            "fill_universe": null,
+            "id": "lat1",
+            "kind": "rect",
+            "lower_left_cm": null,
+            "name": "fuel_lattice",
+            "outer_universe_id": null,
+            "overrides": {},
+            "pitch_cm": [
+              1.26,
+              1.26
+            ],
+            "purpose": "",
+            "requires_human_confirmation": [],
+            "rings": [],
+            "shape": [
+              3,
+              3
+            ],
+            "universe_pattern": [
+              [
+                "u1",
+                "u1",
+                "u1"
+              ],
+              [
+                "u1",
+                "u1",
+                "u1"
+              ],
+              [
+                "u1",
+                "u1",
+                "u1"
+              ]
+            ]
+          }
+        ],
+        "materials": [
+          {
+            "assumptions": [],
+            "chemical_formula": null,
+            "composition": [
+              {
+                "kind": "nuclide",
+                "name": "U235",
+                "percent": 0.03,
+                "percent_type": "ao"
+              },
+              {
+                "kind": "nuclide",
+                "name": "U238",
+                "percent": 0.97,
+                "percent_type": "ao"
+              }
+            ],
+            "composition_basis": null,
+            "density_unit": "g/cm3",
+            "density_value": 10.0,
+            "depletable": false,
+            "derivation_method": null,
+            "enrichment_percent": null,
+            "enrichment_target": null,
+            "enrichment_type": null,
+            "id": "m_fuel",
+            "macroscopic": null,
+            "mixture_component_ids": [],
+            "mixture_volume_fractions": [],
+            "name": "fuel",
+            "normalization_operations": [],
+            "normalization_status": null,
+            "normalization_version": null,
+            "normalized_composition": null,
+            "original_composition": null,
+            "provenance_refs": [],
+            "requires_human_confirmation": [],
+            "sab": [],
+            "semantic_assumptions": [],
+            "source": null,
+            "temperature_k": null,
+            "variant_scope": null,
+            "volume_cm3": null
+          }
+        ],
+        "mg_cross_sections_file": null,
+        "name": "test_model",
+        "packed_spheres": [],
+        "pebbles": [],
+        "reflectors": [],
+        "regions": [
+          {
+            "expression": "cylinder",
+            "id": "r1",
+            "purpose": "",
+            "surface_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "requires_human_confirmation": [],
+        "settings": {
+          "batches": 10,
+          "energy_mode": null,
+          "inactive": 5,
+          "manual_source_bounds_cm": null,
+          "particles": 100,
+          "run_mode": "eigenvalue",
+          "seed": null,
+          "source_requires_fissionable_constraint": true,
+          "source_strategy": "assembly_box",
+          "temperature_interpolation": true
+        },
+        "surfaces": [
+          {
+            "boundary_type": null,
+            "id": "s1",
+            "kind": "zcylinder",
+            "parameters": {
+              "r": 0.4
+            },
+            "purpose": ""
+          }
+        ],
+        "trisos": [],
+        "universes": [
+          {
+            "cell_ids": [
+              "c1"
+            ],
+            "id": "u1",
+            "name": "fuel_pin",
+            "purpose": ""
+          }
+        ]
+      },
+      "execution_check": {
+        "enabled": true,
+        "expected_checks": [],
+        "purpose": "Run a low-particle OpenMC smoke test to catch model definition errors.",
+        "settings": {
+          "batches": 5,
+          "energy_mode": null,
+          "inactive": 2,
+          "manual_source_bounds_cm": null,
+          "particles": 100,
+          "run_mode": "eigenvalue",
+          "seed": null,
+          "source_requires_fissionable_constraint": true,
+          "source_strategy": "active_fuel_box",
+          "temperature_interpolation": true
+        }
+      },
+      "expert_assumptions": [],
+      "expert_feedback": [],
+      "model_spec": null,
+      "plot_specs": [
+        {
+          "basis": "xy",
+          "color_by": "material",
+          "filename": "plot1",
+          "kind": "slice",
+          "origin": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "pixels": [
+            1200,
+            1200
+          ],
+          "purpose": "Check the generated geometry definition.",
+          "width_cm": [
+            10.0,
+            10.0
+          ]
+        }
+      ],
+      "schema_version": "simulation_plan.v2"
+    },
+    "benchmark_id": null,
+    "build_log": [
+      {
+        "data": {
+          "from_contract": "0.5",
+          "to_contract": "0.9"
+        },
+        "event_type": "planning.retry_protocol_migrated",
+        "message": "plan closed-loop retry protocol migrated without clearing ledgers",
+        "timestamp": "2026-07-22T13:26:11.700310+00:00"
+      }
+    ],
+    "canonical_task_plan": null,
+    "component_tasks": [],
+    "confirmed_facts": {},
+    "extracted_facts": {},
+    "facts_review_history": [],
+    "facts_revision_history": [],
+    "material_composition_report": null,
+    "material_species_resolution_report": null,
+    "metadata": {},
+    "patch_generation_attempts_by_context": {},
+    "patch_generation_candidate_hashes_by_context": {},
+    "patch_status": {},
+    "patches": {},
+    "placement_dependency_requests": [],
+    "placement_review_history": [],
+    "placement_revision_history": [],
+    "plan_confirmed_fact_records": {},
+    "plan_confirmed_plan_fact_records": {},
+    "plan_human_answers": {},
+    "plan_human_questions": {},
+    "plan_investigation_schema_version": null,
+    "plan_loop_additional_llm_calls": 0,
+    "plan_loop_artifacts": [],
+    "plan_loop_candidate_hashes_by_fingerprint": {},
+    "plan_loop_contract_version": "0.9",
+    "plan_loop_issue_attempts_by_fingerprint": {},
+    "plan_loop_mode": "controlled",
+    "plan_loop_no_progress_events": [],
+    "plan_loop_policy": {
+      "artifact_subdir": "plan_closed_loop",
+      "assembled_plan_review_mode": "controlled",
+      "axial_geometry_review_mode": "off",
+      "contract_version": "0.9",
+      "enable_facts_review_synthesis": true,
+      "enable_human_gate": false,
+      "facts_review_chunk_chars": 12000,
+      "facts_review_stage_split": false,
+      "fail_closed_on_budget_exhaustion": true,
+      "gate_enabled": {
+        "assembled_plan": true,
+        "axial_geometry": true,
+        "facts": true,
+        "material_universe": true,
+        "placement": true
+      },
+      "material_universe_review_mode": "off",
+      "material_universe_review_split": false,
+      "max_attempts_per_issue_fingerprint": 2,
+      "max_attempts_per_retry_request": 2,
+      "max_facts_review_chunks": 8,
+      "max_facts_review_source_chars": 96000,
+      "max_gate_replays_per_gate": 3,
+      "max_human_rounds_per_gate": 2,
+      "max_no_progress_rounds": 1,
+      "max_owner_regenerations_per_patch": 2,
+      "max_repair_rounds_per_gate": 2,
+      "max_retry_rounds": 6,
+      "max_review_rounds_per_gate": 2,
+      "max_same_candidate_attempts": 1,
+      "max_total_additional_llm_calls": 20,
+      "max_total_retry_llm_calls": 12,
+      "metadata": {},
+      "mode": "controlled",
+      "placement_review_mode": "off",
+      "plan_gates": [],
+      "plan_human_mode": "off"
+    },
+    "plan_loop_stages": {
+      "plan_gate_assembled_plan": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "assembled_plan",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {},
+        "no_progress_count": 0,
+        "patch_types": [],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_assembled_plan",
+        "started_at": null,
+        "status": "pending",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_axial_geometry": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "axial_geometry",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [
+          "axial_layers",
+          "axial_overlays"
+        ],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_axial_geometry",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_facts": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "facts",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [
+          "facts"
+        ],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_facts",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_material_universe": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "material_universe",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [
+          "materials",
+          "universes"
+        ],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_material_universe",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_placement": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "placement",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_placement",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      }
+    },
+    "plan_retry_attempts_by_fingerprint": {},
+    "plan_retry_budget": {},
+    "plan_retry_candidate_hashes_by_fingerprint": {},
+    "plan_retry_cycle_trace": [],
+    "plan_retry_execution_plans": {},
+    "plan_retry_gate_invalidation_counts": {},
+    "plan_retry_gate_replay_attempt_counts": {},
+    "plan_retry_gate_replay_counts": {},
+    "plan_retry_gate_replay_success_counts": {},
+    "plan_retry_human_questions": {},
+    "plan_retry_issue_fingerprints_by_request": {},
+    "plan_retry_outcome": null,
+    "plan_retry_owner_regenerations": {},
+    "plan_retry_pending_request_ids": [],
+    "plan_retry_requests": {},
+    "plan_retry_rounds": [],
+    "plan_retry_task_plan_hash_history": [],
+    "plan_review_decisions": {},
+    "plan_review_findings": {},
+    "planning_evidence_ledger": null,
+    "planning_feature_contract": null,
+    "planning_mode": "incremental",
+    "planning_source_manifest": null,
+    "requirement_text": "test reactor",
+    "resolved_planning_scope": null,
+    "root_cause_attempts_by_fingerprint": {},
+    "root_cause_candidate_hashes": {},
+    "root_cause_retry_history": [],
+    "selected_variant": null,
+    "state_id": "assembled_test",
+    "validation_full_patch_regenerations_by_fingerprint": {},
+    "validation_issues": [],
+    "validation_repair_attempts_by_fingerprint": {},
+    "validation_repair_candidate_hashes": {},
+    "validation_repair_history": []
+  },
+  "policy_snapshot": {
+    "artifact_subdir": "plan_closed_loop",
+    "assembled_plan_review_mode": "controlled",
+    "axial_geometry_review_mode": "off",
+    "contract_version": "0.9",
+    "enable_facts_review_synthesis": true,
+    "enable_human_gate": false,
+    "facts_review_chunk_chars": 12000,
+    "facts_review_stage_split": false,
+    "fail_closed_on_budget_exhaustion": true,
+    "gate_enabled": {
+      "assembled_plan": false,
+      "axial_geometry": false,
+      "facts": false,
+      "material_universe": false,
+      "placement": false
+    },
+    "material_universe_review_mode": "off",
+    "material_universe_review_split": false,
+    "max_attempts_per_issue_fingerprint": 2,
+    "max_attempts_per_retry_request": 2,
+    "max_facts_review_chunks": 8,
+    "max_facts_review_source_chars": 96000,
+    "max_gate_replays_per_gate": 3,
+    "max_human_rounds_per_gate": 2,
+    "max_no_progress_rounds": 1,
+    "max_owner_regenerations_per_patch": 2,
+    "max_repair_rounds_per_gate": 2,
+    "max_retry_rounds": 6,
+    "max_review_rounds_per_gate": 2,
+    "max_same_candidate_attempts": 1,
+    "max_total_additional_llm_calls": 20,
+    "max_total_retry_llm_calls": 12,
+    "metadata": {},
+    "mode": "controlled",
+    "placement_review_mode": "off",
+    "plan_gates": [],
+    "plan_human_mode": "off"
+  },
+  "recorded_inventory": {},
+  "recorded_reviews": [
+    {
+      "coverage_summary": {},
+      "findings": [],
+      "metadata": {
+        "fixture_mode": "offline_deterministic",
+        "gate": "assembled_plan"
+      },
+      "review_status": "complete",
+      "reviewed_contract_row_ids": [],
+      "reviewed_evidence_refs": []
+    }
+  ],
+  "snapshot_schema_version": "1.0",
+  "upstream_accepted": {
+    "axial_geometry": true,
+    "facts": true,
+    "material_universe": true,
+    "placement": true
+  },
+  "upstream_chain_provenance": "offline_deterministic"
+}

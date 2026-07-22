@@ -8,6 +8,10 @@
 - **验证结果**：checkpoint/replay/downstream focused tests `45 passed`，`compileall -q openmc_agent scripts` 通过；未重跑完整 VERA4 canary，Step 3C canary 已有终态且未到达下游 gate，故本阶段仅完成代码级 replay 验收。
 - **风险/边界**：旧 Facts/MU bundle 保持可读；下游 gate 缺少 policy snapshot、上游 accepted 状态、canonical hash 或包含敏感字段时 fail-closed。live-review 仍仅调用目标 reviewer，默认上限 1800 秒；尚未声明 Placement/Axial/Assembled 真实 provider 验收。
 
+- **Phase 8C Step 3E 下游 Gate 离线预资格**：新增三个 `offline_deterministic` 脱敏 replay fixture、fixture fingerprint、离线资格 CLI 与 Placement/Axial/Assembled mutation corpus。资格入口按目标 gate 顺序复用生产 preflight 与 recorded-review，报告 coverage、blocking/rejected findings、terminal status；checkpoint/resume 覆盖三条新增 accepted boundary。
+- **验证结果**：Step 3E focused offline qualification tests `53 passed`；三个 clean fixture 的 preflight/recorded-review 均 accepted、coverage complete、blocking/rejected 均为 0。未运行真实 LLM canary，未将合成 upstream chain 表述为 MU 或 VERA4 acceptance。
+- **风险/边界**：mutation 证明 deterministic blocker/owner route 稳定性，不替代真实 provider 验收。MU accepted 后仍需依次运行 Placement → Axial Geometry → Assembled target-only live-review，每次最长 1800 秒；三个 live-review 闭合后才运行一次完整 milestone canary。
+
 - **Phase 8C Step 3D Facts Revision Stale-Finding Closure**：T3 full VERA4 canary 已实际完成 1 run，但未到 MU：`BLOCKED_BY_GATE:facts`，`planning.facts_revision.unresolved_requires_human`，Facts blocked、MU pending、truth violations 0、15 real LLM calls。根因是 Facts revision rereview 后的 closure metadata 仍引用初审旧 count findings，且 reviewer 将“coverage confirmation, not an error”自相矛盾输出保留为 non-repairable error。
 - **验证结果**：修复 Facts reviewer confirmation-not-error 降级为 warning，并让 Facts revision blocked metadata/registry 使用最新 rereview unresolved findings；新增脱敏 Step 3D fixture，不含 prompt/raw provider output/reasoning/secrets/原始 canary 日志。Focused Facts/GateReplay tests `58 passed`；全量非 OpenMC/非 LLM pytest `3620 passed, 2 skipped, 392 deselected`；`compileall -q openmc_agent scripts`、fake benchmark `21/21` 与 fixture baseline diff 均通过。
 - **风险/边界**：本修复只处理 Facts revision closure 状态机与 reviewer normalization，不改 MU、Materials/Universes generation、renderer 或物理合同。修复后需先跑 Facts target-only live-review；Facts accepted 后再重跑 `--stop-after-gate material_universe` T3。

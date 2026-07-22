@@ -1,0 +1,467 @@
+{
+  "bundle_hash": "80c7b4b95b5903bb8f07553259f31f16a370e7b8bfcec6d6f7669cfe721101da",
+  "bundle_schema_version": "1.0",
+  "campaign_id": "",
+  "canonical_hashes": {
+    "input": "232d3691db2c7d96375f3a1ff0218cb26b676c2551bfc910c7415161933e7829",
+    "policy": "a69032e8367a0bdb45b4816fe0fed6ec6df9b41cb65b07782b53339d46d6b57b",
+    "policy_snapshot": "a69032e8367a0bdb45b4816fe0fed6ec6df9b41cb65b07782b53339d46d6b57b"
+  },
+  "created_at": "",
+  "fixture_fingerprint": "4561d7bf1b54432b9411bfc2b6c51a88060f07edf4741f64a06524ad0dd89c70",
+  "gate_id": "axial_geometry",
+  "normalized_state": {
+    "assembled_plan": null,
+    "benchmark_id": null,
+    "build_log": [
+      {
+        "data": {
+          "from_contract": "0.5",
+          "to_contract": "0.9"
+        },
+        "event_type": "planning.retry_protocol_migrated",
+        "message": "plan closed-loop retry protocol migrated without clearing ledgers",
+        "timestamp": "2026-07-22T13:26:11.699477+00:00"
+      }
+    ],
+    "canonical_task_plan": null,
+    "component_tasks": [],
+    "confirmed_facts": {},
+    "extracted_facts": {},
+    "facts_review_history": [],
+    "facts_revision_history": [],
+    "material_composition_report": null,
+    "material_species_resolution_report": null,
+    "metadata": {},
+    "patch_generation_attempts_by_context": {},
+    "patch_generation_candidate_hashes_by_context": {},
+    "patch_status": {
+      "facts_1": "valid",
+      "layers_1": "valid",
+      "mat_1": "valid",
+      "overlays_1": "valid",
+      "uni_1": "valid"
+    },
+    "patches": {
+      "facts_1": {
+        "content": {
+          "active_fuel_region_cm": [
+            10.0,
+            90.0
+          ],
+          "axial_domain_cm": [
+            0.0,
+            100.0
+          ],
+          "expected_spacer_grid_count": 2,
+          "has_axial_geometry": true,
+          "has_spacer_grids": true,
+          "model_scope": "single_assembly",
+          "patch_type": "facts"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "facts_1",
+        "patch_type": "facts",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "layers_1": {
+        "content": {
+          "axial_domain_cm": [
+            0.0,
+            100.0
+          ],
+          "lattice_loadings": [
+            {
+              "base_lattice_id": "lat1",
+              "loading_id": "ld1"
+            }
+          ],
+          "layers": [
+            {
+              "fill_id": "mat_nozzle",
+              "fill_type": "material",
+              "layer_id": "l1",
+              "role": "lower_nozzle",
+              "z_max_cm": 10.0,
+              "z_min_cm": 0.0
+            },
+            {
+              "fill_id": "lat1",
+              "fill_type": "lattice",
+              "layer_id": "l2",
+              "loading_id": "ld1",
+              "role": "active_fuel",
+              "z_max_cm": 90.0,
+              "z_min_cm": 10.0
+            },
+            {
+              "fill_id": "mat_nozzle",
+              "fill_type": "material",
+              "layer_id": "l3",
+              "role": "upper_nozzle",
+              "z_max_cm": 100.0,
+              "z_min_cm": 90.0
+            }
+          ],
+          "patch_type": "axial_layers"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "layers_1",
+        "patch_type": "axial_layers",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "mat_1": {
+        "content": {
+          "materials": [
+            {
+              "density_g_cm3": 7.8,
+              "material_id": "mat_nozzle",
+              "name": "nozzle steel",
+              "role": "structural"
+            },
+            {
+              "density_g_cm3": 7.8,
+              "material_id": "mat_grid",
+              "name": "grid steel",
+              "role": "structural"
+            },
+            {
+              "density_g_cm3": 10.0,
+              "material_id": "mat_fuel",
+              "name": "fuel",
+              "role": "fuel"
+            }
+          ],
+          "patch_type": "materials"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "mat_1",
+        "patch_type": "materials",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "overlays_1": {
+        "content": {
+          "overlays": [
+            {
+              "effective_density_g_cm3": 7.8,
+              "geometry_mode": "mass_conserving_outer_frame",
+              "material_id": "mat_grid",
+              "overlay_id": "sg1",
+              "overlay_kind": "spacer_grid",
+              "target_lattice_id": "lat1",
+              "through_path_preserved": true,
+              "total_mass_g": 100.0,
+              "z_max_cm": 20.5,
+              "z_min_cm": 20.0
+            },
+            {
+              "effective_density_g_cm3": 7.8,
+              "geometry_mode": "mass_conserving_outer_frame",
+              "material_id": "mat_grid",
+              "overlay_id": "sg2",
+              "overlay_kind": "spacer_grid",
+              "target_lattice_id": "lat1",
+              "through_path_preserved": true,
+              "total_mass_g": 100.0,
+              "z_max_cm": 50.5,
+              "z_min_cm": 50.0
+            }
+          ],
+          "patch_type": "axial_overlays"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "overlays_1",
+        "patch_type": "axial_overlays",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "uni_1": {
+        "content": {
+          "patch_type": "universes",
+          "universes": [
+            {
+              "cells": [
+                {
+                  "id": "c1",
+                  "material_id": "mat_fuel",
+                  "r_max_cm": 0.4,
+                  "r_min_cm": 0,
+                  "region_kind": "cylinder",
+                  "role": "fuel"
+                }
+              ],
+              "kind": "fuel_pin",
+              "universe_id": "u_fuel"
+            }
+          ]
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "uni_1",
+        "patch_type": "universes",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      }
+    },
+    "placement_dependency_requests": [],
+    "placement_review_history": [],
+    "placement_revision_history": [],
+    "plan_confirmed_fact_records": {},
+    "plan_confirmed_plan_fact_records": {},
+    "plan_human_answers": {},
+    "plan_human_questions": {},
+    "plan_investigation_schema_version": null,
+    "plan_loop_additional_llm_calls": 0,
+    "plan_loop_artifacts": [],
+    "plan_loop_candidate_hashes_by_fingerprint": {},
+    "plan_loop_contract_version": "0.9",
+    "plan_loop_issue_attempts_by_fingerprint": {},
+    "plan_loop_mode": "controlled",
+    "plan_loop_no_progress_events": [],
+    "plan_loop_policy": {
+      "artifact_subdir": "plan_closed_loop",
+      "assembled_plan_review_mode": "off",
+      "axial_geometry_review_mode": "controlled",
+      "contract_version": "0.9",
+      "enable_facts_review_synthesis": true,
+      "enable_human_gate": false,
+      "facts_review_chunk_chars": 12000,
+      "facts_review_stage_split": false,
+      "fail_closed_on_budget_exhaustion": true,
+      "gate_enabled": {
+        "axial_geometry": true,
+        "facts": true,
+        "material_universe": true,
+        "placement": true
+      },
+      "material_universe_review_mode": "off",
+      "material_universe_review_split": false,
+      "max_attempts_per_issue_fingerprint": 2,
+      "max_attempts_per_retry_request": 2,
+      "max_facts_review_chunks": 8,
+      "max_facts_review_source_chars": 96000,
+      "max_gate_replays_per_gate": 3,
+      "max_human_rounds_per_gate": 2,
+      "max_no_progress_rounds": 1,
+      "max_owner_regenerations_per_patch": 2,
+      "max_repair_rounds_per_gate": 2,
+      "max_retry_rounds": 6,
+      "max_review_rounds_per_gate": 2,
+      "max_same_candidate_attempts": 1,
+      "max_total_additional_llm_calls": 20,
+      "max_total_retry_llm_calls": 12,
+      "metadata": {},
+      "mode": "controlled",
+      "placement_review_mode": "off",
+      "plan_gates": [],
+      "plan_human_mode": "off"
+    },
+    "plan_loop_stages": {
+      "plan_gate_axial_geometry": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "axial_geometry",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {},
+        "no_progress_count": 0,
+        "patch_types": [
+          "axial_layers",
+          "axial_overlays"
+        ],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_axial_geometry",
+        "started_at": null,
+        "status": "pending",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_facts": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "facts",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [
+          "facts"
+        ],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_facts",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_material_universe": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "material_universe",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [
+          "materials",
+          "universes"
+        ],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_material_universe",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      },
+      "plan_gate_placement": {
+        "attempt_count": 0,
+        "completed_at": null,
+        "decision_ids": [],
+        "finding_ids": [],
+        "gate_id": "placement",
+        "human_round_count": 0,
+        "issue_fingerprint": null,
+        "last_patch_hashes": {},
+        "latest_candidate_hash": null,
+        "metadata": {
+          "accepted_input_hash": "upstream_hash_001"
+        },
+        "no_progress_count": 0,
+        "patch_types": [],
+        "repair_count": 0,
+        "review_count": 0,
+        "stage_id": "plan_gate_placement",
+        "started_at": null,
+        "status": "accepted",
+        "updated_at": null,
+        "validation_count": 0
+      }
+    },
+    "plan_retry_attempts_by_fingerprint": {},
+    "plan_retry_budget": {},
+    "plan_retry_candidate_hashes_by_fingerprint": {},
+    "plan_retry_cycle_trace": [],
+    "plan_retry_execution_plans": {},
+    "plan_retry_gate_invalidation_counts": {},
+    "plan_retry_gate_replay_attempt_counts": {},
+    "plan_retry_gate_replay_counts": {},
+    "plan_retry_gate_replay_success_counts": {},
+    "plan_retry_human_questions": {},
+    "plan_retry_issue_fingerprints_by_request": {},
+    "plan_retry_outcome": null,
+    "plan_retry_owner_regenerations": {},
+    "plan_retry_pending_request_ids": [],
+    "plan_retry_requests": {},
+    "plan_retry_rounds": [],
+    "plan_retry_task_plan_hash_history": [],
+    "plan_review_decisions": {},
+    "plan_review_findings": {},
+    "planning_evidence_ledger": null,
+    "planning_feature_contract": null,
+    "planning_mode": "incremental",
+    "planning_source_manifest": null,
+    "requirement_text": "test reactor",
+    "resolved_planning_scope": null,
+    "root_cause_attempts_by_fingerprint": {},
+    "root_cause_candidate_hashes": {},
+    "root_cause_retry_history": [],
+    "selected_variant": null,
+    "state_id": "axial_test",
+    "validation_full_patch_regenerations_by_fingerprint": {},
+    "validation_issues": [],
+    "validation_repair_attempts_by_fingerprint": {},
+    "validation_repair_candidate_hashes": {},
+    "validation_repair_history": []
+  },
+  "policy_snapshot": {
+    "artifact_subdir": "plan_closed_loop",
+    "assembled_plan_review_mode": "off",
+    "axial_geometry_review_mode": "controlled",
+    "contract_version": "0.9",
+    "enable_facts_review_synthesis": true,
+    "enable_human_gate": false,
+    "facts_review_chunk_chars": 12000,
+    "facts_review_stage_split": false,
+    "fail_closed_on_budget_exhaustion": true,
+    "gate_enabled": {
+      "assembled_plan": false,
+      "axial_geometry": false,
+      "facts": false,
+      "material_universe": false,
+      "placement": false
+    },
+    "material_universe_review_mode": "off",
+    "material_universe_review_split": false,
+    "max_attempts_per_issue_fingerprint": 2,
+    "max_attempts_per_retry_request": 2,
+    "max_facts_review_chunks": 8,
+    "max_facts_review_source_chars": 96000,
+    "max_gate_replays_per_gate": 3,
+    "max_human_rounds_per_gate": 2,
+    "max_no_progress_rounds": 1,
+    "max_owner_regenerations_per_patch": 2,
+    "max_repair_rounds_per_gate": 2,
+    "max_retry_rounds": 6,
+    "max_review_rounds_per_gate": 2,
+    "max_same_candidate_attempts": 1,
+    "max_total_additional_llm_calls": 20,
+    "max_total_retry_llm_calls": 12,
+    "metadata": {},
+    "mode": "controlled",
+    "placement_review_mode": "off",
+    "plan_gates": [],
+    "plan_human_mode": "off"
+  },
+  "recorded_inventory": {},
+  "recorded_reviews": [
+    {
+      "coverage_summary": {},
+      "findings": [],
+      "metadata": {
+        "fixture_mode": "offline_deterministic",
+        "gate": "axial_geometry"
+      },
+      "review_status": "complete",
+      "reviewed_contract_row_ids": [],
+      "reviewed_evidence_refs": []
+    }
+  ],
+  "snapshot_schema_version": "1.0",
+  "upstream_accepted": {
+    "facts": true,
+    "material_universe": true,
+    "placement": true
+  },
+  "upstream_chain_provenance": "offline_deterministic"
+}

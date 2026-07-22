@@ -451,6 +451,7 @@ def test_downstream_bundle_requires_policy_snapshot_hash() -> None:
         "gate_id": "placement",
         "upstream_accepted": {"facts": True},
         "policy_snapshot": {"mode": "controlled", "placement_review_mode": "controlled"},
+        "upstream_chain_provenance": "offline_deterministic",
         "canonical_hashes": {"input": "input", "policy": "policy", "policy_snapshot": "wrong"},
         "bundle_hash": "",
     })

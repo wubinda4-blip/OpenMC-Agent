@@ -130,6 +130,8 @@ class GateReplayBundle(AgentBaseModel):
     canonical_hashes: dict[str, str] = Field(default_factory=dict)
     normalized_state: dict[str, Any] = Field(default_factory=dict)
     policy_snapshot: dict[str, Any] = Field(default_factory=dict)
+    upstream_chain_provenance: str = ""
+    fixture_fingerprint: str = ""
     recorded_reviews: list[dict[str, Any]] = Field(default_factory=list)
     recorded_inventory: dict[str, Any] = Field(default_factory=dict)
     bundle_hash: str = ""
@@ -146,6 +148,7 @@ class GateReplayBundle(AgentBaseModel):
         recorded_reviews: list[Mapping[str, Any]] | None = None,
         canonical_hashes: Mapping[str, str] | None = None,
         campaign_id: str = "",
+        upstream_chain_provenance: str = "production_accepted",
     ) -> "GateReplayBundle":
         """Create a sanitized bundle from an accepted gate boundary.
 
@@ -167,8 +170,10 @@ class GateReplayBundle(AgentBaseModel):
             canonical_hashes=hashes,
             normalized_state=sanitize_plan_build_state(state),
             policy_snapshot=snapshot if gate_id in DOWNSTREAM_GATE_IDS else {},
+            upstream_chain_provenance=upstream_chain_provenance,
             recorded_reviews=[dict(item) for item in (recorded_reviews or [])],
         )
+        object.__setattr__(bundle, "fixture_fingerprint", bundle.compute_fixture_fingerprint())
         object.__setattr__(bundle, "bundle_hash", bundle.compute_bundle_hash())
         return bundle
 
@@ -185,6 +190,10 @@ class GateReplayBundle(AgentBaseModel):
             )
         if self.gate_id in DOWNSTREAM_GATE_IDS and not self.policy_snapshot:
             raise ValueError("downstream gate replay requires a sanitized policy_snapshot")
+        if self.gate_id in DOWNSTREAM_GATE_IDS and self.upstream_chain_provenance not in {
+            "production_accepted", "offline_deterministic"
+        }:
+            raise ValueError("unsupported upstream_chain_provenance")
         # Reject sensitive fields anywhere in the bundle payload.
         sensitive = []
         sensitive.extend(_find_sensitive_keys(self.normalized_state, "normalized_state"))
@@ -200,6 +209,8 @@ class GateReplayBundle(AgentBaseModel):
             recomputed = self.compute_bundle_hash()
             if self.bundle_hash != recomputed:
                 raise ValueError("bundle_hash does not match recomputed value")
+        if self.fixture_fingerprint and self.fixture_fingerprint != self.compute_fixture_fingerprint():
+            raise ValueError("fixture_fingerprint does not match recomputed value")
         return self
 
     def compute_bundle_hash(self) -> str:
@@ -214,9 +225,24 @@ class GateReplayBundle(AgentBaseModel):
             "recorded_reviews_hash": canonical_payload_hash(self.recorded_reviews),
             "recorded_inventory_hash": canonical_payload_hash(self.recorded_inventory),
         }
+        if self.upstream_chain_provenance:
+            payload["upstream_chain_provenance"] = self.upstream_chain_provenance
         if self.policy_snapshot:
             payload["policy_snapshot_hash"] = canonical_payload_hash(self.policy_snapshot)
         return canonical_payload_hash(payload)
+
+    def compute_fixture_fingerprint(self) -> str:
+        """Return the stable content fingerprint used by offline qualification."""
+        return canonical_payload_hash({
+            "gate_id": self.gate_id,
+            "snapshot_schema_version": self.snapshot_schema_version,
+            "upstream_accepted": self.upstream_accepted,
+            "upstream_chain_provenance": self.upstream_chain_provenance,
+            "canonical_hashes": self.canonical_hashes,
+            "normalized_state": self.normalized_state,
+            "policy_snapshot": self.policy_snapshot,
+            "recorded_reviews": self.recorded_reviews,
+        })
 
 
 class GateReplayResult(AgentBaseModel):
@@ -703,7 +729,7 @@ def run_gate_replay(
                 deterministic_issues = _run_deterministic_preflight(bundle)
                 for item in deterministic_issues:
                     if item.get("severity", "error") == "error":
-                        issues.append(GateReplayIssue(code="gate_replay.deterministic_preflight", message=str(item.get("message", item.get("code", "preflight error")))))
+                        issues.append(GateReplayIssue(code="gate_replay.deterministic_preflight", message=f"{item.get('code', 'preflight')}: {item.get('message', 'preflight error')}", path=str(item.get("row_key", ""))))
                 state_complete = state_complete and not any(item.get("severity", "error") == "error" for item in deterministic_issues)
                 result.state_complete = state_complete
             except Exception as exc:
@@ -768,6 +794,13 @@ def run_gate_replay(
         result.review_output = _normalized_review_output(review_result)
         _update_review_diagnostics(result, review_result)
         result.blocking_finding_count += len(blocking)
+        if bundle.gate_id in DOWNSTREAM_GATE_IDS and result.rejected_finding_count:
+            result.ok = False
+            result.issues.append(GateReplayIssue(
+                code="gate_replay.rejected_finding_fail_closed",
+                message="downstream replay rejects unknown, out-of-scope, or unsupported findings",
+                path="recorded_reviews",
+            ))
         if bundle.gate_id == "material_universe" and result.review_output is not None:
             from .material_universe_finding_classification import material_universe_finding_diagnostics
 
@@ -809,6 +842,13 @@ def run_gate_replay(
             result.review_output = _normalized_review_output(review_result)
             _update_review_diagnostics(result, review_result)
             result.blocking_finding_count += len(blocking)
+            if bundle.gate_id in DOWNSTREAM_GATE_IDS and result.rejected_finding_count:
+                result.ok = False
+                result.issues.append(GateReplayIssue(
+                    code="gate_replay.rejected_finding_fail_closed",
+                    message="downstream replay rejects unknown, out-of-scope, or unsupported findings",
+                    path="review_output",
+                ))
             if bundle.gate_id == "material_universe" and result.review_output is not None:
                 from .material_universe_finding_classification import material_universe_finding_diagnostics
 

@@ -1,0 +1,271 @@
+{
+  "bundle_hash": "533c7b16b7c5c20815725f1c1744314234e424dfd396b45ed75b418956e71532",
+  "bundle_schema_version": "1.0",
+  "campaign_id": "",
+  "canonical_hashes": {
+    "input": "a44f5a2292a7998af687f877ff3906446e82e3af59f68a0af12f537927c22f9c",
+    "policy": "7d7425380f55fe5e50af21ef2add2bb6e873723a76c680a537433851af9d1c19",
+    "policy_snapshot": "7d7425380f55fe5e50af21ef2add2bb6e873723a76c680a537433851af9d1c19"
+  },
+  "created_at": "",
+  "fixture_fingerprint": "df0f059e94fcea2474274c93a0ad432cf3d8ff2880acb0a39ab9b28ecd13968d",
+  "gate_id": "placement",
+  "normalized_state": {
+    "assembled_plan": null,
+    "benchmark_id": null,
+    "build_log": [],
+    "canonical_task_plan": null,
+    "component_tasks": [],
+    "confirmed_facts": {},
+    "extracted_facts": {},
+    "facts_review_history": [],
+    "facts_revision_history": [],
+    "material_composition_report": null,
+    "material_species_resolution_report": null,
+    "metadata": {},
+    "patch_generation_attempts_by_context": {},
+    "patch_generation_candidate_hashes_by_context": {},
+    "patch_status": {
+      "facts": "valid",
+      "localized_insert_profiles": "valid",
+      "pin_map": "valid",
+      "universes": "valid"
+    },
+    "patches": {
+      "facts": {
+        "content": {
+          "localized_insert_requirements": [
+            {
+              "anchor_z_cm": 1.0,
+              "assembly_type_ids": [],
+              "control_state_id": "inserted",
+              "expected_coordinate_count_per_assembly": 1,
+              "expected_insert_universe_ids": [
+                "abs"
+              ],
+              "host_kind": "guide_tube",
+              "insert_kind": "absorber_insert",
+              "required_profile_id": "p1",
+              "required_segment_roles": [
+                "absorber"
+              ],
+              "requirement_id": "absorber"
+            }
+          ],
+          "model_scope": "single_assembly",
+          "patch_type": "facts"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "facts",
+        "patch_type": "facts",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "localized_insert_profiles": {
+        "content": {
+          "patch_type": "localized_insert_profiles",
+          "profiles": [
+            {
+              "anchor_kind": "bottom",
+              "anchor_z_cm": 1.0,
+              "profile_id": "p1",
+              "segments": [
+                {
+                  "relative_z_max_cm": 1,
+                  "relative_z_min_cm": 0,
+                  "role": "absorber",
+                  "segment_id": "s",
+                  "universe_id": "abs"
+                }
+              ]
+            }
+          ]
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "localized_insert_profiles",
+        "patch_type": "localized_insert_profiles",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "pin_map": {
+        "content": {
+          "default_universe_id": "fuel",
+          "guide_tube_coords": [
+            [
+              1,
+              1
+            ]
+          ],
+          "instrument_tube_coords": [],
+          "lattice_size": [
+            3,
+            3
+          ],
+          "localized_insert_intents": [
+            {
+              "anchor_z_cm": 1.0,
+              "axial_profile_id": "p1",
+              "control_state_id": "inserted",
+              "coordinates": [
+                [
+                  1,
+                  1
+                ]
+              ],
+              "insert_id": "i",
+              "insert_kind": "absorber_insert",
+              "insert_universe_id": "abs"
+            }
+          ],
+          "patch_type": "pin_map"
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "pin_map",
+        "patch_type": "pin_map",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      },
+      "universes": {
+        "content": {
+          "patch_type": "universes",
+          "universes": [
+            {
+              "cells": [],
+              "kind": "fuel_pin",
+              "universe_id": "fuel"
+            },
+            {
+              "cells": [],
+              "kind": "custom",
+              "universe_id": "abs"
+            }
+          ]
+        },
+        "issues": [],
+        "metadata": {},
+        "patch_id": "universes",
+        "patch_type": "universes",
+        "schema_version": "v1",
+        "source": "llm",
+        "status": "valid"
+      }
+    },
+    "placement_dependency_requests": [],
+    "placement_review_history": [],
+    "placement_revision_history": [],
+    "plan_confirmed_fact_records": {},
+    "plan_confirmed_plan_fact_records": {},
+    "plan_human_answers": {},
+    "plan_human_questions": {},
+    "plan_investigation_schema_version": null,
+    "plan_loop_additional_llm_calls": 0,
+    "plan_loop_artifacts": [],
+    "plan_loop_candidate_hashes_by_fingerprint": {},
+    "plan_loop_contract_version": "0.5",
+    "plan_loop_issue_attempts_by_fingerprint": {},
+    "plan_loop_mode": "off",
+    "plan_loop_no_progress_events": [],
+    "plan_loop_policy": {},
+    "plan_loop_stages": {},
+    "plan_retry_attempts_by_fingerprint": {},
+    "plan_retry_budget": {},
+    "plan_retry_candidate_hashes_by_fingerprint": {},
+    "plan_retry_cycle_trace": [],
+    "plan_retry_execution_plans": {},
+    "plan_retry_gate_invalidation_counts": {},
+    "plan_retry_gate_replay_attempt_counts": {},
+    "plan_retry_gate_replay_counts": {},
+    "plan_retry_gate_replay_success_counts": {},
+    "plan_retry_human_questions": {},
+    "plan_retry_issue_fingerprints_by_request": {},
+    "plan_retry_outcome": null,
+    "plan_retry_owner_regenerations": {},
+    "plan_retry_pending_request_ids": [],
+    "plan_retry_requests": {},
+    "plan_retry_rounds": [],
+    "plan_retry_task_plan_hash_history": [],
+    "plan_review_decisions": {},
+    "plan_review_findings": {},
+    "planning_evidence_ledger": null,
+    "planning_feature_contract": null,
+    "planning_mode": "incremental",
+    "planning_source_manifest": null,
+    "requirement_text": "reactor-neutral placement source",
+    "resolved_planning_scope": null,
+    "root_cause_attempts_by_fingerprint": {},
+    "root_cause_candidate_hashes": {},
+    "root_cause_retry_history": [],
+    "selected_variant": null,
+    "state_id": "placement",
+    "validation_full_patch_regenerations_by_fingerprint": {},
+    "validation_issues": [],
+    "validation_repair_attempts_by_fingerprint": {},
+    "validation_repair_candidate_hashes": {},
+    "validation_repair_history": []
+  },
+  "policy_snapshot": {
+    "artifact_subdir": "plan_closed_loop",
+    "assembled_plan_review_mode": "off",
+    "axial_geometry_review_mode": "off",
+    "contract_version": "0.9",
+    "enable_facts_review_synthesis": true,
+    "enable_human_gate": false,
+    "facts_review_chunk_chars": 12000,
+    "facts_review_stage_split": false,
+    "fail_closed_on_budget_exhaustion": true,
+    "gate_enabled": {
+      "assembled_plan": false,
+      "axial_geometry": false,
+      "facts": false,
+      "material_universe": false,
+      "placement": false
+    },
+    "material_universe_review_mode": "off",
+    "material_universe_review_split": false,
+    "max_attempts_per_issue_fingerprint": 2,
+    "max_attempts_per_retry_request": 2,
+    "max_facts_review_chunks": 8,
+    "max_facts_review_source_chars": 96000,
+    "max_gate_replays_per_gate": 3,
+    "max_human_rounds_per_gate": 2,
+    "max_no_progress_rounds": 1,
+    "max_owner_regenerations_per_patch": 2,
+    "max_repair_rounds_per_gate": 2,
+    "max_retry_rounds": 6,
+    "max_review_rounds_per_gate": 2,
+    "max_same_candidate_attempts": 1,
+    "max_total_additional_llm_calls": 20,
+    "max_total_retry_llm_calls": 12,
+    "metadata": {},
+    "mode": "controlled",
+    "placement_review_mode": "controlled",
+    "plan_gates": [],
+    "plan_human_mode": "off"
+  },
+  "recorded_inventory": {},
+  "recorded_reviews": [
+    {
+      "coverage_summary": {},
+      "findings": [],
+      "metadata": {
+        "fixture_mode": "offline_deterministic",
+        "gate": "placement"
+      },
+      "review_status": "complete",
+      "reviewed_contract_row_ids": [],
+      "reviewed_evidence_refs": []
+    }
+  ],
+  "snapshot_schema_version": "1.0",
+  "upstream_accepted": {
+    "facts": true,
+    "material_universe": true
+  },
+  "upstream_chain_provenance": "offline_deterministic"
+}
