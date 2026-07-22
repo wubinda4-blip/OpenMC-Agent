@@ -10,7 +10,7 @@ Step 3B 的 accepted-boundary checkpoint 与 GateReplay 实现已按父审查意
 
 ## 验证
 
-- 全量非 OpenMC/非 LLM pytest、`compileall` 与 fake workflow benchmark `21/21` 均通过；新增 action interruption/resume 后 focused tests `52 passed`。baseline regression diff 跳过：仓库没有 `data/evals/workflow/baseline/evaluation_report.json`。
+- 全量非 OpenMC/非 LLM pytest `3611 passed, 2 skipped, 392 deselected`，`compileall`、fake workflow benchmark `21/21` 与 fixture baseline regression diff 均通过。workflow regression baseline 已补为 tracked fixture：`tests/fixtures/workflow_baseline/evaluation_report.json`。
 - Facts 与 MU 各完成一次只调用目标 reviewer 的 `live-review`（最长 1800 s）。Facts 返回一条 source-gap warning；MU 完成 3 个 review scope 并产生可复现 finding 终态。
 
 ## 真实性边界

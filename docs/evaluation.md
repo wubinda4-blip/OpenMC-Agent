@@ -7,7 +7,7 @@ The P0 workflow benchmark runs the evaluation-case manifest through a lightweigh
 The default command is safe for base Python environments without OpenMC:
 
 ```bash
-make benchmark-workflow-fake
+make benchmark-fake
 ```
 
 Equivalent direct invocation:
@@ -17,7 +17,7 @@ python scripts/run_workflow_benchmark.py \
   --cases tests/fixtures/evaluation_cases.json \
   --model fake \
   --mode plan-only \
-  --out data/evals/workflow/fake
+  --out data/evals/workflow/fake_current
 ```
 
 Defaults:
@@ -56,20 +56,28 @@ Inspect failed cases using `failed_stage`, `failed_patch_type`, `issue_codes`, a
 
 Two evaluation reports can be compared with `scripts/diff_evaluation_reports.py`. It produces a markdown diff (metric deltas, case status changes, new failures, fixed cases) and optionally fails non-zero when regression thresholds are breached — suitable as a PR gate.
 
-### Save a baseline
+### Curated baseline
+
+The default regression baseline is a tracked fixture at
+`tests/fixtures/workflow_baseline/evaluation_report.json`. Keep benchmark run
+outputs under `data/evals/workflow/`; that directory is ignored because it
+contains local, regenerable artifacts.
+
+To intentionally refresh the curated baseline after reviewing a passing fake
+benchmark result:
 
 ```bash
-make benchmark-workflow-fake
-cp -r data/evals/workflow/fake data/evals/workflow/baseline
+make benchmark-fake
+make benchmark-save-baseline
 ```
 
 ### Compare against the baseline
 
 ```bash
 python scripts/diff_evaluation_reports.py \
-  --base data/evals/workflow/baseline/evaluation_report.json \
-  --head data/evals/workflow/fake/evaluation_report.json \
-  --out data/evals/workflow/fake/report_diff.md
+  --base tests/fixtures/workflow_baseline/evaluation_report.json \
+  --head data/evals/workflow/fake_current/evaluation_report.json \
+  --out data/evals/workflow/fake_current/report_diff.md
 ```
 
 Or via Makefile (pass `BASE_REPORT`, `HEAD_REPORT`, and optional `OUT_DIFF` as env vars):
@@ -82,7 +90,8 @@ make diff-workflow-reports BASE_REPORT=... HEAD_REPORT=...
 
 ```bash
 python scripts/diff_evaluation_reports.py \
-  --base $BASE_REPORT --head $HEAD_REPORT \
+  --base tests/fixtures/workflow_baseline/evaluation_report.json \
+  --head data/evals/workflow/fake_current/evaluation_report.json \
   --fail-on-regression \
   --min-pass-rate-delta 0.0 \
   --min-plan-schema-delta 0.0 \

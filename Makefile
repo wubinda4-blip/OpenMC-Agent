@@ -1,5 +1,5 @@
 .PHONY: check-env check-env-openmc test-quick test-no-openmc test-openmc test-all \
-        benchmark-fake benchmark-real benchmark-save-baseline benchmark-check \
+        benchmark-fake benchmark-workflow-fake benchmark-real benchmark-save-baseline benchmark-check \
         model diff-workflow-reports gate-workflow-regression
 
 # ---------------------------------------------------------------------------
@@ -8,6 +8,14 @@
 PYTHON   ?= conda run --no-capture-output -n openmc-env python
 MODEL    ?= deepseek:deepseek-chat
 CASES    ?= tests/fixtures/evaluation_cases.json
+WORKFLOW_BASE_REPORT ?= tests/fixtures/workflow_baseline/evaluation_report.json
+WORKFLOW_FAKE_OUT ?= data/evals/workflow/fake_current
+WORKFLOW_HEAD_REPORT ?= $(WORKFLOW_FAKE_OUT)/evaluation_report.json
+WORKFLOW_DIFF_OUT ?= $(WORKFLOW_FAKE_OUT)/report_diff.md
+WORKFLOW_REAL_OUT ?= data/evals/workflow/current
+BASE_REPORT ?= $(WORKFLOW_BASE_REPORT)
+HEAD_REPORT ?= $(WORKFLOW_HEAD_REPORT)
+OUT_DIFF ?= $(WORKFLOW_DIFF_OUT)
 
 # Single-model run defaults
 INPUT    ?= Input/VERA3_problem.md
@@ -88,7 +96,9 @@ benchmark-fake:
 		--cases $(CASES) \
 		--model fake \
 		--mode plan-only \
-		--out data/evals/workflow/fake
+		--out $(WORKFLOW_FAKE_OUT)
+
+benchmark-workflow-fake: benchmark-fake
 
 benchmark-real:
 	$(PYTHON) scripts/run_workflow_benchmark.py \
@@ -96,28 +106,27 @@ benchmark-real:
 		--model $(MODEL) \
 		--mode plan-only \
 		--allow-real-llm \
-		--out data/evals/workflow/current
+		--out $(WORKFLOW_REAL_OUT)
 
-# Save current benchmark result as the regression baseline
+# Save the current fake benchmark report as the curated regression baseline.
 benchmark-save-baseline:
-	rm -rf data/evals/workflow/baseline
-	cp -r data/evals/workflow/current data/evals/workflow/baseline
-	@echo "Baseline saved to data/evals/workflow/baseline"
+	@mkdir -p $(dir $(WORKFLOW_BASE_REPORT))
+	cp $(WORKFLOW_HEAD_REPORT) $(WORKFLOW_BASE_REPORT)
+	@echo "Baseline saved to $(WORKFLOW_BASE_REPORT)"
 
-# Run real benchmark + diff against baseline + regression gate (one command)
+# Run fake benchmark + diff against baseline + regression gate (one command).
 benchmark-check:
 	$(PYTHON) scripts/run_workflow_benchmark.py \
 		--cases $(CASES) \
-		--model $(MODEL) \
+		--model fake \
 		--mode plan-only \
-		--allow-real-llm \
-		--out data/evals/workflow/current
+		--out $(WORKFLOW_FAKE_OUT)
 	$(PYTHON) scripts/diff_evaluation_reports.py \
-		--base data/evals/workflow/baseline/evaluation_report.json \
-		--head data/evals/workflow/current/evaluation_report.json \
-		--out data/evals/workflow/current/report_diff.md \
+		--base $(WORKFLOW_BASE_REPORT) \
+		--head $(WORKFLOW_HEAD_REPORT) \
+		--out $(WORKFLOW_DIFF_OUT) \
 		--fail-on-regression
-	@echo "Diff report: data/evals/workflow/current/report_diff.md"
+	@echo "Diff report: $(WORKFLOW_DIFF_OUT)"
 
 # ---------------------------------------------------------------------------
 # Report diff (compare any two evaluation_report.json)
@@ -126,7 +135,7 @@ diff-workflow-reports:
 	$(PYTHON) scripts/diff_evaluation_reports.py \
 		--base $(BASE_REPORT) \
 		--head $(HEAD_REPORT) \
-		--out $(OUT_DIFF:-report_diff.md)
+		--out $(OUT_DIFF)
 
 gate-workflow-regression:
 	$(PYTHON) scripts/diff_evaluation_reports.py \

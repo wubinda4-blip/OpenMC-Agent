@@ -277,12 +277,12 @@ make model ... LOG_LEVEL=DEBUG     # 更详细诊断
 
 ```bash
 make benchmark-fake              # 快速 fake（秒级，不用 LLM/OpenMC）
-make benchmark-real              # 真实 LLM，11 个 case
-make benchmark-save-baseline     # 把当前结果存为 baseline
+make benchmark-real              # 真实 LLM，plan-only
+make benchmark-save-baseline     # 把当前 fake report 固定为 curated baseline fixture
 make benchmark-check             # 跑 + 对比 baseline + regression gate（一键验证）
 ```
 
-`benchmark-check` 在 `pass_rate` / `plan_schema_success_rate` / `artifact_completeness_rate` 下降或出现新失败 case 时 exit 非 0，适合 PR gate。换模型：`make benchmark-check MODEL=glm:glm-4-plus`。
+`benchmark-check` 使用 fake model 重跑 `tests/fixtures/evaluation_cases.json`，并与 `tests/fixtures/workflow_baseline/evaluation_report.json` 比较；当 `pass_rate` / `plan_schema_success_rate` / `artifact_completeness_rate` 下降或出现新失败 case 时 exit 非 0，适合 PR gate。真实 LLM 验证使用 `make benchmark-real MODEL=...` 单独运行。
 
 ### 报告 diff（手动比较任意两个 report）
 
@@ -365,7 +365,7 @@ make benchmark-fake
 # Workflow benchmark（真实 LLM）
 make benchmark-real
 
-# 跑 + 对比 baseline + regression gate（一键验证）
+# 跑 fake + 对比 curated baseline + regression gate（一键验证）
 make benchmark-check
 ```
 
@@ -516,11 +516,11 @@ The P0 workflow benchmark is a lightweight, report-generating evaluation entry p
 ```bash
 make benchmark-fake                # fake model, no LLM/OpenMC
 make benchmark-real                # real LLM (deepseek), plan-only
-make benchmark-save-baseline       # save current result as regression baseline
-make benchmark-check               # run real + diff baseline + regression gate
+make benchmark-save-baseline       # save current fake report as curated baseline
+make benchmark-check               # run fake + diff baseline + regression gate
 ```
 
-`benchmark-check` runs the real LLM benchmark, compares against the saved baseline, and exits non-zero if `pass_rate` / `plan_schema_success_rate` / `artifact_completeness_rate` regress or new cases fail. Override the model with `MODEL=glm:glm-4-plus`.
+`benchmark-check` runs the fake benchmark, compares against `tests/fixtures/workflow_baseline/evaluation_report.json`, and exits non-zero if `pass_rate` / `plan_schema_success_rate` / `artifact_completeness_rate` regress or new cases fail. Use `make benchmark-real MODEL=glm:glm-4-plus` for opt-in real LLM benchmarking.
 
 The command writes `evaluation_report.json`, `benchmark_summary.md`, `traces/`, and `case_artifacts/` under the output directory.
 
