@@ -269,6 +269,9 @@ class InvestigationResult(AgentBaseModel):
     structured_output_payload_hash_drift: bool = False
     structured_output_unbudgeted_retry: bool = False
     structured_output_stale_output_reused: bool = False
+    provider_timeout: bool = False
+    provider_deadline: str = ""
+    billed_call_count: int = 0
     result_hash: str = ""
 
     @model_validator(mode="after")
@@ -283,7 +286,7 @@ class InvestigationResult(AgentBaseModel):
             "completed": self.completed,
             "budget_used": self.budget_used.model_dump(mode="json"),
         }
-        if self.planner_calls or self.schema_retries or self.planner_input_payload_hash or self.semantic_coverage or self.skipped_actions or self.skipped_action_reason or self.structured_output_payload_hash_drift or self.structured_output_unbudgeted_retry or self.structured_output_stale_output_reused:
+        if self.planner_calls or self.schema_retries or self.planner_input_payload_hash or self.semantic_coverage or self.skipped_actions or self.skipped_action_reason or self.structured_output_payload_hash_drift or self.structured_output_unbudgeted_retry or self.structured_output_stale_output_reused or self.provider_timeout or self.billed_call_count:
             payload.update(
                 {
                     "planner_calls": self.planner_calls,
@@ -295,6 +298,9 @@ class InvestigationResult(AgentBaseModel):
                     "structured_output_payload_hash_drift": self.structured_output_payload_hash_drift,
                     "structured_output_unbudgeted_retry": self.structured_output_unbudgeted_retry,
                     "structured_output_stale_output_reused": self.structured_output_stale_output_reused,
+                    "provider_timeout": self.provider_timeout,
+                    "provider_deadline": self.provider_deadline,
+                    "billed_call_count": self.billed_call_count,
                 }
             )
         expected = content_hash(payload)
@@ -613,6 +619,9 @@ class InvestigationAgent:
             structured_output_payload_hash_drift=structured_payload_hash_drift,
             structured_output_unbudgeted_retry=structured_unbudgeted_retry,
             structured_output_stale_output_reused=structured_stale_output_reused,
+            provider_timeout=bool(plan_transaction and plan_transaction.provider_timeout),
+            provider_deadline=plan_transaction.provider_deadline if plan_transaction else "",
+            billed_call_count=plan_transaction.billed_call_count if plan_transaction else 0,
         )
 
     # ------------------------------------------------------------------
@@ -726,9 +735,19 @@ class InvestigationAgent:
                 details["raw_hash"] = latest_attempt.raw_hash
                 details["parse_errors"] = list(latest_attempt.parse_errors)
                 details["schema_errors"] = list(latest_attempt.schema_errors)
+            error_code = (
+                "provider.timeout"
+                if transaction.provider_timeout
+                else BLOCK_CODE_INVALID_LLM_OUTPUT
+            )
+            error_message = (
+                "investigation provider request exceeded its deadline"
+                if transaction.provider_timeout
+                else "investigation LLM output was not valid JSON matching the action schema"
+            )
             raise PlanInvestigationIssue(
-                BLOCK_CODE_INVALID_LLM_OUTPUT,
-                "investigation LLM output was not valid JSON matching the action schema",
+                error_code,
+                error_message,
                 details=details,
             )
         return InvestigationPlan.model_validate(transaction.parsed_output)

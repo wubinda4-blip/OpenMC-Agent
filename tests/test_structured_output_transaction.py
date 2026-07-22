@@ -136,3 +136,31 @@ def test_transaction_fails_closed_when_budget_charge_raises() -> None:
     assert result.error_code == "structured_output.unbudgeted_call"
     assert result.call_count == 1
     assert result.attempts[0].budget_charged is False
+
+
+def test_provider_timeout_is_billed_and_does_not_trigger_schema_retry() -> None:
+    calls = [0]
+
+    def invoke(_client, _prompt):
+        calls[0] += 1
+        raise TimeoutError("provider deadline exceeded")
+
+    budget = [0, 2]
+    result = run_structured_output_transaction(
+        client=_Client(),
+        initial_prompt="return JSON",
+        retry_prompt_builder=lambda _raw, _error: "repair",
+        output_model=_Output,
+        call=invoke,
+        payload={"target": "value"},
+        budget_available=lambda: budget[0] < budget[1],
+        charge_budget=lambda: budget.__setitem__(0, budget[0] + 1),
+    )
+    assert not result.ok
+    assert result.error_code == "provider.timeout"
+    assert result.provider_timeout
+    assert result.call_count == 1
+    assert result.billed_call_count == 1
+    assert budget[0] == 1
+    assert calls[0] == 1
+    assert result.attempts[0].input_payload_hash == canonical_payload_hash({"target": "value"})

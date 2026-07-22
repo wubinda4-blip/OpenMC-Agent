@@ -281,6 +281,10 @@ class InvestigationStageOutcome(AgentBaseModel):
     warnings: tuple[str, ...] = Field(default_factory=tuple)
     coverage: dict[str, Any] = Field(default_factory=dict)
     result_hash: str = ""
+    provider_timeout: bool = False
+    provider_deadline: str = ""
+    billed_call_count: int = 0
+    unfinished_actions: tuple[str, ...] = Field(default_factory=tuple)
 
     @property
     def should_block_facts_patch(self) -> bool:
@@ -671,6 +675,9 @@ def run_patch_investigation_stage(
     coverage_dict["structured_output_payload_hash_drift"] = result.structured_output_payload_hash_drift
     coverage_dict["structured_output_unbudgeted_retry"] = result.structured_output_unbudgeted_retry
     coverage_dict["structured_output_stale_output_reused"] = result.structured_output_stale_output_reused
+    coverage_dict["provider_timeout"] = result.provider_timeout
+    coverage_dict["provider_deadline"] = result.provider_deadline
+    coverage_dict["billed_call_count"] = result.billed_call_count
     payloads: list[dict[str, Any]] = []
     if result.evidence_claim_ids:
         payloads = collect_evidence_for_patch_prompt(
@@ -713,6 +720,10 @@ def run_patch_investigation_stage(
         coverage=coverage_dict,
         warnings=result.warnings,
         result_hash=result.result_hash,
+        provider_timeout=result.provider_timeout,
+        provider_deadline=result.provider_deadline,
+        billed_call_count=result.billed_call_count,
+        unfinished_actions=tuple(result.skipped_actions),
     )
 
     # Controlled post-condition: per-patch-type coverage check.
@@ -736,7 +747,10 @@ def run_patch_investigation_stage(
                 }
             )
 
-    if session_cache is not None:
+    # An interrupted or contract-blocked session is not a reusable cache
+    # entry.  Resume must execute only the still-unfinished work rather than
+    # returning a stale blocked snapshot as if the investigation completed.
+    if session_cache is not None and outcome.completed:
         session_cache.put(
             cache_key,
             SessionCacheEntry(

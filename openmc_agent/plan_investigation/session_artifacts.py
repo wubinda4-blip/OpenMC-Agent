@@ -68,6 +68,9 @@ class InvestigationSessionRecord(AgentBaseModel):
     structured_output_payload_hash_drift: bool = False
     structured_output_unbudgeted_retry: bool = False
     structured_output_stale_output_reused: bool = False
+    provider_timeout: bool = False
+    provider_deadline: str = ""
+    billed_call_count: int = 0
     result_hash: str
 
 
@@ -92,6 +95,9 @@ def _to_record(result: InvestigationResult) -> InvestigationSessionRecord:
         structured_output_payload_hash_drift=result.structured_output_payload_hash_drift,
         structured_output_unbudgeted_retry=result.structured_output_unbudgeted_retry,
         structured_output_stale_output_reused=result.structured_output_stale_output_reused,
+        provider_timeout=result.provider_timeout,
+        provider_deadline=result.provider_deadline,
+        billed_call_count=result.billed_call_count,
         result_hash=result.result_hash,
     )
 

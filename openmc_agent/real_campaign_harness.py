@@ -77,6 +77,10 @@ from openmc_agent.llm_call_recorder import (
     LLMCallRecorder,
     verify_real_llm,
 )
+from openmc_agent.plan_builder.closed_loop.campaign_checkpoint import (
+    CampaignGateCheckpoint,
+    CampaignCheckpointStore,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -1421,6 +1425,44 @@ def _write_run_artifacts(
     """Persist Phase 7A per-run artifacts."""
     build_state = ws.get("plan_build_state") or {}
     snapshot = extract_five_gate_status(build_state)
+
+    # Persist accepted-gate fingerprints separately from the mutable plan
+    # state.  This artifact is audit-only here; resume consumers must validate
+    # all fingerprints before reusing any gate.
+    checkpoint_store = CampaignCheckpointStore(run_dir / "campaign_checkpoint.json")
+    state_metadata = build_state.get("metadata", {}) if isinstance(build_state, dict) else {}
+    evidence_payload = state_metadata.get("planning_evidence_ledger", {})
+    inventory_payload = {
+        key: state_metadata.get(key)
+        for key in (
+            "planning_geometry_inventory",
+            "planning_material_requirement_set",
+            "planning_universe_requirement_set",
+        )
+        if key in state_metadata
+    }
+    policy_payload = {
+        "policy_hash": config.fingerprint.plan_policy_hash,
+        "structured_output_policy_hash": STRUCTURED_OUTPUT_POLICY_HASH,
+    }
+    for gate_id, status in snapshot.statuses.items():
+        if status != "accepted":
+            continue
+        input_hash = snapshot.accepted_input_hashes.get(gate_id, "")
+        checkpoint = CampaignGateCheckpoint.create(
+            campaign_id=config.run_id,
+            gate_id=gate_id,
+            input_payload={"accepted_input_hash": input_hash},
+            evidence=evidence_payload,
+            inventory=inventory_payload,
+            structured_output_policy=policy_payload,
+            canonical_hashes={
+                "accepted_input": input_hash,
+                "policy": config.fingerprint.plan_policy_hash,
+            },
+            accepted_at=snapshot.completed_at.get(gate_id, ""),
+        )
+        checkpoint_store.accept_gate(checkpoint)
 
     _write_json_atomic(run_dir / "five_gate_status.json", {
         "statuses": snapshot.statuses,

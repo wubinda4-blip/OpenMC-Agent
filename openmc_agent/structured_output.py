@@ -62,6 +62,9 @@ class StructuredOutputResult(AgentBaseModel):
     input_payload_hash: str = ""
     error_code: str = ""
     error_detail: str = ""
+    provider_timeout: bool = False
+    provider_deadline: str = ""
+    billed_call_count: int = 0
 
 
 def _canonical_json(value: Any) -> str:
@@ -273,6 +276,7 @@ def run_structured_output_transaction(
                 result.error_code = "structured_output.unbudgeted_call"
                 result.error_detail = "structured-output call could not be charged"
                 return result
+            result.billed_call_count += 1
             try:
                 raw_text = (
                     raw
@@ -341,6 +345,27 @@ def run_structured_output_transaction(
                 result.error_code = "structured_output.unbudgeted_call"
                 result.error_detail = "structured-output call could not be charged"
                 return result
+            result.billed_call_count += 1
+            if _is_provider_timeout(exc):
+                # A provider deadline is an infrastructure interruption, not a
+                # schema-repair opportunity.  Never issue a hidden second call.
+                result.provider_timeout = True
+                result.provider_deadline = str(
+                    getattr(exc, "deadline", "")
+                    or getattr(exc, "timeout", "")
+                    or ""
+                )
+                record.metadata.update(
+                    {
+                        "provider_error_type": type(exc).__name__,
+                        "provider_timeout": True,
+                        "provider_deadline": result.provider_deadline,
+                    }
+                )
+                result.attempts.append(record)
+                result.error_code = "provider.timeout"
+                result.error_detail = "provider request exceeded its deadline"
+                return result
 
         result.attempts.append(record)
         if attempt_index == 0:
@@ -369,3 +394,17 @@ def run_structured_output_transaction(
     )
     result.error_detail = last_error or "structured output did not validate"
     return result
+
+
+def _is_provider_timeout(exc: Exception) -> bool:
+    """Identify provider deadline failures without importing provider SDKs."""
+
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    return (
+        isinstance(exc, TimeoutError)
+        or "timeout" in name
+        or "deadline" in name
+        or "timed out" in text
+        or "deadline exceeded" in text
+    )

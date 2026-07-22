@@ -2,6 +2,12 @@
 
 维护日期：2026-07-21
 
+### 2026-07-22
+
+- **Phase 8C Step 3A MU Gate 可达性与恢复协议**：新增 gate checkpoint 数据合同与原子 JSON store，accepted gate 复用同时校验 input/evidence/inventory/structured-output policy/canonical hashes；任一漂移 fail-closed。Facts investigation provider deadline 独立记录为 `provider.timeout`，保留已计费调用、deadline、payload hash，禁止隐藏 schema retry；未完成 session 不写入可复用 cache。新增 checkpoint/timeout 回归覆盖；MU deterministic preflight 与 v12/v13 binding 回归保持零错误。
+- **验证结果**：focused MU/investigation/replay tests `24 passed`；全量非 OpenMC/非 LLM `3579 passed, 2 skipped, 392 deselected`；compileall、fake benchmark `21/21` 与 `git diff --check` clean。真实 VERA4 canary 已启动但在 provider 调用前被 `BLOCKED_BY_LLM_ENVIRONMENT` 阻塞（`glm` API 环境未配置），未宣称 gate 完成。
+- **风险/边界**：本次只加强恢复与真实性 telemetry，不改变材料、universe、几何或 renderer 合同；provider 持续超时仍报告为外部运行阻塞，不可宣称 MU Gate 完成。
+
 维护方式：每完成一个重要工程 Step 后更新本报告的"当前状态""验证结果""风险/边界""下一步建议"和"维护记录"。**维护记录使用精炼风格**：每条 2–4 行（日期 + 主题 + 核心改动 + 测试数），不写冗长根因/实现细节（那些在代码与 git history 里）。
 
 ### 2026-07-22
