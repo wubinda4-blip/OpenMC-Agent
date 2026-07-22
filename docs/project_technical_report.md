@@ -4,6 +4,10 @@
 
 ### 2026-07-22
 
+- **Phase 8C Step 3G MU Composition-Basis Preflight Closure**：Step 3D Facts→MU canary 已到达 MU：Facts accepted、Materials 15/15、Universes 5/5、MU preflight 0 error、truth violations 0、MU reviewer 3 calls；唯一 blocker 为 `material_universe.invalid_composition_sum_for_basis`（water 声明 `atom_frac` 但 H1=2/O16=1 为 stoichiometric ratio）。修复将 `atom_frac`/`weight_frac` 的 composition sum 合同前移到 MaterialsPatch validator、materials fragment qualification 与 MU preflight。
+- **验证结果**：全量非 OpenMC/非 LLM 测试 `3662 passed, 2 skipped, 392 deselected`；`compileall`、fake benchmark `21/21`、baseline regression diff 均通过。fraction basis 现在允许 partial sum `<=1` 与 percent-style `≈100`，拒绝 `1<sum<100` 的未归一化化学计量比；`material_universe.invalid_composition_sum_for_basis` 注册为 materials-owned deterministic preflight gap。
+- **风险/边界**：不自动改写材料成分，不改变 renderer 或 OpenMC transport semantics；LLM 仍可选择 `stoichiometric_ratio` 表达化学式。修复后需重跑 Facts→MU milestone canary，预期该问题在 reviewer 前由 deterministic preflight/qualification 拦截或由 generation 修正。
+
 - **Phase 8C Step 3D 下游 Gate Replay**：accepted checkpoint 边界扩展至 Placement/Axial/Assembled；GateReplayBundle 现在支持五个 gate，下游 bundle 强制保存脱敏 policy snapshot 与完整 accepted upstream chain。preflight、recorded-review、live-review 复用目标 gate 的生产 preflight/evidence/reviewer，并输出 coverage、blocking/rejected finding、terminal status 与脱敏 diagnostics；新增三条 gate accepted 原子 checkpoint 回调。
 - **验证结果**：checkpoint/replay/downstream focused tests `45 passed`，`compileall -q openmc_agent scripts` 通过；未重跑完整 VERA4 canary，Step 3C canary 已有终态且未到达下游 gate，故本阶段仅完成代码级 replay 验收。
 - **风险/边界**：旧 Facts/MU bundle 保持可读；下游 gate 缺少 policy snapshot、上游 accepted 状态、canonical hash 或包含敏感字段时 fail-closed。live-review 仍仅调用目标 reviewer，默认上限 1800 秒；尚未声明 Placement/Axial/Assembled 真实 provider 验收。

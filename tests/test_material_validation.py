@@ -13,6 +13,8 @@ from openmc_agent.schemas import (
     NormalizationStatus,
     NuclideSpec,
 )
+from openmc_agent.plan_builder.patches import MaterialsPatch
+from openmc_agent.plan_builder.validators import validate_patch
 
 
 def _n(name, pct, pt="ao"):
@@ -105,3 +107,59 @@ def test_normalized_material_passes_validation():
     new_fuel, _ = normalize_material_semantics(fuel)
     result = validate_normalized_material(new_fuel)
     assert result.render_ready
+
+
+def test_materials_patch_rejects_stoichiometric_ratio_declared_as_atom_frac():
+    patch = MaterialsPatch.model_validate({
+        "patch_type": "materials",
+        "materials": [{
+            "material_id": "water",
+            "name": "water",
+            "role": "coolant",
+            "density_g_cm3": 0.743,
+            "composition": {"H1": 2.0, "O16": 1.0},
+            "composition_basis": "atom_frac",
+            "composition_status": "confirmed",
+        }],
+    })
+    result = validate_patch(patch)
+    assert any(
+        issue.code == "materials.composition_fraction_sum_invalid"
+        and issue.severity == "error"
+        for issue in result.issues
+    )
+
+
+def test_materials_patch_accepts_fraction_and_percent_sums():
+    for composition in ({"H1": 0.6666667, "O16": 0.3333333}, {"H1": 66.66667, "O16": 33.33333}):
+        patch = MaterialsPatch.model_validate({
+            "patch_type": "materials",
+            "materials": [{
+                "material_id": "water",
+                "name": "water",
+                "role": "coolant",
+                "density_g_cm3": 0.743,
+                "composition": composition,
+                "composition_basis": "atom_frac",
+                "composition_status": "confirmed",
+            }],
+        })
+        result = validate_patch(patch)
+        assert not any(issue.code == "materials.composition_fraction_sum_invalid" for issue in result.issues)
+
+
+def test_materials_patch_accepts_partial_fraction_vector():
+    patch = MaterialsPatch.model_validate({
+        "patch_type": "materials",
+        "materials": [{
+            "material_id": "trace",
+            "name": "trace",
+            "role": "structural",
+            "density_g_cm3": 1.0,
+            "composition": {"B10": 0.0001, "B11": 0.0004},
+            "composition_basis": "atom_frac",
+            "composition_status": "approximate",
+        }],
+    })
+    result = validate_patch(patch)
+    assert not any(issue.code == "materials.composition_fraction_sum_invalid" for issue in result.issues)

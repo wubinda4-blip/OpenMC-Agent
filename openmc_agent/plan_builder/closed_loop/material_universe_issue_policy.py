@@ -34,6 +34,7 @@ _MATERIALS_CODES = {
     "material_universe.material_provenance_missing",
     "material_universe.density_provenance_missing",
     "material_universe.materials_schema_invalid",
+    "material_universe.invalid_composition_sum_for_basis",
     "material_universe.contract_material_id_mismatch",
     "material_universe.contract_material_role_mismatch",
 }

@@ -53,6 +53,26 @@ def test_invalid_density_detected() -> None:
     assert "material_universe.material_density_invalid" in codes
 
 
+def test_atom_frac_stoichiometric_ratio_detected_before_reviewer() -> None:
+    state = _state(materials={"patch_type": "materials", "materials": [
+        {
+            "material_id": "coolant",
+            "name": "water",
+            "role": "coolant",
+            "density_g_cm3": 0.743,
+            "composition": {"H1": 2.0, "O16": 1.0},
+            "composition_basis": "atom_frac",
+            "composition_status": "confirmed",
+        },
+        {"material_id": "fuel", "name": "f", "role": "fuel", "density_g_cm3": 10.0},
+        {"material_id": "clad", "name": "c", "role": "cladding", "density_g_cm3": 6.5},
+    ]})
+    result = run_material_universe_preflight(state=state, policy=_policy())
+    codes = {i["code"] for i in result.issues}
+    assert "materials.composition_fraction_sum_invalid" in codes
+    assert any(i.get("source_validator") for i in result.issues if i["code"] == "materials.composition_fraction_sum_invalid")
+
+
 def test_unknown_material_reference_detected() -> None:
     state = _state(universes={"patch_type": "universes", "universes": [
         {"universe_id": "u", "kind": "fuel_pin", "cells": [{"id": "c", "role": "fuel", "material_id": "does_not_exist", "region_kind": "cylinder"}]},

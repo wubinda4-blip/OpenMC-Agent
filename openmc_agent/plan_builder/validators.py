@@ -374,6 +374,28 @@ def _validate_materials(
                 actual=mat.density_g_cm3,
             ))
 
+        if mat.composition and mat.composition_basis in {"atom_frac", "weight_frac"}:
+            total = sum(float(value) for value in mat.composition.values())
+            # MaterialsPatch historically accepts both fractional (sum≈1)
+            # and percent-style (sum≈100) values for atom_frac/weight_frac.
+            # Values such as H1=2, O16=1 are stoichiometric ratios and must
+            # declare stoichiometric_ratio instead of fraction basis.
+            if total <= 0 or (total > 1.0 + 1.0e-3 and abs(total - 100.0) > 1.0e-2):
+                issues.append(PatchValidationIssue(
+                    code="materials.composition_fraction_sum_invalid",
+                    severity="error",
+                    message=(
+                        f"material {mat.material_id!r} declares composition_basis="
+                        f"{mat.composition_basis!r}, but composition values sum to "
+                        f"{total:g}; fraction bases must sum to <=1.0 for fractional "
+                        "values or approximately 100.0 for percent-style values. "
+                        "Use stoichiometric_ratio for unnormalized chemical ratios."
+                    ),
+                    path=f"materials[{mat.material_id}].composition",
+                    expected="sum<=1.0 or sum≈100.0",
+                    actual=total,
+                ))
+
         # Static source/transport species contract.  This deliberately does
         # not import OpenMC or inspect nuclear data; library availability is a
         # runtime preflight concern.

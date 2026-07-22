@@ -321,6 +321,10 @@ def test_mu_finding_classifier_covers_registered_codes_and_unknown_fails_closed(
         classification = classify_material_universe_finding(code)
         assert classification.classification != "unknown_code", code
         assert not classification.fail_closed, code
+    composition = classify_material_universe_finding(
+        "material_universe.invalid_composition_sum_for_basis"
+    )
+    assert composition.classification == "deterministic_preflight_gap"
 
     unknown = classify_material_universe_finding("material_universe.future_new_code")
     assert unknown.classification == "unknown_code"

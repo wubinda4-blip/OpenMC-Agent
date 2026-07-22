@@ -187,7 +187,7 @@ def build_vera4_materials() -> MaterialsPatch:
         MaterialSpecPatch(
             material_id="water", name="borated water", role="coolant",
             density_g_cm3=0.7409,
-            composition={"H1": 2.0, "O16": 1.0, "B10": 1e-5, "B11": 4e-5},
+            composition={"H1": 0.666633333, "O16": 0.333316667, "B10": 1e-5, "B11": 4e-5},
             composition_basis="atom_frac",
             composition_status="approximate",
         ),
@@ -241,15 +241,15 @@ def build_vera4_materials() -> MaterialsPatch:
         MaterialSpecPatch(
             material_id="rcca_aic_mat", name="Ag-In-Cd absorber", role="absorber",
             density_g_cm3=10.2,
-            composition={"Ag107": 0.4173, "In115": 0.1491, "Cd114": 0.0529,
-                         "Ag109": 0.3827},
+            composition={"Ag107": 0.416467, "In115": 0.148802, "Cd114": 0.052794,
+                         "Ag109": 0.381936},
             composition_basis="atom_frac",
             composition_status="approximate",
         ),
         MaterialSpecPatch(
             material_id="rcca_b4c_mat", name="B4C absorber", role="absorber",
             density_g_cm3=2.52,
-            composition={"B10": 0.199, "B11": 0.801, "C0": 0.250},
+            composition={"B10": 0.1592, "B11": 0.6408, "C0": 0.2},
             composition_basis="atom_frac",
             composition_status="approximate",
         ),

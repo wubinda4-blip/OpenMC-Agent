@@ -235,6 +235,21 @@ class TestFragmentQualification:
         assert not result.ok
         assert any("placeholder" in i["code"] for i in result.issues)
 
+    def test_atom_frac_stoichiometric_ratio_rejected_before_fragment_acceptance(self):
+        item = _make_manifest_item(mid="mat_water", role="coolant", variant=None)
+        data = _make_material_data(mid="mat_water", role="coolant", variant=None, composition={"H1": 2.0, "O16": 1.0})
+        data["composition_basis"] = "atom_frac"
+        result = qualify_material_fragment(
+            raw_fragment={"materials": [data]},
+            manifest_item=item,
+            all_manifest_material_ids={item.material_id},
+        )
+        assert not result.ok
+        assert any(
+            i["code"] == "qualification.schema_materials.composition_fraction_sum_invalid"
+            for i in result.issues
+        )
+
     def test_placeholder_material_id_rejected(self):
         item = _make_manifest_item(mid="mat_fuel_1")
         data = _make_material_data(mid="REPLACE")
