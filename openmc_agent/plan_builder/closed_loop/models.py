@@ -1335,6 +1335,10 @@ class PlanClosedLoopPolicy(AgentBaseModel):
     enable_human_gate: bool = False
     fail_closed_on_budget_exhaustion: bool = True
     artifact_subdir: str = "plan_closed_loop"
+    # Optional milestone canary boundary.  When set, the executor returns a
+    # successful stopped-after-gate result immediately after this controlled
+    # gate accepts instead of continuing into downstream patch generation.
+    stop_after_gate: PlanGateId | None = None
     facts_review_chunk_chars: int = 12000
     max_facts_review_chunks: int = 8
     max_facts_review_source_chars: int = 96000

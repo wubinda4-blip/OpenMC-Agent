@@ -319,6 +319,7 @@ def make_five_gate_controlled_policy(
     enable_human_gate: bool = False,
     plan_human_mode: str = "off",
     enabled_gate_ids: tuple[str, ...] | None = None,
+    stop_after_gate: str | None = None,
 ) -> Any:
     """Construct the explicit five-gate controlled PlanClosedLoopPolicy.
 
@@ -355,6 +356,7 @@ def make_five_gate_controlled_policy(
         max_total_additional_llm_calls=max_total_additional_llm_calls,
         enable_human_gate=enable_human_gate,
         plan_human_mode=plan_human_mode,
+        stop_after_gate=stop_after_gate,
         plan_gates=list(active),
         placement_review_mode="controlled",
         material_universe_review_mode="controlled",
@@ -370,6 +372,7 @@ def policy_hash(policy: Any) -> str:
     """Return a short stable hash of the policy fields used for resume matching."""
     payload = {
         "mode": getattr(policy, "mode", ""),
+        "stop_after_gate": str(getattr(policy, "stop_after_gate", "") or ""),
         "plan_gates": [str(g) for g in getattr(policy, "plan_gates", [])],
         "gate_enabled": {str(k): bool(v) for k, v in getattr(policy, "gate_enabled", {}).items()},
         "placement_review_mode": getattr(policy, "placement_review_mode", ""),
@@ -1317,7 +1320,18 @@ def run_real_canary_once(
 
     # Final disposition.
     if not result.final_disposition or result.final_disposition == "UNKNOWN":
-        if result.five_gate_accepted and result.simulation_plan_present:
+        incremental_result = ws.get("incremental_execution_result") or {}
+        incremental_summary = (
+            incremental_result.get("summary") if isinstance(incremental_result, dict) else {}
+        ) or {}
+        stopped_after_gate = str(incremental_summary.get("stopped_after_gate", ""))
+        if (
+            config.stop_after_gate
+            and stopped_after_gate == config.stop_after_gate
+            and extract_five_gate_status(ws.get("plan_build_state") or {}).statuses.get(config.stop_after_gate) == "accepted"
+        ):
+            result.final_disposition = f"STOP_AFTER_GATE_PASSED:{config.stop_after_gate}"
+        elif result.five_gate_accepted and result.simulation_plan_present:
             if config.planning_stage == _PLANNING_STAGE:
                 result.final_disposition = "PLANNING_CANARY_PASSED"
             elif config.planning_stage == _RENDER_COMPILE_STAGE:
@@ -1688,6 +1702,7 @@ def run_real_canary_campaign(
             max_review_rounds_per_gate=campaign.plan_loop_max_review_rounds,
             max_repair_rounds_per_gate=campaign.plan_loop_max_repair_rounds,
             max_total_additional_llm_calls=campaign.plan_loop_max_additional_llm_calls,
+            stop_after_gate=campaign.stop_after_gate,
         )
     else:
         policy = make_five_gate_controlled_policy(

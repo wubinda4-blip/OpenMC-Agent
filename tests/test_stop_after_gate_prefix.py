@@ -85,6 +85,28 @@ def test_harness_make_policy_with_material_universe_stop_enables_facts() -> None
     assert "axial_geometry" not in active
 
 
+def test_harness_policy_records_stop_target() -> None:
+    policy = make_five_gate_controlled_policy(
+        enabled_gate_ids=("facts", "material_universe"),
+        stop_after_gate="material_universe",
+    )
+    assert policy.stop_after_gate is PlanGateId.MATERIAL_UNIVERSE
+
+
+def test_graph_router_stops_on_incremental_stop_after_gate() -> None:
+    from openmc_agent.graph import _plan_generation_router
+
+    route = _plan_generation_router({
+        "incremental_execution_result": {
+            "ok": True,
+            "summary": {"stopped_after_gate": "material_universe"},
+        },
+        "plan_build_state": {},
+    })
+
+    assert route == "stop"
+
+
 def test_harness_make_policy_with_placement_stop_enables_facts_and_mu() -> None:
     """Placement stop must include Facts + MU as barriers."""
 

@@ -567,7 +567,7 @@ def build_plan_graph(
     graph.add_edge("select_few_shots", "generate_plan")
     graph.add_conditional_edges(
         "generate_plan", _plan_generation_router,
-        {"ask_plan_expert": "ask_plan_expert", "validate": "validate_plan", "execute_plan_retry": "execute_plan_retry"},
+        {"ask_plan_expert": "ask_plan_expert", "validate": "validate_plan", "execute_plan_retry": "execute_plan_retry", "stop": "save_record"},
     )
     graph.add_conditional_edges(
         "ask_plan_expert", _plan_human_router,
@@ -1741,6 +1741,32 @@ def _run_incremental_plan_generation(
                     "patch_order": [t.patch_type for t in build_state.component_tasks],
                     "valid_patch_count": len(build_state.get_valid_patches()),
                     "assembly_ok": True,
+                },
+            ),
+        })
+        return state_updates
+
+    if exec_result.ok and exec_result.summary.get("stopped_after_gate"):
+        stopped_gate = str(exec_result.summary["stopped_after_gate"])
+        _progress(
+            state,
+            "generate_plan",
+            f"incremental planning stopped after {stopped_gate} gate accepted",
+        )
+        state_updates.update({
+            "simulation_plan": None,
+            "needs_regeneration": False,
+            "error": "",
+            **_trace_event_update(
+                state,
+                "plan_gate_stopped",
+                summary=f"incremental planning stopped after {stopped_gate} gate accepted",
+                metadata={
+                    "success": True,
+                    "planning_mode": "incremental",
+                    "stopped_after_gate": stopped_gate,
+                    "valid_patch_types": exec_result.summary.get("valid_patch_types", []),
+                    "valid_patch_count": exec_result.summary.get("valid_patch_count", 0),
                 },
             ),
         })
@@ -4100,6 +4126,11 @@ def _plan_generation_router(state: GraphState) -> str:
       4. validate.
     """
     build_state = state.get("plan_build_state") or {}
+    incremental_result = state.get("incremental_execution_result") or {}
+    if isinstance(incremental_result, dict):
+        summary = incremental_result.get("summary") or {}
+        if isinstance(summary, dict) and summary.get("stopped_after_gate"):
+            return "stop"
     stages = build_state.get("plan_loop_stages", {}) if isinstance(build_state, dict) else {}
     awaiting_plan_gate = isinstance(stages, dict) and any(
         isinstance(stage, dict) and stage.get("status") == "awaiting_human"

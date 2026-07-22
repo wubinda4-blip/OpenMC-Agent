@@ -2888,6 +2888,82 @@ def run_incremental_planning(
     def _assembled_plan_stage():
         return state.plan_loop_stages.get("plan_gate_assembled_plan")
 
+    def _stop_after_gate_target() -> PlanGateId | None:
+        raw = getattr(policy, "stop_after_gate", None)
+        if raw is None:
+            return None
+        if isinstance(raw, PlanGateId):
+            return raw
+        try:
+            return PlanGateId(str(raw))
+        except ValueError:
+            return None
+
+    def _stage_for_gate(gate_id: PlanGateId):
+        return state.plan_loop_stages.get(f"plan_gate_{gate_id.value}")
+
+    def _maybe_stop_after_gate(gate_id: PlanGateId) -> IncrementalExecutionResult | None:
+        """Return a milestone success once the requested gate has accepted.
+
+        ``--stop-after-gate`` is used for target live-review/canary runs.  The
+        cumulative gate prefix still enforces upstream barriers, but once the
+        requested gate accepts the executor must not continue into downstream
+        patch generation because later patch failures would contaminate the
+        gate milestone result.
+        """
+        if policy.mode is not PlanLoopMode.CONTROLLED:
+            return None
+        if _stop_after_gate_target() is not gate_id:
+            return None
+        stage = _stage_for_gate(gate_id)
+        if stage is None or stage.status is not PlanStageStatus.ACCEPTED:
+            return None
+        valid_patch_types = sorted({
+            e.patch_type for e in state.patches.values() if e.status == "valid"
+        })
+        state.metadata["stopped_after_gate"] = gate_id.value
+        state.add_event(
+            event_type=EVENT_INCREMENTAL_EXECUTION_COMPLETED,
+            message=f"incremental planning stopped after {gate_id.value} gate accepted",
+            data={
+                "gate_id": gate_id.value,
+                "valid_patch_count": len(state.get_valid_patches()),
+                "valid_patch_types": valid_patch_types,
+            },
+        )
+        return IncrementalExecutionResult(
+            ok=True,
+            state=state,
+            assembled_plan=None,
+            issues=issues,
+            summary={
+                "stopped_after_gate": gate_id.value,
+                "valid_patch_count": len(state.get_valid_patches()),
+                "valid_patch_types": valid_patch_types,
+                "assembled": False,
+                "reference_patches_used": reference_patches_used,
+                "reference_match_status": state.metadata.get(
+                    "reference_match_status",
+                    "off" if reference_patch_policy == "off" else "unavailable",
+                ),
+                "reference_path": state.metadata.get("reference_path"),
+                "actual_pin_counts": _latest_assembly_summary(state).get("actual_pin_counts", {}),
+                "lattice_loading_count": _latest_assembly_summary(state).get("lattice_loading_count", 0),
+                "material_aliases_applied": _latest_assembly_summary(state).get("material_aliases_applied", {}),
+                "material_composition_policy": _latest_assembly_summary(state).get(
+                    "material_composition_policy", "default"
+                ),
+                "material_composition_report_present": state.material_composition_report is not None,
+            },
+            plan_loop_outcome={
+                "status": "stopped_after_gate",
+                "active_gate_id": gate_id.value,
+                "active_stage_id": stage.stage_id,
+                "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                "detail": f"stopped after {gate_id.value} gate accepted",
+            },
+        )
+
     def _run_assembled_plan_gate(
         *, finalize_non_applicable: bool = False,
     ) -> IncrementalExecutionIssue | None:
@@ -3860,6 +3936,11 @@ def run_incremental_planning(
             )
 
     for patch_type in order:
+        stop_target = _stop_after_gate_target()
+        if stop_target is not None:
+            stopped_after_gate = _maybe_stop_after_gate(stop_target)
+            if stopped_after_gate is not None:
+                return stopped_after_gate
         facts_barrier_issue = _require_accepted_facts_gate(next_patch_type=patch_type)
         if facts_barrier_issue is not None:
             issues.append(facts_barrier_issue)
@@ -3882,6 +3963,9 @@ def run_incremental_planning(
                     "detail": facts_barrier_issue.message,
                 },
             )
+        stopped_after_gate = _maybe_stop_after_gate(PlanGateId.FACTS)
+        if stopped_after_gate is not None:
+            return stopped_after_gate
         # Skip if already valid.
         if _has_valid_patch(state, patch_type):
             state.add_event(
@@ -4405,6 +4489,9 @@ def run_incremental_planning(
                             "detail": facts_gate_issue.message,
                         },
                     )
+                stopped_after_gate = _maybe_stop_after_gate(PlanGateId.FACTS)
+                if stopped_after_gate is not None:
+                    return stopped_after_gate
                 if (policy.mode is PlanLoopMode.CONTROLLED and state.canonical_task_plan is not None
                         and task_order is None and required != ["facts"]):
                     # Mutate the iterated list in-place: the remaining work is
@@ -4432,6 +4519,9 @@ def run_incremental_planning(
                         "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": material_universe_gate_issue.message,
                     },
                 )
+            stopped_after_gate = _maybe_stop_after_gate(PlanGateId.MATERIAL_UNIVERSE)
+            if stopped_after_gate is not None:
+                return stopped_after_gate
             # Placement is evaluated at the first point all of its scoped
             # inputs become valid.  In controlled mode the reordered task list
             # makes this a barrier before axial patch generation; advisory
@@ -4452,6 +4542,9 @@ def run_incremental_planning(
                         "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": placement_gate_issue.message,
                     },
                 )
+            stopped_after_gate = _maybe_stop_after_gate(PlanGateId.PLACEMENT)
+            if stopped_after_gate is not None:
+                return stopped_after_gate
             # Phase-5: Axial-Geometry Gate runs after axial patches become valid.
             axial_geometry_gate_issue = _run_axial_geometry_gate()
             if axial_geometry_gate_issue is not None:
@@ -4469,6 +4562,9 @@ def run_incremental_planning(
                         "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": axial_geometry_gate_issue.message,
                     },
                 )
+            stopped_after_gate = _maybe_stop_after_gate(PlanGateId.AXIAL_GEOMETRY)
+            if stopped_after_gate is not None:
+                return stopped_after_gate
             # Phase 7D: extract benchmark_id from FactsPatch for reference loading.
             _sync_benchmark_from_facts()
 
