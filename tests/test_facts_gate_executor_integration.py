@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from openmc_agent.plan_builder import executor
 from openmc_agent.plan_builder.closed_loop.controller import initialize_plan_loop_state, transition_stage
 from openmc_agent.plan_builder.closed_loop.models import PlanClosedLoopPolicy, PlanGateId, PlanStageStatus
@@ -290,3 +292,146 @@ def test_mu_deterministic_preflight_routes_universe_retry_without_reviewer(
     assert retry_files
     retry_payload = json.loads(retry_files[0].read_text())
     assert retry_payload["owner_patch_types"] == ["universes"]
+
+
+@pytest.mark.parametrize(
+    ("blocked_before_resume", "expected_issue_code"),
+    [
+        (False, "planning.material_universe.contract_preflight_failed"),
+        (True, "planning.material_universe_gate_not_accepted"),
+    ],
+)
+def test_final_barrier_blocks_assembly_when_mu_preflight_fails(
+    monkeypatch,
+    tmp_path,
+    blocked_before_resume,
+    expected_issue_code,
+) -> None:
+    monkeypatch.setattr(executor, "default_patch_task_order", lambda _: [])
+    monkeypatch.setattr(executor, "required_patch_types_for_state", lambda _: [])
+    monkeypatch.setattr(
+        executor,
+        "assemble_state_if_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("assembly must not run before MU gate accepts")
+        ),
+    )
+
+    state = PlanBuildState(state_id="mu-final-barrier", requirement_text="source")
+    state.add_patch(PlanPatchEnvelope(
+        patch_id="facts",
+        patch_type="facts",
+        content={
+            "patch_type": "facts",
+            "model_scope": "single_assembly",
+            "fuel_variant_requirements": [
+                {"variant_id": "region1", "enrichment_wt_percent": 2.11},
+                {"variant_id": "region2", "enrichment_wt_percent": 2.619},
+            ],
+        },
+        status="valid",
+    ))
+    state.add_patch(PlanPatchEnvelope(
+        patch_id="materials",
+        patch_type="materials",
+        content={
+            "patch_type": "materials",
+            "materials": [
+                {
+                    "material_id": "mat_region1",
+                    "name": "Region 1 Fuel",
+                    "role": "fuel",
+                    "density_g_cm3": 10.0,
+                    "source_variant_id": "region1",
+                },
+                {
+                    "material_id": "mat_region2",
+                    "name": "Region 2 Fuel",
+                    "role": "fuel",
+                    "density_g_cm3": 10.0,
+                    "source_variant_id": "region2",
+                },
+                {
+                    "material_id": "coolant",
+                    "name": "coolant",
+                    "role": "coolant",
+                    "density_g_cm3": 1.0,
+                },
+            ],
+        },
+        status="valid",
+    ))
+    state.add_patch(PlanPatchEnvelope(
+        patch_id="universes",
+        patch_type="universes",
+        content={
+            "patch_type": "universes",
+            "universes": [
+                {
+                    "universe_id": "u_region2",
+                    "kind": "fuel_pin",
+                    "metadata": {"fuel_variant_id": "region2"},
+                    "cells": [
+                        {
+                            "id": "fuel_inner",
+                            "role": "fuel",
+                            "material_id": "mat_region1",
+                            "region_kind": "cylinder",
+                            "r_min_cm": 0.0,
+                            "r_max_cm": 0.4,
+                        },
+                        {
+                            "id": "bg",
+                            "role": "background",
+                            "material_id": "coolant",
+                            "region_kind": "background",
+                        },
+                    ],
+                }
+            ],
+        },
+        status="valid",
+    ))
+    policy = PlanClosedLoopPolicy(
+        mode="controlled",
+        gate_enabled={PlanGateId.FACTS: True, PlanGateId.MATERIAL_UNIVERSE: True},
+        material_universe_review_mode="controlled",
+    )
+    initialize_plan_loop_state(state, policy, ["facts", "materials", "universes"])
+    facts_stage = state.plan_loop_stages["plan_gate_facts"]
+    transition_stage(facts_stage, PlanStageStatus.PROPOSING)
+    transition_stage(facts_stage, PlanStageStatus.VALIDATING)
+    transition_stage(facts_stage, PlanStageStatus.REVIEWING)
+    transition_stage(facts_stage, PlanStageStatus.ACCEPTED)
+    if blocked_before_resume:
+        transition_stage(
+            state.plan_loop_stages["plan_gate_material_universe"],
+            PlanStageStatus.BLOCKED,
+        )
+
+    reviewer_called = {"value": False}
+
+    def reviewer(_prompt):
+        reviewer_called["value"] = True
+        raise AssertionError("MU reviewer must be skipped for deterministic blockers")
+
+    result = run_incremental_planning(
+        requirement="source",
+        state=state,
+        llm_client=lambda _prompt: (_ for _ in ()).throw(
+            AssertionError("LLM must not run when all required patches are valid")
+        ),
+        plan_loop_policy=policy,
+        plan_reviewer_client=reviewer,
+        plan_loop_output_dir=tmp_path,
+        universes_generation_mode="off",
+    )
+
+    assert not result.ok
+    assert result.summary["failed_patch_type"] == "universes"
+    assert result.summary["issue_codes"] == [expected_issue_code]
+    assert result.plan_loop_outcome["active_gate_id"] == "material_universe"
+    assert reviewer_called["value"] is False
+    assert result.state.plan_loop_stages[
+        "plan_gate_material_universe"
+    ].status is PlanStageStatus.BLOCKED

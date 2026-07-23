@@ -2882,6 +2882,37 @@ def run_incremental_planning(
     def _material_universe_stage():
         return state.plan_loop_stages.get("plan_gate_material_universe")
 
+    def _require_accepted_material_universe_gate(
+        *,
+        next_patch_type: str | None = None,
+    ) -> IncrementalExecutionIssue | None:
+        """Prevent controlled execution from resuming below a non-accepted MU gate."""
+        if (
+            policy.mode is not PlanLoopMode.CONTROLLED
+            or not policy.gate_enabled.get(PlanGateId.MATERIAL_UNIVERSE, False)
+            or next_patch_type in {"facts", "materials", "universes"}
+        ):
+            return None
+        stage = _material_universe_stage()
+        if stage is not None and stage.status is PlanStageStatus.ACCEPTED:
+            return None
+        if stage is not None and stage.status is PlanStageStatus.PENDING:
+            replay_issue = _run_material_universe_gate(finalize_non_applicable=True)
+            if replay_issue is not None:
+                return replay_issue
+            if stage.status is PlanStageStatus.ACCEPTED:
+                return None
+        status = stage.status.value if stage is not None else "uninitialized"
+        return IncrementalExecutionIssue(
+            code="planning.material_universe_gate_not_accepted",
+            severity="error",
+            message=(
+                "controlled planning requires an accepted Material-Universe Gate "
+                f"before {next_patch_type or 'assembly'} (current status={status})"
+            ),
+            patch_type="universes",
+        )
+
     def _axial_geometry_stage():
         return state.plan_loop_stages.get("plan_gate_axial_geometry")
 
@@ -3986,6 +4017,36 @@ def run_incremental_planning(
         stopped_after_gate = _maybe_stop_after_gate(PlanGateId.FACTS)
         if stopped_after_gate is not None:
             return stopped_after_gate
+        material_universe_barrier_issue = _require_accepted_material_universe_gate(
+            next_patch_type=patch_type
+        )
+        if material_universe_barrier_issue is not None:
+            issues.append(material_universe_barrier_issue)
+            state.add_event(
+                EVENT_INCREMENTAL_EXECUTION_FAILED,
+                "controlled Material-Universe Gate blocked downstream patch generation",
+                {
+                    "issue_code": material_universe_barrier_issue.code,
+                    "next_patch_type": patch_type,
+                },
+            )
+            return IncrementalExecutionResult(
+                ok=False,
+                state=state,
+                issues=issues,
+                summary=_build_failure_summary(
+                    material_universe_barrier_issue.patch_type or "universes",
+                    [material_universe_barrier_issue.code],
+                    0,
+                ),
+                plan_loop_outcome={
+                    "status": "blocked",
+                    "active_gate_id": "material_universe",
+                    "active_stage_id": "plan_gate_material_universe",
+                    "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
+                    "detail": material_universe_barrier_issue.message,
+                },
+            )
         # Skip if already valid.
         if _has_valid_patch(state, patch_type):
             state.add_event(
@@ -4853,9 +4914,9 @@ def run_incremental_planning(
             plan_loop_outcome=_write_advisory_artifacts(),
         )
 
-    # Resume paths may skip every already-valid patch, so give the Placement
-    # Gate one final opportunity before assembly.  The input-hash guard makes
-    # this idempotent.
+    # Resume paths may skip every already-valid patch, so give each gate one
+    # final opportunity before assembly.  The input-hash guards make these
+    # checks idempotent.
     facts_gate_issue = _require_accepted_facts_gate()
     if facts_gate_issue is not None:
         issues.append(facts_gate_issue)
@@ -4872,6 +4933,18 @@ def run_incremental_planning(
                 "additional_llm_calls_used": state.plan_loop_additional_llm_calls,
                 "detail": facts_gate_issue.message,
             },
+        )
+    material_universe_gate_issue = _require_accepted_material_universe_gate()
+    if material_universe_gate_issue is not None:
+        issues.append(material_universe_gate_issue)
+        return IncrementalExecutionResult(
+            ok=False, state=state, issues=issues,
+            summary=_build_failure_summary(
+                material_universe_gate_issue.patch_type or "materials",
+                [material_universe_gate_issue.code],
+                0,
+            ),
+            plan_loop_outcome={"status": "blocked", "active_gate_id": "material_universe", "active_stage_id": "plan_gate_material_universe", "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": material_universe_gate_issue.message},
         )
     placement_gate_issue = _run_placement_gate(finalize_non_applicable=True)
     if placement_gate_issue is not None:

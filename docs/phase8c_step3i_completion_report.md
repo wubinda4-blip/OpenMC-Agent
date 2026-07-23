@@ -1,6 +1,6 @@
 # Phase 8C Step 3I 完成报告
 
-维护日期：2026-07-23
+维护日期：2026-07-24
 
 ## 实现状态
 
@@ -15,6 +15,7 @@
 - Focused tests：`39 passed`（MU preflight、MU issue policy、retry registry parity、MU replay classifier、gate replay fail-closed、assembly catalog schema）。
 - Repository validation：非 OpenMC/非 LLM 全量 pytest `3680 passed, 2 skipped, 392 deselected`；`compileall` 通过；fake workflow benchmark `21/21`；baseline regression diff 无回归。
 - Step 3I v2 canary 到达 Facts accepted 后阻塞于 MU preflight：`u_fuel_region2_2.619/fuel_inner` 声明 Region2 universe 但引用 Region1 material。离线修复让 deterministic blocker 跳过 reviewer 但继续生成 Universes owner retry request，并修正 failed owner 与 campaign aggregate status。Focused tests：`48 passed`；全量非 OpenMC/非 LLM pytest `3684 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
+- Step 3I v3 canary 证明 retry request 已生成，但 MU stage 仍为 blocked；executor resume/final path 未强制 Material-Universe accepted，继续进入 assembly 并暴露 `localized_insert.*` 下游症状。修复后真实 v3 `plan_build_state.json` 离线 replay 停在 `planning.material_universe_gate_not_accepted`，不再进入 assembly。Focused tests：`39 passed`；全量非 OpenMC/非 LLM pytest `3686 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
 
 ## 下一步
 

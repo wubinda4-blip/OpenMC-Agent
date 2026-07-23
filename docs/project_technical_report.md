@@ -1,6 +1,11 @@
 # OpenMC-Agent 技术报告与进度总览
 
-维护日期：2026-07-23
+维护日期：2026-07-24
+
+### 2026-07-24
+
+- **Phase 8C Step 3I MU final barrier hardening**：v3 canary 中 MU deterministic retry 已生成，但 stage 保持 blocked；executor 在 resume/final path 未强制 Material-Universe accepted，继续进入 assembly 并报 `localized_insert.*` 下游症状。新增 MU accepted barrier，禁止 controlled 模式在 MU 未 accepted 时生成 downstream patch 或 assembly。
+- **验证结果**：真实 v3 `plan_build_state.json` 离线 replay 现在秒级停在 `planning.material_universe_gate_not_accepted`（owner `universes`），不再触发 localized insert assembly failure；focused tests `39 passed`。全量非 OpenMC/非 LLM pytest `3686 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
 
 ### 2026-07-23
 
