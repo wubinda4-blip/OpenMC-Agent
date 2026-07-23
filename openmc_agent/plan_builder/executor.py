@@ -3337,34 +3337,16 @@ def run_incremental_planning(
         )
         # Deterministic contract blocking: when the preflight has
         # blocking errors (material-reference, profile-coverage, variant,
-        # localized-insert), skip the reviewer and block immediately.
-        # This avoids wasting LLM calls on inputs that cannot pass review
-        # and prevents the review_failed→review_failed transition error.
+        # localized-insert), skip the reviewer but continue through the
+        # deterministic finding and owner-retry routing below.  This avoids
+        # wasting LLM calls without losing targeted Materials/Universes
+        # regeneration.
         _blocking_preflight = [i for i in preflight.issues if i.get("severity") == "error"]
-        if _blocking_preflight and policy.mode is PlanLoopMode.CONTROLLED:
-            transition_stage(stage, PlanStageStatus.BLOCKED)
-            state.add_event(
-                "planning.material_universe_contract_preflight_failed",
-                "material-universe gate blocked by deterministic preflight errors",
-                {
-                    "blocking_error_count": len(_blocking_preflight),
-                    "error_codes": sorted({i.get("code", "?") for i in _blocking_preflight}),
-                },
-            )
-            return IncrementalExecutionIssue(
-                code="planning.material_universe.contract_preflight_failed",
-                severity="error",
-                message=(
-                    f"material-universe deterministic preflight found "
-                    f"{len(_blocking_preflight)} blocking errors; "
-                    f"codes: {sorted({i.get('code', '?') for i in _blocking_preflight})}"
-                ),
-                patch_type="materials",
-            )
         # Build evidence pack (needed for review even in advisory).
         pack = build_material_universe_evidence_pack(state=state, policy=policy, species_report=species_report, deterministic_issues=preflight.issues)
         artifact_writer._write("material_universe_evidence_pack.json", pack)
-        enter_review_cycle(stage, state)
+        if not (_blocking_preflight and policy.mode is PlanLoopMode.CONTROLLED):
+            enter_review_cycle(stage, state)
         # In advisory mode, run the critic if a reviewer is available; never mutate.
         if policy.mode is PlanLoopMode.ADVISORY:
             if plan_reviewer_client is not None:
@@ -3383,7 +3365,16 @@ def run_incremental_planning(
         # Controlled mode.
         # If deterministic preflight has no blocking issues and no reviewer, accept.
         all_findings: list[Any] = []
-        if plan_reviewer_client is not None:
+        if _blocking_preflight:
+            state.add_event(
+                "planning.material_universe_contract_preflight_failed",
+                "material-universe gate blocked by deterministic preflight errors; reviewer skipped",
+                {
+                    "blocking_error_count": len(_blocking_preflight),
+                    "error_codes": sorted({i.get("code", "?") for i in _blocking_preflight}),
+                },
+            )
+        elif plan_reviewer_client is not None:
             review = (run_material_universe_review_split or run_material_universe_review)(evidence_pack=pack, reviewer_client=plan_reviewer_client, state=state, policy=policy)
             all_findings = list(review.findings)
             state.facts_review_history.append({"material_universe_review": review.model_dump(mode="json")})
@@ -3400,7 +3391,19 @@ def run_incremental_planning(
             confidence=1.0,
             affected_patch_types=[item.get("owner_patch_type", "materials")] if item.get("owner_patch_type") else ["materials", "universes"],
             affected_json_paths=list(item.get("affected_json_paths", []) or []),
-            metadata={key: item[key] for key in ("required_ids", "requirement_id", "universe_id", "material_id") if key in item},
+            metadata={
+                key: item[key]
+                for key in (
+                    "required_ids",
+                    "requirement_id",
+                    "universe_id",
+                    "cell_id",
+                    "material_id",
+                    "expected_variant_id",
+                    "actual_variant_id",
+                )
+                if key in item
+            },
         ) for item in preflight.issues]
         # Phase 8A Step 5: append inventory-driven preflight findings.
         inventory_det_findings = [_Finding(gate_id=PlanGateId.MATERIAL_UNIVERSE, code=str(item["code"]), severity=_Sev(item.get("severity", "error")), category="cross_patch_mismatch", message=str(item.get("message", "")), confidence=1.0, affected_patch_types=[item.get("owner_patch_type", "materials")] if item.get("owner_patch_type") else ["materials", "universes"]) for item in inventory_preflight_issues]
@@ -3475,7 +3478,24 @@ def run_incremental_planning(
                 artifact_writer._write(f"material_universe_retry_request_{typed.request_id[:12]}.json", typed)
                 state.add_event("planning.material_universe_retry_requested", "material-universe blocking finding routed to Phase-3B retry", {"request_id": typed.request_id, "owner_patch_types": typed.owner_patch_types})
         transition_stage(stage, PlanStageStatus.BLOCKED)
-        return IncrementalExecutionIssue(code="planning.material_universe_gate_blocked", severity="error", message=f"material-universe gate blocked by {len(error_findings)} finding(s)", patch_type="materials")
+        owner_patch_types = [
+            owner
+            for finding in error_findings
+            for owner in finding.affected_patch_types
+            if owner in {"facts", "materials", "universes"}
+        ]
+        failed_owner = owner_patch_types[0] if owner_patch_types else "materials"
+        code = (
+            "planning.material_universe.contract_preflight_failed"
+            if _blocking_preflight
+            else "planning.material_universe_gate_blocked"
+        )
+        return IncrementalExecutionIssue(
+            code=code,
+            severity="error",
+            message=f"material-universe gate blocked by {len(error_findings)} finding(s)",
+            patch_type=failed_owner,
+        )
 
     def _run_placement_gate(
         *, finalize_non_applicable: bool = False,
@@ -4513,7 +4533,11 @@ def run_incremental_planning(
                 )
                 return IncrementalExecutionResult(
                     ok=False, state=state, issues=issues,
-                    summary=_build_failure_summary("materials", [material_universe_gate_issue.code], len(result.attempts)),
+                    summary=_build_failure_summary(
+                        material_universe_gate_issue.patch_type or "materials",
+                        [material_universe_gate_issue.code],
+                        len(result.attempts),
+                    ),
                     plan_loop_outcome={
                         "status": "blocked", "active_gate_id": "material_universe", "active_stage_id": "plan_gate_material_universe",
                         "additional_llm_calls_used": state.plan_loop_additional_llm_calls, "detail": material_universe_gate_issue.message,

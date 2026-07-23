@@ -14,7 +14,8 @@
 - 真实 `assembly_catalog_attempt_1_raw.txt` 在新 schema 下可 parse，`validate_patch` 通过；此前 schema failure 的 structured assumptions 已规范化为字符串。
 - Focused tests：`39 passed`（MU preflight、MU issue policy、retry registry parity、MU replay classifier、gate replay fail-closed、assembly catalog schema）。
 - Repository validation：非 OpenMC/非 LLM 全量 pytest `3680 passed, 2 skipped, 392 deselected`；`compileall` 通过；fake workflow benchmark `21/21`；baseline regression diff 无回归。
+- Step 3I v2 canary 到达 Facts accepted 后阻塞于 MU preflight：`u_fuel_region2_2.619/fuel_inner` 声明 Region2 universe 但引用 Region1 material。离线修复让 deterministic blocker 跳过 reviewer 但继续生成 Universes owner retry request，并修正 failed owner 与 campaign aggregate status。Focused tests：`48 passed`；全量非 OpenMC/非 LLM pytest `3684 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
 
 ## 下一步
 
-重跑 MU stop-after canary。预期新的 MU preflight 会在 reviewer 前阻塞旧错误，并由 Universes owner retry/regeneration 修复；只有 MU 再次 accepted 后，才重新提取下游 Placement/Axial/Assembled bundles 并进入 target-only live-review。
+下一次不直接重跑完整链路；优先 resume v2 checkpoint，复用 Facts accepted，并验证 MU deterministic blocker 是否产出 Universes retry request。只有 Universes owner retry/regeneration 离线闭合后，才继续 target MU canary；MU accepted 后再提取下游 Placement/Axial/Assembled bundles。

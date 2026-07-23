@@ -1966,6 +1966,13 @@ def run_real_canary_campaign(
         if campaign.fail_fast and result.status == "infrastructure_failure":
             break
 
+    if manifest.get("aggregate_status") == "CAMPAIGN_RUNNING":
+        if manifest["completed_runs"] < campaign.runs:
+            manifest["aggregate_status"] = "CAMPAIGN_INCOMPLETE"
+        elif manifest["successful_runs"] == campaign.runs:
+            manifest["aggregate_status"] = "CAMPAIGN_PASSED"
+        else:
+            manifest["aggregate_status"] = "CAMPAIGN_FAILED"
     manifest["end_time"] = datetime.now(timezone.utc).isoformat()
     _write_json_atomic(output_dir / "campaign_results.json", results)
     _write_json_atomic(output_dir / "campaign_manifest.json", manifest)

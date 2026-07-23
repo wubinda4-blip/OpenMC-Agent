@@ -4,7 +4,10 @@ import pytest
 
 from openmc_agent.real_campaign_harness import (
     CanaryCampaignConfig,
+    ProviderEnvironmentStatus,
+    RealCampaignRunResult,
     RealCampaignCaseSpec,
+    run_real_canary_campaign,
     _validate_stage,
 )
 
@@ -108,3 +111,55 @@ def test_planning_stage_does_not_require_openmc_environment(monkeypatch):
     # LLM environment is OK; OpenMC env may be missing but that must not
     # block a planning canary.
     assert status.llm_environment_available is True
+
+
+def test_completed_failed_campaign_updates_final_aggregate_status(tmp_path, monkeypatch):
+    import openmc_agent.real_campaign_harness as harness
+
+    monkeypatch.setattr(
+        harness,
+        "detect_provider_environment",
+        lambda _model: ProviderEnvironmentStatus(
+            provider="zhipu",
+            model="zhipu:test",
+            api_key_env="ZHIPUAI_API_KEY",
+            api_key_present=True,
+            openmc_library_present=True,
+            openmc_cross_sections_present=True,
+            openmc_cross_sections_path="/tmp/cross_sections.xml",
+            openmc_version="0.0",
+            endpoint="https://example.invalid",
+        ),
+    )
+    monkeypatch.setattr(harness, "_git_sha", lambda: "git")
+
+    def failed_once(*_args, **_kwargs):
+        return RealCampaignRunResult(
+            run_id="run_001",
+            status="completed",
+            final_disposition="BLOCKED_BY_GATE:material_universe",
+            started_at="2026-07-23T00:00:00+00:00",
+            completed_at="2026-07-23T00:00:01+00:00",
+            duration_s=1.0,
+            git_sha="git",
+            input_sha="",
+            configuration_hash="cfg",
+            provider="zhipu",
+            model="zhipu:test",
+            real_llm_verified=True,
+            real_openmc_verified=False,
+            llm_call_count=0,
+        )
+
+    monkeypatch.setattr(harness, "run_real_canary_once", failed_once)
+
+    campaign = CanaryCampaignConfig(
+        case=_case(),
+        runs=1,
+        model="zhipu:test",
+    )
+    manifest = run_real_canary_campaign(tmp_path, campaign)
+
+    assert manifest["completed_runs"] == 1
+    assert manifest["failed_runs"] == 1
+    assert manifest["aggregate_status"] == "CAMPAIGN_FAILED"

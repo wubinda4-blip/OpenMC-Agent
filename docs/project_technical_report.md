@@ -4,6 +4,9 @@
 
 ### 2026-07-23
 
+- **Phase 8C Step 3I MU deterministic retry routing closure**：v2 canary 已到 Facts accepted，但 MU preflight 阻塞 `u_fuel_region2_2.619/fuel_inner` 误引用 Region1 fuel material；修复 executor 让 deterministic MU blocker 跳过 reviewer 但继续进入 owner retry routing，并让 `universe_id` 写入 retry consumer/required target。修正 failed owner summary 与 completed-failed campaign 仍显示 `CAMPAIGN_RUNNING` 的终态落盘问题。
+- **验证结果**：真实 v2 `plan_build_state.json` 离线复现唯一 blocker，并路由到 `owner_patch_types=['universes']`、target `u_fuel_region2_2.619`；focused tests `48 passed`。全量非 OpenMC/非 LLM pytest `3684 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
+
 - **Phase 8C Step 3I stop-after run config 回归修复**：修复 `CanaryCampaignConfig.stop_after_gate` 未传入 `CanaryRunConfig` 导致真实 canary 启动时报 `AttributeError: stop_after_gate` 的参数接线缺口；CLI 与 policy 行为不变。
 - **验证结果**：stop-after/stage focused tests `22 passed`；全量非 OpenMC/非 LLM pytest `3681 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
 

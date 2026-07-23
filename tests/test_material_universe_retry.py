@@ -3,6 +3,7 @@ from __future__ import annotations
 from openmc_agent.plan_builder.closed_loop.retry_owner_policy import retry_owner_policy
 from openmc_agent.plan_builder.closed_loop.retry_controller import normalize_retry_request
 from openmc_agent.plan_builder.closed_loop.retry_models import RetryTriggerOrigin
+from openmc_agent.plan_builder.closed_loop.models import PlanGateId
 from openmc_agent.plan_builder.state import PlanBuildState
 
 
@@ -48,6 +49,29 @@ def test_missing_universe_retry_preserves_exact_target_id():
         }, state=state, origin=RetryTriggerOrigin.MATERIAL_UNIVERSE_GATE,
     )
     assert request is not None
+    assert request.gate_id is PlanGateId.MATERIAL_UNIVERSE
     assert request.owner_patch_types == ["universes"]
     assert request.targets[0].required_ids == ["u_pyrex_poison"]
     assert request.targets[0].affected_json_paths == ["/universes/u_pyrex_poison"]
+
+
+def test_fuel_variant_material_mismatch_routes_to_universes_owner():
+    state = PlanBuildState(state_id="mu-retry", requirement_text="r")
+    request = normalize_retry_request(
+        {
+            "code": "material_universe.fuel_variant_material_mismatch",
+            "issue_codes": ["material_universe.fuel_variant_material_mismatch"],
+            "universe_id": "u_fuel_region2",
+            "material_id": "mat_region1",
+            "affected_json_paths": ["/universes/u_fuel_region2/cells/0/material_id"],
+        },
+        state=state,
+        origin=RetryTriggerOrigin.MATERIAL_UNIVERSE_GATE,
+    )
+    assert request is not None
+    assert request.owner_patch_types == ["universes"]
+    assert request.consumer_ids == ["u_fuel_region2"]
+    assert request.targets[0].required_ids == ["u_fuel_region2"]
+    assert request.targets[0].affected_json_paths == [
+        "/universes/u_fuel_region2/cells/0/material_id"
+    ]

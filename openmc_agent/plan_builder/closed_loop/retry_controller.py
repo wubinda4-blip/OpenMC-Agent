@@ -105,11 +105,18 @@ def normalize_retry_request(
 
     assert isinstance(policy, RetryOwnerPolicy)
     owner_hashes = {owner: _patch_hash(state, owner) for owner in policy.owner_patch_types if owner != "planning_task_plan"}
+    required_ids = [str(value) for value in data.get("required_ids", [])]
+    universe_id = data.get("universe_id")
+    if not required_ids and "universes" in policy.owner_patch_types and universe_id:
+        required_ids = [str(universe_id)]
+    consumer_ids = [str(value) for value in data.get("consumer_ids", [])]
+    if not consumer_ids and universe_id:
+        consumer_ids = [str(universe_id)]
     targets = [
         RetryTargetSpec(
             patch_type=owner,
             current_patch_hash=owner_hashes.get(owner),
-            required_ids=[str(value) for value in data.get("required_ids", [])],
+            required_ids=required_ids,
             affected_json_paths=[str(value) for value in data.get("affected_json_paths", [])],
             protected_json_paths=policy.protected_json_paths,
             required_properties=[str(value) for value in ([data.get("required_property")] if data.get("required_property") else data.get("required_properties", []))],
@@ -121,7 +128,20 @@ def normalize_retry_request(
     ]
     request = ExecutablePlanRetryRequest(
         request_id=f"retry_{uuid4().hex[:16]}", protocol_version=PLAN_CLOSED_LOOP_CONTRACT_VERSION,
-        origin=origin, gate_id=(PlanGateId.PLACEMENT if origin is RetryTriggerOrigin.PLACEMENT_GATE else (PlanGateId.FACTS if origin is RetryTriggerOrigin.FACTS_GATE else None)),
+        origin=origin,
+        gate_id=(
+            PlanGateId.PLACEMENT
+            if origin is RetryTriggerOrigin.PLACEMENT_GATE
+            else (
+                PlanGateId.FACTS
+                if origin is RetryTriggerOrigin.FACTS_GATE
+                else (
+                    PlanGateId.MATERIAL_UNIVERSE
+                    if origin is RetryTriggerOrigin.MATERIAL_UNIVERSE_GATE
+                    else None
+                )
+            )
+        ),
         action=policy.preferred_action, owner_patch_types=policy.owner_patch_types, targets=targets,
         source_finding_ids=[str(value) for value in data.get("finding_ids", data.get("source_finding_ids", []))],
         source_issue_codes=codes, evidence_refs=[str(value) for value in data.get("evidence_refs", [])],
@@ -131,7 +151,7 @@ def normalize_retry_request(
         priority={"facts": 10, "planning_task_plan": 30, "materials": 20, "universes": 30}.get(policy.owner_patch_types[0], 60),
         requires_human=bool(data.get("requires_human", False)), repairable=policy.preferred_action is not PlanRetryAction.FAIL_CLOSED,
         created_round=len(state.plan_retry_rounds), owner_patch_hashes=owner_hashes,
-        consumer_ids=[str(value) for value in data.get("consumer_ids", [])],
+        consumer_ids=consumer_ids,
         metadata={"legacy_payload": {key: value for key, value in data.items() if key not in {"message", "reason"}}},
     )
     return _idempotent_register(request, state)
