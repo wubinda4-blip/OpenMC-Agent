@@ -4,6 +4,9 @@
 
 ### 2026-07-23
 
+- **Phase 8C Step 3I stop-after run config 回归修复**：修复 `CanaryCampaignConfig.stop_after_gate` 未传入 `CanaryRunConfig` 导致真实 canary 启动时报 `AttributeError: stop_after_gate` 的参数接线缺口；CLI 与 policy 行为不变。
+- **验证结果**：stop-after/stage focused tests `22 passed`；全量非 OpenMC/非 LLM pytest `3681 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
+
 - **Phase 8C Step 3I MU accepted artifact audit + variant binding preflight**：按 MU accepted 后下游计划提取 bundles 时发现当前 checkpoint 尚无 Placement/Axial/Assembled boundary；继续审计 MU 后 `assembly_catalog` failure，定位为 upstream Universes patch 中 fuel universe `metadata.fuel_variant_id=region1_2.11wt` 但 fuel cells 引用 `source_variant_id=region2_2.619wt` 的材料。修复 MU binding view 读取 universe metadata，并新增 deterministic `material_universe.fuel_variant_material_mismatch`，owner=universes。
 - **验证结果**：真实 Step 3H `plan_build_state.json` 离线重跑 MU preflight 现在 fail-closed，blocking 仅 1 个：`fuel_variant_material_mismatch`，指向 `u_fuel_region1_2.11wt/fuel_inner`，expected `region1_2.11wt`、actual `region2_2.619wt`。Focused tests `39 passed`；全量非 OpenMC/非 LLM pytest `3680 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过；真实 `assembly_catalog_attempt_1_raw` schema+validator 可通过。
 - **风险/边界**：本轮撤回“可直接进入 downstream gate live-review”的实现路径；必须先重跑 MU stop-after canary，让 Universes 由 owner retry/regeneration 生成正确 fuel-material binding。未提交原始 run/prompt/raw provider output。

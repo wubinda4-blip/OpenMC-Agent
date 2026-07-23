@@ -15,7 +15,12 @@ from openmc_agent.plan_builder.closed_loop.policy import (
     enabled_gates_through,
 )
 from openmc_agent.plan_builder.closed_loop.models import PlanGateId
-from openmc_agent.real_campaign_harness import make_five_gate_controlled_policy
+from openmc_agent.real_campaign_harness import (
+    CanaryCampaignConfig,
+    CanaryRunConfig,
+    RealCampaignCaseSpec,
+    make_five_gate_controlled_policy,
+)
 
 
 def test_facts_stop_enables_only_facts() -> None:
@@ -91,6 +96,35 @@ def test_harness_policy_records_stop_target() -> None:
         stop_after_gate="material_universe",
     )
     assert policy.stop_after_gate is PlanGateId.MATERIAL_UNIVERSE
+
+
+def test_run_config_carries_campaign_stop_after_gate() -> None:
+    case = RealCampaignCaseSpec(
+        case_id="x",
+        input_path="/tmp/x.md",
+        operating_state="",
+        benchmark_label="X",
+        model="fake:test",
+        output_dir="/tmp/out",
+    )
+    campaign = CanaryCampaignConfig(
+        case=case,
+        runs=1,
+        model="fake:test",
+        stop_after_gate="material_universe",
+    )
+    run_config = CanaryRunConfig(
+        run_id="run_001",
+        run_index=1,
+        case=campaign.case,
+        policy=object(),
+        env_status=object(),
+        fingerprint=object(),
+        output_dir="/tmp/out/runs/run_001",
+        model=campaign.model,
+        stop_after_gate=campaign.stop_after_gate,
+    )
+    assert run_config.stop_after_gate == "material_universe"
 
 
 def test_graph_router_stops_on_incremental_stop_after_gate() -> None:

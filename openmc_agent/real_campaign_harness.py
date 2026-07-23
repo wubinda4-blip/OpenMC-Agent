@@ -1053,6 +1053,7 @@ class CanaryRunConfig:
     max_llm_calls: int = 36
     expected_patch_count: int = 8
     expected_universe_count: int = 0
+    stop_after_gate: str | None = None
     human_answers: dict[str, Any] = field(default_factory=dict)
     human_answer_hash: str = ""
     acceptance_callback: Callable[[Any], tuple[bool, list[str]]] | None = None
@@ -1907,6 +1908,7 @@ def run_real_canary_campaign(
             max_llm_calls=effective_max_calls,
             expected_patch_count=campaign.expected_patch_count,
             expected_universe_count=campaign.expected_universe_count,
+            stop_after_gate=campaign.stop_after_gate,
             human_answers=dict(campaign.human_answers),
             human_answer_hash=campaign.human_answer_hash,
             acceptance_callback=campaign.acceptance_callback,
