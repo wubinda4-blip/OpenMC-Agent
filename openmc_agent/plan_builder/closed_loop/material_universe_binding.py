@@ -132,16 +132,28 @@ def _universe_record(universe: Any, required_by: dict[str, list[str]]) -> Univer
     material_ids = sorted({cell.material_id for cell in cells if cell.material_id})
     roles = [cell.role for cell in cells]
     background = next((cell.id for cell in cells if cell.region_kind == "background"), None)
+    metadata = getattr(universe, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
     return UniverseRecord(
         universe_id=universe.universe_id,
         kind=universe.kind,
-        fuel_variant_id=getattr(universe, "fuel_variant_id", None),
+        fuel_variant_id=getattr(universe, "fuel_variant_id", None) or metadata.get("fuel_variant_id"),
         cell_count=len(cells),
         material_ids=material_ids,
         cell_roles=roles,
         background_cell_id=background,
         required_by_source=list(required_by.get(universe.universe_id, [])),
+        metadata=dict(metadata),
     )
+
+
+def _declared_fuel_variant_id(universe: Any) -> str | None:
+    metadata = getattr(universe, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    value = getattr(universe, "fuel_variant_id", None) or metadata.get("fuel_variant_id")
+    return str(value) if value else None
 
 
 # Reactor-neutral role compatibility.  A material role is compatible with a
@@ -269,17 +281,24 @@ def build_material_universe_binding_view(*, state: Any, species_report: dict[str
     # Fuel variant bindings.
     variant_bindings: list[FuelVariantBinding] = []
     if facts:
+        fuel_universes = [u for u in (universes.universes if universes else []) if u.kind == "fuel_pin"]
+        has_declared_fuel_variants = any(_declared_fuel_variant_id(u) for u in fuel_universes)
         for variant in facts.fuel_variant_requirements:
             material_id = variant_to_material.get(variant.variant_id)
             active_fuel_universe_ids: list[str] = []
             active_fuel_cell_ids: list[str] = []
             actual_variant_ids: list[str] = []
-            for u in universe_records:
-                if u.kind == "fuel_pin":
-                    active_fuel_universe_ids.append(u.universe_id)
-                    active_fuel_cell_ids.extend(f"{u.universe_id}:{cid}" for cid in _fuel_cell_ids(universe_by_id.get(u.universe_id)))
-                    if u.fuel_variant_id:
-                        actual_variant_ids.append(u.fuel_variant_id)
+            for universe in fuel_universes:
+                declared_variant = _declared_fuel_variant_id(universe)
+                if has_declared_fuel_variants and declared_variant != variant.variant_id:
+                    continue
+                active_fuel_universe_ids.append(universe.universe_id)
+                active_fuel_cell_ids.extend(
+                    f"{universe.universe_id}:{cid}"
+                    for cid in _fuel_cell_ids(universe)
+                )
+                if declared_variant:
+                    actual_variant_ids.append(declared_variant)
             collapsed = sorted({v for v in actual_variant_ids if v != variant.variant_id})
             status_val = "pass"
             issue_codes: list[str] = []

@@ -722,15 +722,33 @@ def run_gate_replay(
         bundle_hash=bundle.bundle_hash,
     )
 
+    def _append_deterministic_preflight_issues() -> tuple[bool, list[dict[str, Any]]]:
+        deterministic_issues = _run_deterministic_preflight(bundle)
+        blocking = [
+            item for item in deterministic_issues
+            if item.get("severity", "error") == "error"
+        ]
+        for item in blocking:
+            issues.append(
+                GateReplayIssue(
+                    code="gate_replay.deterministic_preflight",
+                    message=(
+                        f"{item.get('code', 'preflight')}: "
+                        f"{item.get('message', 'preflight error')}"
+                    ),
+                    path=str(item.get("row_key", "")),
+                )
+            )
+        return (not blocking, deterministic_issues)
+
     # Preflight stops here — no LLM, no recorded-output replay.
     if mode is GateReplayMode.PREFLIGHT:
         if state_ok:
             try:
-                deterministic_issues = _run_deterministic_preflight(bundle)
-                for item in deterministic_issues:
-                    if item.get("severity", "error") == "error":
-                        issues.append(GateReplayIssue(code="gate_replay.deterministic_preflight", message=f"{item.get('code', 'preflight')}: {item.get('message', 'preflight error')}", path=str(item.get("row_key", ""))))
-                state_complete = state_complete and not any(item.get("severity", "error") == "error" for item in deterministic_issues)
+                deterministic_ok, _deterministic_issues = (
+                    _append_deterministic_preflight_issues()
+                )
+                state_complete = state_complete and deterministic_ok
                 result.state_complete = state_complete
             except Exception as exc:
                 state_complete = False
@@ -750,6 +768,32 @@ def run_gate_replay(
     if not (upstream_ok and hashes_ok and state_ok and sensitive_ok):
         result.ok = False
         result.summary = "preflight failed; replay aborted"
+        return result
+
+    try:
+        deterministic_ok, _deterministic_issues = (
+            _append_deterministic_preflight_issues()
+        )
+    except Exception as exc:
+        result.ok = False
+        result.state_complete = False
+        result.issues.append(
+            GateReplayIssue(
+                code="gate_replay.state_reconstruction_failed",
+                message=f"state reconstruction failed: {type(exc).__name__}",
+            )
+        )
+        result.summary = "deterministic preflight failed; replay aborted"
+        return result
+    if not deterministic_ok:
+        result.ok = False
+        result.state_complete = False
+        result.issues = issues
+        result.summary = "deterministic preflight failed; replay aborted"
+        result.sanitized_diagnostics = {
+            "deterministic_issue_count": len(issues),
+            "validation_issue_codes": [item.code for item in issues],
+        }
         return result
 
     if mode is GateReplayMode.RECORDED_REVIEW:

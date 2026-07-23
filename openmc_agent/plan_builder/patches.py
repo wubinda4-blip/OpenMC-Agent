@@ -15,6 +15,7 @@ No OpenMC, no renderer, no LLM dependencies.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -83,6 +84,54 @@ class _PatchBase(AgentBaseModel):
             elif origin is dict:
                 data[fname] = {}
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_assumption_items(cls, data: Any) -> Any:
+        """Normalize LLM-emitted structured assumptions to strings.
+
+        Patch schemas deliberately keep ``assumptions`` lightweight:
+        they are audit notes, not typed contracts.  Real reviewers and
+        patch generators sometimes emit objects such as
+        ``{"assumption_id": "...", "statement": "..."}``; rejecting the
+        whole patch for that recoverable shape wastes a retry and can push
+        large downstream patches into truncation.  Preserve the information
+        as a compact string while keeping the public schema unchanged.
+        """
+        if not isinstance(data, dict) or "assumptions" not in data:
+            return data
+        raw = data.get("assumptions")
+        if raw is None:
+            data["assumptions"] = []
+            return data
+        if not isinstance(raw, list):
+            data["assumptions"] = [_stringify_assumption(raw)]
+            return data
+        data["assumptions"] = [_stringify_assumption(item) for item in raw]
+        return data
+
+
+def _stringify_assumption(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        ident = item.get("assumption_id") or item.get("id") or item.get("key")
+        text = (
+            item.get("statement")
+            or item.get("assumption")
+            or item.get("note")
+            or item.get("message")
+            or item.get("description")
+            or item.get("rationale")
+        )
+        if ident and text:
+            return f"{ident}: {text}"
+        if text:
+            return str(text)
+        if ident:
+            return str(ident)
+        return json.dumps(item, sort_keys=True, ensure_ascii=False)
+    return str(item)
 
 
 # ---------------------------------------------------------------------------

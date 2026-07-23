@@ -92,10 +92,15 @@ def test_mu_fixture_loads_and_preflights_clean() -> None:
     assert result.ok, [i.message for i in result.issues]
 
 
-def test_mu_v13_finding_fixture_preflights_clean() -> None:
+def test_mu_v13_finding_fixture_preflight_catches_variant_material_mismatch() -> None:
     bundle = _mu_v13_findings_bundle()
     result = run_gate_replay(bundle, mode=GateReplayMode.PREFLIGHT)
-    assert result.ok, [i.message for i in result.issues]
+    assert not result.ok
+    assert any(
+        i.code == "gate_replay.deterministic_preflight"
+        and "material_universe.fuel_variant_material_mismatch" in i.message
+        for i in result.issues
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +245,8 @@ def test_mu_old_error_mutation_now_clean_in_recorded_review() -> None:
 
 def test_mu_v13_recorded_findings_close_to_nonblocking_diagnostics() -> None:
     """The sanitized v13 recorded-review fixture keeps the old MU finding
-    target but current normalization closes stale/deterministic blockers.
+    target.  Current deterministic preflight now catches the remaining
+    fuel variant/material mismatch before reviewer replay.
     """
     bundle = _mu_v13_findings_bundle()
     recorded_codes = {
@@ -259,41 +265,30 @@ def test_mu_v13_recorded_findings_close_to_nonblocking_diagnostics() -> None:
 
     result = run_gate_replay(bundle, mode=GateReplayMode.RECORDED_REVIEW)
 
-    assert result.ok, [i.message for i in result.issues]
-    assert result.recorded_review_replayed
-    assert result.review_output is not None
-    diagnostics = result.review_output["finding_diagnostics"]
-    assert diagnostics["coverage_complete"] is True
-    assert diagnostics["blocking_finding_count"] == 0
-    assert diagnostics["rejected_summary"] == {
-        "material_universe_review.repeated_deterministic_issue": 2,
-        "material_universe_review.stale_finding_closed": 1,
-        "material_universe_review.over_specific_role_contract": 1,
-    }
-    remaining = {
-        item["code"]: item["classification"]
-        for item in diagnostics["classification_summary"]
-    }
-    assert remaining == {
-        "material_universe.material_role_conflict": "reviewer_false_positive",
-        "material_universe.material_count_role_count_mismatch": "binding_metadata_gap",
-    }
+    assert not result.ok
+    assert not result.recorded_review_replayed
+    assert any(
+        i.code == "gate_replay.deterministic_preflight"
+        and "material_universe.fuel_variant_material_mismatch" in i.message
+        for i in result.issues
+    )
 
 
 def test_mu_recorded_review_rejects_scope_mismatch() -> None:
-    bundle = _mu_v13_findings_bundle()
+    bundle = _mu_bundle()
     reviews = [dict(item) for item in bundle.recorded_reviews]
     # Put a universes-only row into the materials scope.  Replay must reject
     # the finding instead of misrouting it to Materials.
     reviews[0] = dict(reviews[0])
+    reviews[0]["scope"] = "materials"
     reviews[0]["findings"] = [
         {
             "code": "material_universe.material_role_conflict",
             "severity": "warning",
             "category": "cross_patch_mismatch",
             "message": "scope mismatch mutation",
-            "evidence_refs": ["U024"],
-            "contract_row_ids": ["rums:u_fuel_region_1_2p11"],
+            "evidence_refs": ["U004"],
+            "contract_row_ids": ["rums:u_fuel"],
             "affected_json_paths": ["records[0]"],
             "repairable_by_llm": False,
             "requires_human": False,

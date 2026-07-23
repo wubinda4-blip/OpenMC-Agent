@@ -99,6 +99,36 @@ def test_parse_patch_content_assembly_catalog():
     assert patch.assembly_types[0].pin_map.lattice_size == (3, 3)
 
 
+def test_assembly_catalog_structured_assumptions_are_normalized():
+    content = {
+        "patch_type": "assembly_catalog",
+        "assembly_types": [
+            {
+                "assembly_type_id": "type_a",
+                "pin_map": {
+                    "lattice_size": [3, 3],
+                    "default_universe_id": "fuel",
+                },
+                "assumptions": [
+                    {"assumption_id": "atype-note", "statement": "uses accepted fuel variant binding"},
+                ],
+            },
+        ],
+        "assumptions": [
+            {
+                "assumption_id": "catalog-note",
+                "note": "assembly type count comes from accepted Facts",
+                "evidence_refs": ["F001"],
+            }
+        ],
+    }
+
+    patch = parse_patch_content("assembly_catalog", content)
+
+    assert patch.assumptions == ["catalog-note: assembly type count comes from accepted Facts"]
+    assert patch.assembly_types[0].assumptions == ["atype-note: uses accepted fuel variant binding"]
+
+
 def test_assembly_catalog_multiplicity_hint():
     atype = AssemblyTypePatchItem(
         assembly_type_id="type_a",

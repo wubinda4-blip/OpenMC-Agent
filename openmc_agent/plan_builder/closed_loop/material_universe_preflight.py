@@ -49,6 +49,15 @@ def _universe_metadata(universe: Any) -> dict[str, Any]:
     return {}
 
 
+def _universe_fuel_variant_id(universe: Any) -> str | None:
+    direct = getattr(universe, "fuel_variant_id", None)
+    if direct:
+        return str(direct)
+    meta = _universe_metadata(universe)
+    value = meta.get("fuel_variant_id")
+    return str(value) if value else None
+
+
 def _metadata_covers_localized_insert(meta: dict[str, Any], req_id: str) -> bool:
     if not req_id:
         return False
@@ -140,6 +149,11 @@ def _collect_universes_issues(universes_patch: Any, view: MaterialUniverseBindin
     issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     material_ids = {m.material_id for m in view.material_records}
+    material_variant_by_id = {
+        m.material_id: m.source_variant_id
+        for m in view.material_records
+        if m.source_variant_id
+    }
     for universe in universes_patch.universes:
         uid = universe.universe_id
         if uid in seen_ids:
@@ -158,6 +172,30 @@ def _collect_universes_issues(universes_patch: Any, view: MaterialUniverseBindin
             seen_cell_ids.add(cell.id)
             if cell.material_id and cell.material_id not in material_ids:
                 issues.append(_issue("material_universe.material_reference_missing", f"universe {uid} cell {cell.id} references unknown material {cell.material_id}", row_kind="material_to_cell_binding", row_key=f"{uid}:{cell.id}", universe_id=uid, cell_id=cell.id, material_id=cell.material_id))
+            declared_variant = _universe_fuel_variant_id(universe)
+            material_variant = material_variant_by_id.get(cell.material_id or "")
+            if (
+                universe.kind == "fuel_pin"
+                and cell.role == "fuel"
+                and declared_variant
+                and material_variant
+                and material_variant != declared_variant
+            ):
+                issues.append(_issue(
+                    "material_universe.fuel_variant_material_mismatch",
+                    (
+                        f"fuel universe {uid} declares fuel_variant_id={declared_variant!r} "
+                        f"but fuel cell {cell.id!r} references material variant {material_variant!r}"
+                    ),
+                    row_kind="fuel_variant_identity",
+                    row_key=uid,
+                    universe_id=uid,
+                    cell_id=cell.id,
+                    material_id=cell.material_id,
+                    expected_variant_id=declared_variant,
+                    actual_variant_id=material_variant,
+                    owner_patch_type="universes",
+                ))
             if cell.r_min_cm is not None and cell.r_max_cm is not None:
                 radii.append((cell.id, cell.r_min_cm, cell.r_max_cm))
                 if cell.r_min_cm > cell.r_max_cm:
@@ -297,7 +335,8 @@ def _collect_required_universe_issues(state: Any, universes_patch: Any, view: Ma
     for universe in universes_patch.universes:
         if universe.kind != "fuel_pin":
             continue
-        variants = {str(universe.fuel_variant_id)} if getattr(universe, "fuel_variant_id", None) else set()
+        fuel_variant_id = _universe_fuel_variant_id(universe)
+        variants = {fuel_variant_id} if fuel_variant_id else set()
         cell_variants = {str(cell.source_variant_id) for cell in universe.cells if getattr(cell, "source_variant_id", None)}
         variants |= cell_variants
         if len(variants) > 1:

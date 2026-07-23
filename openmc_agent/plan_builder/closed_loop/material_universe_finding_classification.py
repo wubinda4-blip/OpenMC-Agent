@@ -39,6 +39,7 @@ class MaterialUniverseFindingClassification(AgentBaseModel):
 _DETERMINISTIC_PREFLIGHT_CODES = {
     "material_universe.background_missing",
     "material_universe.enrichment_contract_mismatch",
+    "material_universe.fuel_variant_material_mismatch",
     "material_universe.invalid_composition_sum_for_basis",
 }
 

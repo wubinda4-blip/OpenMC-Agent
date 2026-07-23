@@ -301,13 +301,17 @@ def test_axial_recovery_does_not_reuse_blocked_output() -> None:
     blocked = _mutate_layer_overlap(_axial_bundle())
     first = run_gate_replay(blocked, mode=GateReplayMode.RECORDED_REVIEW)
     assert not first.ok
-    assert first.review_output is not None
-    blocked_output = first.review_output
+    assert first.recorded_review_replayed is False
+    assert first.review_output is None
+    assert any(
+        issue.code == "gate_replay.deterministic_preflight"
+        for issue in first.issues
+    )
     recovered = _fix_layer_overlap(blocked)
     second = run_gate_replay(recovered, mode=GateReplayMode.RECORDED_REVIEW)
     assert second.ok
     assert second.review_output is not None
-    assert second.review_output is not blocked_output
+    assert second.recorded_review_replayed
 
 
 def test_axial_rejected_finding_fail_closed_in_recorded_review() -> None:

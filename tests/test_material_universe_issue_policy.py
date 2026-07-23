@@ -15,6 +15,11 @@ def test_universes_owner_for_unknown_reference() -> None:
     assert owner["owner_patch_types"] == ["universes"]
 
 
+def test_universes_owner_for_fuel_variant_material_mismatch() -> None:
+    owner = material_universe_issue_owner("material_universe.fuel_variant_material_mismatch")
+    assert owner["owner_patch_types"] == ["universes"]
+
+
 def test_facts_dependency_for_missing_fuel_variant() -> None:
     owner = material_universe_issue_owner("material_universe.required_fuel_variant_missing")
     assert owner.get("dependency_patch_type") == "facts"

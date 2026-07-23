@@ -60,6 +60,7 @@ _UNIVERSES_CODES = {
     "material_universe.profile_material_structure_incomplete",
     "material_universe.multiple_variants_in_one_universe",
     "material_universe.fuel_variant_material_unreachable",
+    "material_universe.fuel_variant_material_mismatch",
     "material_universe.fuel_variant_collapsed",
     "material_universe.variant_identity_mismatch",
     "material_universe.universes_schema_invalid",
@@ -78,6 +79,7 @@ _MATERIALS_VARIANT_CODES = {
 _UNIVERSES_VARIANT_CODES = {
     "material_universe.multiple_variants_in_one_universe",
     "material_universe.fuel_variant_collapsed",
+    "material_universe.fuel_variant_material_mismatch",
     "material_universe.fuel_variant_material_unreachable",
     "material_universe.variant_identity_mismatch",
 }
