@@ -96,6 +96,31 @@ def test_qualify_accepts_normal_fragment():
     assert result.canonical_universe_data["universe_id"] == "u_fuel"
 
 
+def test_qualify_rejects_fuel_material_from_wrong_variant():
+    item = _manifest_item(
+        universe_id="u_fuel_v2",
+        required_cell_roles=["fuel"],
+        required_material_roles=["fuel"],
+        fuel_variant_id="v2",
+    )
+    frag = _fragment(
+        "u_fuel_v2",
+        _fuel_universe(uid="u_fuel_v2", material_id="m_fuel_v1"),
+    )
+    result = qualify_universe_fragment(
+        manifest_item=item,
+        fragment=frag,
+        known_material_ids={"m_fuel_v1", "m_fuel_v2"},
+        material_roles_by_id={"m_fuel_v1": "fuel", "m_fuel_v2": "fuel"},
+        material_source_variants_by_id={"m_fuel_v1": "v1", "m_fuel_v2": "v2"},
+    )
+    assert result.ok is False
+    assert [issue.code for issue in result.issues] == [
+        "qualification.fuel_variant_material_mismatch"
+    ]
+    assert result.issues[0].expected == "v2"
+
+
 def test_qualify_fragment_hash_is_canonical_and_stable():
     item = _manifest_item()
     frag = _fragment("u_fuel", _fuel_universe())

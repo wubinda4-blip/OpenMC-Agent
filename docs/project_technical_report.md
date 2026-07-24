@@ -4,6 +4,9 @@
 
 ### 2026-07-24
 
+- **Phase 8C Step 3I fuel-variant scoped universe retry prompt**：v3 artifact 离线审计显示 Universes retry owner/target 正确，但 fragment prompt 的 role→material binding 对 fuel role 暴露了所有 fuel materials，LLM retry 后把 Region1/Region2 fuel material 混入同一 fuel universe。修复为按 manifest `fuel_variant_id` 过滤明确不匹配的 fuel material，并在 fragment prompt/schema-repair prompt 与 qualification 中加入 fuel variant material mismatch 约束。
+- **验证结果**：v3 目标 `u_fuel_region_2_2.619pct` role binding 离线检查现在只暴露 Region2 fuel material；v3 两个混用 fuel universe 现在在 fragment qualification 级以 `qualification.fuel_variant_material_mismatch` 拒绝。Focused tests `63 passed`；全量非 OpenMC/非 LLM pytest `3689 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
+
 - **Phase 8C Step 3I MU final barrier hardening**：v3 canary 中 MU deterministic retry 已生成，但 stage 保持 blocked；executor 在 resume/final path 未强制 Material-Universe accepted，继续进入 assembly 并报 `localized_insert.*` 下游症状。新增 MU accepted barrier，禁止 controlled 模式在 MU 未 accepted 时生成 downstream patch 或 assembly。
 - **验证结果**：真实 v3 `plan_build_state.json` 离线 replay 现在秒级停在 `planning.material_universe_gate_not_accepted`（owner `universes`），不再触发 localized insert assembly failure；focused tests `39 passed`。全量非 OpenMC/非 LLM pytest `3686 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
 

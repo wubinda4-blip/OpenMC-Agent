@@ -301,6 +301,28 @@ class TestRoleBindingPrompt:
         binding = _build_role_binding_map(item, {"m_fuel": "fuel", "m_water": "coolant"})
         assert binding == {"fuel": ["m_fuel"]}
 
+    def test_role_binding_filters_fuel_materials_by_variant(self):
+        item = UniverseManifestItem(
+            universe_id="u_fuel_v2",
+            kind="fuel_pin",
+            required_material_roles=["fuel", "coolant"],
+            fuel_variant_id="v2",
+        )
+        binding = _build_role_binding_map(
+            item,
+            {
+                "m_fuel_v1": "fuel",
+                "m_fuel_v2": "fuel",
+                "m_water": "coolant",
+            },
+            {
+                "m_fuel_v1": "v1",
+                "m_fuel_v2": "v2",
+                "m_water": None,
+            },
+        )
+        assert binding == {"coolant": ["m_water"], "fuel": ["m_fuel_v2"]}
+
     def test_fragment_prompt_includes_binding(self):
         item = UniverseManifestItem(
             universe_id="u_fuel_v1", kind="fuel_pin",
@@ -312,6 +334,22 @@ class TestRoleBindingPrompt:
         )
         assert "Role → material bindings" in prompt
         assert "fuel → m_fuel" in prompt
+
+    def test_fragment_prompt_includes_fuel_variant_material_constraint(self):
+        item = UniverseManifestItem(
+            universe_id="u_fuel_v1",
+            kind="fuel_pin",
+            required_material_roles=["fuel"],
+            fuel_variant_id="v1",
+        )
+        prompt = _build_fragment_prompt(
+            item,
+            requirement="test",
+            material_summary="  - m_fuel_v1 (role=fuel, source_variant_id=v1)",
+            role_binding={"fuel": ["m_fuel_v1"]},
+        )
+        assert "source_variant_id matches this fuel variant" in prompt
+        assert "do not mix fuel materials from multiple variants" in prompt
 
     def test_fragment_prompt_without_binding(self):
         """When no role_binding is passed, the section is omitted."""

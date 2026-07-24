@@ -233,13 +233,21 @@ def _preflight_material_role_coverage(
 def _build_role_binding_map(
     item: UniverseManifestItem,
     material_roles_by_id: dict[str, str],
+    material_source_variants_by_id: dict[str, str | None] | None = None,
 ) -> dict[str, list[str]]:
     """Map each required_material_role to accepted material IDs with that role."""
+    material_source_variants_by_id = material_source_variants_by_id or {}
     binding: dict[str, list[str]] = {}
     for role in item.required_material_roles:
         binding[role] = sorted(
             mid for mid, mrole in material_roles_by_id.items()
             if mrole == role
+            and not (
+                role == "fuel"
+                and item.fuel_variant_id
+                and material_source_variants_by_id.get(mid) is not None
+                and material_source_variants_by_id.get(mid) != item.fuel_variant_id
+            )
         )
     return binding
 
@@ -270,6 +278,11 @@ def _build_fragment_prompt(
         lines.append("Each required role above MUST be referenced by at least one cell's material_id.")
     if item.fuel_variant_id:
         lines.append(f"Fuel variant: {item.fuel_variant_id}")
+        lines.append(
+            "For this fuel universe, every role='fuel' cell MUST use a fuel "
+            "material whose source_variant_id matches this fuel variant; do "
+            "not mix fuel materials from multiple variants inside one universe."
+        )
     if item.protected_through_path_roles:
         lines.append(f"Protected through-path roles: {', '.join(item.protected_through_path_roles)}")
     lines.append(f"\nAvailable materials:\n{material_summary}")
@@ -331,6 +344,13 @@ def _build_schema_repair_prompt(
         lines.append(f"Required cell roles (each MUST appear in at least one cell): {', '.join(item.required_cell_roles)}")
     if item.required_material_roles:
         lines.append(f"Required material roles: {', '.join(item.required_material_roles)}")
+    if item.fuel_variant_id:
+        lines.append(f"Fuel variant: {item.fuel_variant_id}")
+        lines.append(
+            "Every role='fuel' cell MUST use a fuel material whose "
+            "source_variant_id matches this fuel variant; do not mix fuel "
+            "materials from multiple variants inside one universe."
+        )
     if role_binding:
         lines.append("\nRole → material bindings (MUST use these exact material_id values):")
         for role, mids in sorted(role_binding.items()):
@@ -346,6 +366,11 @@ def _build_schema_repair_prompt(
             lines.append(f"  - {failure}")
     lines.append("")
     lines.append("Required JSON schema (fill in real values):")
+    example_material_id = "<material_id>"
+    if role_binding and item.required_material_roles:
+        bound_materials = role_binding.get(item.required_material_roles[0]) or []
+        if bound_materials:
+            example_material_id = bound_materials[0]
     lines.append("```json")
     lines.append(json.dumps({
         "patch_type": "universes",
@@ -356,9 +381,7 @@ def _build_schema_repair_prompt(
                 {
                     "id": "<cell_1>",
                     "role": item.required_cell_roles[0] if item.required_cell_roles else "filler",
-                    "material_id": role_binding.get(
-                        item.required_material_roles[0], ["<material_id>"]
-                    )[0] if role_binding and item.required_material_roles else "<material_id>",
+                    "material_id": example_material_id,
                     "region_kind": "cylinder",
                     "r_min_cm": 0.0,
                     "r_max_cm": 0.4,
@@ -381,6 +404,7 @@ def _verify_resume_fragments(
     manifest: UniverseManifest,
     known_material_ids: set[str],
     material_roles_by_id: dict[str, str],
+    material_source_variants_by_id: dict[str, str | None],
 ) -> tuple[dict[str, AcceptedFragmentRecord], dict[str, FragmentQualificationResult]]:
     """Re-verify every accepted fragment record on resume.
 
@@ -441,6 +465,7 @@ def _verify_resume_fragments(
             record=record,
             known_material_ids=known_material_ids,
             material_roles_by_id=material_roles_by_id,
+            material_source_variants_by_id=material_source_variants_by_id,
         )
         if result.ok:
             valid[uid] = record
@@ -493,6 +518,7 @@ def _generate_and_qualify_one_fragment(
     material_summary: str,
     known_material_ids: set[str],
     material_roles_by_id: dict[str, str],
+    material_source_variants_by_id: dict[str, str | None],
     effective_max_tokens: int,
     explicit_max_tokens: int | None,
     prior_failures: list[str],
@@ -505,7 +531,11 @@ def _generate_and_qualify_one_fragment(
     other return values carry the diagnostic.
     """
     # Build role → material_id binding for the prompt.
-    role_binding = _build_role_binding_map(item, material_roles_by_id)
+    role_binding = _build_role_binding_map(
+        item,
+        material_roles_by_id,
+        material_source_variants_by_id,
+    )
 
     # Attempt 0: full prompt.  Attempt 1+: focused schema-repair prompt.
     if attempt_index == 0:
@@ -587,6 +617,7 @@ def _generate_and_qualify_one_fragment(
         fragment=fragment,
         known_material_ids=known_material_ids,
         material_roles_by_id=material_roles_by_id,
+        material_source_variants_by_id=material_source_variants_by_id,
         qualification_attempt=attempt_index,
     )
     if not qualification.ok:
@@ -674,6 +705,7 @@ def generate_universes_patch(
     materials_obj = None
     known_material_ids: set[str] = set()
     material_roles_by_id: dict[str, str] = {}
+    material_source_variants_by_id: dict[str, str | None] = {}
     if facts_env is not None:
         try:
             facts_obj = parse_patch_content("facts", facts_env.content)
@@ -686,6 +718,9 @@ def generate_universes_patch(
                 known_material_ids.add(m.material_id)
                 if getattr(m, "role", None):
                     material_roles_by_id[m.material_id] = m.role
+                material_source_variants_by_id[m.material_id] = getattr(
+                    m, "source_variant_id", None
+                )
         except Exception:
             pass
 
@@ -823,6 +858,7 @@ def generate_universes_patch(
         session=session, manifest=manifest,
         known_material_ids=known_material_ids,
         material_roles_by_id=material_roles_by_id,
+        material_source_variants_by_id=material_source_variants_by_id,
     )
     for uid, result in invalid_resume_results.items():
         _downgrade_fragment(
@@ -863,6 +899,7 @@ def generate_universes_patch(
                 requirement=requirement, material_summary=material_summary,
                 known_material_ids=known_material_ids,
                 material_roles_by_id=material_roles_by_id,
+                material_source_variants_by_id=material_source_variants_by_id,
                 effective_max_tokens=effective_max or 8000,
                 explicit_max_tokens=max_tokens,
                 prior_failures=prior_failures,
@@ -955,6 +992,7 @@ def generate_universes_patch(
         accepted_records=accepted_records,
         known_material_ids=known_material_ids,
         material_roles_by_id=material_roles_by_id,
+        material_source_variants_by_id=material_source_variants_by_id,
         requirement=requirement,
         material_summary=material_summary,
         llm_client=llm_client,
@@ -1073,6 +1111,7 @@ def _attempt_merge_with_replay(
     accepted_records: dict[str, AcceptedFragmentRecord],
     known_material_ids: set[str],
     material_roles_by_id: dict[str, str],
+    material_source_variants_by_id: dict[str, str | None],
     requirement: str,
     material_summary: str,
     llm_client: Any,
@@ -1161,6 +1200,7 @@ def _attempt_merge_with_replay(
                     requirement=requirement, material_summary=material_summary,
                     known_material_ids=known_material_ids,
                     material_roles_by_id=material_roles_by_id,
+                    material_source_variants_by_id=material_source_variants_by_id,
                     effective_max_tokens=effective_max_tokens,
                     explicit_max_tokens=explicit_max_tokens,
                     prior_failures=prior_failures,

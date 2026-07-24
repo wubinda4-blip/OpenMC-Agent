@@ -144,6 +144,7 @@ def qualify_universe_fragment(
     fragment: UniverseDefinitionFragment,
     known_material_ids: set[str] | None = None,
     material_roles_by_id: dict[str, str] | None = None,
+    material_source_variants_by_id: dict[str, str | None] | None = None,
     qualification_attempt: int = 0,
 ) -> FragmentQualificationResult:
     """Qualify one fragment against its manifest item.
@@ -155,6 +156,7 @@ def qualify_universe_fragment(
     """
     known_material_ids = known_material_ids or set()
     material_roles_by_id = material_roles_by_id or {}
+    material_source_variants_by_id = material_source_variants_by_id or {}
     uid = manifest_item.universe_id
     issues: list[FragmentQualificationIssue] = []
 
@@ -374,6 +376,37 @@ def qualify_universe_fragment(
                 metadata={"missing_roles": missing_material_roles},
             ))
 
+    if manifest_item.fuel_variant_id and material_source_variants_by_id:
+        mismatched_fuel_cells: list[dict[str, Any]] = []
+        expected_variant = manifest_item.fuel_variant_id
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            if (cell.get("role") or "").lower() != "fuel":
+                continue
+            mid = cell.get("material_id")
+            actual_variant = material_source_variants_by_id.get(mid)
+            if actual_variant and actual_variant != expected_variant:
+                mismatched_fuel_cells.append({
+                    "cell_id": cell.get("id"),
+                    "material_id": mid,
+                    "actual_source_variant_id": actual_variant,
+                })
+        if mismatched_fuel_cells:
+            issues.append(FragmentQualificationIssue(
+                code="qualification.fuel_variant_material_mismatch",
+                universe_id=uid,
+                json_path=f"/universes/{uid}/cells",
+                message=(
+                    f"fuel universe {uid!r} declares fuel_variant_id="
+                    f"{expected_variant!r} but at least one fuel cell uses "
+                    "a material from a different source_variant_id"
+                ),
+                expected=expected_variant,
+                actual=mismatched_fuel_cells,
+                retryable=True,
+            ))
+
     # --- 3.4 Internal integrity: duplicate cell IDs ---
     seen_cell_ids: set[str] = set()
     duplicate_cell_ids: list[str] = []
@@ -457,6 +490,7 @@ def verify_accepted_fragment_record(
     record: Any,
     known_material_ids: set[str] | None = None,
     material_roles_by_id: dict[str, str] | None = None,
+    material_source_variants_by_id: dict[str, str | None] | None = None,
 ) -> FragmentQualificationResult:
     """Re-qualify a previously-accepted fragment on resume.
 
@@ -496,6 +530,7 @@ def verify_accepted_fragment_record(
         fragment=fragment,
         known_material_ids=known_material_ids,
         material_roles_by_id=material_roles_by_id,
+        material_source_variants_by_id=material_source_variants_by_id,
         qualification_attempt=record.accepted_at_attempt,
     )
     # Additionally enforce that the stored hash matches the recomputed one.
