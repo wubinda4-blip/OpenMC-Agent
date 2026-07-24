@@ -2,6 +2,9 @@
 from __future__ import annotations
 from typing import Any
 from openmc_agent.schemas import AgentBaseModel
+from openmc_agent.plan_builder.control_state_normalization import (
+    canonicalize_control_state_id,
+)
 from openmc_agent.plan_builder.planning_scope import PlanningFeatureContract, ResolvedPlanningScope, resolve_planning_scope
 
 class FactsConsistencyResult(AgentBaseModel):
@@ -30,7 +33,12 @@ def run_facts_consistency_preflight(*, feature_contract: PlanningFeatureContract
         issues.append(_issue("facts.localized_insert_contract_missing", "/localized_insert_requirements"))
     if feature_contract.has_multi_segment_localized_insert and not any(isinstance(x, dict) and x.get("required_profile_id") for x in requirements):
         issues.append(_issue("facts.localized_insert_profile_contract_missing", "/localized_insert_requirements"))
-    if feature_contract.has_control_state and requirements and not any(isinstance(x, dict) and x.get("control_state_id") for x in requirements):
+    if feature_contract.has_control_state and requirements and not any(
+        isinstance(x, dict)
+        and "control_state_id" in x
+        and canonicalize_control_state_id(x.get("control_state_id")) is not None
+        for x in requirements
+    ):
         issues.append(_issue("facts.control_state_contract_missing", "/localized_insert_requirements"))
     variants = facts_patch.get("fuel_variant_requirements", []) or []
     if feature_contract.has_multiple_fuel_variants and len(variants) < 2:

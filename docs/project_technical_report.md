@@ -4,6 +4,9 @@
 
 ### 2026-07-24
 
+- **Phase 8C Step 3I Facts blank control-state closure**：v5 MU milestone 未到 MU，Facts Gate 在 revision closure 阻塞 `facts.control_state_contract_missing`；真实 candidate 已包含 `control_state_id=""`，但 deterministic check 用 truthiness 将空字符串误判为缺失。新增 control-state normalization，将空 source state canonicalize 为 `base`，并在 Facts schema、revision merge 与 consistency preflight 复用。
+- **验证结果**：v5 最后一轮 `facts_revision_evaluation_002.json` 离线 normalized 后 localized insert control states 全为 `base`，Facts consistency issue codes 为空；focused tests `39 passed`。全量非 OpenMC/非 LLM pytest `3692 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
+
 - **Phase 8C Step 3I fuel-variant scoped universe retry prompt**：v3 artifact 离线审计显示 Universes retry owner/target 正确，但 fragment prompt 的 role→material binding 对 fuel role 暴露了所有 fuel materials，LLM retry 后把 Region1/Region2 fuel material 混入同一 fuel universe。修复为按 manifest `fuel_variant_id` 过滤明确不匹配的 fuel material，并在 fragment prompt/schema-repair prompt 与 qualification 中加入 fuel variant material mismatch 约束。
 - **验证结果**：v3 目标 `u_fuel_region_2_2.619pct` role binding 离线检查现在只暴露 Region2 fuel material；v3 两个混用 fuel universe 现在在 fragment qualification 级以 `qualification.fuel_variant_material_mismatch` 拒绝。Focused tests `63 passed`；全量非 OpenMC/非 LLM pytest `3689 passed, 2 skipped, 392 deselected`，`compileall`、fake benchmark `21/21`、baseline diff 均通过。
 

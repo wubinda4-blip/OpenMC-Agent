@@ -14,3 +14,19 @@ def test_unknown_counts_do_not_downgrade_multi_scope():
     result = run_facts_consistency_preflight(feature_contract=contract, facts_patch={"patch_type":"facts", "model_scope":"multi_assembly_core"})
     assert result.scope.value == "multi_assembly_core"
     assert "facts.multi_assembly_contract_incomplete" in {item["code"] for item in result.issues}
+
+
+def test_blank_control_state_id_satisfies_source_control_state_contract():
+    contract = planning_feature_contract({"feature_summary": {"has_localized_insert": True, "has_control_state": True}})
+    result = run_facts_consistency_preflight(
+        feature_contract=contract,
+        facts_patch={
+            "patch_type": "facts",
+            "localized_insert_requirements": [
+                {"requirement_id": "rcca", "insert_kind": "control_rod", "control_state_id": ""}
+            ],
+        },
+    )
+    assert "facts.control_state_contract_missing" not in {
+        item["code"] for item in result.issues
+    }

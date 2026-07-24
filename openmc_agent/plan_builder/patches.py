@@ -21,6 +21,9 @@ from typing import Any, Literal, get_origin
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openmc_agent.schemas import AgentBaseModel
+from openmc_agent.plan_builder.control_state_normalization import (
+    canonicalize_control_state_id,
+)
 
 
 PatchType = Literal[
@@ -211,6 +214,15 @@ class LocalizedInsertPlacementRequirementPatchItem(_PatchBase):
     required_in_detailed_domain: bool = True
     source_note: str | None = None
     requires_human_confirmation: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_control_state_id(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "control_state_id" in data:
+            data["control_state_id"] = canonicalize_control_state_id(
+                data.get("control_state_id")
+            )
+        return data
 
 
 # ---------------------------------------------------------------------------

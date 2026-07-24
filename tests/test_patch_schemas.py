@@ -29,6 +29,17 @@ class TestParsePatchContent:
         assert isinstance(patch, FactsPatch)
         assert patch.benchmark_id == "VERA3"
 
+    def test_facts_blank_control_state_id_normalizes_to_base(self) -> None:
+        patch = parse_patch_content("facts", {
+            "localized_insert_requirements": [{
+                "requirement_id": "rcca",
+                "insert_kind": "control_rod",
+                "control_state_id": "",
+            }]
+        })
+        assert isinstance(patch, FactsPatch)
+        assert patch.localized_insert_requirements[0].control_state_id == "base"
+
     def test_materials(self) -> None:
         patch = parse_patch_content("materials", {
             "materials": [

@@ -12,6 +12,9 @@ from typing import Any, Literal
 from pydantic import Field
 
 from openmc_agent.schemas import AgentBaseModel
+from openmc_agent.plan_builder.control_state_normalization import (
+    normalize_localized_insert_control_states,
+)
 
 
 class FactsEvidenceContract(AgentBaseModel):
@@ -513,6 +516,8 @@ def merge_facts_content_into_skeleton(
                 # Locked scalar — proposal cannot override.
                 continue
         candidate[field_path] = value
+
+    candidate = normalize_localized_insert_control_states(candidate)
 
     from openmc_agent.plan_builder.closed_loop.fingerprints import _digest
     patch_hash = _digest(candidate)

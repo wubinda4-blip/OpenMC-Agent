@@ -243,3 +243,26 @@ def test_merge_locks_localized_inserts_from_skeleton():
     assert li[0].get("requirement_id") == "pyrex_edge"
     assert li[0].get("insert_kind") == "pyrex_rod"
     assert li[0].get("expected_coordinate_count_per_assembly") == 20
+
+
+def test_merge_normalizes_blank_control_state_id_to_base():
+    skeleton = FactsRequirementSkeleton(
+        requirement_hash="abc",
+        source_index_hash="def",
+        ledger_hash="ghi",
+        feature_contract_hash="jkl",
+    )
+    proposal = FactsContentProposal(
+        resolved_fields={
+            "localized_insert_requirements": [
+                {
+                    "requirement_id": "rcca",
+                    "insert_kind": "control_rod",
+                    "control_state_id": "",
+                }
+            ]
+        }
+    )
+    result = merge_facts_content_into_skeleton(skeleton, proposal)
+    li = result.merged.patch["localized_insert_requirements"]
+    assert li[0]["control_state_id"] == "base"
