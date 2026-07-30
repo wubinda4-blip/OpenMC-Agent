@@ -62,35 +62,74 @@ docker build -t openmc-agent .                    # Docker
 
 ### 最常用的建模命令
 
-以下命令模拟用户真实使用场景：从输入文件出发，LLM 从头规划，无 reference patch、无 gold model，端到端生成模型 + OpenMC 传输 keff。
+以下命令模拟用户真实使用场景：从输入文件出发，LLM 从头规划，开启专家反馈，无 reference patch、无 gold model，端到端生成模型、渲染图和 OpenMC smoke keff。
 
-#### VERA3 3A（增量规划，推荐入门）
+#### VERA3 3B（增量规划 + 专家反馈，推荐演示）
 
 ```bash
-# make 方式（最简洁）
-make model INPUT=Input/VERA3_problem.md VARIANT=3A \
-    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1 \
-    REFERENCE_PATCH_POLICY=off LOG_LEVEL=INFO
-
-# 等价的 python 方式（可自由组合参数）
-conda run --no-capture-output -n openmc-env python scripts/run_model.py \
-    --input Input/VERA3_problem.md --benchmark VERA3 --variant 3A \
-    --model zhipu:glm-5.2 --allow-real-llm --smoke-test \
-    --reference-patch-policy off --log-level INFO \
-    --out data/runs/VERA3_3A
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA3_problem.md \
+    --state 3B \
+    --model zhipu:glm-5.2 \
+    --plan \
+    --plot \
+    --smoke-test \
+    --verbose \
+    --compact \
+    --interactive-feedback \
+    --max-expert-rounds 3 \
+    --reference-patch-policy off \
+    --no-gold-few-shots \
+    --plan-loop-mode controlled \
+    --plan-gates facts,material_universe,placement,axial_geometry,assembled_plan \
+    --material-universe-review-mode controlled \
+    --placement-review-mode controlled \
+    --axial-geometry-review-mode controlled \
+    --assembled-plan-review-mode controlled \
+    --universes-generation-mode fragmented \
+    --strict-structured-patch-output \
+    --max-plan-review-rounds 4 \
+    --max-plan-repair-rounds 4 \
+    --max-plan-additional-llm-calls 60 \
+    --output-dir runs/VERA_3B_demo
 ```
 
-#### C5G7（monolithic 单次规划）
-
-C5G7 结构简单，用 monolithic 模式（LLM 单次输出整个 plan，不走增量）：
+#### VERA4 base（同一命令形态，换输入）
 
 ```bash
-# make 方式
-make model INPUT=Input/case3.md BENCHMARK=C5G7 \
-    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1 \
-    REFERENCE_PATCH_POLICY=off LOG_LEVEL=INFO
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA4_problem.md \
+    --model zhipu:glm-5.2 \
+    --plan \
+    --plot \
+    --smoke-test \
+    --verbose \
+    --compact \
+    --interactive-feedback \
+    --max-expert-rounds 3 \
+    --reference-patch-policy off \
+    --no-gold-few-shots \
+    --plan-loop-mode controlled \
+    --plan-gates facts,material_universe,placement,axial_geometry,assembled_plan \
+    --material-universe-review-mode controlled \
+    --placement-review-mode controlled \
+    --axial-geometry-review-mode controlled \
+    --assembled-plan-review-mode controlled \
+    --universes-generation-mode fragmented \
+    --strict-structured-patch-output \
+    --max-plan-review-rounds 4 \
+    --max-plan-repair-rounds 4 \
+    --max-plan-additional-llm-calls 60 \
+    --output-dir runs/VERA4_base_demo
+```
 
-# 等价的 python 方式
+> **说明**：上述命令均为**无 reference patch、无 gold model** 的纯 LLM 从头规划（`--reference-patch-policy off --no-gold-few-shots`）。`--interactive-feedback --max-expert-rounds 3` 开启专家反馈；`conda run --no-capture-output`、`--verbose` 和 `--compact` 保证命令行实时显示 `[node:...]`、`[llm] ...` 等进度消息，适合现场演示。若要批处理，可改为 `--no-interactive-feedback`。
+
+#### C5G7（monolithic 单次规划，可选快速演示）
+
+C5G7 结构简单，也可以用 monolithic 模式（LLM 单次输出整个 plan，不走增量）：
+
+```bash
 conda run --no-capture-output -n openmc-env python scripts/run_model.py \
     --input Input/case3.md --benchmark C5G7 \
     --model zhipu:glm-5.2 --allow-real-llm --no-incremental --smoke-test \
@@ -98,29 +137,41 @@ conda run --no-capture-output -n openmc-env python scripts/run_model.py \
     --out data/runs/C5G7
 ```
 
-> **说明**：上述命令均为**无 reference patch、无 gold model** 的纯 LLM 从头规划（`--reference-patch-policy off`）。`--log-level INFO`（或 `LOG_LEVEL=INFO`）开启 CLI 实时状态消息（`[node:...]`、`[llm] ...`），便于观察建模进度。设为 `WARNING` 可静默进度消息，`DEBUG` 可查看更详细诊断。
-
 #### 通用：换输入 / 换堆型 / 换模型
 
 ```bash
-# 换 variant（3B 含 Pyrex 毒物棒）
-make model INPUT=Input/VERA3_problem.md VARIANT=3B MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1
+# 换 variant（3A 不含 Pyrex 毒物棒）
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA3_problem.md --state 3A --model zhipu:glm-5.2 \
+    --plan --plot --smoke-test --interactive-feedback --max-expert-rounds 3 \
+    --reference-patch-policy off --no-gold-few-shots \
+    --output-dir runs/VERA_3A_demo
 
 # 换堆型（VERA2 2A）
-make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2 MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA2_problem.md --state 2A --model zhipu:glm-5.2 \
+    --plan --plot --smoke-test --interactive-feedback --max-expert-rounds 3 \
+    --reference-patch-policy off --no-gold-few-shots \
+    --output-dir runs/VERA_2A_demo
 
 # 换 LLM 模型
-make model INPUT=Input/VERA3_problem.md MODEL=ds:deepseek-v4-flash ALLOW_REAL_LLM=1
-make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA3_problem.md --state 3B --model ds:deepseek-v4-flash \
+    --plan --plot --smoke-test --interactive-feedback --max-expert-rounds 3 \
+    --reference-patch-policy off --no-gold-few-shots \
+    --output-dir runs/VERA_3B_deepseek_demo
 
 # 不调 LLM，只看 feature detection（秒级，不花钱）
 make model-dry INPUT=Input/VERA3_problem.md
 
-# 紧凑终端视图
-make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 LOG_LEVEL=WARNING
+# 紧凑终端视图：主命令已带 --compact；若需要更详细日志，保留 --verbose
 
-# 开启交互式专家回环（需要时人工确认/补全缺失事实）
-make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 INTERACTIVE=1
+# 批处理时关闭专家反馈
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA3_problem.md --state 3B --model zhipu:glm-5.2 \
+    --plan --plot --smoke-test --no-interactive-feedback \
+    --reference-patch-policy off --no-gold-few-shots \
+    --output-dir runs/VERA_3B_batch
 ```
 
 > **提示**：`deepseek-v4-flash` 默认开启思考模式，CoT 会占用输出 token 预算，可能导致 JSON
