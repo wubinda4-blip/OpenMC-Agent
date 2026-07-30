@@ -69,12 +69,14 @@ docker build -t openmc-agent .                    # Docker
 ```bash
 # make 方式（最简洁）
 make model INPUT=Input/VERA3_problem.md VARIANT=3A \
-    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1
+    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1 \
+    REFERENCE_PATCH_POLICY=off LOG_LEVEL=INFO
 
 # 等价的 python 方式（可自由组合参数）
 conda run --no-capture-output -n openmc-env python scripts/run_model.py \
     --input Input/VERA3_problem.md --benchmark VERA3 --variant 3A \
     --model zhipu:glm-5.2 --allow-real-llm --smoke-test \
+    --reference-patch-policy off --log-level INFO \
     --out data/runs/VERA3_3A
 ```
 
@@ -85,14 +87,18 @@ C5G7 结构简单，用 monolithic 模式（LLM 单次输出整个 plan，不走
 ```bash
 # make 方式
 make model INPUT=Input/case3.md BENCHMARK=C5G7 \
-    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1
+    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1 \
+    REFERENCE_PATCH_POLICY=off LOG_LEVEL=INFO
 
 # 等价的 python 方式
 conda run --no-capture-output -n openmc-env python scripts/run_model.py \
     --input Input/case3.md --benchmark C5G7 \
     --model zhipu:glm-5.2 --allow-real-llm --no-incremental --smoke-test \
+    --reference-patch-policy off --log-level INFO \
     --out data/runs/C5G7
 ```
+
+> **说明**：上述命令均为**无 reference patch、无 gold model** 的纯 LLM 从头规划（`--reference-patch-policy off`）。`--log-level INFO`（或 `LOG_LEVEL=INFO`）开启 CLI 实时状态消息（`[node:...]`、`[llm] ...`），便于观察建模进度。设为 `WARNING` 可静默进度消息，`DEBUG` 可查看更详细诊断。
 
 #### 通用：换输入 / 换堆型 / 换模型
 
