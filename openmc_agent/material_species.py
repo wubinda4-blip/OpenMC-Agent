@@ -288,12 +288,23 @@ def resolve_material_species(
         bases.add(str(composition_basis))
     bases.discard("None")
     if len(bases) > 1:
-        result.errors.append("material_resolution.mixed_fraction_basis")
-        return result
-    result.fraction_basis = next(iter(bases), composition_basis)
+        # Mixed fraction bases (e.g. atom_frac + weight_frac in the same
+        # material). Per goal directive (allow small errors, prioritize
+        # rendering): pick the most common basis as a fallback and record a
+        # warning instead of blocking assembly with a hard error.
+        from collections import Counter
+        basis_counts = Counter(str(_basis_for_component(c)) for c in components)
+        basis_counts.update([str(composition_basis)] if composition else [])
+        basis_counts.pop("None", None)
+        result.fraction_basis = basis_counts.most_common(1)[0][0] if basis_counts else "atom_frac"
+        result.warnings.append("material_resolution.mixed_fraction_basis_fallback")
+    else:
+        result.fraction_basis = next(iter(bases), composition_basis)
     if components and result.fraction_basis not in {"weight_frac", "atom_frac"}:
-        result.errors.append("material_resolution.mixed_fraction_basis")
-        return result
+        # Unknown/unusual basis with compound components: fallback to atom_frac
+        # rather than blocking (per goal directive: allow small errors).
+        result.fraction_basis = "atom_frac"
+        result.warnings.append("material_resolution.mixed_fraction_basis_fallback")
 
     direct_total = 0.0
     for raw_name, value in (composition or {}).items():
