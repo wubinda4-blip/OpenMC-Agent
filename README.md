@@ -94,6 +94,43 @@ conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
     --output-dir runs/VERA_3B_demo
 ```
 
+#### VERA3 3B（成功率优先，演示前推荐）
+
+如果现场目标是尽量跑出完整 `model.py`、渲染图和 smoke keff，而不是压缩耗时，使用下面这版。它仍然是无 reference patch、无 gold model 的纯 LLM 从头规划，但给 Facts/repair/expert loop 更多预算：
+
+```bash
+conda run --no-capture-output -n openmc-env python -m openmc_agent.inspect \
+    --md-file Input/VERA3_problem.md \
+    --state 3B \
+    --model zhipu:glm-5.2 \
+    --plan \
+    --plot \
+    --smoke-test \
+    --verbose \
+    --compact \
+    --interactive-feedback \
+    --max-expert-rounds 5 \
+    --reference-patch-policy off \
+    --no-gold-few-shots \
+    --plan-loop-mode controlled \
+    --plan-human-mode ambiguity_only \
+    --plan-gates facts,material_universe,placement,axial_geometry,assembled_plan \
+    --material-universe-review-mode controlled \
+    --placement-review-mode controlled \
+    --axial-geometry-review-mode controlled \
+    --assembled-plan-review-mode controlled \
+    --universes-generation-mode fragmented \
+    --strict-structured-patch-output \
+    --facts-review-chunk-chars 12000 \
+    --max-facts-review-chunks 10 \
+    --max-plan-review-rounds 6 \
+    --max-plan-repair-rounds 6 \
+    --max-plan-human-rounds 5 \
+    --max-plan-no-progress-rounds 2 \
+    --max-plan-additional-llm-calls 100 \
+    --output-dir runs/VERA_3B_success
+```
+
 #### VERA4 base（同一命令形态，换输入）
 
 ```bash
