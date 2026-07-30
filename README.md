@@ -62,38 +62,59 @@ docker build -t openmc-agent .                    # Docker
 
 ### 最常用的建模命令
 
+以下命令模拟用户真实使用场景：从输入文件出发，LLM 从头规划，无 reference patch、无 gold model，端到端生成模型 + OpenMC 传输 keff。
+
+#### VERA3 3A（增量规划，推荐入门）
+
 ```bash
-# 跑 VERA3 3A（默认 deepseek，含 OpenMC smoke test 输出 keff）
-make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1
+# make 方式（最简洁）
+make model INPUT=Input/VERA3_problem.md VARIANT=3A \
+    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1
 
-# 切换 variant / 堆型 / 输入文件
-make model INPUT=Input/VERA3_problem.md VARIANT=3B ALLOW_REAL_LLM=1
-make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2 ALLOW_REAL_LLM=1
+# 等价的 python 方式（可自由组合参数）
+conda run --no-capture-output -n openmc-env python scripts/run_model.py \
+    --input Input/VERA3_problem.md --benchmark VERA3 --variant 3A \
+    --model zhipu:glm-5.2 --allow-real-llm --smoke-test \
+    --out data/runs/VERA3_3A
+```
 
-# 切换 LLM 模型
-make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
-make model INPUT=Input/VERA3_problem.md MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1
+#### C5G7（monolithic 单次规划）
+
+C5G7 结构简单，用 monolithic 模式（LLM 单次输出整个 plan，不走增量）：
+
+```bash
+# make 方式
+make model INPUT=Input/case3.md BENCHMARK=C5G7 \
+    MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1 SMOKE=1
+
+# 等价的 python 方式
+conda run --no-capture-output -n openmc-env python scripts/run_model.py \
+    --input Input/case3.md --benchmark C5G7 \
+    --model zhipu:glm-5.2 --allow-real-llm --no-incremental --smoke-test \
+    --out data/runs/C5G7
+```
+
+#### 通用：换输入 / 换堆型 / 换模型
+
+```bash
+# 换 variant（3B 含 Pyrex 毒物棒）
+make model INPUT=Input/VERA3_problem.md VARIANT=3B MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1
+
+# 换堆型（VERA2 2A）
+make model INPUT=Input/VERA2_problem.md VARIANT=2A BENCHMARK=VERA2 MODEL=zhipu:glm-5.2 ALLOW_REAL_LLM=1
+
+# 换 LLM 模型
 make model INPUT=Input/VERA3_problem.md MODEL=ds:deepseek-v4-flash ALLOW_REAL_LLM=1
+make model INPUT=Input/VERA3_problem.md MODEL=glm:glm-4-plus ALLOW_REAL_LLM=1
 
 # 不调 LLM，只看 feature detection（秒级，不花钱）
 make model-dry INPUT=Input/VERA3_problem.md
 
-# 带 OpenMC smoke test（输出 keff）
-make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 SMOKE=1
-
-# 紧凑终端视图（含绘图 + smoke）
+# 紧凑终端视图
 make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 LOG_LEVEL=WARNING
 
 # 开启交互式专家回环（需要时人工确认/补全缺失事实）
 make model INPUT=Input/VERA3_problem.md ALLOW_REAL_LLM=1 INTERACTIVE=1
-```
-
-或者直接用 python（等价命令）：
-
-```bash
-conda run --no-capture-output -n openmc-env python scripts/run_model.py \
-    --input Input/VERA3_problem.md --variant 3A \
-    --model zhipu:glm-5.2 --allow-real-llm
 ```
 
 > **提示**：`deepseek-v4-flash` 默认开启思考模式，CoT 会占用输出 token 预算，可能导致 JSON
